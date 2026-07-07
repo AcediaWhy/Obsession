@@ -9,10 +9,22 @@ type Props = {
   size?: number;
 };
 
-// «Fallen Down» — скрытая, тихая тема. Дождь падает в тёмную гладь, рождая
-// расходящиеся круги; над водой дышит мягкий отражённый свет. Приглушённая
-// сумеречная палитра, медленное меланхоличное движение. При активации свет
-// чуть теплеет и дождь стихает — становится спокойнее, «под защитой».
+// Пиксельное сердце SOUL — визитная карточка Undertale, нарисованное блоками по
+// сетке (без сглаживания). Единственный цвет в монохромной теме: приглушённо-алое
+// в покое (медленное сердцебиение, меланхолия), яркое и тёплое при активации
+// (DETERMINATION). Форма намеренно грубо-пиксельная.
+const HEART: number[][] = [
+  [0, 1, 1, 0, 0, 1, 1, 0],
+  [1, 1, 1, 1, 1, 1, 1, 1],
+  [1, 1, 1, 1, 1, 1, 1, 1],
+  [1, 1, 1, 1, 1, 1, 1, 1],
+  [0, 1, 1, 1, 1, 1, 1, 0],
+  [0, 0, 1, 1, 1, 1, 0, 0],
+  [0, 0, 0, 1, 1, 0, 0, 0],
+];
+const COLS = HEART[0].length;
+const ROWS = HEART.length;
+
 export function FallenCore({ active, busy = false, onClick, size = 240 }: Props) {
   return (
     <motion.button
@@ -24,21 +36,21 @@ export function FallenCore({ active, busy = false, onClick, size = 240 }: Props)
       className="no-drag snow-surface relative flex items-center justify-center disabled:cursor-wait"
       style={{ width: size, height: size }}
     >
-      {/* Мягкий ореол — дышит медленно, чуть теплеет при активации. */}
+      {/* Мягкий алый ореол — дышит, теплеет и ярче при активации. */}
       <motion.div
         className="absolute rounded-full"
         style={{
           inset: -size * 0.16,
           background: active
-            ? "radial-gradient(circle, rgba(180,168,196,0.22), rgba(120,140,180,0.12) 46%, transparent 72%)"
-            : "radial-gradient(circle, rgba(110,130,170,0.18), transparent 70%)",
+            ? "radial-gradient(circle, rgba(255,58,64,0.30), rgba(150,30,40,0.12) 48%, transparent 72%)"
+            : "radial-gradient(circle, rgba(150,36,44,0.18), transparent 70%)",
           filter: "blur(12px)",
         }}
-        animate={{ opacity: active ? [0.6, 0.85, 0.6] : [0.45, 0.62, 0.45] }}
-        transition={{ duration: active ? 5 : 6.5, repeat: Infinity, ease: "easeInOut" }}
+        animate={{ opacity: active ? [0.6, 0.9, 0.6] : [0.4, 0.58, 0.4] }}
+        transition={{ duration: active ? 4.2 : 6, repeat: Infinity, ease: "easeInOut" }}
       />
 
-      <FallenCanvas active={active} busy={busy} size={size} />
+      <SoulCanvas active={active} busy={busy} size={size} />
 
       {/* Стеклянная кромка. */}
       <motion.div
@@ -46,23 +58,23 @@ export function FallenCore({ active, busy = false, onClick, size = 240 }: Props)
         style={{
           inset: size * 0.06,
           boxShadow: active
-            ? "inset 0 0 30px 2px rgba(180,168,196,0.22), 0 0 20px 1px rgba(150,160,200,0.28)"
-            : "inset 0 0 26px 2px rgba(110,130,170,0.18), 0 0 14px 1px rgba(110,130,170,0.20)",
+            ? "inset 0 0 30px 2px rgba(255,58,64,0.20), 0 0 20px 1px rgba(220,54,62,0.26)"
+            : "inset 0 0 26px 2px rgba(150,36,44,0.16), 0 0 14px 1px rgba(150,36,44,0.18)",
           border: "1px solid rgba(255,255,255,0.05)",
         }}
-        animate={{ opacity: active ? [0.7, 0.9, 0.7] : [0.5, 0.68, 0.5] }}
+        animate={{ opacity: active ? [0.7, 0.9, 0.7] : [0.5, 0.66, 0.5] }}
         transition={{ duration: 3.2, repeat: Infinity, ease: "easeInOut" }}
       />
 
-      {/* Метка состояния. */}
-      <div className="pointer-events-none absolute flex flex-col items-center" style={{ marginTop: -size * 0.14 }}>
+      {/* Метка состояния под сердцем. */}
+      <div className="pointer-events-none absolute flex flex-col items-center" style={{ marginTop: size * 0.34 }}>
         <span
           className="text-[11px] font-bold tracking-[0.32em]"
           style={{
-            color: active ? "#D7DAEA" : "#AAB4CE",
+            color: active ? "#FFC4C7" : "#B79398",
             textShadow: active
-              ? "0 0 14px rgba(180,168,196,0.7)"
-              : "0 0 12px rgba(110,130,170,0.6)",
+              ? "0 0 14px rgba(255,58,64,0.7)"
+              : "0 0 12px rgba(150,36,44,0.55)",
           }}
         >
           {busy ? "···" : active ? "ON" : "OFF"}
@@ -72,12 +84,9 @@ export function FallenCore({ active, busy = false, onClick, size = 240 }: Props)
   );
 }
 
-// ─── Canvas: дождь → гладь → рябь ────────────────────────────────────────────
+// ─── Canvas: пиксельное сердце с сердцебиением ───────────────────────────────
 
-type Drop = { x: number; y: number; len: number; speed: number };
-type Ripple = { x: number; r: number; alpha: number };
-
-function FallenCanvas({ active, busy, size }: { active: boolean; busy: boolean; size: number }) {
+function SoulCanvas({ active, busy, size }: { active: boolean; busy: boolean; size: number }) {
   const ref = useRef<HTMLCanvasElement>(null);
   const stateRef = useRef({ active, busy });
   stateRef.current = { active, busy };
@@ -92,25 +101,21 @@ function FallenCanvas({ active, busy, size }: { active: boolean; busy: boolean; 
     canvas.width = size * dpr;
     canvas.height = size * dpr;
     ctx.scale(dpr, dpr);
+    ctx.imageSmoothingEnabled = false; // крипкие пиксели
 
     const cx = size / 2;
-    const waterY = size * 0.6; // линия глади
-    const ANGLE = 0.12; // лёгкий наклон дождя
-
-    // Инициализация капель по всей высоте (чтобы дождь шёл сразу).
-    const N = 15;
-    const drops: Drop[] = Array.from({ length: N }, () => ({
-      x: Math.random() * size,
-      y: Math.random() * waterY,
-      len: size * (0.04 + Math.random() * 0.05),
-      speed: size * (0.9 + Math.random() * 0.7),
-    }));
-    const ripples: Ripple[] = [];
+    const cy = size / 2;
 
     let t = 0;
-    let warm = 0; // 0..1 «спокойствие/тепло» при активации
+    let warm = 0; // 0..1 плавный «разогрев» при активации
     let raf = 0;
     let last = 0;
+
+    // Сердцебиение: два толчка (lub-dub) и пауза, свёрнутые в фазу 0..1.
+    const heartbeat = (u: number) => {
+      const g = (c: number, s: number) => Math.exp(-((u - c) * (u - c)) / (s * s));
+      return g(0.0, 0.055) + g(0.17, 0.06) * 0.62;
+    };
 
     const draw = (now: number) => {
       raf = requestAnimationFrame(draw);
@@ -122,100 +127,60 @@ function FallenCanvas({ active, busy, size }: { active: boolean; busy: boolean; 
       last = now;
       const { active: on, busy: loading } = stateRef.current;
       t += dt;
-      warm += ((on ? 1 : 0) - warm) * (1 - Math.exp(-dt * 2.2));
+      warm += ((on ? 1 : 0) - warm) * (1 - Math.exp(-dt * 2.6));
+
+      const period = loading ? 0.7 : 1.9 - warm * 0.7;
+      const u = (t % period) / period;
+      const beat = heartbeat(u); // 0..~1.6
 
       ctx.clearRect(0, 0, size, size);
 
-      // Тёмная гладь ниже линии воды (спокойный вертикальный градиент).
-      const water = ctx.createLinearGradient(0, waterY, 0, size);
-      water.addColorStop(0, "rgba(24,30,46,0.9)");
-      water.addColorStop(1, "rgba(10,13,22,0.95)");
-      ctx.fillStyle = water;
-      ctx.fillRect(0, waterY, size, size - waterY);
+      // Пульс масштаба (пиксели остаются квадратными → чёткими).
+      const scale = 1 + beat * (0.05 + warm * 0.05);
+      const heartW = size * 0.42 * scale;
+      const px = heartW / COLS;
+      const heartH = px * ROWS;
+      const x0 = cx - heartW / 2;
+      const y0 = cy - heartH / 2;
 
-      // Отражённый мягкий свет над водой — «дышит», чуть теплеет.
+      // Цвет: приглушённо-алый в покое → яркий алый при DETERMINATION.
+      const cr = Math.round(178 + (255 - 178) * warm);
+      const cg = Math.round(40 + (58 - 40) * warm);
+      const cb = Math.round(48 + (60 - 48) * warm);
+
+      // Внешнее свечение (additive), пульсирует с биением.
       ctx.globalCompositeOperation = "lighter";
-      const breathe = 0.5 + Math.sin(t * 0.9) * 0.5;
-      const glowY = waterY - size * 0.12;
-      const glowR = size * (0.24 + warm * 0.04 + breathe * 0.03);
-      const cr = Math.round(120 + 60 * warm);
-      const cg = Math.round(140 + 25 * warm);
-      const cb = Math.round(180 + 10 * warm);
-      const glow = ctx.createRadialGradient(cx, glowY, 0, cx, glowY, glowR);
-      const ga = 0.22 + warm * 0.16 + breathe * 0.05;
+      const glowR = size * (0.2 + warm * 0.05) * (1 + beat * 0.16);
+      const ga = 0.14 + warm * 0.2 + beat * 0.14;
+      const glow = ctx.createRadialGradient(cx, cy, 0, cx, cy, glowR);
       glow.addColorStop(0, `rgba(${cr},${cg},${cb},${ga})`);
       glow.addColorStop(1, "rgba(0,0,0,0)");
       ctx.fillStyle = glow;
-      ctx.beginPath();
-      ctx.arc(cx, glowY, glowR, 0, Math.PI * 2);
-      ctx.fill();
+      ctx.fillRect(cx - glowR, cy - glowR, glowR * 2, glowR * 2);
 
-      // Отражение света в воде — вытянутая мерцающая колонна.
-      const refl = ctx.createLinearGradient(0, waterY, 0, size);
-      const ra = (0.1 + warm * 0.08) * (0.7 + 0.3 * Math.sin(t * 2.1));
-      refl.addColorStop(0, `rgba(${cr},${cg},${cb},${ra})`);
-      refl.addColorStop(1, "rgba(0,0,0,0)");
-      ctx.fillStyle = refl;
-      ctx.fillRect(cx - size * 0.10, waterY, size * 0.20, size - waterY);
-
-      // Дождь: тонкие штрихи. При активации редеет и замедляется (спокойнее).
-      const rainAlpha = (0.5 - warm * 0.28) * (loading ? 0.6 : 1);
-      const speedK = 1 - warm * 0.35;
-      ctx.strokeStyle = `rgba(170,192,220,${rainAlpha})`;
-      ctx.lineWidth = Math.max(1, size * 0.006);
-      ctx.beginPath();
-      for (const d of drops) {
-        d.y += d.speed * speedK * dt;
-        d.x += d.speed * speedK * dt * ANGLE;
-        if (d.y >= waterY) {
-          // Капля коснулась глади — рождаем круг и перезапускаем сверху.
-          ripples.push({ x: d.x, r: size * 0.008, alpha: 0.5 - warm * 0.2 });
-          d.y = -d.len - Math.random() * size * 0.2;
-          d.x = Math.random() * size;
-          d.speed = size * (0.9 + Math.random() * 0.7);
-          continue;
+      // Тело сердца — плоские красные блоки.
+      ctx.globalCompositeOperation = "source-over";
+      ctx.fillStyle = `rgb(${cr},${cg},${cb})`;
+      for (let r = 0; r < ROWS; r++) {
+        for (let c = 0; c < COLS; c++) {
+          if (!HEART[r][c]) continue;
+          const bx = Math.floor(x0 + c * px);
+          const by = Math.floor(y0 + r * px);
+          const bw = Math.ceil(px) + 1; // +1 закрывает щели округления
+          ctx.fillRect(bx, by, bw, bw);
         }
-        ctx.moveTo(d.x, d.y);
-        ctx.lineTo(d.x - d.len * ANGLE, d.y - d.len);
-      }
-      ctx.stroke();
-
-      // Рябь на воде: расходящиеся затухающие круги (сплюснуты перспективой).
-      for (let i = ripples.length - 1; i >= 0; i--) {
-        const rp = ripples[i];
-        rp.r += size * 0.12 * dt;
-        rp.alpha -= dt * 0.5;
-        if (rp.alpha <= 0 || rp.r > size * 0.16) {
-          ripples.splice(i, 1);
-          continue;
-        }
-        ctx.strokeStyle = `rgba(180,200,225,${Math.max(rp.alpha, 0)})`;
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.ellipse(rp.x, waterY, rp.r, rp.r * 0.34, 0, 0, Math.PI * 2);
-        ctx.stroke();
       }
 
-      // Линия глади — тонкий световой блик.
-      const surf = ctx.createLinearGradient(0, 0, size, 0);
-      surf.addColorStop(0, "rgba(150,170,205,0)");
-      surf.addColorStop(0.5, `rgba(170,190,220,${0.25 + warm * 0.1})`);
-      surf.addColorStop(1, "rgba(150,170,205,0)");
-      ctx.strokeStyle = surf;
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(0, waterY);
-      ctx.lineTo(size, waterY);
-      ctx.stroke();
-
-      // Феатеринг в мягкий круг.
-      ctx.globalCompositeOperation = "destination-in";
-      const mask = ctx.createRadialGradient(cx, size / 2, size * 0.2, cx, size / 2, size * 0.5);
-      mask.addColorStop(0, "rgba(0,0,0,1)");
-      mask.addColorStop(0.76, "rgba(0,0,0,1)");
-      mask.addColorStop(1, "rgba(0,0,0,0)");
-      ctx.fillStyle = mask;
-      ctx.fillRect(0, 0, size, size);
+      // Лёгкий верхний блик — один осветлённый ряд блоков (объём, не ломает пиксель).
+      ctx.globalCompositeOperation = "lighter";
+      ctx.fillStyle = `rgba(255,150,150,${0.16 + warm * 0.12})`;
+      for (let c = 0; c < COLS; c++) {
+        if (!HEART[1][c]) continue;
+        const bx = Math.floor(x0 + c * px);
+        const by = Math.floor(y0 + 1 * px);
+        const bw = Math.ceil(px) + 1;
+        ctx.fillRect(bx, by, bw, Math.ceil(px));
+      }
       ctx.globalCompositeOperation = "source-over";
     };
     raf = requestAnimationFrame(draw);
@@ -226,7 +191,7 @@ function FallenCanvas({ active, busy, size }: { active: boolean; busy: boolean; 
     <canvas
       ref={ref}
       className="pointer-events-none absolute"
-      style={{ width: size, height: size }}
+      style={{ width: size, height: size, imageRendering: "pixelated" }}
     />
   );
 }
