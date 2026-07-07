@@ -11,7 +11,7 @@ const THEME_IDS: Theme[] = ["aurora", "ophanim", "japan", "fallendown", "russia"
 export const THEMES: { id: Theme; label: string; secret?: string }[] = [
   { id: "aurora", label: "Aurora" },
   { id: "ophanim", label: "Ophanim" },
-  { id: "japan", label: "Silk" },
+  { id: "japan", label: "Rain" },
   { id: "fallendown", label: "Fallen Down", secret: "fallendown" },
   { id: "russia", label: "Russia", secret: "russia" },
 ];

@@ -5,6 +5,7 @@ import { useThemeStore, THEMES, type Theme } from "../store/themeStore";
 import { useSecretStore, type OverlayId } from "../store/secretStore";
 import { GlassPanel } from "../design/components/GlassPanel";
 import { AuroraCore } from "../design/components/AuroraCore";
+import { RainCore } from "../design/components/RainCore";
 import { OphanimCore } from "../design/components/OphanimCore";
 import { FallenCore } from "../design/components/FallenCore";
 import { RussiaCore } from "../design/components/RussiaCore";
@@ -318,6 +319,8 @@ function ThemeTile({
           <FallenCore active={selected} onClick={() => {}} size={104} />
         ) : id === "russia" ? (
           <RussiaCore active={selected} onClick={() => {}} size={104} />
+        ) : id === "japan" ? (
+          <RainCore active={selected} onClick={() => {}} size={104} />
         ) : (
           <AuroraCore active={selected} onClick={() => {}} size={104} />
         )}

@@ -3,11 +3,13 @@ import { useThemeStore } from "../../store/themeStore";
 import { AuroraField } from "./AuroraField";
 import { OphanimField } from "./OphanimField";
 import { FallenField } from "./FallenField";
+import { RainField2D } from "./RainField2D";
 import { RussiaField } from "./RussiaField";
 
-// 3D-шейдер «Silk» (id japan) грузится лениво (three.js только при выборе темы)
-// и только если доступен WebGL; при любой ошибке рендера — откат на AuroraField.
-const JapanScene3D = lazy(() => import("./JapanScene3D"));
+// 3D-сцена «Rain» (id japan) грузится лениво (three.js только при выборе темы)
+// и только если доступен WebGL; при любой ошибке рендера — откат на 2D-дождь
+// (RainField2D), тематически верный запасной вариант.
+const RainScene3D = lazy(() => import("./RainScene3D"));
 
 function webglSupported(): boolean {
   try {
@@ -26,7 +28,7 @@ class Fallback3D extends Component<{ children: ReactNode; fallback: ReactNode },
     return { failed: true };
   }
   componentDidCatch(err: unknown) {
-    console.warn("Japan 3D-сцена упала, откат на 2D:", err);
+    console.warn("Rain 3D-сцена упала, откат на 2D:", err);
   }
   render() {
     return this.state.failed ? this.props.fallback : this.props.children;
@@ -40,11 +42,11 @@ export function HeroField() {
   if (theme === "fallendown") return <FallenField />;
   if (theme === "russia") return <RussiaField />;
   if (theme === "japan") {
-    if (!WEBGL) return <AuroraField />;
+    if (!WEBGL) return <RainField2D />;
     return (
-      <Fallback3D fallback={<AuroraField />}>
-        <Suspense fallback={<AuroraField />}>
-          <JapanScene3D />
+      <Fallback3D fallback={<RainField2D />}>
+        <Suspense fallback={<RainField2D />}>
+          <RainScene3D />
         </Suspense>
       </Fallback3D>
     );
