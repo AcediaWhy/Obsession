@@ -1,0 +1,114 @@
+# Основа
+dzen.ru
+imgsmail.ru
+mail.ru
+vk.com
+vk.me
+vkuser.net
+vkusercontent.com
+ya.ru
+yandex.kz
+yandex.net
+yandex.ru
+
+# Онлайн кинотеатры
+amediateka.ru
+ctc.ru
+ivi.ru
+kion.ru
+kinopoisk.ru
+okko.tv
+premier.one
+rutube.ru
+start.ru
+wink.ru
+
+# Steam
+steamcommunity.com
+steamcontent.com
+steamgames.com
+steampowered.com
+steamstatic.com
+steamusercontent.com
+steam-chat.com
+
+# Магазины и маркетплейсы
+aliexpress.ru
+avito.ru
+cdek.ru
+citilink.ru
+chitai-gorod.ru
+dns-shop.ru
+eldorado.ru
+lamoda.ru
+litres.ru
+megamarket.ru
+mvideo.ru
+ozon.ru
+pochta.ru
+plati.market
+samokat.ru
+vkusvill.ru
+wb.ru
+wildberries.ru
+
+# Банки
+alfabank.ru
+gazprombank.ru
+mirconnect.ru
+nspk.ru
+open.ru
+psbank.ru
+raiffeisen.ru
+rosbank.ru
+rshb.ru
+sber.ru
+sberbank.ru
+sovcombank.ru
+tbank.ru
+tochka.com
+vtb.ru
+
+# Ведомства
+gosuslugi.ru
+government.ru
+gu-st.ru
+kremlin.ru
+mos.ru
+nalog.ru
+nalog.gov.ru
+sfr.gov.ru
+
+# СМИ и новости
+3dnews.ru
+kommersant.ru
+lenta.ru
+pikabu.ru
+rbc.ru
+ria.ru
+tass.ru
+
+# Операторы связи
+beeline.ru
+dom.ru
+megafon.ru
+mts.ru
+rt.ru
+tele2.ru
+yota.ru
+
+# Сервисы
+2gis.ru
+2ip.ru
+cian.ru
+donationalerts.com
+hh.ru
+kontur.ru
+rabota.ru
+
+# Другое
+faceit.com
+habr.com
+playground.ru
+nvidia.com
+vc.ru

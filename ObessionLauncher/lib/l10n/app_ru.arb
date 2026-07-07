@@ -1,0 +1,263 @@
+{
+  "@@locale": "ru",
+  "appName": "Obsession",
+  "dpiTitle": "DPI обход",
+  "dpiSubtitle": "Управление обходом блокировок через WinDivert.",
+  "categories": "Категории",
+  "canSelectMultiple": "Можно выбрать несколько",
+  "config": "Конфиг",
+  "autoSelect": "Автоподбор",
+  "test": "Проверить",
+  "testingConfig": "Проверка {current}/{total}: {config}",
+  "@testingConfig": {
+    "placeholders": {
+      "current": {"type": "int"},
+      "total": {"type": "int"},
+      "config": {"type": "String"}
+    }
+  },
+  "testingCategory": "Автоподбор категории {current}/{total}: {config}",
+  "@testingCategory": {
+    "placeholders": {
+      "current": {"type": "int"},
+      "total": {"type": "int"},
+      "config": {"type": "String"}
+    }
+  },
+  "start": "START",
+  "stop": "STOP",
+  "active": "АКТИВЕН",
+  "inactive": "НЕ АКТИВЕН",
+  "activeShort": "Активен",
+  "inactiveShort": "Остановлен",
+  "protectionActive": "Защита активна",
+  "protectionStopped": "Остановлен",
+  "working": "Рабочий",
+  "notWorking": "Нерабочий",
+  "settings": "Настройки",
+  "settingsSubtitle": "Кастомизация внешнего вида и поведения приложения.",
+  "appearance": "Внешний вид",
+  "themePreset": "Пресет темы",
+  "themeGroupDark": "Тёмные",
+  "themeGroupLight": "Светлые",
+  "backgroundMode": "Режим фона",
+  "backgroundModeAuto": "Авто (из темы)",
+  "accentColor": "Акцентный цвет",
+  "glowIntensity": "Интенсивность свечения",
+  "blurStrength": "Сила размытия (glass)",
+  "backgroundSpeed": "Скорость фоновых анимаций",
+  "particleDensity": "Плотность частиц",
+  "animationsEnabled": "Анимации включены",
+  "blackHoleEnabled": "Чёрная дыра на фоне",
+  "blackHole": "Чёрная дыра",
+  "blackHoleRadius": "Размер чёрной дыры",
+  "blackHoleDiskBrightness": "Яркость аккреционного диска",
+  "blackHoleLensIntensity": "Сила гравитационного линзирования",
+  "behavior": "Поведение",
+  "minimizeToTray": "Сворачивать в трей при закрытии",
+  "autostart": "Автозапуск при старте системы",
+  "resetSettings": "Сбросить настройки по умолчанию",
+  "resetConfirmTitle": "Сбросить настройки?",
+  "resetConfirmMessage": "Все параметры кастомизации вернутся к значениям по умолчанию.",
+  "cancel": "Отмена",
+  "reset": "Сбросить",
+  "yes": "Да",
+  "no": "Нет",
+  "minimize": "Свернуть",
+  "maximize": "Развернуть",
+  "restore": "Восстановить",
+  "close": "Закрыть",
+  "language": "Язык",
+  "russian": "Русский",
+  "english": "English",
+  "liveLog": "Live log",
+  "logTitle": "ЖУРНАЛ",
+  "waitingToStart": "Ожидание запуска...",
+  "statistics": "Статистика",
+  "status": "Статус",
+  "dpiBypass": "DPI обход",
+  "telegramProxy": "Telegram прокси",
+  "hosts": "Hosts",
+  "activeProcesses": "Активных процессов",
+  "activeProcessesCount": "{count} процессов",
+  "@activeProcessesCount": {
+    "placeholders": {
+      "count": {"type": "int"}
+    }
+  },
+  "selectedConfigs": "Выбрано конфигов",
+  "version": "Версия",
+  "versionWithValue": "Версия: {version}",
+  "@versionWithValue": {
+    "placeholders": {
+      "version": {"type": "String"}
+    }
+  },
+  "uptime": "Время работы",
+  "noActiveProcesses": "Нет активных процессов",
+  "selectedConfigsTitle": "ВЫБРАННЫЕ КОНФИГИ",
+  "restart": "Перезапустить",
+  "configFolder": "Папка конфигов",
+  "singularityStatus": "SINGULARITY STATUS",
+  "installed": "Установлен",
+  "notInstalled": "Не установлен",
+  "logEmpty": "Лог пуст",
+  "menu": "МЕНЮ",
+  "aiTitle": "ИИ обход",
+  "aiSubtitle": "Разблокировка ChatGPT, Claude, Gemini через hosts-файл.",
+  "provider": "ПРОВАЙДЕР",
+  "install": "Установить",
+  "update": "Обновить",
+  "uninstall": "Удалить",
+  "check": "Проверить",
+  "installedUpToDate": "Установлено, актуально",
+  "installedOutdated": "Установлено, но устарело",
+  "aiNotInstalled": "Не установлено",
+  "uninstallAiTitle": "Удалить ИИ-обход?",
+  "uninstallAiMessage": "hosts-файл будет восстановлен к значению по умолчанию.",
+  "telegramTitle": "Telegram обход",
+  "telegramSubtitle": "MTProto WebSocket-мост для разблокировки Telegram Desktop.",
+  "tgProxyNotFoundTitle": "TgWsProxy.exe не найден",
+  "tgProxyNotFoundMessage": "Положите TgWsProxy_windows.exe в папку bin/ и перезапустите приложение.",
+  "proxySettings": "НАСТРОЙКИ ПРОКСИ",
+  "port": "Порт",
+  "fakeTlsDomainOptional": "Fake TLS домен (опц.)",
+  "notSet": "не задан",
+  "connectionLink": "ССЫЛКА ПОДКЛЮЧЕНИЯ",
+  "openInTelegram": "Открыть в Telegram",
+  "copy": "Копировать",
+  "instructions": "ИНСТРУКЦИЯ",
+  "telegramInstructions": "1. Нажмите START для запуска прокси\n2. Нажмите «Открыть в Telegram» или скопируйте ссылку\n3. В Telegram: Настройки → Продвинутые → Тип подключения → Прокси",
+  "listsTitle": "Редактор списков",
+  "listsSubtitle": "Редактирование доменов и IP для обхода блокировок.",
+  "importListDialogTitle": "Импорт списка",
+  "exportListDialogTitle": "Экспорт списка",
+  "selectListHint": "Выберите список",
+  "entriesCount": "{count} записей",
+  "@entriesCount": {
+    "placeholders": {
+      "count": {"type": "int"}
+    }
+  },
+  "domain": "Домен",
+  "ip": "IP",
+  "comment": "Комментарий",
+  "save": "Сохранить",
+  "clearListTitle": "Очистить список?",
+  "clearListMessage": "Все записи будут удалены. Это действие нельзя отменить.",
+  "clear": "Очистить",
+  "removeDuplicates": "Удалить дубликаты",
+  "listEntryHint": "Домен или IP",
+  "commentHint": "Комментарий",
+  "profilesTitle": "Профили",
+  "profilesSubtitle": "Сохранённые наборы настроек.",
+  "profile": "Профиль",
+  "newProfile": "Новый профиль",
+  "profileName": "Название профиля",
+  "create": "Создать",
+  "delete": "Удалить",
+  "deleteProfileTitle": "Удалить профиль?",
+  "deleteProfileMessage": "Профиль «{name}» будет удалён без возможности восстановления.",
+  "@deleteProfileMessage": {
+    "placeholders": {
+      "name": {"type": "String"}
+    }
+  },
+  "activate": "Активировать",
+  "profileCategoriesWithProvider": "{count} категорий · {provider}",
+  "@profileCategoriesWithProvider": {
+    "placeholders": {
+      "count": {"type": "int"},
+      "provider": {"type": "String"}
+    }
+  },
+  "noProfiles": "Нет сохранённых профилей",
+  "copyLink": "Скопировать ссылку",
+  "proxyPort": "Порт прокси",
+  "portWithValue": "Порт {port}",
+  "@portWithValue": {
+    "placeholders": {
+      "port": {"type": "int"}
+    }
+  },
+  "fakeTlsDomain": "Fake TLS домен",
+  "updateAvailable": "Доступно обновление",
+  "versionDate": "Опубликовано: {date}",
+  "@versionDate": {
+    "placeholders": {
+      "date": {"type": "String"}
+    }
+  },
+  "noDescription": "Нет описания",
+  "downloadingUpdate": "Загрузка обновления...",
+  "download": "Скачать",
+  "later": "Позже",
+  "folder": "Папка",
+  "runInstaller": "Запустить установщик",
+  "fileHash": "SHA256",
+  "hashHint": "Файл загружен. Сверьте SHA256 с релизом на GitHub перед запуском.",
+  "errorWithMessage": "Ошибка: {error}",
+  "@errorWithMessage": {
+    "placeholders": {
+      "error": {"type": "String"}
+    }
+  },
+  "onboardingTitle": "Добро пожаловать в Obsession",
+  "onboardingSubtitle": "Обход DPI и блокировок с космическим интерфейсом. Нажмите ниже, чтобы начать.",
+  "onboardingContinue": "Продолжить",
+  "onboardingIntro": "Космический лаунчер для обхода блокировок. DPI, ИИ и Telegram — всё в одном окне.",
+  "onboardingDpi": "Автоматический подбор конфигураций WinDivert для Discord, YouTube, игр и других сервисов.",
+  "onboardingAi": "Разблокировка ChatGPT, Claude и Gemini через обновление hosts-файла.",
+  "onboardingTelegram": "Локальный MTProto WebSocket-прокси для разблокировки Telegram Desktop.",
+  "onboardingProfiles": "Сохраняйте настройки и переключайтесь между ними одним кликом.",
+  "onboardingStyleTitle": "Настрой свой стиль",
+  "onboardingStyle": "Акцентный цвет, свечение, чёрная дыра и анимации — под твоё настроение.",
+  "skip": "Пропустить",
+  "next": "Далее",
+  "getStarted": "Начать",
+  "open": "Открыть",
+  "availability": "Доступность",
+  "latencyMs": "{ms} мс",
+  "@latencyMs": {
+    "placeholders": {
+      "ms": {"type": "int"}
+    }
+  },
+  "unreachable": "недоступен",
+  "checking": "проверка...",
+  "emergencyStop": "Экстренный стоп",
+  "emergencyStopTitle": "Остановить всё?",
+  "emergencyStopMessage": "Будут остановлены DPI, Telegram-прокси и удалены hosts-правила. Продолжить?",
+  "stop": "Остановить",
+  "saveLogToFile": "Сохранить лог в файл",
+  "logSavedTo": "Лог сохранён: {path}",
+  "@logSavedTo": {
+    "placeholders": {
+      "path": {"type": "String"}
+    }
+  },
+  "logSaveFailed": "Не удалось сохранить лог",
+  "autoDetected": "Авто-обнаруженные",
+  "autoDetectedSubtitle": "Домены, которые Zapret сам определил как заблокированные",
+  "noAutoDetected": "Пока ничего не обнаружено. Список формируется автоматически при использовании обхода.",
+  "clearAutoDetected": "Очистить списки",
+  "autoDetectedCleared": "Списки авто-обнаружения очищены",
+  "domainsCount": "{count} доменов",
+  "@domainsCount": {
+    "placeholders": {
+      "count": {"type": "int"}
+    }
+  },
+  "orphanDetectedTitle": "Обнаружены зависшие процессы",
+  "orphanDetectedMessage": "Найдено {count} процесс(ов) winws.exe от предыдущего запуска (возможно, после краша). Они могут мешать запуску обхода. Остановить их?\n\nВнимание: будут остановлены ВСЕ процессы winws.exe в системе, включая запущенные другими DPI-инструментами.",
+  "@orphanDetectedMessage": {
+    "placeholders": {
+      "count": {"type": "int"}
+    }
+  },
+  "orphanDetectedClear": "Остановить",
+  "orphanDetectedIgnore": "Игнорировать",
+  "orphanDetectedNone": "Зависших процессов не обнаружено.",
+  "orphanDetectedCleared": "Зависшие процессы остановлены.",
+  "orphanDetectedCleanFailed": "Не удалось остановить зависшие процессы."
+}
