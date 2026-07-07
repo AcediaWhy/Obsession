@@ -1,0 +1,210 @@
+@import url("https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+
+  /* Акцентная палитра (rgb-триплеты для rgb(var(--x) / a)). По умолчанию —
+     холодная Aurora: индиго / циан / фиолетовый. */
+  --accent: 99 102 241;
+  --accent-cyan: 34 211 238;
+  --accent-violet: 139 92 246;
+
+  /* Внешний вид стеклянных панелей — тоже темизируется (см. Japan). */
+  --glass-bg: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.06),
+    rgba(255, 255, 255, 0.025)
+  );
+  --glass-border: rgba(255, 255, 255, 0.08);
+  --glass-blur: 14px;
+  --glass-sat: 125%;
+  --glass-specular: rgba(255, 255, 255, 0.22);
+}
+
+/* Тема Ophanim — тёплое золото → магента/фуксия. Переключается data-атрибутом
+   на корне (см. App.tsx). Все accent-утилиты Tailwind теплеют автоматически. */
+[data-theme="ophanim"] {
+  --accent: 234 179 8;
+  --accent-cyan: 240 171 252;
+  --accent-violet: 217 70 239;
+}
+
+/* Скрытая тема Fallen Down — приглушённый дождливый сумрак: сланец / стальной
+   голубой / тусклая лаванда. Намеренно desaturated и спокойная. */
+[data-theme="fallendown"] {
+  --accent: 129 145 185;
+  --accent-cyan: 150 175 205;
+  --accent-violet: 150 140 185;
+}
+
+/* Скрытая тема Russia — зимняя ночь, одинокий фонарь в метель. Акцент — тёплый
+   натриевый свет фонаря на фоне холодного стального сумрака. */
+[data-theme="russia"] {
+  --accent: 206 158 92;
+  --accent-cyan: 124 142 170;
+  --accent-violet: 150 150 176;
+}
+
+/* ─── Тема Silk ───────────────────────────────────────────────────────────────
+   Абстрактный «жидкий свет»: иридесцентная переливающаяся палитра —
+   тиловый / фиолетовый / магента. Прохладное стекло с сиреневой кромкой. */
+[data-theme="japan"] {
+  --accent: 190 130 245;
+  --accent-cyan: 90 214 205;
+  --accent-violet: 236 120 200;
+
+  --glass-bg: linear-gradient(
+    180deg,
+    rgba(24, 20, 40, 0.5),
+    rgba(14, 14, 26, 0.4)
+  );
+  --glass-border: rgba(174, 152, 232, 0.22);
+  --glass-blur: 14px;
+  --glass-sat: 128%;
+  --glass-specular: rgba(214, 202, 255, 0.24);
+}
+
+/* Иридесцентный тил→фиолет→магента градиент заголовков. */
+[data-theme="japan"] .text-gradient {
+  background: linear-gradient(120deg, #eafcff 0%, #5ad6cd 40%, #e878c8 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+[data-theme="japan"] ::-webkit-scrollbar-thumb {
+  background: rgba(180, 150, 230, 0.22);
+}
+[data-theme="japan"] ::-webkit-scrollbar-thumb:hover {
+  background: rgba(180, 150, 230, 0.42);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  @apply bg-base text-ink font-sans antialiased;
+  overflow: hidden;
+  user-select: none;
+}
+
+/* Тонкий кастомный скроллбар в стиле стекла. */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+/* Область перетаскивания окна (кастомный титлбар). */
+.drag-region {
+  -webkit-app-region: drag;
+}
+.no-drag {
+  -webkit-app-region: no-drag;
+}
+
+/* Класс для glass-панелей. Внешний вид — через переменные (темизируется). */
+.glass {
+  position: relative;
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat));
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat));
+  border: 1px solid var(--glass-border);
+}
+
+/* Specular-блик по верхней кромке стекла — тонкая световая линия. */
+.glass::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: linear-gradient(
+    180deg,
+    var(--glass-specular),
+    rgba(255, 255, 255, 0) 30%
+  );
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+}
+
+/* Прожектор за курсором: подсвечивает стекло там, где мышь. */
+.spotlight::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: radial-gradient(
+    380px circle at var(--mx, -100px) var(--my, -100px),
+    rgb(var(--accent) / 0.12),
+    transparent 60%
+  );
+  opacity: 0;
+  transition: opacity 0.35s ease;
+  pointer-events: none;
+}
+.spotlight:hover::after {
+  opacity: 1;
+}
+
+/* Spotlight-кромка: тонкий кант панели загорается под курсором (эффект глубины,
+   стекло перестаёт быть «наклейкой»). Отдельный элемент, т.к. ::before/::after
+   у .glass уже заняты specular-бликом и внутренним прожектором. */
+.spotlight-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: radial-gradient(
+    240px circle at var(--mx, -200px) var(--my, -200px),
+    rgb(var(--accent) / 0.6),
+    rgb(var(--accent-cyan) / 0.16) 42%,
+    transparent 66%
+  );
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+  pointer-events: none;
+}
+.glass:hover > .spotlight-ring {
+  opacity: 1;
+}
+
+/* Градиентная заливка текста (заголовки). */
+.text-gradient {
+  background: linear-gradient(
+    120deg,
+    #f4f6ff 0%,
+    rgb(var(--accent)) 48%,
+    rgb(var(--accent-cyan)) 100%
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+input,
+textarea {
+  user-select: text;
+}

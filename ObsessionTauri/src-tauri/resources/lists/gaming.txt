@@ -1,0 +1,177 @@
+# Epic game store              #Если не работает epic game store  , то уберите решётку на каждой строке, кроме этой
+unrealengine.com
+fn.gg
+#epicgames.com
+#epicgames.net
+#account.epicgames.com
+#store.epicgames.com
+
+# Ubisoft Connect              #Если не работает ubisoft connect, то уберите решётку на каждой строке, кроме этой
+#ubisoftconnect.com            
+#uplay.com
+#ubiservices.com
+wildcard.cdn.ubi.com.edgekey.net
+
+# Riot client                  #Если не работает riot client, то уберите решётку на каждой строке, кроме этой
+#riotgames.com
+#riotcdn.net
+#rstatic.net
+
+# EA App
+activity.ea.com
+easo.ea.com
+easss.ea.com
+easu.ea.com
+config.ea.com
+dataportal.ea.com
+game-data.ea.com
+api.origin.com
+api1.origin.com
+api2.origin.com
+api3.origin.com
+gos.ea.com
+atlas.gos.ea.com
+gosredirector.ea.com
+blaze.ea.com
+rtm.tnt-ea.com
+
+# Xbox
+xbox.com
+xboxlive.com
+xboxservices.com
+gamepass.com
+xboxgamepass.com
+login.live.com
+login.microsoftonline.com
+auth.xboxlive.com
+xsts.auth.xboxlive.com
+user.auth.xboxlive.com
+title.mgl.xboxlive.com
+xkms.xboxlive.com
+
+# Battle.net
+battle.net
+blizzard.com
+actual.battle.net
+us.actual.battle.net
+eu.actual.battle.net
+account.battle.net
+shop.battle.net
+
+# Rockstar Games
+rockstargames.com
+socialclub.rockstargames.com
+rsg.sc
+
+# Fortnite
+fortnite.com
+fortnite-vod.akamaized.net
+fortnite.net
+
+# Roblox
+roblox.com
+rbxcdn.com
+rbxcdn.net
+rbxlabs.com
+robloxlabs.com
+rblx.com
+arkoselabs.com
+ecsv2.roblox.com
+metrics.roblox.com
+apis.roblox.com
+funcaptcha.com
+
+# Apex Legends & Titanfall 2
+apexlegends.com
+respawn.com
+stryder.respawn.com
+apex.r2-pc.stryder.respawn.com
+apex.r3-pc.stryder.respawn.com
+apex.r5-pc.stryder.respawn.com
+projectapex.com
+matchmaking.respawn.com
+titanfall.com
+
+# Battlefield
+battlefield.com
+battlelog.com
+easports.com
+platoons.ea.com
+companion.ea.com
+stats.ea.com
+battlefield3.com
+battlefield4.com
+battlefield5.com
+battlefield2042.com
+frostbite.com
+
+# League of Lengends
+leagueoflegends.com
+playruneterra.com
+pvp.net
+lolstatic.com
+lolesports.com
+blitz.gg
+blitz-cdn.blitz.gg
+blitz-desktop.blitz.gg
+lol.v2.iesdev.com
+datalake.v2.iesdev.com
+
+# Dead By Daylight
+deadbydaylight.com
+dbd.starbreeze.com
+starbreeze.com
+bhvr.com
+behaviourinteractive.com
+
+# Beat Saber
+beatsaver.com
+beatmods.com
+modelsaber.com
+
+# VRchat
+api.vrchat.cloud
+assets.vrchat.com
+cloud.exitgames.com
+d348imysud55la.cloudfront.net
+eu.ns.exitgames.com
+files.vrchat.cloud
+jp.ns.exitgames.com
+ns.exitgames.com
+ns.photonengine.io
+photonengine.io
+pipeline.vrchat.cloud
+status.vrchat.com
+use.ns.exitgames.com
+usw.ns.exitgames.com
+vrchat.cloud
+vrchat.com
+vrchat.net
+
+# Cloudflare
+cloudflare.com
+cloudflare-ech.com
+cloudflare.net
+challenges.cloudflare.com
+cdnjs.com
+cdnjs.cloudflare.com
+consent.cloudflare.com
+workers.dev
+
+# Amazon & AWS
+amazon.com
+amazongames.com
+amazonaws.com
+amazonaws.net
+amazonaws.org
+aws.com
+awsapps.com
+s3.amazonaws.com
+sso.amazonaws.com
+signin.aws.amazon.com
+api.amazon.com
+media-amazon.com
+ssl-images-amazon.com
+images-amazon.com
+cloudfront.com
+cloudfront.net

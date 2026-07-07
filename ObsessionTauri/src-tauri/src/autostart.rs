@@ -1,0 +1,58 @@
+//! Автозапуск с Windows через ключ реестра
+//! `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
+//!
+//! Источник истины — сам реестр (не дублируем флаг в settings.json, чтобы не
+//! рассинхронизироваться, если пользователь удалит запись вручную). Работаем
+//! через `reg.exe` (без внешних крейтов), HKCU-ветку — прав администратора не
+//! требует. Старт «свёрнутым» реализован отдельно, персистентной настройкой
+//! `start_minimized`, т.к. UAC-релонч теряет аргументы командной строки.
+
+#[cfg(windows)]
+const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+#[cfg(windows)]
+const VALUE_NAME: &str = "Obsession";
+
+/// True, если запись автозапуска присутствует в реестре.
+#[cfg(windows)]
+pub fn is_enabled() -> bool {
+    crate::util::std_command("reg")
+        .args(["query", RUN_KEY, "/v", VALUE_NAME])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Включает/выключает автозапуск. Путь к exe берётся текущий; оборачиваем в
+/// кавычки на случай пробелов в пути (напр. `C:\Program Files\...`).
+#[cfg(windows)]
+pub fn set(enable: bool) -> Result<(), String> {
+    if enable {
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        let data = format!("\"{}\"", exe.display());
+        let status = crate::util::std_command("reg")
+            .args([
+                "add", RUN_KEY, "/v", VALUE_NAME, "/t", "REG_SZ", "/d", &data, "/f",
+            ])
+            .status()
+            .map_err(|e| e.to_string())?;
+        if !status.success() {
+            return Err("не удалось записать ключ автозапуска".into());
+        }
+    } else {
+        // Отсутствие значения при удалении — не ошибка.
+        let _ = crate::util::std_command("reg")
+            .args(["delete", RUN_KEY, "/v", VALUE_NAME, "/f"])
+            .status();
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+pub fn is_enabled() -> bool {
+    false
+}
+
+#[cfg(not(windows))]
+pub fn set(_enable: bool) -> Result<(), String> {
+    Ok(())
+}

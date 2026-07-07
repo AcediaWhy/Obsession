@@ -1,0 +1,36 @@
+# YouTube
+1e100.net
+ggpht.com
+googleapis.com
+googleusercontent.com
+googlevideo.com
+gstatic.com
+jnn-pa.googleapis.com
+music.youtube.com
+wide-youtube.l.google.com
+youtu.be
+youtube-nocookie.com
+youtube-ui.l.google.com
+youtube.com
+youtubei.googleapis.com
+youtubekids.com
+ytimg.com
+ytimg.l.google.com
+yt3.ggpht.com
+yt4.ggpht.com
+yt3.googleusercontent.com
+
+# twitch				#Если не работает twitch, то уберите решётку на каждой строке, кроме этой
+#twitch.tv
+#ttvnw.net
+#jtvnw.net
+#live-video.net
+#twitchcdn.net
+#twitchsvc.net
+
+# Расширения
+7tv.app
+7tv.io
+betterttv.net
+frankerfacez.com
+sponsor.ajay.app

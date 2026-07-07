@@ -1,0 +1,77 @@
+name: obsession
+description: "Obsession — обход блокировок DPI и ИИ. Cosmic neon UI."
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.12.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+
+  # State management
+  flutter_riverpod: ^2.6.1
+
+  # Window & tray (24/7 в трее)
+  window_manager: ^0.4.3
+  system_tray: ^2.0.3
+
+  # Анимации уровня Framer Motion
+  flutter_animate: ^4.5.0
+
+  # Скачивание hosts-файлов
+  http: ^1.2.2
+
+  # Хеширование для проверки обновлений
+  crypto: ^3.0.3
+
+  # Пути для бэкапов hosts
+  path_provider: ^2.1.5
+  path: ^1.9.0
+
+  # Выбор файлов для импорта/экспорта списков
+  file_picker: ^8.0.0
+
+  # Настройки (кастомизация UI, автозапуск и т.п.)
+  shared_preferences: ^2.3.2
+
+  # Шрифты
+  google_fonts: ^6.2.1
+
+  # Локализация
+  flutter_localizations:
+    sdk: flutter
+  intl: ^0.20.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
+  generate: true
+
+  shaders:
+    - shaders/black_hole.frag
+    - shaders/iridescence.frag
+
+  assets:
+    - assets/bin/
+    - assets/configs/discord/
+    - assets/configs/youtube_twitch/
+    - assets/configs/gaming/
+    - assets/configs/universal/
+    - assets/lists/
+    - assets/icons/
+    - assets/fonts/
+
+  fonts:
+    - family: Plus Jakarta Sans
+      fonts:
+        - asset: assets/fonts/PlusJakartaSans.ttf
+    - family: Nunito
+      fonts:
+        - asset: assets/fonts/Nunito.ttf
