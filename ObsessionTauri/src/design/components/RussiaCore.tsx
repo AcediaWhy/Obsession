@@ -100,6 +100,28 @@ function RussiaCanvas({ active, busy, size }: { active: boolean; busy: boolean; 
       a: 0.3 + Math.random() * 0.5,
     }));
 
+    // Крупные расфокус-снежинки спереди (глубина резкости, как в фоне).
+    const softDot = (() => {
+      const s = 48;
+      const c = document.createElement("canvas");
+      c.width = c.height = s;
+      const cc = c.getContext("2d")!;
+      const gr = cc.createRadialGradient(s / 2, s / 2, 0, s / 2, s / 2, s / 2);
+      gr.addColorStop(0, "rgba(214,224,240,0.9)");
+      gr.addColorStop(0.4, "rgba(214,224,240,0.45)");
+      gr.addColorStop(1, "rgba(214,224,240,0)");
+      cc.fillStyle = gr;
+      cc.fillRect(0, 0, s, s);
+      return c;
+    })();
+    const nearFlakes: Flake[] = Array.from({ length: 5 }, () => ({
+      x: Math.random() * size,
+      y: Math.random() * size,
+      r: size * (0.04 + Math.random() * 0.05),
+      vy: size * (0.7 + Math.random() * 0.5),
+      a: 0.1 + Math.random() * 0.12,
+    }));
+
     let t = 0;
     let warm = 0;
     let raf = 0;
@@ -136,6 +158,29 @@ function RussiaCanvas({ active, busy, size }: { active: boolean; busy: boolean; 
       ctx.beginPath();
       ctx.arc(cx, cy, coreR, 0, Math.PI * 2);
       ctx.fill();
+
+      // Мягкий bloom вокруг огонька — широкое тёплое сияние.
+      const bloomR = coreR * 2.1;
+      const bloom = ctx.createRadialGradient(cx, cy, coreR * 0.4, cx, cy, bloomR);
+      bloom.addColorStop(0, `rgba(255,224,175,${(0.1 + warm * 0.14) * flicker})`);
+      bloom.addColorStop(1, "rgba(0,0,0,0)");
+      ctx.fillStyle = bloom;
+      ctx.beginPath();
+      ctx.arc(cx, cy, bloomR, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Крупные расфокус-снежинки (глубина) — мягкие спрайты спереди.
+      for (const f of nearFlakes) {
+        f.y += f.vy * dt;
+        f.x -= f.vy * dt * WIND;
+        if (f.y - f.r > size || f.x < -f.r) {
+          f.y = -f.r - Math.random() * size * 0.2;
+          f.x = Math.random() * size;
+        }
+        ctx.globalAlpha = f.a;
+        ctx.drawImage(softDot, f.x - f.r, f.y - f.r, f.r * 2, f.r * 2);
+      }
+      ctx.globalAlpha = 1;
 
       // Метель поверх — холодные хлопья, теплеющие у самого огонька.
       for (const f of flakes) {
