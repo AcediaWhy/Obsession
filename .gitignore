@@ -29,3 +29,10 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
+
+# --- Прочие проекты, не относящиеся к репозиторию (лежат локально) ---
+tg-ws-proxy-1.8.1/
+Smart-Zapret-Launcher-1.62/
+ObessionLauncher/
+LarpingLauncher/
+Goida-AI-Unlocker-1.3.0/
