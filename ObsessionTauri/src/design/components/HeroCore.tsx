@@ -1,5 +1,6 @@
 import { useThemeStore } from "../../store/themeStore";
 import { AuroraCore } from "./AuroraCore";
+import { RainCore } from "./RainCore";
 import { OphanimCore } from "./OphanimCore";
 import { FallenCore } from "./FallenCore";
 import { RussiaCore } from "./RussiaCore";
@@ -18,6 +19,8 @@ export function HeroCore(props: Props) {
   if (theme === "ophanim") return <OphanimCore {...props} />;
   if (theme === "fallendown") return <FallenCore {...props} />;
   if (theme === "russia") return <RussiaCore {...props} />;
-  // «Silk» (id japan) использует абстрактное ядро Aurora — в тон текучему свету.
+  // «Rain» (id japan): поверхность воды с расходящейся рябью от капель.
+  if (theme === "japan") return <RainCore {...props} />;
+  // Aurora — исходное ядро (световые шторы).
   return <AuroraCore {...props} />;
 }
