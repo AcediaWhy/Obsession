@@ -28,7 +28,7 @@ export function NavRail({
         </div>
         <div className="leading-tight">
           <div className="font-display text-lg font-bold text-ink">Obsession</div>
-          <div className="text-[11px] tracking-widest text-ink-muted">SINGULARITY</div>
+          <div className="text-[11px] tracking-widest text-ink-muted">V1.0.0</div>
         </div>
       </div>
 

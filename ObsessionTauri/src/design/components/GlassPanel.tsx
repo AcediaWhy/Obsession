@@ -11,7 +11,7 @@ type Props = Omit<HTMLMotionProps<"div">, "children"> & {
   children?: ReactNode;
 };
 
-// Базовая стеклянная панель Singularity: specular-кромка + прожектор за курсором
+// Базовая стеклянная панель: specular-кромка + прожектор за курсором
 // + spotlight-кант + параллакс среднего плана (панель отделяется от фона по
 // глубине при движении мыши).
 export function GlassPanel({

@@ -13,3 +13,7 @@ src-tauri/gen/schemas/
 .DS_Store
 .idea/
 .vscode/
+
+# Локальные артефакты иконок (бэкап старых + исходник для регенерации)
+src-tauri/icons.space-backup/
+icon-source.png

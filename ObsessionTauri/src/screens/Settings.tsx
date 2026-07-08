@@ -161,10 +161,14 @@ export function SettingsScreen() {
                       {s.elevated ? "Есть" : "Нет"}
                     </span>
                   </Row>
-                  <Row label="Онбординг пройден">
-                    <span className="text-xs font-semibold text-ink-soft">
-                      {cfg.has_completed_onboarding ? "Да" : "Нет"}
-                    </span>
+                  <Row label="Онбординг" hint="Приветственный экран первого запуска">
+                    {cfg.has_completed_onboarding ? (
+                      <Button variant="ghost" onClick={() => s.patch({ has_completed_onboarding: false })}>
+                        Показать снова
+                      </Button>
+                    ) : (
+                      <span className="text-xs font-semibold text-ink-soft">Не пройден</span>
+                    )}
                   </Row>
                 </div>
               </GlassPanel>
