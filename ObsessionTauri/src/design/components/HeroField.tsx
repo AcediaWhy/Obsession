@@ -10,6 +10,10 @@ import { RussiaField } from "./RussiaField";
 // и только если доступен WebGL; при любой ошибке рендера — откат на 2D-дождь
 // (RainField2D), тематически верный запасной вариант.
 const RainScene3D = lazy(() => import("./RainScene3D"));
+// «Russia» — гибрид фото-глубины (depth-parallax, vanilla WebGL, без three) +
+// генеративный снег/грейд. Сам откатывается на 2D `RussiaField`, если ассетов
+// (AI-фото + карта глубины) ещё нет или WebGL недоступен.
+const RussiaHybrid = lazy(() => import("./RussiaHybrid"));
 
 function webglSupported(): boolean {
   try {
@@ -40,7 +44,15 @@ export function HeroField() {
   const theme = useThemeStore((s) => s.theme);
   if (theme === "ophanim") return <OphanimField />;
   if (theme === "fallendown") return <FallenField />;
-  if (theme === "russia") return <RussiaField />;
+  if (theme === "russia") {
+    return (
+      <Fallback3D fallback={<RussiaField />}>
+        <Suspense fallback={<RussiaField />}>
+          <RussiaHybrid />
+        </Suspense>
+      </Fallback3D>
+    );
+  }
   if (theme === "japan") {
     if (!WEBGL) return <RainField2D />;
     return (
