@@ -67,6 +67,10 @@ pub struct DpiConfigArg {
 
 #[tauri::command]
 pub async fn dpi_start(app: AppHandle, configs: Vec<DpiConfigArg>) -> Result<Vec<u32>, String> {
+    // Ворота: сериализуем со stop/test, чтобы старт не прервался на середине
+    // (иначе Глаза поднимутся на уже убитый winws — обход не детектится).
+    let state = app.state::<AppState>();
+    let _gate = state.dpi_gate.lock().await;
     let pairs: Vec<(String, String)> = configs
         .into_iter()
         .map(|c| (c.category, c.config_file))
@@ -82,6 +86,8 @@ pub async fn dpi_start(app: AppHandle, configs: Vec<DpiConfigArg>) -> Result<Vec
 
 #[tauri::command]
 pub async fn dpi_stop(app: AppHandle) {
+    let state = app.state::<AppState>();
+    let _gate = state.dpi_gate.lock().await;
     // Сначала сообщаем Мозгу — чтобы он не воспринял штатный стоп как сбой.
     send_brain_event(&app, crate::brain::BrainEvent::SessionStop);
     crate::dpi::stop_all(&app).await;
@@ -89,6 +95,8 @@ pub async fn dpi_stop(app: AppHandle) {
 
 #[tauri::command]
 pub async fn dpi_test(app: AppHandle, category: String, config_file: String) -> bool {
+    let state = app.state::<AppState>();
+    let _gate = state.dpi_gate.lock().await;
     crate::dpi::test(&app, &category, &config_file).await
 }
 
