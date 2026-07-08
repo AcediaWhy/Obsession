@@ -153,14 +153,23 @@ async fn exec(
 ) {
     match action {
         Action::Switch { selections } => {
+            // Ворота: сериализуем с кликами юзера/трея (dpi_start/stop/test).
+            let state = app.state::<AppState>();
+            let _gate = state.dpi_gate.lock().await;
             let ok = crate::dpi::start_many(app, &selections).await.is_ok();
             let _ = tx.send(BrainEvent::RespawnResult { ok, now: 0 });
         }
         Action::StopBypass => {
+            let state = app.state::<AppState>();
+            let _gate = state.dpi_gate.lock().await;
             crate::dpi::stop_all(app).await;
         }
         Action::Probe { category, conf } => {
-            let ok = crate::dpi::test(app, &category, &conf).await;
+            let ok = {
+                let state = app.state::<AppState>();
+                let _gate = state.dpi_gate.lock().await;
+                crate::dpi::test(app, &category, &conf).await
+            };
             let _ = tx.send(BrainEvent::ProbeResult {
                 category,
                 conf,

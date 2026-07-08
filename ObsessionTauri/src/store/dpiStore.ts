@@ -63,10 +63,10 @@ export const useDpiStore = create<DpiState>((set, get) => ({
       selectedCategories: selectedCategories.length ? selectedCategories : ["discord"],
     });
 
-    // Подписка на статус DPI от бэкенда.
-    on.dpiStatus((s) =>
-      set({ active: s.active, processes: s.processes, transitioning: false }),
-    );
+    // Подписка на статус DPI от бэкенда. НЕ трогает transitioning — им владеют
+    // start()/stop() (сбрасывают в finally). Иначе первый же dpi-status снимал
+    // блокировку кнопки до конца операции → повторный клик ловил гонку.
+    on.dpiStatus((s) => set({ active: s.active, processes: s.processes }));
   },
 
   toggleCategory: (cat) => {
@@ -97,9 +97,12 @@ export const useDpiStore = create<DpiState>((set, get) => ({
     }));
     try {
       await api.dpiStart(configs);
-      // Статус обновит подписка dpi-status.
+      // active/processes придут подпиской dpi-status ещё до resolve.
     } catch (e) {
-      set({ transitioning: false, active: false, error: String(e) });
+      set({ active: false, error: String(e) });
+    } finally {
+      // Держим блокировку до конца операции (включая старт Глаз на бэкенде).
+      set({ transitioning: false });
     }
   },
 

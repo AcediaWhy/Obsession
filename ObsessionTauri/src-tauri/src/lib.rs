@@ -258,6 +258,10 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
 fn toggle_dpi(app: &tauri::AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
+        // Те же ворота, что и у команд dpi_start/dpi_stop — трей и UI не должны
+        // запускать перекрывающиеся start/stop.
+        let state = app.state::<AppState>();
+        let _gate = state.dpi_gate.lock().await;
         let active = {
             let st = app.state::<AppState>();
             let a = !st.dpi.lock().unwrap().procs.is_empty();

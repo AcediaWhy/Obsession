@@ -31,6 +31,11 @@ pub struct ProxyState {
 pub struct AppState {
     pub paths: Paths,
     pub dpi: Mutex<DpiState>,
+    /// Сериализует DPI-операции (start_many/stop_all/test) между собой. Без него
+    /// частые клики по «Старт» запускают параллельные start/stop, которые топчут
+    /// общий `procs` и поднимают Глаза на уже убитый winws → обход не детектится.
+    /// Async-мьютекс (держится через `.await`), НЕ std — операции асинхронные.
+    pub dpi_gate: tokio::sync::Mutex<()>,
     pub proxy: Mutex<ProxyState>,
     pub settings: Mutex<Settings>,
     /// Активный наблюдатель трафика («Глаза»), пока запущен winws.
@@ -47,6 +52,7 @@ impl AppState {
         Self {
             paths,
             dpi: Mutex::new(DpiState::default()),
+            dpi_gate: tokio::sync::Mutex::new(()),
             proxy: Mutex::new(ProxyState::default()),
             settings: Mutex::new(settings),
             #[cfg(windows)]
