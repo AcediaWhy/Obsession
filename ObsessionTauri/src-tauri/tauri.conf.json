@@ -44,6 +44,11 @@
       "resources/lists": "lists",
       "resources/icons": "icons",
       "resources/ranking.json": "ranking.json"
+    },
+    "windows": {
+      "nsis": {
+        "installerIcon": "icons/icon.ico"
+      }
     }
   },
   "plugins": {}
