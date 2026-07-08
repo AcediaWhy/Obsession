@@ -20,11 +20,16 @@ import { useProxyStore } from "./store/proxyStore";
 import { useHostsStore } from "./store/hostsStore";
 import { useThemeStore } from "./store/themeStore";
 import { useSecretStore } from "./store/secretStore";
+import { useSettingsStore } from "./store/settingsStore";
+import { Onboarding } from "./design/components/Onboarding";
 
 export default function App() {
   const [tab, setTab] = useState<Tab>("dpi");
   const theme = useThemeStore((s) => s.theme);
   const overlays = useSecretStore((s) => s.overlays);
+  const showOnboarding = useSettingsStore(
+    (s) => s.loaded && !!s.settings && !s.settings.has_completed_onboarding,
+  );
 
   // Инициализация сторов и подписок — один раз при старте.
   useEffect(() => {
@@ -32,6 +37,7 @@ export default function App() {
     useDpiStore.getState().bootstrap();
     useProxyStore.getState().bootstrap();
     useHostsStore.getState().bootstrap();
+    useSettingsStore.getState().bootstrap();
     return () => {
       unlisten.then((fn) => fn());
     };
@@ -78,6 +84,9 @@ export default function App() {
         {/* Пасхальные оверлеи поверх всего (pointer-events-none). */}
         {overlays.snow && <SnowOverlay />}
         {overlays.sakura && <SakuraOverlay />}
+
+        {/* Онбординг первого запуска — поверх всего, пока флаг не выставлен. */}
+        {showOnboarding && <Onboarding />}
       </ParallaxProvider>
     </div>
   );
