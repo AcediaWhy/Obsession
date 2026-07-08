@@ -10,7 +10,7 @@ import { NavRail, type Tab } from "./design/components/NavRail";
 import { DpiScreen } from "./screens/Dpi";
 import { AiScreen } from "./screens/Ai";
 import { TelegramScreen } from "./screens/Telegram";
-import { SoonScreen } from "./screens/Soon";
+import { ListsScreen } from "./screens/Lists";
 import { SettingsScreen } from "./screens/Settings";
 import { ProfilesScreen } from "./screens/Profiles";
 
@@ -67,7 +67,7 @@ export default function App() {
               {tab === "dpi" && <DpiScreen />}
               {tab === "ai" && <AiScreen />}
               {tab === "telegram" && <TelegramScreen />}
-              {tab === "lists" && <SoonScreen title="Списки" />}
+              {tab === "lists" && <ListsScreen />}
               {tab === "profiles" && <ProfilesScreen />}
               {tab === "settings" && <SettingsScreen />}
             </motion.div>

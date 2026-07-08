@@ -18,6 +18,8 @@ pub struct Settings {
     pub ai_provider: String,
     pub has_completed_onboarding: bool,
     pub locale: String,
+    /// Авто-восстановление обхода (Мозг L3). Default false — пока не обкатано.
+    pub auto_recovery: bool,
 }
 
 impl Default for Settings {
@@ -32,6 +34,7 @@ impl Default for Settings {
             ai_provider: "malw".to_string(),
             has_completed_onboarding: false,
             locale: "ru".to_string(),
+            auto_recovery: false,
         }
     }
 }

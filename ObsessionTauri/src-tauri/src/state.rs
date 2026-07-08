@@ -33,6 +33,13 @@ pub struct AppState {
     pub dpi: Mutex<DpiState>,
     pub proxy: Mutex<ProxyState>,
     pub settings: Mutex<Settings>,
+    /// Активный наблюдатель трафика («Глаза»), пока запущен winws.
+    #[cfg(windows)]
+    pub eyes: Mutex<Option<crate::eyes::EyesHandle>>,
+    /// Задача «Мозга» (L3), пока включено авто-восстановление.
+    pub brain: Mutex<Option<crate::brain::runtime::BrainHandle>>,
+    /// Последний снимок сетевой идентичности (Менеджер сети, L2).
+    pub netid: Mutex<Option<crate::netid::NetIdentity>>,
 }
 
 impl AppState {
@@ -42,6 +49,10 @@ impl AppState {
             dpi: Mutex::new(DpiState::default()),
             proxy: Mutex::new(ProxyState::default()),
             settings: Mutex::new(settings),
+            #[cfg(windows)]
+            eyes: Mutex::new(None),
+            brain: Mutex::new(None),
+            netid: Mutex::new(None),
         }
     }
 }

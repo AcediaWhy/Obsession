@@ -2,14 +2,20 @@
 
 mod admin;
 mod autostart;
+mod brain;
 mod commands;
 mod diag;
 mod dpi;
+mod eyes;
 mod hosts;
+mod lists;
 mod net;
+mod netcache;
+mod netid;
 mod paths;
 mod profiles;
 mod proxy;
+mod ranking;
 mod settings;
 mod state;
 mod util;
@@ -49,7 +55,25 @@ pub fn run() {
             let settings = settings::Settings::load(&paths.base_dir);
             // Старт свёрнутым: читаем ДО передачи settings во владение AppState.
             let start_minimized = settings.start_minimized;
+            let auto_recovery = settings.auto_recovery;
             app.manage(AppState::new(paths, settings));
+
+            // Подчищаем зависшие winws от предыдущего жёсткого выхода (иначе новый
+            // инстанс падает «A copy of winws is already running»).
+            #[cfg(windows)]
+            {
+                let orphans = dpi::detect_orphaned(&handle);
+                if !orphans.is_empty() {
+                    dpi::emergency_kill_all(&handle);
+                }
+            }
+
+            // Если авто-восстановление включено в настройках — поднимаем Мозг сразу
+            // (сессия откроется при следующем dpi_start).
+            if auto_recovery {
+                let bh = brain::runtime::start(handle.clone());
+                *handle.state::<AppState>().brain.lock().unwrap() = Some(bh);
+            }
 
             build_tray(app)?;
 
@@ -126,9 +150,16 @@ pub fn run() {
             commands::hosts_uninstall,
             commands::get_settings,
             commands::save_settings,
+            commands::lists_all,
+            commands::read_list,
+            commands::save_list,
+            commands::create_list,
+            commands::delete_list,
             commands::get_profiles,
             commands::save_profile,
             commands::delete_profile,
+            commands::brain_set_enabled,
+            commands::brain_get_status,
         ])
         .build(tauri::generate_context!())
         .expect("ошибка запуска Obsession")

@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "winws_compat": ">=0.9.0",
+  "categories": {
+    "discord": {
+      "default": [
+        "discord_1.conf",
+        "discord_2.conf",
+        "discord_3.conf",
+        "discord_4.conf",
+        "discord_5.conf",
+        "discord_6.conf",
+        "discord_7.conf",
+        "discord_8.conf",
+        "discord_9.conf",
+        "discord_10.conf"
+      ],
+      "by_asn_region": {}
+    },
+    "gaming": {
+      "default": [
+        "gaming_1.conf",
+        "gaming_2.conf",
+        "gaming_3.conf",
+        "gaming_4.conf",
+        "gaming_5.conf",
+        "gaming_6.conf",
+        "gaming_7.conf",
+        "gaming_8.conf",
+        "gaming_2_ultimate.conf",
+        "gaming_3_ultimate.conf",
+        "gaming_4_ultimate.conf",
+        "gaming_5_ultimate.conf",
+        "gaming_6_ultimate.conf",
+        "gaming_7_ultimate.conf",
+        "gaming_8_ultimate.conf"
+      ],
+      "by_asn_region": {}
+    },
+    "universal": {
+      "default": [
+        "universal_1.conf",
+        "universal_2.conf",
+        "universal_3.conf",
+        "universal_4.conf",
+        "universal_5.conf",
+        "universal_6.conf"
+      ],
+      "by_asn_region": {}
+    },
+    "youtube_twitch": {
+      "default": [
+        "youtube_twitch_1.conf",
+        "youtube_twitch_2.conf",
+        "youtube_twitch_3.conf",
+        "youtube_twitch_4.conf",
+        "youtube_twitch_5.conf",
+        "youtube_twitch_6.conf",
+        "youtube_twitch_7.conf",
+        "youtube_twitch_8.conf",
+        "youtube_twitch_9.conf",
+        "youtube_twitch_10.conf"
+      ],
+      "by_asn_region": {}
+    }
+  }
+}
