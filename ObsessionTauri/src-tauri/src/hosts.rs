@@ -302,7 +302,9 @@ pub async fn check_status(p: Provider) -> HostsStatus {
     }
 
     let content = read_hosts();
-    let re = regex::Regex::new(r"# update:\s*(.+)").unwrap();
+    // Провайдеры пишут дату строкой `# Последнее обновление: <дата>`.
+    // `# update:` оставлен для обратной совместимости со старым форматом.
+    let re = regex::Regex::new(r"#\s*(?:Последнее обновление|update):\s*(.+)").unwrap();
     let local_version = re
         .captures(&content)
         .and_then(|c| c.get(1))
