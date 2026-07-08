@@ -1,7 +1,9 @@
 //! Общие утилиты: спавн команд без консольного окна и эмит событий в UI.
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
+
+use crate::state::AppState;
 
 /// Флаг CREATE_NO_WINDOW — дочерние процессы не открывают консоль.
 #[cfg(windows)]
@@ -31,17 +33,37 @@ fn now_hms() -> String {
     chrono::Local::now().format("%H:%M:%S").to_string()
 }
 
-/// Отправляет строку лога во фронтенд (событие `log`).
+/// Отправляет строку лога во фронтенд (событие `log`) И дублирует её на диск
+/// в `%APPDATA%\Obsession\logs\app.log` — чтобы логи можно было прочитать
+/// после закрытия окна (боковая панель UI не копируется).
 pub fn emit_log(app: &AppHandle, level: &str, source: &str, message: &str) {
+    let ts = now_hms();
     let _ = app.emit(
         "log",
         LogPayload {
             level: level.to_string(),
             source: source.to_string(),
             message: message.to_string(),
-            ts: now_hms(),
+            ts: ts.clone(),
         },
     );
+    append_log_file(app, &ts, level, source, message);
+}
+
+/// Дописывает строку лога в файл на диске. Ошибки глушим — лог не критичен.
+fn append_log_file(app: &AppHandle, ts: &str, level: &str, source: &str, message: &str) {
+    use std::io::Write;
+    let Some(state) = app.try_state::<AppState>() else {
+        return;
+    };
+    let file = state.paths.logs_dir().join("app.log");
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&file)
+    {
+        let _ = writeln!(f, "{ts} [{level}] {source}: {message}");
+    }
 }
 
 #[derive(Clone, Serialize)]

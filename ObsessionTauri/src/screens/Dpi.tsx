@@ -7,6 +7,7 @@ import { Parallax } from "../design/parallax";
 import { Stagger, StaggerItem } from "../design/components/Stagger";
 import { LogStream } from "../design/components/LogStream";
 import { Diagnostics } from "../design/components/Diagnostics";
+import { BrainPanel } from "../design/components/BrainPanel";
 import {
   Button,
   Chip,
@@ -160,6 +161,11 @@ export function DpiScreen() {
             {/* Диагностика доступности (работает ли обход). */}
             <StaggerItem className="w-full">
               <Diagnostics />
+            </StaggerItem>
+
+            {/* Авто-восстановление (Мозг L3) — debug-читалка статуса. */}
+            <StaggerItem className="w-full">
+              <BrainPanel />
             </StaggerItem>
           </Stagger>
         </GlassPanel>

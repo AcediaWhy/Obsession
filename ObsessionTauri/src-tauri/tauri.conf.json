@@ -42,7 +42,8 @@
       "resources/bin": "bin",
       "resources/configs": "configs",
       "resources/lists": "lists",
-      "resources/icons": "icons"
+      "resources/icons": "icons",
+      "resources/ranking.json": "ranking.json"
     }
   },
   "plugins": {}

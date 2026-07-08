@@ -71,11 +71,19 @@ pub async fn dpi_start(app: AppHandle, configs: Vec<DpiConfigArg>) -> Result<Vec
         .into_iter()
         .map(|c| (c.category, c.config_file))
         .collect();
-    crate::dpi::start_many(&app, &pairs).await
+    let pids = crate::dpi::start_many(&app, &pairs).await?;
+    // Если Мозг включён — открываем сессию (сбор кандидатов + резолв сети).
+    if brain_is_running(&app) {
+        let ev = crate::brain::runtime::build_session_start(&app, pairs).await;
+        send_brain_event(&app, ev);
+    }
+    Ok(pids)
 }
 
 #[tauri::command]
 pub async fn dpi_stop(app: AppHandle) {
+    // Сначала сообщаем Мозгу — чтобы он не воспринял штатный стоп как сбой.
+    send_brain_event(&app, crate::brain::BrainEvent::SessionStop);
     crate::dpi::stop_all(&app).await;
 }
 
@@ -153,6 +161,97 @@ pub fn save_settings(app: AppHandle, settings: Settings) -> Result<(), String> {
     settings.save(&base).map_err(|e| e.to_string())?;
     *state.settings.lock().unwrap() = settings;
     Ok(())
+}
+
+// ─── Мозг (авто-восстановление, L3) ───────────────────────────────────────
+
+/// Есть ли живая задача Мозга в состоянии.
+fn brain_is_running(app: &AppHandle) -> bool {
+    app.state::<AppState>()
+        .brain
+        .lock()
+        .map(|g| g.is_some())
+        .unwrap_or(false)
+}
+
+/// Шлёт событие Мозгу, если он запущен (иначе тихо игнорирует).
+fn send_brain_event(app: &AppHandle, ev: crate::brain::BrainEvent) {
+    let tx = {
+        let st = app.state::<AppState>();
+        let guard = st.brain.lock().ok();
+        guard.and_then(|g| g.as_ref().map(|bh| bh.tx.clone()))
+    };
+    if let Some(tx) = tx {
+        let _ = tx.send(ev);
+    }
+}
+
+/// Включает/выключает авто-восстановление: спавнит или гасит задачу Мозга и
+/// персистит флаг в настройках. Идемпотентно.
+#[tauri::command]
+pub fn brain_set_enabled(app: AppHandle, enabled: bool) -> Result<(), String> {
+    {
+        let st = app.state::<AppState>();
+        let mut guard = st.brain.lock().map_err(|_| "brain lock".to_string())?;
+        let running = guard.is_some();
+        if enabled && !running {
+            *guard = Some(crate::brain::runtime::start(app.clone()));
+        } else if !enabled && running {
+            if let Some(bh) = guard.take() {
+                let _ = bh.tx.send(crate::brain::BrainEvent::Shutdown);
+                bh.shutdown();
+            }
+        }
+    }
+    // Персист флага.
+    let st = app.state::<AppState>();
+    let base = st.paths.base_dir.clone();
+    let mut settings = st.settings.lock().unwrap();
+    settings.auto_recovery = enabled;
+    settings.save(&base).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Текущий агрегированный статус Мозга (для UI-читалки).
+#[tauri::command]
+pub fn brain_get_status(app: AppHandle) -> Option<crate::brain::BrainStatus> {
+    let st = app.state::<AppState>();
+    let guard = st.brain.lock().ok()?;
+    let bh = guard.as_ref()?;
+    let status = bh.status.borrow().clone();
+    Some(status)
+}
+
+// ─── Списки (домены / IP) ─────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn lists_all(app: AppHandle) -> Vec<crate::lists::ListInfo> {
+    let state = app.state::<AppState>();
+    crate::lists::list_all(&state.paths.lists_dir())
+}
+
+#[tauri::command]
+pub fn read_list(app: AppHandle, name: String) -> Result<String, String> {
+    let state = app.state::<AppState>();
+    crate::lists::read_list(&state.paths.lists_dir(), &name)
+}
+
+#[tauri::command]
+pub fn save_list(app: AppHandle, name: String, content: String) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    crate::lists::save_list(&state.paths.lists_dir(), &name, &content)
+}
+
+#[tauri::command]
+pub fn create_list(app: AppHandle, name: String) -> Result<Vec<crate::lists::ListInfo>, String> {
+    let state = app.state::<AppState>();
+    crate::lists::create_list(&state.paths.lists_dir(), &name)
+}
+
+#[tauri::command]
+pub fn delete_list(app: AppHandle, name: String) -> Result<Vec<crate::lists::ListInfo>, String> {
+    let state = app.state::<AppState>();
+    crate::lists::delete_list(&state.paths.lists_dir(), &name)
 }
 
 // ─── Профили (пресеты) ────────────────────────────────────────────────────

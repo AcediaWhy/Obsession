@@ -1,0 +1,278 @@
+//! Харнесс воспроизведения сценариев: гоняет последовательности пакетов через
+//! весь конвейер `parse → flow` и проверяет итоговые вердикты — детерминированно,
+//! без WinDivert, без админ-прав, на любой ОС.
+//!
+//! Это и есть причина «чистых» модулей: самую хитрую логику (reset/blackhole,
+//! пересборка split-CH, отсев фейков) отлаживаем на фикстурах, а не «на живой сети».
+//!
+//! Позже сюда же лягут реальные pcap-дампы (свои захваты через WinDivert/Wireshark):
+//! пакеты декодируются в `ParsedPacket` и прогоняются этим же движком.
+
+use std::net::{IpAddr, Ipv4Addr};
+
+use crate::eyes::flow::{Config, FlowTable};
+use crate::eyes::parse::{FlowKey, ParsedPacket, TcpFlags};
+use crate::eyes::signal::Verdict;
+
+/// Событие сценария: пакет в момент `t_ms`, либо тик времени.
+enum Ev {
+    Pkt(ParsedPacket, u64),
+    Tick(u64),
+}
+
+/// Прогоняет сценарий и собирает все вердикты в порядке появления.
+fn run(cfg: Config, events: Vec<Ev>) -> Vec<(String, Verdict, &'static str)> {
+    let mut table = FlowTable::new(cfg);
+    let mut out = Vec::new();
+    for ev in events {
+        match ev {
+            Ev::Pkt(p, t) => {
+                if let Some(o) = table.on_packet(&p, t) {
+                    out.push((o.domain, o.verdict, o.evidence));
+                }
+            }
+            Ev::Tick(t) => {
+                for o in table.on_tick(t) {
+                    out.push((o.domain, o.verdict, o.evidence));
+                }
+            }
+        }
+    }
+    out
+}
+
+// --- конструкторы пакетов для сценариев ---
+
+const SRV: IpAddr = IpAddr::V4(Ipv4Addr::new(198, 51, 100, 7));
+
+fn fk(port: u16) -> FlowKey {
+    FlowKey {
+        local_port: port,
+        remote_ip: SRV,
+        remote_port: 443,
+    }
+}
+
+fn p_syn(port: u16, ttl: u8, seq: u32) -> ParsedPacket {
+    ParsedPacket {
+        outbound: true,
+        key: fk(port),
+        ttl,
+        seq,
+        flags: TcpFlags {
+            syn: true,
+            ..Default::default()
+        },
+        payload: vec![],
+    }
+}
+
+fn p_synack(port: u16) -> ParsedPacket {
+    ParsedPacket {
+        outbound: false,
+        key: fk(port),
+        ttl: 54,
+        seq: 9000,
+        flags: TcpFlags {
+            syn: true,
+            ack: true,
+            ..Default::default()
+        },
+        payload: vec![],
+    }
+}
+
+fn p_out(port: u16, ttl: u8, seq: u32, payload: Vec<u8>) -> ParsedPacket {
+    ParsedPacket {
+        outbound: true,
+        key: fk(port),
+        ttl,
+        seq,
+        flags: TcpFlags {
+            psh: true,
+            ack: true,
+            ..Default::default()
+        },
+        payload,
+    }
+}
+
+fn p_in_rst(port: u16) -> ParsedPacket {
+    ParsedPacket {
+        outbound: false,
+        key: fk(port),
+        ttl: 54,
+        seq: 9001,
+        flags: TcpFlags {
+            rst: true,
+            ..Default::default()
+        },
+        payload: vec![],
+    }
+}
+
+fn p_in(port: u16, payload: Vec<u8>) -> ParsedPacket {
+    ParsedPacket {
+        outbound: false,
+        key: fk(port),
+        ttl: 54,
+        seq: 9001,
+        flags: TcpFlags {
+            psh: true,
+            ack: true,
+            ..Default::default()
+        },
+        payload,
+    }
+}
+
+fn ch(sni: &str) -> Vec<u8> {
+    let host = sni.as_bytes();
+    let mut sni_ext = Vec::new();
+    let name_len = host.len() as u16;
+    let list_len = 3 + name_len;
+    sni_ext.extend_from_slice(&list_len.to_be_bytes());
+    sni_ext.push(0x00);
+    sni_ext.extend_from_slice(&name_len.to_be_bytes());
+    sni_ext.extend_from_slice(host);
+    let mut exts = Vec::new();
+    exts.extend_from_slice(&0x0000u16.to_be_bytes());
+    exts.extend_from_slice(&(sni_ext.len() as u16).to_be_bytes());
+    exts.extend_from_slice(&sni_ext);
+    let mut body = Vec::new();
+    body.extend_from_slice(&[0x03, 0x03]);
+    body.extend_from_slice(&[7u8; 32]);
+    body.push(0x00);
+    body.extend_from_slice(&2u16.to_be_bytes());
+    body.extend_from_slice(&[0x13, 0x01]);
+    body.push(0x01);
+    body.push(0x00);
+    body.extend_from_slice(&(exts.len() as u16).to_be_bytes());
+    body.extend_from_slice(&exts);
+    let mut hs = Vec::new();
+    hs.push(0x01);
+    let l = body.len() as u32;
+    hs.extend_from_slice(&[(l >> 16) as u8, (l >> 8) as u8, l as u8]);
+    hs.extend_from_slice(&body);
+    let mut rec = Vec::new();
+    rec.push(0x16);
+    rec.extend_from_slice(&[0x03, 0x01]);
+    rec.extend_from_slice(&(hs.len() as u16).to_be_bytes());
+    rec.extend_from_slice(&hs);
+    rec
+}
+
+fn sh() -> Vec<u8> {
+    vec![0x16, 0x03, 0x03, 0x00, 0x04, 0x02, 0x00, 0x00, 0x00]
+}
+
+fn cfg() -> Config {
+    Config {
+        hostlist: vec!["youtube.com".into(), "discord.com".into()],
+        ..Config::default()
+    }
+}
+
+#[test]
+fn scenario_clean_working() {
+    let out = run(
+        cfg(),
+        vec![
+            Ev::Pkt(p_syn(40001, 128, 1000), 0),
+            Ev::Pkt(p_synack(40001), 12),
+            Ev::Pkt(p_out(40001, 128, 1001, ch("www.youtube.com")), 20),
+            Ev::Pkt(p_in(40001, sh()), 45),
+        ],
+    );
+    assert_eq!(out, vec![("www.youtube.com".into(), Verdict::Working, "server_hello")]);
+}
+
+#[test]
+fn scenario_dpi_reset() {
+    let out = run(
+        cfg(),
+        vec![
+            Ev::Pkt(p_syn(40002, 128, 1000), 0),
+            Ev::Pkt(p_synack(40002), 12),
+            Ev::Pkt(p_out(40002, 128, 1001, ch("discord.com")), 20),
+            Ev::Pkt(p_in_rst(40002), 33),
+        ],
+    );
+    assert_eq!(out, vec![("discord.com".into(), Verdict::Reset, "inbound_rst")]);
+}
+
+#[test]
+fn scenario_armed_blackhole_silence() {
+    let out = run(
+        cfg(),
+        vec![
+            Ev::Pkt(p_syn(40003, 128, 1000), 0),
+            Ev::Pkt(p_synack(40003), 12),
+            Ev::Pkt(p_out(40003, 128, 1001, ch("www.youtube.com")), 20),
+            // ретрансмит CH — ответа нет
+            Ev::Pkt(p_out(40003, 128, 1001, ch("www.youtube.com")), 1020),
+            Ev::Tick(7000),
+        ],
+    );
+    assert_eq!(
+        out,
+        vec![("www.youtube.com".into(), Verdict::Blackhole, "silence+retransmit")]
+    );
+}
+
+#[test]
+fn scenario_split_and_fake_mixed() {
+    // Реалистичный десинк: winws шлёт fake CH (низкий TTL, плохой SNI),
+    // а реальный CH приходит двумя кусками в обратном порядке.
+    let real = ch("www.youtube.com");
+    let (a, b) = real.split_at(real.len() / 2);
+    let out = run(
+        cfg(),
+        vec![
+            Ev::Pkt(p_syn(40004, 128, 1000), 0),
+            Ev::Pkt(p_synack(40004), 8),
+            // fake-инъекция winws: низкий TTL, левый SNI — должна игнорироваться
+            Ev::Pkt(p_out(40004, 3, 1001, ch("www.google.com")), 15),
+            // реальный CH, disorder: вторая половина, затем первая
+            Ev::Pkt(p_out(40004, 128, 1001 + a.len() as u32, b.to_vec()), 18),
+            Ev::Pkt(p_out(40004, 128, 1001, a.to_vec()), 19),
+            Ev::Pkt(p_in(40004, sh()), 40),
+        ],
+    );
+    assert_eq!(out, vec![("www.youtube.com".into(), Verdict::Working, "server_hello")]);
+}
+
+#[test]
+fn scenario_untracked_host_is_silent() {
+    // Домен вне хостлиста — ни одного вердикта.
+    let out = run(
+        cfg(),
+        vec![
+            Ev::Pkt(p_syn(40005, 128, 1000), 0),
+            Ev::Pkt(p_synack(40005), 12),
+            Ev::Pkt(p_out(40005, 128, 1001, ch("example.org")), 20),
+            Ev::Pkt(p_in_rst(40005), 30),
+            Ev::Tick(8000),
+        ],
+    );
+    assert!(out.is_empty());
+}
+
+#[test]
+fn scenario_multiple_flows_independent() {
+    // Два параллельных соединения к разным хостам дают два независимых вердикта.
+    let out = run(
+        cfg(),
+        vec![
+            Ev::Pkt(p_syn(40006, 128, 1000), 0),
+            Ev::Pkt(p_syn(40007, 128, 2000), 1),
+            Ev::Pkt(p_out(40006, 128, 1001, ch("www.youtube.com")), 20),
+            Ev::Pkt(p_out(40007, 128, 2001, ch("discord.com")), 21),
+            Ev::Pkt(p_in(40006, sh()), 40),
+            Ev::Pkt(p_in_rst(40007), 41),
+        ],
+    );
+    assert_eq!(out.len(), 2);
+    assert!(out.contains(&("www.youtube.com".into(), Verdict::Working, "server_hello")));
+    assert!(out.contains(&("discord.com".into(), Verdict::Reset, "inbound_rst")));
+}

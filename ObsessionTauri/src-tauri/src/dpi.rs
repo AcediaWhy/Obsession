@@ -171,8 +171,151 @@ pub async fn start(app: &AppHandle, category: &str, config_file: &str) -> Result
     Ok(pid)
 }
 
+/// Собирает хостлист для Глаз из активных конфигов winws: вытаскивает пути
+/// `--hostlist="..."`/`--hostlist-auto="..."`, читает эти файлы и собирает домены.
+/// Так Глаза следят ровно за теми хостами, что обходит текущая стратегия.
+#[cfg(windows)]
+fn collect_hostlist(app: &AppHandle, configs: &[(String, String)]) -> Vec<String> {
+    use std::collections::BTreeSet;
+    let st = app.state::<AppState>();
+    let base = st.paths.base_dir.clone();
+    let re = regex::Regex::new(r#"--hostlist(?:-auto)?="([^"]+)""#).unwrap();
+    let mut domains: BTreeSet<String> = BTreeSet::new();
+    for (category, config_file) in configs {
+        let conf = st.paths.config_path(category, config_file);
+        let Ok(text) = std::fs::read_to_string(&conf) else {
+            continue;
+        };
+        for cap in re.captures_iter(&text) {
+            // Пути в конфигах с бэкслешами (lists\discord.txt) — нормализуем.
+            let rel = cap[1].replace('\\', "/");
+            let path = base.join(&rel);
+            let Ok(list) = std::fs::read_to_string(&path) else {
+                continue; // autohosts может ещё не существовать — это норма
+            };
+            for line in list.lines() {
+                let d = line.trim();
+                if d.is_empty() || d.starts_with('#') {
+                    continue;
+                }
+                domains.insert(d.to_ascii_lowercase());
+            }
+        }
+    }
+    domains.into_iter().collect()
+}
+
+/// Как [`collect_hostlist`], но строит мост `домен → категория` для Мозга: по
+/// какой категории обхода наблюдается данный SNI. Если домен встречается в
+/// нескольких категориях — первая по порядку `configs` (детерминизм). Нужен для
+/// `BrainEvent::SessionStart`, чтобы Reset/Working скоупились по категории.
+#[cfg(windows)]
+pub fn collect_hostlist_by_category(
+    app: &AppHandle,
+    configs: &[(String, String)],
+) -> std::collections::HashMap<String, String> {
+    let st = app.state::<AppState>();
+    let base = st.paths.base_dir.clone();
+    let re = regex::Regex::new(r#"--hostlist(?:-auto)?="([^"]+)""#).unwrap();
+    let mut map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for (category, config_file) in configs {
+        let conf = st.paths.config_path(category, config_file);
+        let Ok(text) = std::fs::read_to_string(&conf) else {
+            continue;
+        };
+        for cap in re.captures_iter(&text) {
+            let rel = cap[1].replace('\\', "/");
+            let path = base.join(&rel);
+            let Ok(list) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            for line in list.lines() {
+                let d = line.trim();
+                if d.is_empty() || d.starts_with('#') {
+                    continue;
+                }
+                map.entry(d.to_ascii_lowercase())
+                    .or_insert_with(|| category.clone());
+            }
+        }
+    }
+    map
+}
+
+/// Запускает «Глаза» после старта winws. Льёт per-flow вердикты в общий лог
+/// (source `eyes`) + stderr. Пустой хостлист = следим за всеми :443 (фолбэк).
+#[cfg(windows)]
+fn start_eyes(app: &AppHandle, hostlist: Vec<String>) {
+    let dll = app.state::<AppState>().paths.bin_dir().join("WinDivert.dll");
+    if !dll.exists() {
+        util::emit_log(app, "warn", "eyes", "WinDivert.dll не найдена — Глаза не стартуют");
+        return;
+    }
+    let n = hostlist.len();
+    let cfg = crate::eyes::Config {
+        hostlist,
+        ..Default::default()
+    };
+    let app_cb = app.clone();
+    match crate::eyes::start(&dll, cfg, move |obs| {
+        let line = format!(
+            "{:?} {} :{} — {}",
+            obs.verdict, obs.domain, obs.local_port, obs.evidence
+        );
+        // Дублируем в stderr процесса — видно в консоли dev-запуска для отладки.
+        eprintln!("[eyes] {line}");
+        util::emit_log(&app_cb, "info", "eyes", &line);
+        // Сырое наблюдение во фронт (debug-читалка Глаз).
+        let _ = app_cb.emit("eyes://observation", &obs);
+        // Форвард в Мозг, если авто-восстановление активно. `ts` перештампует
+        // рантайм своей монотоникой — часы Глаз сбрасываются на респавне.
+        // Клонируем sender в узком блоке, чтобы State-гард освободился до send.
+        let brain_tx = {
+            let st = app_cb.state::<AppState>();
+            let guard = st.brain.lock().ok();
+            guard.and_then(|g| g.as_ref().map(|bh| bh.tx.clone()))
+        };
+        if let Some(tx) = brain_tx {
+            let _ = tx.send(crate::brain::BrainEvent::Observation {
+                domain: obs.domain.clone(),
+                verdict: obs.verdict,
+                ts: obs.ts_ms,
+            });
+        }
+    }) {
+        Ok(handle) => {
+            let st = app.state::<AppState>();
+            *st.eyes.lock().unwrap() = Some(handle);
+            let msg = if n == 0 {
+                "Наблюдатель запущен (sniff :443, хостлист пуст — все хосты)".to_string()
+            } else {
+                format!("Наблюдатель запущен (sniff :443, хостлист: {n} доменов)")
+            };
+            eprintln!("[eyes] {msg}");
+            util::emit_log(app, "info", "eyes", &msg);
+        }
+        Err(e) => {
+            eprintln!("[eyes] Глаза не запустились: {e}");
+            util::emit_log(app, "error", "eyes", &format!("Глаза не запустились: {e}"));
+        }
+    }
+}
+
+/// Останавливает наблюдателя, если запущен.
+#[cfg(windows)]
+fn stop_eyes(app: &AppHandle) {
+    let handle = app.state::<AppState>().eyes.lock().unwrap().take();
+    if let Some(h) = handle {
+        h.stop();
+        util::emit_log(app, "info", "eyes", "Наблюдатель остановлен");
+    }
+}
+
 /// Останавливает все свои DPI-процессы, ждёт выгрузку WinDivert, чистит DNS.
 pub async fn stop_all(app: &AppHandle) {
+    #[cfg(windows)]
+    stop_eyes(app);
+
     let pids: Vec<u32> = {
         let state = app.state::<AppState>();
         let mut d = state.dpi.lock().unwrap();
@@ -208,6 +351,17 @@ pub async fn start_many(app: &AppHandle, configs: &[(String, String)]) -> Result
     if started.is_empty() {
         return Err("Ни один DPI-процесс не был запущен".to_string());
     }
+
+    // Поднимаем Глаза после winws — драйвер WinDivert уже установлен,
+    // NO_INSTALL-хендл откроется. Даём winws мгновение на init. Хостлист —
+    // домены из активных конфигов, чтобы следить только за обходимыми хостами.
+    #[cfg(windows)]
+    {
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        let hostlist = collect_hostlist(app, configs);
+        start_eyes(app, hostlist);
+    }
+
     Ok(started)
 }
 

@@ -61,6 +61,13 @@ export interface Profile {
   ai_provider: string;
 }
 
+export interface ListInfo {
+  name: string;
+  entries: number;
+  bytes: number;
+  kind: "domains" | "ipset";
+}
+
 export interface Settings {
   minimize_to_tray: boolean;
   start_minimized: boolean;
@@ -71,6 +78,41 @@ export interface Settings {
   ai_provider: string;
   has_completed_onboarding: boolean;
   locale: string;
+  auto_recovery: boolean;
+}
+
+// ─── Глаза / Мозг (контур надёжности) ───────────────────────────────────────
+
+export type Verdict = "working" | "reset" | "blackhole";
+
+/** Сырое per-flow наблюдение Глаз (событие `eyes://observation`). */
+export interface Observation {
+  domain: string;
+  dst_ip: string;
+  local_port: number;
+  verdict: Verdict;
+  evidence: string;
+  ts_ms: number;
+}
+
+/** Агрегированный статус Мозга (событие `brain://status`, camelCase из serde). */
+export interface BrainStatus {
+  enabled: boolean;
+  phase:
+    | "idle"
+    | "confirming"
+    | "healthy"
+    | "suspect"
+    | "switching"
+    | "frozen"
+    | "exhausted";
+  category: string | null;
+  currentConf: string | null;
+  ladderLevel: "l1" | "l2" | "l3" | "none";
+  frozenUntilMs: number | null;
+  backoffSecs: number | null;
+  asnRegion: string | null;
+  gatewayMacMasked: string | null;
 }
 
 // ─── Команды ──────────────────────────────────────────────────────────────
@@ -106,11 +148,22 @@ export const api = {
   saveSettings: (settings: Settings) =>
     invoke<void>("save_settings", { settings }),
 
+  listsAll: () => invoke<ListInfo[]>("lists_all"),
+  readList: (name: string) => invoke<string>("read_list", { name }),
+  saveList: (name: string, content: string) =>
+    invoke<void>("save_list", { name, content }),
+  createList: (name: string) => invoke<ListInfo[]>("create_list", { name }),
+  deleteList: (name: string) => invoke<ListInfo[]>("delete_list", { name }),
+
   getProfiles: () => invoke<Profile[]>("get_profiles"),
   saveProfile: (profile: Profile) =>
     invoke<Profile[]>("save_profile", { profile }),
   deleteProfile: (id: string) =>
     invoke<Profile[]>("delete_profile", { id }),
+
+  brainSetEnabled: (enabled: boolean) =>
+    invoke<void>("brain_set_enabled", { enabled }),
+  brainGetStatus: () => invoke<BrainStatus | null>("brain_get_status"),
 };
 
 // ─── События ──────────────────────────────────────────────────────────────
@@ -122,6 +175,10 @@ export const on = {
     listen<DpiStatus>("dpi-status", (e) => cb(e.payload)),
   proxyStatus: (cb: (e: ProxyStatus) => void): Promise<UnlistenFn> =>
     listen<ProxyStatus>("proxy-status", (e) => cb(e.payload)),
+  eyesObservation: (cb: (o: Observation) => void): Promise<UnlistenFn> =>
+    listen<Observation>("eyes://observation", (e) => cb(e.payload)),
+  brainStatus: (cb: (s: BrainStatus) => void): Promise<UnlistenFn> =>
+    listen<BrainStatus>("brain://status", (e) => cb(e.payload)),
 };
 
 // ─── Утилиты окна / системы ────────────────────────────────────────────────

@@ -12,6 +12,7 @@ pub const TGPROXY_EXE: &str = "TgWsProxy_windows.exe";
 /// Системный hosts-файл Windows.
 pub const HOSTS_PATH: &str = r"C:\Windows\System32\drivers\etc\hosts";
 
+#[derive(Clone)]
 pub struct Paths {
     pub base_dir: PathBuf,
 }
@@ -27,6 +28,7 @@ impl Paths {
         let paths = Paths { base_dir };
         paths.ensure_dirs()?;
         paths.extract_assets(resource_dir);
+        paths.sanitize_configs();
         Ok(paths)
     }
 
@@ -53,6 +55,19 @@ impl Paths {
     }
     pub fn icons_dir(&self) -> PathBuf {
         self.base_dir.join("icons")
+    }
+
+    /// Bundled-рейтинг стратегий под ASN_region (копируется из ресурсов в appdata).
+    pub fn ranking_path(&self) -> PathBuf {
+        self.base_dir.join("ranking.json")
+    }
+    /// L1-кэш «что работало в этой сети» (пишется рантаймом Мозга).
+    pub fn netcache_path(&self) -> PathBuf {
+        self.base_dir.join("netcache.json")
+    }
+    /// Кэш сетевой идентичности: MAC шлюза → ASN_region (мемоизация ipinfo).
+    pub fn netid_cache_path(&self) -> PathBuf {
+        self.base_dir.join("netid_cache.json")
     }
 
     pub fn winws_path(&self) -> PathBuf {
@@ -186,8 +201,45 @@ impl Paths {
                 let _ = copy_dir(&src, &dst, force);
             }
         }
+        // Одиночный bundled-файл рейтинга (цикл выше ходит только по директориям).
+        {
+            let primary = resource_dir.join("ranking.json");
+            let src = if primary.exists() {
+                primary
+            } else {
+                dev_dir.join("ranking.json")
+            };
+            let dst = self.ranking_path();
+            if src.exists() && (force || !dst.exists()) {
+                let _ = fs::copy(&src, &dst);
+            }
+        }
         if force {
             let _ = fs::write(self.version_marker(), APP_VERSION);
+        }
+    }
+
+    /// Снимает UTF-8 BOM (EF BB BF) со всех `.conf` в configs. КРИТИЧНО: winws
+    /// читает конфиг как `@file` и трактует BOM как часть ПЕРВОГО аргумента —
+    /// `﻿--wf-tcp=...` не распознаётся, фильтр окна WinDivert не ставится, десинк
+    /// не применяется НИ к чему (хендл открыт, но пакеты не захватываются).
+    /// Идемпотентно и дёшево — гоняем на каждом старте, чинит и старые установки.
+    fn sanitize_configs(&self) {
+        let mut stack = vec![self.configs_dir()];
+        while let Some(dir) = stack.pop() {
+            let Ok(rd) = fs::read_dir(&dir) else { continue };
+            for entry in rd.flatten() {
+                let p = entry.path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else if p.extension().and_then(|s| s.to_str()) == Some("conf") {
+                    if let Ok(bytes) = fs::read(&p) {
+                        if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+                            let _ = fs::write(&p, &bytes[3..]);
+                        }
+                    }
+                }
+            }
         }
     }
 }

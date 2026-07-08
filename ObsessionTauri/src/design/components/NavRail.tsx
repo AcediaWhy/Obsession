@@ -7,7 +7,7 @@ const items: { id: Tab; label: string; icon: (p: { size?: number }) => JSX.Eleme
   { id: "dpi", label: "DPI-обход", icon: Icon.Bolt },
   { id: "ai", label: "ИИ-разблокировка", icon: Icon.Robot },
   { id: "telegram", label: "Telegram", icon: Icon.Send },
-  { id: "lists", label: "Списки", icon: Icon.List, soon: true },
+  { id: "lists", label: "Списки", icon: Icon.List },
   { id: "profiles", label: "Профили", icon: Icon.Layers },
   { id: "settings", label: "Настройки", icon: Icon.Settings },
 ];
