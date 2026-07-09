@@ -1,11 +1,12 @@
 import { create } from "zustand";
-import { api, clipboard, on, opener } from "../lib/tauri";
+import { api, clipboard, on } from "../lib/tauri";
 
 interface ProxyState {
   available: boolean;
   running: boolean;
   transitioning: boolean;
   link: string;
+  lanLink: string | null;
   port: number;
   fakeTlsDomain: string;
   error: string;
@@ -26,6 +27,7 @@ export const useProxyStore = create<ProxyState>((set, get) => ({
   running: false,
   transitioning: false,
   link: "",
+  lanLink: null,
   port: 1443,
   fakeTlsDomain: "",
   error: "",
@@ -40,7 +42,7 @@ export const useProxyStore = create<ProxyState>((set, get) => ({
       fakeTlsDomain: settings.fake_tls_domain,
     });
     on.proxyStatus((s) =>
-      set({ running: s.running, link: s.link, transitioning: false }),
+      set({ running: s.running, link: s.link, lanLink: s.lan_link, transitioning: false }),
     );
   },
 
@@ -49,9 +51,10 @@ export const useProxyStore = create<ProxyState>((set, get) => ({
 
   start: async () => {
     if (get().transitioning) return;
-    set({ transitioning: true, error: "", link: "" });
+    set({ transitioning: true, error: "", link: "", lanLink: null });
     try {
       const link = await api.proxyStart(get().port, get().fakeTlsDomain);
+      // lanLink придёт через подписку proxy-status.
       set({ running: true, link, transitioning: false });
       await savePrefs();
     } catch (e) {
@@ -65,7 +68,7 @@ export const useProxyStore = create<ProxyState>((set, get) => ({
     try {
       await api.proxyStop();
     } finally {
-      set({ transitioning: false, link: "" });
+      set({ transitioning: false, link: "", lanLink: null });
     }
   },
 
@@ -81,7 +84,7 @@ export const useProxyStore = create<ProxyState>((set, get) => ({
     const { link } = get();
     if (!link) return;
     try {
-      await opener.open(link);
+      await api.openExternalUrl(link);
     } catch (e) {
       set({ error: String(e) });
     }
