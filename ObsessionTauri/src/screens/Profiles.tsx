@@ -66,7 +66,7 @@ export function ProfilesScreen() {
         </GlassPanel>
 
         {/* Список профилей. */}
-        <GlassPanel className="overflow-y-auto">
+        <GlassPanel scroll>
           {!s.loaded ? (
             <div className="flex h-full items-center justify-center text-sm text-ink-muted">
               Загрузка…
