@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { api, type Settings } from "../lib/tauri";
+import { toast } from "./toastStore";
 
 interface SettingsState {
   loaded: boolean;
@@ -51,6 +52,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       setTimeout(() => set({ saved: false }), 1600);
     } catch (e) {
       set({ saving: false, error: String(e) });
+      toast.error("Не удалось сохранить настройки");
     }
   },
 
@@ -61,6 +63,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       await api.setAutostart(enable);
     } catch (e) {
       set({ autostart: !enable, error: String(e) });
+      toast.error(String(e));
     }
   },
 }));

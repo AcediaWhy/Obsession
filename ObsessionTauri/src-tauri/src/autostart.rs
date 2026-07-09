@@ -27,6 +27,15 @@ pub fn is_enabled() -> bool {
 #[cfg(windows)]
 pub fn set(enable: bool) -> Result<(), String> {
     if enable {
+        // В dev-сборке exe грузит devUrl (http://localhost:1420). Прописанный в
+        // автозапуск, при следующем входе в систему он откроет «страница
+        // недоступна» — Vite не запущен. Автозапуск имеет смысл только для
+        // установленной release-сборки со встроенным dist. Не пишем битый ключ.
+        if cfg!(debug_assertions) {
+            return Err(
+                "Автозапуск доступен только в установленной версии (не в dev-сборке).".into(),
+            );
+        }
         let exe = std::env::current_exe().map_err(|e| e.to_string())?;
         let data = format!("\"{}\"", exe.display());
         let status = crate::util::std_command("reg")

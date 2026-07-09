@@ -50,6 +50,35 @@ pub fn emit_log(app: &AppHandle, level: &str, source: &str, message: &str) {
     append_log_file(app, &ts, level, source, message);
 }
 
+/// Показывает нативное уведомление Windows. Ошибки глушим — уведомление не
+/// критично (например, если пользователь отключил их в системе).
+pub fn notify(app: &AppHandle, title: &str, body: &str) {
+    use tauri_plugin_notification::NotificationExt;
+    let _ = app
+        .notification()
+        .builder()
+        .title(title)
+        .body(body)
+        .show();
+}
+
+/// Определяет локальный IPv4, используемый для выхода в интернет.
+/// Фолбэк на 127.0.0.1, если сети нет.
+pub fn local_ip() -> String {
+    let socket = std::net::UdpSocket::bind("0.0.0.0:0");
+    if let Ok(s) = socket {
+        if s.connect("8.8.8.8:80").is_ok() {
+            if let Ok(addr) = s.local_addr() {
+                let ip = addr.ip().to_string();
+                if ip != "0.0.0.0" {
+                    return ip;
+                }
+            }
+        }
+    }
+    "127.0.0.1".to_string()
+}
+
 /// Дописывает строку лога в файл на диске. Ошибки глушим — лог не критичен.
 fn append_log_file(app: &AppHandle, ts: &str, level: &str, source: &str, message: &str) {
     use std::io::Write;
@@ -83,4 +112,5 @@ pub struct DpiStatusPayload {
 pub struct ProxyStatusPayload {
     pub running: bool,
     pub link: String,
+    pub lan_link: Option<String>,
 }
