@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { api, type HostsStatus } from "../lib/tauri";
+import { toast } from "./toastStore";
 
 type Provider = "malw" | "geohide";
 
@@ -31,6 +32,9 @@ export const useHostsStore = create<HostsState>((set, get) => ({
     const settings = await api.getSettings();
     set({ provider: (settings.ai_provider as Provider) ?? "malw" });
     await get().refresh();
+    if (get().status === "outdated") {
+      toast.warn("Доступно обновление ИИ-хостов", 6000);
+    }
   },
 
   setProvider: async (p) => {
