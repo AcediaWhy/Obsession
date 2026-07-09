@@ -11,16 +11,26 @@
 // на изменение, чтобы переключить <Canvas frameloop>. Для этого есть подписка
 // onRenderActiveChange, единый источник правды со 2D-темами.
 
+import { useSettingsStore } from "../store/settingsStore";
+
 type Listener = (active: boolean) => void;
 
 let active = true;
+// Два независимых сигнала: DOM Visibility API (свёрнуто/другой рабочий стол) и
+// явный сигнал из Rust (скрытие в трей). Окно «видимо» только когда оба за.
+let domVisible = true;
+let windowShown = true;
 const listeners = new Set<Listener>();
 
+const mediaQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
+const settingsMotion = () => !useSettingsStore.getState().settings?.reduce_motion;
+
 function compute(): boolean {
-  // Пауза, только когда окно реально скрыто (свёрнуто / другой рабочий стол).
-  // Простую потерю фокуса скрытием не считаем — иначе анимация замирала бы при
-  // каждом клике мимо окна, что выглядит как баг.
-  return document.visibilityState !== "hidden";
+  // Пауза, только когда окно реально скрыто (свёрнуто / трей / другой рабочий
+  // стол). Простую потерю фокуса скрытием не считаем — иначе анимация замирала
+  // бы при каждом клике мимо окна, что выглядит как баг.
+  // Также уважаем системную настройку и флаг reduce_motion из настроек.
+  return domVisible && windowShown && settingsMotion() && !mediaQuery.matches;
 }
 
 function set(next: boolean) {
@@ -30,8 +40,30 @@ function set(next: boolean) {
 }
 
 if (typeof document !== "undefined") {
-  document.addEventListener("visibilitychange", () => set(compute()));
+  document.addEventListener("visibilitychange", () => {
+    domVisible = document.visibilityState !== "hidden";
+    set(compute());
+  });
+  domVisible = document.visibilityState !== "hidden";
   active = compute();
+
+  // Уважаем системную настройку reduce-motion и флаг из настроек приложения.
+  mediaQuery.addEventListener("change", () => set(compute()));
+  useSettingsStore.subscribe((state, prevState) => {
+    if (state.settings?.reduce_motion !== prevState.settings?.reduce_motion) {
+      set(compute());
+    }
+  });
+}
+
+/**
+ * Сигнал из Rust о скрытии/показе окна в трей. WebView2 не всегда шлёт
+ * visibilitychange на `window.hide()`, поэтому дополняем гейт этим сигналом —
+ * иначе анимации жгут CPU, пока приложение живёт в трее.
+ */
+export function setWindowShown(shown: boolean) {
+  windowShown = shown;
+  set(compute());
 }
 
 /** true, если сейчас имеет смысл рисовать кадр. */

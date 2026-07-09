@@ -2,6 +2,7 @@
 // Максимально дословно (структура, формулы, константы сохранены), добавлены типы
 // и метод destroy() для остановки rAF при размонтировании React-компонента.
 import { random, chance, times, createCanvas } from "./random";
+import { renderActive } from "../../render";
 
 const dropSize = 64;
 
@@ -435,6 +436,13 @@ export class Raindrops {
 
   update() {
     if (this.destroyed) return;
+    // Окно скрыто/в трее — не считаем физику капель (сбрасываем lastRender, чтобы
+    // после паузы dt не «прыгнул»), лишь держим rAF живым для возобновления.
+    if (!renderActive()) {
+      this.lastRender = null;
+      this.raf = requestAnimationFrame(this.update.bind(this));
+      return;
+    }
     this.clearCanvas();
 
     const now = performance.now();

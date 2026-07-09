@@ -20,7 +20,6 @@ import {
 } from "../design/components/atoms";
 import { Icon } from "../design/components/icons";
 
-const LOCALES = ["ru", "en"];
 const AI_PROVIDERS = ["malw", "geohide"];
 
 export function SettingsScreen() {
@@ -91,14 +90,14 @@ export function SettingsScreen() {
                       onChange={(v) => s.patch({ minimize_to_tray: v })}
                     />
                   </Row>
-                  <Row label="Язык интерфейса" hint="Требуется перезапуск">
-                    <div className="w-32">
-                      <Select
-                        value={cfg.locale}
-                        options={LOCALES}
-                        onChange={(v) => s.patch({ locale: v })}
-                      />
-                    </div>
+                  <Row
+                    label="Меньше анимаций"
+                    hint="Отключает фоновую анимацию и эффекты"
+                  >
+                    <Switch
+                      checked={cfg.reduce_motion}
+                      onChange={(v) => s.patch({ reduce_motion: v })}
+                    />
                   </Row>
                 </div>
               </GlassPanel>

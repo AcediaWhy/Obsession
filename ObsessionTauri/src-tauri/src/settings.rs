@@ -17,9 +17,11 @@ pub struct Settings {
     pub fake_tls_domain: String,
     pub ai_provider: String,
     pub has_completed_onboarding: bool,
-    pub locale: String,
     /// Авто-восстановление обхода (Мозг L3). Default false — пока не обкатано.
     pub auto_recovery: bool,
+    /// Меньше анимаций: гасит canvas/WebGL-фон и Framer-циклы (a11y + экономия
+    /// CPU/батареи). Default false; фронт также уважает `prefers-reduced-motion`.
+    pub reduce_motion: bool,
 }
 
 impl Default for Settings {
@@ -33,8 +35,8 @@ impl Default for Settings {
             fake_tls_domain: String::new(),
             ai_provider: "malw".to_string(),
             has_completed_onboarding: false,
-            locale: "ru".to_string(),
             auto_recovery: false,
+            reduce_motion: false,
         }
     }
 }

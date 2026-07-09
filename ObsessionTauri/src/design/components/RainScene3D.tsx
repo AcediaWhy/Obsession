@@ -4,6 +4,7 @@ import { useProxyStore } from "../../store/proxyStore";
 import { Raindrops } from "./rain/raindrops";
 import { RainRenderer } from "./rain/rainRenderer";
 import { createCanvas } from "./rain/random";
+import { renderActive } from "../render";
 
 // Тема «Rain»: дождь на стекле — порт codrops/RainEffect (vanilla WebGL, без R3F).
 // CPU-симуляция капель (raindrops) пишет water map, шейдер water.frag преломляет
@@ -124,6 +125,11 @@ export default function RainScene3D() {
 
     let smoothRaf = 0;
     const smooth = () => {
+      // Окно скрыто/в трее — не гоняем параллакс, держим только rAF живым.
+      if (!renderActive()) {
+        smoothRaf = requestAnimationFrame(smooth);
+        return;
+      }
       parallax.x += (target.x - parallax.x) * 0.06;
       parallax.y += (target.y - parallax.y) * 0.06;
       if (renderer) {
