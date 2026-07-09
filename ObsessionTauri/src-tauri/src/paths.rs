@@ -4,10 +4,10 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-pub const APP_VERSION: &str = "1.0.0";
+pub const APP_VERSION: &str = "1.0.1";
 pub const APP_DATA_FOLDER: &str = "Obsession";
 pub const WINWS_EXE: &str = "winws.exe";
-pub const TGPROXY_EXE: &str = "TgWsProxy_windows.exe";
+pub const TGPROXY_EXE: &str = "tg_ws_proxy.exe";
 
 /// Системный hosts-файл Windows.
 pub const HOSTS_PATH: &str = r"C:\Windows\System32\drivers\etc\hosts";
@@ -93,6 +93,11 @@ impl Paths {
 
     pub fn tray_icon_path(&self) -> PathBuf {
         self.icons_dir().join("tray.ico")
+    }
+
+    /// Иконка трея для активного состояния (обход/прокси включены).
+    pub fn tray_active_icon_path(&self) -> PathBuf {
+        self.icons_dir().join("tray-active.png")
     }
 
     pub fn config_path(&self, category: &str, conf_file: &str) -> PathBuf {

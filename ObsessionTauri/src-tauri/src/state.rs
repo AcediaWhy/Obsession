@@ -1,6 +1,7 @@
 //! Глобальное состояние приложения, управляемое Tauri (`app.state`).
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::AtomicBool;
 use std::sync::Mutex;
 
 use crate::paths::Paths;
@@ -25,7 +26,9 @@ pub struct DpiState {
 pub struct ProxyState {
     pub pid: Option<u32>,
     pub link: String,
+    pub lan_link: Option<String>,
     pub stopping: bool,
+    pub forwarder: Option<tokio::task::JoinHandle<()>>,
 }
 
 pub struct AppState {
@@ -36,6 +39,10 @@ pub struct AppState {
     /// общий `procs` и поднимают Глаза на уже убитый winws → обход не детектится.
     /// Async-мьютекс (держится через `.await`), НЕ std — операции асинхронные.
     pub dpi_gate: tokio::sync::Mutex<()>,
+    /// Флаг отмены текущего теста конфигов. Ставится командой `dpi_test_cancel`
+    /// (без ворот, чтобы сработать, пока тест их держит); `dpi::test` проверяет
+    /// его между этапами и обрывается досрочно, освобождая обход.
+    pub test_cancel: AtomicBool,
     pub proxy: Mutex<ProxyState>,
     pub settings: Mutex<Settings>,
     /// Активный наблюдатель трафика («Глаза»), пока запущен winws.
@@ -53,6 +60,7 @@ impl AppState {
             paths,
             dpi: Mutex::new(DpiState::default()),
             dpi_gate: tokio::sync::Mutex::new(()),
+            test_cancel: AtomicBool::new(false),
             proxy: Mutex::new(ProxyState::default()),
             settings: Mutex::new(settings),
             #[cfg(windows)]
