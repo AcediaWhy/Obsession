@@ -70,6 +70,14 @@ impl NetCache {
         }
     }
 
+    /// Все записи надёжности для сети (по категориям). Для UI-дашборда.
+    pub fn network_entries(&self, mac: &str) -> HashMap<String, CatEntry> {
+        self.networks
+            .get(mac)
+            .map(|n| n.categories.clone())
+            .unwrap_or_default()
+    }
+
     /// Рабочий `.conf` для (сеть, категория), если есть в кэше.
     pub fn get(&self, mac: &str, category: &str) -> Option<String> {
         self.networks

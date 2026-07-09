@@ -73,4 +73,32 @@ export const Icon = {
       <path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
     </svg>
   ),
+  X: ({ size = 16, className = "" }: P) => (
+    <svg {...base(size, className)}>
+      <path d="M18 6 6 18M6 6l12 12" />
+    </svg>
+  ),
+  Info: ({ size = 16, className = "" }: P) => (
+    <svg {...base(size, className)}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 16v-4M12 8h.01" />
+    </svg>
+  ),
+  Alert: ({ size = 16, className = "" }: P) => (
+    <svg {...base(size, className)}>
+      <path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z" />
+      <path d="M12 9v4M12 17h.01" />
+    </svg>
+  ),
+  Shield: ({ size = 18, className = "" }: P) => (
+    <svg {...base(size, className)}>
+      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z" />
+    </svg>
+  ),
+  Globe: ({ size = 18, className = "" }: P) => (
+    <svg {...base(size, className)}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18" />
+    </svg>
+  ),
 };

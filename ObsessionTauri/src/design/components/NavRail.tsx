@@ -1,9 +1,10 @@
 import { motion } from "framer-motion";
 import { Icon } from "./icons";
 
-export type Tab = "dpi" | "ai" | "telegram" | "lists" | "profiles" | "settings";
+export type Tab = "overview" | "dpi" | "ai" | "telegram" | "lists" | "profiles" | "settings";
 
 const items: { id: Tab; label: string; icon: (p: { size?: number }) => JSX.Element; soon?: boolean }[] = [
+  { id: "overview", label: "Обзор", icon: Icon.Shield },
   { id: "dpi", label: "DPI-обход", icon: Icon.Bolt },
   { id: "ai", label: "ИИ-разблокировка", icon: Icon.Robot },
   { id: "telegram", label: "Telegram", icon: Icon.Send },

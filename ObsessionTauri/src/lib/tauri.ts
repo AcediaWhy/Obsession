@@ -28,6 +28,7 @@ export interface DpiStatus {
 export interface ProxyStatus {
   running: boolean;
   link: string;
+  lan_link: string | null;
 }
 
 export interface HostsStatus {
@@ -77,8 +78,8 @@ export interface Settings {
   fake_tls_domain: string;
   ai_provider: string;
   has_completed_onboarding: boolean;
-  locale: string;
   auto_recovery: boolean;
+  reduce_motion: boolean;
 }
 
 // ─── Глаза / Мозг (контур надёжности) ───────────────────────────────────────
@@ -115,6 +116,21 @@ export interface BrainStatus {
   gatewayMacMasked: string | null;
 }
 
+/** Идентичность текущей сети (для дашборда «Обзор»). */
+export interface NetworkInfo {
+  online: boolean;
+  asn_region: string | null;
+  org: string | null;
+  gateway_mac_masked: string | null;
+}
+
+/** Запись надёжности конфига из L1-кэша (netcache). */
+export interface ConfStat {
+  conf: string;
+  success_count: number;
+  confirmed_at: number;
+}
+
 // ─── Команды ──────────────────────────────────────────────────────────────
 
 export const api = {
@@ -129,14 +145,20 @@ export const api = {
   dpiStop: () => invoke<void>("dpi_stop"),
   dpiTest: (category: string, configFile: string) =>
     invoke<boolean>("dpi_test", { category, configFile }),
+  dpiTestCancel: () => invoke<void>("dpi_test_cancel"),
   dpiDetectOrphaned: () => invoke<number[]>("dpi_detect_orphaned"),
   dpiEmergencyKill: () => invoke<void>("dpi_emergency_kill"),
+  getNetworkIdentity: () => invoke<NetworkInfo>("get_network_identity"),
+  getNetcacheStats: () => invoke<Record<string, ConfStat>>("get_netcache_stats"),
+  recordWorkingConfig: (category: string, conf: string) =>
+    invoke<void>("record_working_config", { category, conf }),
 
   proxyAvailable: () => invoke<boolean>("proxy_available"),
   proxyStart: (port: number, fakeTlsDomain: string) =>
     invoke<string>("proxy_start", { port, fakeTlsDomain }),
   proxyStop: () => invoke<void>("proxy_stop"),
   proxyLink: () => invoke<string>("proxy_link"),
+  openExternalUrl: (url: string) => invoke<void>("open_external_url", { url }),
 
   hostsStatus: (provider: string) =>
     invoke<HostsStatus>("hosts_status", { provider }),
@@ -179,6 +201,10 @@ export const on = {
     listen<Observation>("eyes://observation", (e) => cb(e.payload)),
   brainStatus: (cb: (s: BrainStatus) => void): Promise<UnlistenFn> =>
     listen<BrainStatus>("brain://status", (e) => cb(e.payload)),
+  // Rust сообщает о скрытии/показе окна в трей — дополняет Visibility API для
+  // паузы анимаций (WebView2 не всегда шлёт visibilitychange на hide()).
+  windowVisibility: (cb: (visible: boolean) => void): Promise<UnlistenFn> =>
+    listen<boolean>("window-visibility", (e) => cb(e.payload)),
 };
 
 // ─── Утилиты окна / системы ────────────────────────────────────────────────
