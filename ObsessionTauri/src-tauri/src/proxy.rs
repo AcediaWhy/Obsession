@@ -92,10 +92,10 @@ fn remove_firewall_rule() {}
 pub async fn start(app: &AppHandle, port: u16, fake_tls_domain: &str) -> Result<String, String> {
     stop(app).await;
 
-    let (exe, bin_dir) = {
+    let (exe, bin_dir, cache_path) = {
         let state = app.state::<AppState>();
         match state.paths.tgproxy_path() {
-            Some(e) => (e, state.paths.bin_dir()),
+            Some(e) => (e, state.paths.bin_dir(), state.paths.cfproxy_cache_path()),
             None => return Err("TgWsProxy.exe не найден в bin/".to_string()),
         }
     };
@@ -112,6 +112,9 @@ pub async fn start(app: &AppHandle, port: u16, fake_tls_domain: &str) -> Result<
         args.push("--fake-tls-domain".into());
         args.push(fake_tls_domain.to_string());
     }
+    // Диск-кэш CF-доменов под %APPDATA%\Obsession — переживает недоступность GitHub.
+    args.push("--cfproxy-cache".into());
+    args.push(cache_path.to_string_lossy().to_string());
 
     util::emit_log(
         app,

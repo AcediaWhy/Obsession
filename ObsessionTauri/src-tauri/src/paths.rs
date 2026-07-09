@@ -4,7 +4,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-pub const APP_VERSION: &str = "1.0.1";
+pub const APP_VERSION: &str = "1.0.2";
 pub const APP_DATA_FOLDER: &str = "Obsession";
 pub const WINWS_EXE: &str = "winws.exe";
 pub const TGPROXY_EXE: &str = "tg_ws_proxy.exe";
@@ -68,6 +68,11 @@ impl Paths {
     /// Кэш сетевой идентичности: MAC шлюза → ASN_region (мемоизация ipinfo).
     pub fn netid_cache_path(&self) -> PathBuf {
         self.base_dir.join("netid_cache.json")
+    }
+    /// Last-good список CF-фронтинг доменов TgWsProxy (передаётся ему через
+    /// `--cfproxy-cache`, чтобы пережить недоступность GitHub при рестарте).
+    pub fn cfproxy_cache_path(&self) -> PathBuf {
+        self.base_dir.join("cfproxy_cache.json")
     }
 
     pub fn winws_path(&self) -> PathBuf {
