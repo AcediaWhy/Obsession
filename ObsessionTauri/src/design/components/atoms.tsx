@@ -101,11 +101,13 @@ export function Chip({
 export function Select({
   value,
   options,
+  placeholder,
   onChange,
   disabled = false,
 }: {
   value: string;
   options: string[];
+  placeholder?: string;
   onChange: (v: string) => void;
   disabled?: boolean;
 }) {
@@ -118,7 +120,7 @@ export function Select({
     >
       {options.map((o) => (
         <option key={o} value={o} className="bg-base-800">
-          {o}
+          {o || placeholder || "(по умолчанию)"}
         </option>
       ))}
     </select>
