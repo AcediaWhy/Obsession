@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { api, on, type AppConfig, type DpiProc } from "../lib/tauri";
+import { api, on, type AppConfig, type ConfStat, type DpiProc } from "../lib/tauri";
 
 const CATEGORY_ORDER = ["discord", "youtube_twitch", "gaming", "universal"];
 
@@ -11,16 +11,20 @@ interface DpiState {
   processes: DpiProc[];
   transitioning: boolean;
   testing: boolean;
+  testCancel: boolean;
   testingLabel: string;
   testResults: Record<string, boolean>;
+  netStats: Record<string, ConfStat>;
   error: string;
 
   bootstrap: () => Promise<void>;
+  loadStats: () => Promise<void>;
   toggleCategory: (cat: string) => void;
   setConfig: (cat: string, file: string) => void;
   start: () => Promise<void>;
   stop: () => Promise<void>;
-  testAll: (cat: string) => Promise<void>;
+  testAll: () => Promise<void>;
+  cancelTest: () => void;
   autoConfigure: () => Promise<void>;
   clearError: () => void;
 }
@@ -38,8 +42,10 @@ export const useDpiStore = create<DpiState>((set, get) => ({
   processes: [],
   transitioning: false,
   testing: false,
+  testCancel: false,
   testingLabel: "",
   testResults: {},
+  netStats: {},
   error: "",
 
   bootstrap: async () => {
@@ -67,6 +73,16 @@ export const useDpiStore = create<DpiState>((set, get) => ({
     // start()/stop() (сбрасывают в finally). Иначе первый же dpi-status снимал
     // блокировку кнопки до конца операции → повторный клик ловил гонку.
     on.dpiStatus((s) => set({ active: s.active, processes: s.processes }));
+    await get().loadStats();
+  },
+
+  loadStats: async () => {
+    try {
+      const stats = await api.getNetcacheStats();
+      set({ netStats: stats });
+    } catch {
+      /* offline/нет сети — ничего */
+    }
   },
 
   toggleCategory: (cat) => {
@@ -116,37 +132,57 @@ export const useDpiStore = create<DpiState>((set, get) => ({
     }
   },
 
-  testAll: async (cat) => {
-    const files = get().config?.configs[cat] ?? [];
-    set({ testing: true, testResults: {}, testingLabel: cat });
+  // Проверяет выбранный конфиг КАЖДОЙ выбранной категории (по одному тесту на
+  // категорию — быстро и покрывает весь выбор). Полный перебор конфигов делает
+  // autoConfigure. Прерывается флагом testCancel между категориями.
+  testAll: async () => {
+    const { selectedCategories, selectedConfigs, config } = get();
+    set({ testing: true, testCancel: false, testResults: {} });
     const results: Record<string, boolean> = {};
-    for (const file of files) {
+    for (const cat of selectedCategories) {
+      if (get().testCancel) break;
+      const files = config?.configs[cat] ?? [];
+      const file = selectedConfigs[cat] || defaultConfig(files);
+      if (!file) continue;
       set({ testingLabel: `${cat}: ${file}` });
       const ok = await api.dpiTest(cat, file);
       results[file] = ok;
+      if (ok) await api.recordWorkingConfig(cat, file);
       set({ testResults: { ...results } });
     }
-    set({ testing: false, testingLabel: "" });
+    set({ testing: false, testingLabel: "", testCancel: false });
+    await get().loadStats(); // Обновить статистику надёжности
+  },
+
+  // Отмена теста: помечаем флаг (цикл прервётся между категориями) и просим
+  // бэкенд оборвать текущий тест — обход тут же освобождается.
+  cancelTest: () => {
+    if (!get().testing) return;
+    set({ testCancel: true, testingLabel: "Отмена…" });
+    api.dpiTestCancel().catch(() => {});
   },
 
   autoConfigure: async () => {
     const { selectedCategories, config } = get();
-    set({ testing: true, testResults: {} });
+    set({ testing: true, testCancel: false, testResults: {} });
     const selected = { ...get().selectedConfigs };
-    for (const cat of selectedCategories) {
+    outer: for (const cat of selectedCategories) {
       const files = config?.configs[cat] ?? [];
       set({ testingLabel: cat });
       for (const file of files) {
+        if (get().testCancel) break outer;
         set({ testingLabel: `${cat}: ${file}` });
         const ok = await api.dpiTest(cat, file);
         if (ok) {
+          await api.recordWorkingConfig(cat, file);
           selected[cat] = file;
           break;
         }
       }
     }
-    set({ testing: false, testingLabel: "", selectedConfigs: selected });
+    set({ testing: false, testingLabel: "", testCancel: false, selectedConfigs: selected });
     persist();
+    await get().loadStats(); // Обновить статистику надёжности
   },
 
   clearError: () => set({ error: "" }),

@@ -52,7 +52,7 @@ export function DpiScreen() {
 
       <div className="grid flex-1 grid-cols-[1fr_360px] gap-4 overflow-hidden">
         {/* Левая колонка: питание + категории. */}
-        <GlassPanel className="overflow-y-auto">
+        <GlassPanel scroll>
           <Stagger className="flex flex-col items-center gap-6">
             <StaggerItem className="mt-2 flex flex-col items-center gap-4">
               <Parallax depth={18}>
@@ -130,6 +130,11 @@ export function DpiScreen() {
                           disabled={s.active}
                           onChange={(v) => s.setConfig(cat, v)}
                         />
+                        {s.netStats[cat]?.conf === current && current && (
+                          <span className="text-[10px] text-ok">
+                            ✓ работал {s.netStats[cat].success_count} раз
+                          </span>
+                        )}
                       </motion.div>
                     );
                   })}
@@ -137,25 +142,43 @@ export function DpiScreen() {
               </motion.div>
             </StaggerItem>
 
-            {/* Тестирование / авто-подбор. */}
+            {/* Тестирование / авто-подбор. Во время теста кнопки превращаются в
+                «Отмена» — тест можно прервать и сразу пользоваться обходом. */}
             <StaggerItem className="flex w-full gap-2">
-              <Button
-                variant="ghost"
-                disabled={busy || s.active}
-                onClick={() => s.autoConfigure()}
-                className="flex-1"
-              >
-                {s.testing ? s.testingLabel || "Подбор…" : "Авто-подбор"}
-              </Button>
-              <Button
-                variant="ghost"
-                disabled={busy || s.active}
-                onClick={() => s.selectedCategories[0] && s.testAll(s.selectedCategories[0])}
-              >
-                <span className="flex items-center gap-1.5">
-                  <Icon.Refresh size={15} /> Тест
-                </span>
-              </Button>
+              {s.testing ? (
+                <Button
+                  variant="danger"
+                  disabled={s.testCancel}
+                  onClick={() => s.cancelTest()}
+                  className="flex-1"
+                >
+                  <span className="block truncate">
+                    {s.testCancel
+                      ? "Отмена…"
+                      : `Отменить${s.testingLabel ? ` · ${s.testingLabel}` : " тест"}`}
+                  </span>
+                </Button>
+              ) : (
+                <>
+                  <Button
+                    variant="ghost"
+                    disabled={busy || s.active}
+                    onClick={() => s.autoConfigure()}
+                    className="flex-1"
+                  >
+                    Авто-подбор
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    disabled={busy || s.active}
+                    onClick={() => s.testAll()}
+                  >
+                    <span className="flex items-center gap-1.5">
+                      <Icon.Refresh size={15} /> Тест
+                    </span>
+                  </Button>
+                </>
+              )}
             </StaggerItem>
 
             {/* Диагностика доступности (работает ли обход). */}

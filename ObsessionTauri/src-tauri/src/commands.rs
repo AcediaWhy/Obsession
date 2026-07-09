@@ -100,6 +100,13 @@ pub async fn dpi_test(app: AppHandle, category: String, config_file: String) -> 
     crate::dpi::test(&app, &category, &config_file).await
 }
 
+/// Отмена текущего теста. Намеренно НЕ берёт `dpi_gate` (его держит бегущий
+/// `dpi_test`) — только ставит флаг и убивает тестовый winws.
+#[tauri::command]
+pub fn dpi_test_cancel(app: AppHandle) {
+    crate::dpi::cancel_test(&app);
+}
+
 #[tauri::command]
 pub fn dpi_detect_orphaned(app: AppHandle) -> Vec<u32> {
     crate::dpi::detect_orphaned(&app)
@@ -108,6 +115,114 @@ pub fn dpi_detect_orphaned(app: AppHandle) -> Vec<u32> {
 #[tauri::command]
 pub fn dpi_emergency_kill(app: AppHandle) {
     crate::dpi::emergency_kill_all(&app);
+}
+
+// ─── Сеть (идентичность для дашборда) ─────────────────────────────────────
+
+#[derive(Serialize)]
+pub struct NetworkInfo {
+    /// Удалось ли определить сеть через интернет (ipinfo).
+    pub online: bool,
+    /// Ключ рейтинга `AS<asn>_<COUNTRY>-<REGION>`.
+    pub asn_region: Option<String>,
+    /// Человекочитаемое имя оператора.
+    pub org: Option<String>,
+    /// MAC шлюза с маской (приватность): `aa:··:··:··:··:ff`.
+    pub gateway_mac_masked: Option<String>,
+}
+
+fn mask_mac(mac: &str) -> String {
+    let parts: Vec<&str> = mac.split(':').collect();
+    if parts.len() == 6 {
+        format!("{}:··:··:··:··:{}", parts[0], parts[5])
+    } else {
+        "··".to_string()
+    }
+}
+
+/// Идентичность текущей сети: кэш (если Мозг уже резолвил) или резолв на месте
+/// (memoization по MAC → ipinfo дёргается один раз на сеть).
+async fn current_netid(app: &AppHandle) -> crate::netid::NetIdentity {
+    let cached = {
+        let st = app.state::<AppState>();
+        let g = st.netid.lock().ok();
+        g.and_then(|g| g.clone())
+    };
+    if let Some(id) = cached {
+        return id;
+    }
+    let paths = app.state::<AppState>().paths.clone();
+    let id = crate::netid::resolve(&paths).await;
+    if let Ok(mut slot) = app.state::<AppState>().netid.lock() {
+        *slot = Some(id.clone());
+    }
+    id
+}
+
+/// Идентичность текущей сети для дашборда.
+#[tauri::command]
+pub async fn get_network_identity(app: AppHandle) -> NetworkInfo {
+    let id = current_netid(&app).await;
+    NetworkInfo {
+        online: id.asn_region.is_some() || id.org.is_some(),
+        asn_region: id.asn_region,
+        org: id.org,
+        gateway_mac_masked: id.gateway_mac.as_deref().map(mask_mac),
+    }
+}
+
+// ─── Статистика надёжности конфигов (netcache) ────────────────────────────
+
+#[derive(Serialize)]
+pub struct ConfStat {
+    pub conf: String,
+    pub success_count: u64,
+    pub confirmed_at: u64,
+}
+
+/// Записи надёжности из L1-кэша для текущей сети (по категориям). Пусто, если
+/// сеть не идентифицируется или в кэше ничего нет.
+#[tauri::command]
+pub async fn get_netcache_stats(app: AppHandle) -> HashMap<String, ConfStat> {
+    let mac = match current_netid(&app).await.gateway_mac {
+        Some(m) => m,
+        None => return HashMap::new(),
+    };
+    let paths = app.state::<AppState>().paths.clone();
+    let cache = crate::netcache::NetCache::load(&paths);
+    cache
+        .network_entries(&mac)
+        .into_iter()
+        .map(|(cat, e)| {
+            (
+                cat,
+                ConfStat {
+                    conf: e.conf,
+                    success_count: e.success_count,
+                    confirmed_at: e.confirmed_at,
+                },
+            )
+        })
+        .collect()
+}
+
+/// Отмечает конфиг как рабочий для текущей сети (L1-кэш). Вызывается после
+/// успешного ручного теста/авто-подбора — наполняет статистику надёжности и
+/// заодно засевает L1 Мозгу. Тихо ничего не делает, если сеть не определяется.
+#[tauri::command]
+pub async fn record_working_config(app: AppHandle, category: String, conf: String) {
+    let id = current_netid(&app).await;
+    let Some(mac) = id.gateway_mac else {
+        return;
+    };
+    let paths = app.state::<AppState>().paths.clone();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let mut cache = crate::netcache::NetCache::load(&paths);
+    cache.put(&mac, id.asn_region.as_deref(), &category, &conf, now);
+    cache.save(&paths);
 }
 
 // ─── Proxy ──────────────────────────────────────────────────────────────
@@ -134,6 +249,39 @@ pub async fn proxy_stop(app: AppHandle) {
 #[tauri::command]
 pub fn proxy_link(app: AppHandle) -> String {
     crate::proxy::current_link(&app)
+}
+
+/// Открывает произвольный URL через системную оболочку. Используется для
+/// `tg://proxy?...` с параметрами (`&`), которые ломают `cmd /c start`.
+/// PowerShell `Start-Process` корректно передаёт URL целиком в ShellExecute.
+#[tauri::command]
+pub fn open_external_url(url: String) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        let mut cmd = crate::util::std_command("powershell");
+        cmd.args(["-NoProfile", "-NonInteractive", "-Command"])
+            .arg(format!(
+                "Start-Process -FilePath '{}'",
+                url.replace('\'', "''")
+            ))
+            .spawn()
+            .map_err(|e| format!("Не удалось открыть ссылку: {e}"))?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let mut cmd = std::process::Command::new("open");
+        cmd.arg(&url)
+            .spawn()
+            .map_err(|e| format!("Не удалось открыть ссылку: {e}"))?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let mut cmd = std::process::Command::new("xdg-open");
+        cmd.arg(&url)
+            .spawn()
+            .map_err(|e| format!("Не удалось открыть ссылку: {e}"))?;
+    }
+    Ok(())
 }
 
 // ─── Hosts (AI) ─────────────────────────────────────────────────────────
