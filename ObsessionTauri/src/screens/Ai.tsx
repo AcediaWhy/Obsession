@@ -3,6 +3,16 @@ import { GlassPanel } from "../design/components/GlassPanel";
 import { LogStream } from "../design/components/LogStream";
 import { Button, Chip, SectionLabel, StatusBadge } from "../design/components/atoms";
 
+const UNBLOCKED_SERVICES = [
+  "ChatGPT (OpenAI)",
+  "Claude (Anthropic)",
+  "Gemini (Google)",
+  "Perplexity AI",
+  "Poe",
+  "HuggingFace",
+  "Midjourney",
+];
+
 const STATUS_LABEL: Record<string, string> = {
   installed: "Установлено (актуально)",
   outdated: "Установлено (есть обновление)",
@@ -34,7 +44,7 @@ export function AiScreen() {
       </div>
 
       <div className="grid flex-1 grid-cols-[1fr_360px] gap-4 overflow-hidden">
-        <GlassPanel className="flex flex-col gap-6 overflow-y-auto">
+        <GlassPanel scroll contentClassName="flex flex-col gap-6">
           <div>
             <SectionLabel>Провайдер DNS</SectionLabel>
             <div className="flex gap-2">
@@ -50,6 +60,20 @@ export function AiScreen() {
                 disabled={s.busy}
                 onClick={() => s.setProvider("geohide")}
               />
+            </div>
+            <p className="text-xs text-ink-muted mt-2">
+              <strong>Malw:</strong> зеркала резолвятся через DNS Cloudflare.
+              {" "}
+              <strong>GeoHide:</strong> GeoIP-обход, иногда медленнее.
+            </p>
+          </div>
+
+          <div className="rounded-xl border border-glass-border bg-white/5 p-4">
+            <span className="text-sm font-medium text-ink-soft">Разблокируемые сервисы</span>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {UNBLOCKED_SERVICES.map((svc) => (
+                <Chip key={svc} label={svc} active={false} disabled onClick={() => {}} />
+              ))}
             </div>
           </div>
 
