@@ -20,9 +20,11 @@ mod settings;
 mod state;
 mod util;
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
-use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{Listener, Manager, WindowEvent, Wry};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
+use tauri::{Emitter, Listener, Manager, WindowEvent, Wry};
 
 use state::AppState;
 
@@ -31,6 +33,46 @@ use state::AppState;
 struct TrayMenu {
     dpi: CheckMenuItem<Wry>,
     proxy: CheckMenuItem<Wry>,
+}
+
+/// Хэндл трей-иконки + текущее состояние DPI/прокси. Нужен, чтобы менять иконку
+/// (активная/пассивная) и тултип из слушателей статуса.
+struct TrayState {
+    tray: TrayIcon<Wry>,
+    idle_path: std::path::PathBuf,
+    active_path: std::path::PathBuf,
+    dpi: AtomicBool,
+    proxy: AtomicBool,
+}
+
+/// Обновляет иконку и тултип трея под текущее состояние. `dpi`/`proxy` — новые
+/// значения (если известны); иначе берём сохранённые.
+fn refresh_tray(app: &tauri::AppHandle, dpi: Option<bool>, proxy: Option<bool>) {
+    let Some(ts) = app.try_state::<TrayState>() else {
+        return;
+    };
+    if let Some(d) = dpi {
+        ts.dpi.store(d, Ordering::SeqCst);
+    }
+    if let Some(p) = proxy {
+        ts.proxy.store(p, Ordering::SeqCst);
+    }
+    let dpi_on = ts.dpi.load(Ordering::SeqCst);
+    let proxy_on = ts.proxy.load(Ordering::SeqCst);
+    let path = if dpi_on || proxy_on {
+        &ts.active_path
+    } else {
+        &ts.idle_path
+    };
+    if let Ok(img) = tauri::image::Image::from_path(path) {
+        let _ = ts.tray.set_icon(Some(img));
+    }
+    let tip = format!(
+        "Obsession · DPI: {} · Прокси: {}",
+        if dpi_on { "вкл" } else { "выкл" },
+        if proxy_on { "вкл" } else { "выкл" },
+    );
+    let _ = ts.tray.set_tooltip(Some(tip));
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -48,6 +90,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             let handle = app.handle().clone();
             let resource_dir = handle.path().resource_dir()?;
@@ -89,6 +132,7 @@ pub fn run() {
                     if let Some(tm) = h.try_state::<TrayMenu>() {
                         let _ = tm.dpi.set_checked(active);
                     }
+                    refresh_tray(&h, Some(active), None);
                 });
                 let h = handle.clone();
                 app.listen("proxy-status", move |event| {
@@ -99,6 +143,7 @@ pub fn run() {
                     if let Some(tm) = h.try_state::<TrayMenu>() {
                         let _ = tm.proxy.set_checked(running);
                     }
+                    refresh_tray(&h, None, Some(running));
                 });
             }
 
@@ -122,9 +167,12 @@ pub fn run() {
                     .unwrap()
                     .minimize_to_tray;
                 if minimize {
-                    // Сворачиваем в трей вместо выхода.
+                    // Сворачиваем в трей вместо выхода. Сообщаем фронту, что окно
+                    // скрыто — WebView2 не всегда шлёт visibilitychange на hide(),
+                    // а без него анимации продолжали бы жечь CPU в трее.
                     api.prevent_close();
                     let _ = window.hide();
+                    let _ = app.emit("window-visibility", false);
                 } else {
                     shutdown(&app);
                 }
@@ -139,12 +187,17 @@ pub fn run() {
             commands::dpi_start,
             commands::dpi_stop,
             commands::dpi_test,
+            commands::dpi_test_cancel,
             commands::dpi_detect_orphaned,
             commands::dpi_emergency_kill,
+            commands::get_network_identity,
+            commands::get_netcache_stats,
+            commands::record_working_config,
             commands::proxy_available,
             commands::proxy_start,
             commands::proxy_stop,
             commands::proxy_link,
+            commands::open_external_url,
             commands::hosts_status,
             commands::hosts_install,
             commands::hosts_uninstall,
@@ -218,6 +271,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                 if let Some(win) = app.get_webview_window("main") {
                     let _ = win.show();
                     let _ = win.set_focus();
+                    let _ = app.emit("window-visibility", true);
                 }
             }
             "quit" => {
@@ -237,6 +291,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                 if let Some(win) = app.get_webview_window("main") {
                     let _ = win.show();
                     let _ = win.set_focus();
+                    let _ = app.emit("window-visibility", true);
                 }
             }
         });
@@ -249,7 +304,21 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
         builder = builder.icon(icon.clone());
     }
 
-    builder.build(app)?;
+    let (idle_path, active_path) = {
+        let st = app.state::<AppState>();
+        (
+            st.paths.tray_icon_path(),
+            st.paths.tray_active_icon_path(),
+        )
+    };
+    let tray = builder.build(app)?;
+    app.manage(TrayState {
+        tray,
+        idle_path,
+        active_path,
+        dpi: AtomicBool::new(false),
+        proxy: AtomicBool::new(false),
+    });
     Ok(())
 }
 

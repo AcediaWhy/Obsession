@@ -157,6 +157,20 @@ async fn exec(
             let state = app.state::<AppState>();
             let _gate = state.dpi_gate.lock().await;
             let ok = crate::dpi::start_many(app, &selections).await.is_ok();
+            drop(_gate);
+            if ok {
+                // Уведомляем: авто-восстановление подобрало другую стратегию.
+                let cats = selections
+                    .iter()
+                    .map(|(c, _)| c.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                crate::util::notify(
+                    app,
+                    "Obsession — обход восстановлен",
+                    &format!("Авто-восстановление переключило стратегию ({cats})."),
+                );
+            }
             let _ = tx.send(BrainEvent::RespawnResult { ok, now: 0 });
         }
         Action::StopBypass => {

@@ -2,6 +2,7 @@
 //! Порт из `process_local_datasource.dart` + `dpi_provider.dart` + `dpi_usecases.dart`.
 
 use std::process::Stdio;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, Emitter, Manager};
@@ -164,6 +165,12 @@ pub async fn start(app: &AppHandle, category: &str, config_file: &str) -> Result
                     &format!("Процесс {cat_mon} завершился (код {code})"),
                 );
             }
+            // Нативное уведомление: обход отвалился без нашего участия.
+            util::notify(
+                &app_mon,
+                "Obsession — обход прерван",
+                &format!("Процесс обхода «{cat_mon}» неожиданно завершился. Возможно, защита не работает."),
+            );
         }
         emit_status(&app_mon);
     });
@@ -365,9 +372,48 @@ pub async fn start_many(app: &AppHandle, configs: &[(String, String)]) -> Result
     Ok(started)
 }
 
+/// True, если пользователь запросил отмену теста (флаг в состоянии).
+#[inline]
+fn test_cancelled(app: &AppHandle) -> bool {
+    app.state::<AppState>().test_cancel.load(Ordering::SeqCst)
+}
+
+/// Отменяет текущий тест: ставит флаг и убивает тестовый winws, чтобы проба
+/// оборвалась немедленно. PID помечаем как `stopping` — монитор не сочтёт это
+/// крахом. Вызывается БЕЗ ворот (тест их держит), поэтому трогает только атомик
+/// и список процессов.
+pub fn cancel_test(app: &AppHandle) {
+    app.state::<AppState>()
+        .test_cancel
+        .store(true, Ordering::SeqCst);
+    let pids: Vec<u32> = {
+        let state = app.state::<AppState>();
+        let mut d = state.dpi.lock().unwrap();
+        let pids: Vec<u32> = d.procs.keys().copied().collect();
+        for p in &pids {
+            d.stopping.insert(*p);
+        }
+        pids
+    };
+    for pid in pids {
+        kill_pid(pid);
+    }
+    util::emit_log(app, "info", "dpi", "Тест отменён пользователем");
+}
+
 /// Тестирует один конфиг: старт → проверка URL → стоп. Порт из `TestDpiConfigUseCase`.
+/// Проверяет флаг отмены между этапами — по нему обрывается досрочно.
 pub async fn test(app: &AppHandle, category: &str, config_file: &str) -> bool {
+    // Сбрасываем флаг на входе: фронт не вызывает следующий тест после отмены,
+    // поэтому сброс на старте каждого теста безопасен.
+    app.state::<AppState>()
+        .test_cancel
+        .store(false, Ordering::SeqCst);
+
     stop_all(app).await;
+    if test_cancelled(app) {
+        return false;
+    }
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     let pid = match start(app, category, config_file).await {
@@ -382,10 +428,15 @@ pub async fn test(app: &AppHandle, category: &str, config_file: &str) -> bool {
     tokio::time::sleep(Duration::from_millis(1000)).await;
 
     let mut connected = false;
-    for url in test_urls(category) {
-        if crate::net::test_url(url, 4).await {
-            connected = true;
-            break;
+    if !test_cancelled(app) {
+        for url in test_urls(category) {
+            if test_cancelled(app) {
+                break;
+            }
+            if crate::net::test_url(url, 3).await {
+                connected = true;
+                break;
+            }
         }
     }
 
