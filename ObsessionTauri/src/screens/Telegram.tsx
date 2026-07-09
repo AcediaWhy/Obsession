@@ -1,3 +1,6 @@
+import { useEffect, useState } from "react";
+import QRCode from "qrcode";
+
 import { useProxyStore } from "../store/proxyStore";
 import { GlassPanel } from "../design/components/GlassPanel";
 import { LogStream } from "../design/components/LogStream";
@@ -6,14 +9,30 @@ import { Parallax } from "../design/parallax";
 import {
   Button,
   SectionLabel,
+  Select,
   StatusBadge,
   TextField,
 } from "../design/components/atoms";
 import { Uptime } from "../design/components/Uptime";
 import { Icon } from "../design/components/icons";
 
+const FAKE_TLS_PRESETS = ["", "www.google.com", "www.bing.com", "www.cloudflare.com"];
+
 export function TelegramScreen() {
   const s = useProxyStore();
+  const [qr, setQr] = useState<string | null>(null);
+
+  // QR-код для телефона: используем LAN-ссылку (с LAN IP), не 127.0.0.1.
+  const qrLink = s.lanLink ?? s.link;
+  useEffect(() => {
+    if (qrLink) {
+      QRCode.toDataURL(qrLink, { width: 200 })
+        .then(setQr)
+        .catch(() => setQr(null));
+    } else {
+      setQr(null);
+    }
+  }, [qrLink]);
 
   return (
     <div className="flex h-full flex-col gap-4">
@@ -31,7 +50,7 @@ export function TelegramScreen() {
       </div>
 
       <div className="grid flex-1 grid-cols-[1fr_360px] gap-4 overflow-hidden">
-        <GlassPanel className="flex flex-col items-center gap-6 overflow-y-auto">
+        <GlassPanel scroll contentClassName="flex flex-col items-center gap-6">
           <div className="mt-2 flex flex-col items-center gap-4">
             <Parallax depth={18}>
               <HeroCore
@@ -50,6 +69,18 @@ export function TelegramScreen() {
             </div>
           </div>
 
+          {!s.available && (
+            <GlassPanel className="border-warn/30">
+              <p className="text-sm text-warn">
+                TgWsProxy.exe не найден в bundled-ресурсах.
+              </p>
+              <p className="text-xs text-ink-muted mt-2">
+                Проверьте, что приложение установлено корректно.
+                Переустановите Obsession или скачайте последнюю версию.
+              </p>
+            </GlassPanel>
+          )}
+
           {s.error && (
             <div className="w-full rounded-xl border border-danger/40 bg-danger/10 px-3 py-2 text-xs text-danger">
               {s.error}
@@ -67,9 +98,10 @@ export function TelegramScreen() {
             </div>
             <div className="flex flex-col gap-1.5">
               <SectionLabel>Fake TLS домен</SectionLabel>
-              <TextField
+              <Select
                 value={s.fakeTlsDomain}
-                placeholder="напр. www.google.com"
+                options={FAKE_TLS_PRESETS}
+                placeholder="Оставьте пустым или выберите"
                 onChange={(v) => s.setFakeTlsDomain(v)}
               />
             </div>
@@ -93,6 +125,15 @@ export function TelegramScreen() {
                   </span>
                 </Button>
               </div>
+
+              {qr && (
+                <GlassPanel className="mt-4 flex flex-col items-center gap-2">
+                  <img src={qr} alt="QR-код" className="rounded-lg" />
+                  <span className="text-xs text-ink-muted">
+                    {s.lanLink ? "Отсканируйте телефоном (та же Wi-Fi сеть)" : "Отсканируйте телефоном"}
+                  </span>
+                </GlassPanel>
+              )}
             </div>
           )}
         </GlassPanel>
