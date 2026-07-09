@@ -303,7 +303,7 @@ function Editor({
 
       {/* Удаление. */}
       <div className="flex items-center justify-between">
-        <p className="text-[11px] text-ink-muted">
+        <p className="text-[11px] text-ink-soft">
           Изменения применяются при следующем запуске обхода.
         </p>
         <AnimatePresence mode="wait" initial={false}>
@@ -330,7 +330,7 @@ function Editor({
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               onClick={() => setConfirmDel(true)}
-              className="no-drag flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs text-ink-muted transition-colors hover:text-danger"
+              className="no-drag flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs text-ink-soft transition-colors hover:bg-danger/10 hover:text-danger"
             >
               <Icon.Trash size={14} /> Удалить список
             </motion.button>
