@@ -2,6 +2,7 @@
 import { GL } from "./gl";
 import { simpleVert, waterFrag } from "./shaders";
 import { createCanvas } from "./random";
+import { renderActive } from "../../render";
 
 export interface RainRendererOptions {
   renderShadow: boolean;
@@ -107,6 +108,11 @@ export class RainRenderer {
 
   draw() {
     if (this.destroyed) return;
+    // Окно скрыто/в трее — пропускаем дорогой WebGL-проход, держим только rAF.
+    if (!renderActive()) {
+      this.raf = requestAnimationFrame(this.draw.bind(this));
+      return;
+    }
     this.gl.useProgram(this.gl.program);
     this.gl.createUniform("2f", "parallax", this.parallaxX, this.parallaxY);
     this.updateTexture();

@@ -209,3 +209,10 @@ input,
 textarea {
   user-select: text;
 }
+
+/* Reduce-motion: глушим CSS-анимации и переходы, когда включён флаг
+   reduce_motion или системная prefers-reduced-motion. */
+[data-reduce-motion="true"] * {
+  animation: none !important;
+  transition-duration: 0.01ms !important;
+}
