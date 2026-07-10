@@ -2,8 +2,6 @@ import { useEffect, useState } from "react";
 import { AnimatePresence, motion, MotionConfig } from "framer-motion";
 
 import { HeroField } from "./design/components/HeroField";
-import { SnowOverlay } from "./design/components/SnowOverlay";
-import { SakuraOverlay } from "./design/components/SakuraOverlay";
 import { ParallaxProvider, Parallax } from "./design/parallax";
 import { CustomTitleBar } from "./design/components/CustomTitleBar";
 import { NavRail, type Tab } from "./design/components/NavRail";
@@ -20,7 +18,6 @@ import { useDpiStore } from "./store/dpiStore";
 import { useProxyStore } from "./store/proxyStore";
 import { useHostsStore } from "./store/hostsStore";
 import { useThemeStore } from "./store/themeStore";
-import { useSecretStore } from "./store/secretStore";
 import { useSettingsStore } from "./store/settingsStore";
 import { Onboarding } from "./design/components/Onboarding";
 import { Toaster } from "./design/components/Toaster";
@@ -31,7 +28,6 @@ import { toast } from "./store/toastStore";
 export default function App() {
   const [tab, setTab] = useState<Tab>("overview");
   const theme = useThemeStore((s) => s.theme);
-  const overlays = useSecretStore((s) => s.overlays);
   const reduceMotion = useSettingsStore((s) => s.settings?.reduce_motion);
   const showOnboarding = useSettingsStore(
     (s) => s.loaded && !!s.settings && !s.settings.has_completed_onboarding,
@@ -117,10 +113,6 @@ export default function App() {
             </AnimatePresence>
           </main>
           </div>
-
-          {/* Пасхальные оверлеи поверх всего (pointer-events-none). */}
-          {overlays.snow && <SnowOverlay />}
-          {overlays.sakura && <SakuraOverlay />}
 
           {/* Онбординг первого запуска — поверх всего, пока флаг не выставлен. */}
           {showOnboarding && <Onboarding />}
