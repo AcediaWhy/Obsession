@@ -18,7 +18,6 @@ function norm(s: string): string {
 
 const REGISTRY: Reward[] = [
   { id: "fallendown", title: "Fallen Down", keys: ["fallendown"] },
-  { id: "russia", title: "Russia", keys: ["russia", "россия"] },
 ];
 
 export type RedeemResult =
@@ -80,3 +79,4 @@ export const useSecretStore = create<SecretState>((set, get) => ({
     };
   },
 }));
+
