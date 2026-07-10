@@ -1,5 +1,6 @@
 import { motion } from "framer-motion";
 import { Icon } from "./icons";
+import { EyeLogo } from "./EyeLogo";
 
 export type Tab = "overview" | "dpi" | "ai" | "telegram" | "lists" | "profiles" | "settings";
 
@@ -22,11 +23,9 @@ export function NavRail({
 }) {
   return (
     <nav className="flex w-[220px] flex-col px-4 pb-4 pt-2">
-      {/* Лого. */}
+      {/* Лого — живой глаз (идентичность Obsession). */}
       <div className="mb-8 flex items-center gap-3 px-2">
-        <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-accent to-accent-violet shadow-glow">
-          <Icon.Bolt size={20} />
-        </div>
+        <EyeLogo size={40} />
         <div className="leading-tight">
           <div className="font-display text-lg font-bold text-ink">Obsession</div>
           <div className="text-[11px] tracking-widest text-ink-muted">V1.0.0</div>
