@@ -58,7 +58,7 @@ export function AuroraField() {
     let warm = 0;
     let raf = 0;
     let last = 0;
-    const FRAME = 1000 / 30; // ambient-фон: 30 fps более чем достаточно
+    const FRAME = 1000 / 60; // кап 60 fps: плавно на любом герце, но не жжём 120/180
 
     const draw = (now: number) => {
       raf = requestAnimationFrame(draw);
