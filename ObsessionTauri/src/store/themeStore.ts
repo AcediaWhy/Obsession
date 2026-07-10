@@ -2,9 +2,9 @@ import { create } from "zustand";
 
 // Визуальная тема hero-элемента и фона. Чисто фронтовая настройка (не трогает
 // Rust-Settings): храним в localStorage, применяем мгновенно.
-export type Theme = "aurora" | "ophanim" | "japan" | "fallendown" | "russia";
+export type Theme = "aurora" | "ophanim" | "japan" | "fireflies" | "hearth" | "fallendown";
 
-const THEME_IDS: Theme[] = ["aurora", "ophanim", "japan", "fallendown", "russia"];
+const THEME_IDS: Theme[] = ["aurora", "ophanim", "japan", "fireflies", "hearth", "fallendown"];
 
 // `secret` — id пасхалки в secretStore; такая тема появляется в выборе только
 // после разблокировки (см. окошко пасхалок в Настройках).
@@ -12,8 +12,9 @@ export const THEMES: { id: Theme; label: string; secret?: string }[] = [
   { id: "aurora", label: "Aurora" },
   { id: "ophanim", label: "Ophanim" },
   { id: "japan", label: "Rain" },
+  { id: "fireflies", label: "Fireflies" },
+  { id: "hearth", label: "Hearth" },
   { id: "fallendown", label: "Fallen Down", secret: "fallendown" },
-  { id: "russia", label: "Russia", secret: "russia" },
 ];
 
 const KEY = "obsession.theme";
@@ -44,3 +45,4 @@ export const useThemeStore = create<ThemeState>((set) => ({
     set({ theme });
   },
 }));
+

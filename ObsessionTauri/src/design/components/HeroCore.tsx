@@ -3,7 +3,8 @@ import { AuroraCore } from "./AuroraCore";
 import { RainCore } from "./RainCore";
 import { OphanimCore } from "./OphanimCore";
 import { FallenCore } from "./FallenCore";
-import { RussiaCore } from "./RussiaCore";
+import { FirefliesCore } from "./FirefliesCore";
+import { HearthCore } from "./HearthCore";
 
 type Props = {
   active: boolean;
@@ -18,9 +19,11 @@ export function HeroCore(props: Props) {
   const theme = useThemeStore((s) => s.theme);
   if (theme === "ophanim") return <OphanimCore {...props} />;
   if (theme === "fallendown") return <FallenCore {...props} />;
-  if (theme === "russia") return <RussiaCore {...props} />;
+  if (theme === "fireflies") return <FirefliesCore {...props} />;
+  if (theme === "hearth") return <HearthCore {...props} />;
   // «Rain» (id japan): поверхность воды с расходящейся рябью от капель.
   if (theme === "japan") return <RainCore {...props} />;
   // Aurora — исходное ядро (световые шторы).
   return <AuroraCore {...props} />;
 }
+

@@ -1,19 +1,17 @@
 import { Component, lazy, Suspense, type ReactNode } from "react";
 import { useThemeStore } from "../../store/themeStore";
+import { useRenderActive } from "../render";
 import { AuroraField } from "./AuroraField";
 import { OphanimField } from "./OphanimField";
 import { FallenField } from "./FallenField";
+import { FirefliesField } from "./FirefliesField";
+import { HearthField } from "./HearthField";
 import { RainField2D } from "./RainField2D";
-import { RussiaField } from "./RussiaField";
 
 // 3D-сцена «Rain» (id japan) грузится лениво (three.js только при выборе темы)
 // и только если доступен WebGL; при любой ошибке рендера — откат на 2D-дождь
 // (RainField2D), тематически верный запасной вариант.
 const RainScene3D = lazy(() => import("./RainScene3D"));
-// «Russia» — гибрид фото-глубины (depth-parallax, vanilla WebGL, без three) +
-// генеративный снег/грейд. Сам откатывается на 2D `RussiaField`, если ассетов
-// (AI-фото + карта глубины) ещё нет или WebGL недоступен.
-const RussiaHybrid = lazy(() => import("./RussiaHybrid"));
 
 function webglSupported(): boolean {
   try {
@@ -42,19 +40,21 @@ class Fallback3D extends Component<{ children: ReactNode; fallback: ReactNode },
 // Диспетчер реактивного фона по выбранной теме.
 export function HeroField() {
   const theme = useThemeStore((s) => s.theme);
+  // Пока окно скрыто (трей/сворачивание) — размонтируем тяжёлую WebGL-сцену Rain
+  // целиком. Её rAF-циклы и так паузятся по renderActive, НО живой WebGL-контекст
+  // + полноэкранные текстуры остаются на GPU и держат compositor WebView2 занятым
+  // (~2-4% в трее). Размонтирование запускает RainRenderer/Raindrops.destroy()
+  // (освобождает контекст/текстуры), а при возврате сцена собирается заново.
+  // Лёгкие 2D-темы так не мучаем — они дёшевы и мгновенно паузятся.
+  const renderOn = useRenderActive();
   if (theme === "ophanim") return <OphanimField />;
   if (theme === "fallendown") return <FallenField />;
-  if (theme === "russia") {
-    return (
-      <Fallback3D fallback={<RussiaField />}>
-        <Suspense fallback={<RussiaField />}>
-          <RussiaHybrid />
-        </Suspense>
-      </Fallback3D>
-    );
-  }
+  if (theme === "fireflies") return <FirefliesField />;
+  if (theme === "hearth") return <HearthField />;
   if (theme === "japan") {
-    if (!WEBGL) return <RainField2D />;
+    // В трее показываем лёгкий 2D-дождь-заглушку (почти бесплатен и сразу
+    // паузится) вместо WebGL-сцены — визуально та же тема, без утечки контекста.
+    if (!WEBGL || !renderOn) return <RainField2D />;
     return (
       <Fallback3D fallback={<RainField2D />}>
         <Suspense fallback={<RainField2D />}>
@@ -65,3 +65,4 @@ export function HeroField() {
   }
   return <AuroraField />;
 }
+

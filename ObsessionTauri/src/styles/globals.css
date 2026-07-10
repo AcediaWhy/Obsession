@@ -20,7 +20,7 @@
     rgba(255, 255, 255, 0.025)
   );
   --glass-border: rgba(255, 255, 255, 0.08);
-  --glass-blur: 14px;
+  --glass-blur: 10px;
   --glass-sat: 125%;
   --glass-specular: rgba(255, 255, 255, 0.22);
 }
@@ -42,12 +42,49 @@
   --accent-violet: 180 84 104;
 }
 
-/* Скрытая тема Russia — зимняя ночь, одинокий фонарь в метель. Акцент — тёплый
-   натриевый свет фонаря на фоне холодного стального сумрака. */
-[data-theme="russia"] {
-  --accent: 206 158 92;
-  --accent-cyan: 124 142 170;
-  --accent-violet: 150 150 176;
+/* Тема Fireflies — летний сумрак: перемигивающиеся светлячки над тёмным лугом.
+   Акцент — тёплый жёлто-зелёный огонёк на фоне сумеречного индиго. */
+[data-theme="fireflies"] {
+  --accent: 196 214 122;
+  --accent-cyan: 86 132 138;
+  --accent-violet: 92 96 150;
+}
+
+[data-theme="fireflies"] .text-gradient {
+  background: linear-gradient(120deg, #e6ee9c 0%, #a9c98a 44%, #8b90c8 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* Тема Hearth — тёплый очаг: тлеющие угли, искры, янтарный свет в тёмной комнате.
+   Тёплая гамма целиком, включая стекло. */
+[data-theme="hearth"] {
+  --accent: 230 148 70;
+  --accent-cyan: 240 190 120;
+  --accent-violet: 196 92 64;
+
+  --glass-bg: linear-gradient(
+    180deg,
+    rgba(255, 210, 160, 0.10),
+    rgba(30, 18, 10, 0.36)
+  );
+  --glass-border: rgba(240, 190, 120, 0.18);
+  --glass-specular: rgba(255, 224, 180, 0.24);
+}
+
+[data-theme="hearth"] .text-gradient {
+  background: linear-gradient(120deg, #ffd9a0 0%, #f0a95a 50%, #d67a3a 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+[data-theme="hearth"] ::-webkit-scrollbar-thumb {
+  background: rgba(240, 190, 120, 0.22);
+}
+[data-theme="hearth"] ::-webkit-scrollbar-thumb:hover {
+  background: rgba(240, 190, 120, 0.42);
 }
 
 /* ─── Тема Rain ───────────────────────────────────────────────────────────────
@@ -216,3 +253,15 @@ textarea {
   animation: none !important;
   transition-duration: 0.01ms !important;
 }
+
+/* Окно скрыто в трей: ставим CSS-анимации на паузу (animate-ping/pulse и т.д.)
+   и отключаем backdrop-filter — композитору WebView2 не нужно пересчитывать
+   блюр стекла для скрытого окна. */
+[data-hidden="true"] * {
+  animation-play-state: paused !important;
+}
+[data-hidden="true"] .glass {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
