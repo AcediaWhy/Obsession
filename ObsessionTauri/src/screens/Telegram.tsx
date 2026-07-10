@@ -101,7 +101,7 @@ export function TelegramScreen() {
               <Select
                 value={s.fakeTlsDomain}
                 options={FAKE_TLS_PRESETS}
-                placeholder="Оставьте пустым или выберите"
+                placeholder="Без домена"
                 onChange={(v) => s.setFakeTlsDomain(v)}
               />
             </div>
