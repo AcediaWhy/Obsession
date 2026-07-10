@@ -100,20 +100,28 @@ export function AiScreen() {
             </div>
           )}
 
-          <div className="flex gap-2">
-            <Button disabled={s.busy} onClick={() => s.install()} className="flex-1">
+          <div className="flex flex-col gap-2">
+            <Button disabled={s.busy} onClick={() => s.install()} className="w-full">
               {installed ? "Переустановить / Обновить" : "Установить"}
             </Button>
-            <Button
-              variant="ghost"
-              disabled={s.busy || !installed}
-              onClick={() => s.uninstall()}
-            >
-              Удалить
-            </Button>
-            <Button variant="ghost" disabled={s.busy} onClick={() => s.refresh()}>
-              Проверить
-            </Button>
+            <div className="flex gap-2">
+              <Button
+                variant="ghost"
+                disabled={s.busy || !installed}
+                onClick={() => s.uninstall()}
+                className="flex-1"
+              >
+                Удалить
+              </Button>
+              <Button
+                variant="ghost"
+                disabled={s.busy}
+                onClick={() => s.refresh()}
+                className="flex-1"
+              >
+                Проверить
+              </Button>
+            </div>
           </div>
 
           <p className="text-xs leading-relaxed text-ink-muted">
