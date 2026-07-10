@@ -1,16 +1,11 @@
 import { create } from "zustand";
 
-// Система пасхалок: ввод кодовых слов открывает мелкие бонусы.
-//  • theme   — разблокирует скрытую тему (появляется в выборе оформления).
-//  • overlay — включает/выключает визуальный оверлей поверх любой темы
-//              (снег, сакура). Повторный ввод кода — переключает.
-// Разблокировки и состояние оверлеев хранятся в localStorage. Расширяется
+// Система пасхалок: ввод кодовых слов открывает скрытые темы (появляются в
+// выборе оформления). Разблокировки хранятся в localStorage. Расширяется
 // добавлением записи в REGISTRY.
 
-type RewardKind = "theme" | "overlay";
 type Reward = {
   id: string;
-  kind: RewardKind;
   title: string;
   keys: string[]; // нормализованные варианты кода (латиница/кириллица/цифры)
 };
@@ -22,23 +17,16 @@ function norm(s: string): string {
 }
 
 const REGISTRY: Reward[] = [
-  { id: "fallendown", kind: "theme", title: "Fallen Down", keys: ["fallendown"] },
-  { id: "russia", kind: "theme", title: "Russia", keys: ["russia", "россия"] },
-  { id: "snow", kind: "overlay", title: "Снег", keys: ["snow", "снег"] },
-  { id: "sakura", kind: "overlay", title: "Сакура", keys: ["sakura", "сакура"] },
+  { id: "fallendown", title: "Fallen Down", keys: ["fallendown"] },
+  { id: "russia", title: "Russia", keys: ["russia", "россия"] },
 ];
 
-export type OverlayId = "snow" | "sakura";
-
 export type RedeemResult =
-  | { status: "unlocked"; kind: RewardKind; id: string; title: string }
-  | { status: "already"; kind: RewardKind; id: string; title: string }
-  | { status: "on"; kind: "overlay"; id: string; title: string }
-  | { status: "off"; kind: "overlay"; id: string; title: string }
+  | { status: "unlocked"; id: string; title: string }
+  | { status: "already"; id: string; title: string }
   | { status: "unknown" };
 
 const KEY_UNLOCKED = "obsession.secrets";
-const KEY_OVERLAYS = "obsession.overlays";
 
 function loadArr(key: string): string[] {
   try {
@@ -63,20 +51,12 @@ function persist(key: string, val: string[]) {
 
 interface SecretState {
   unlocked: string[]; // открытые id (для видимости тем и «обнаружено»)
-  overlays: Record<OverlayId, boolean>;
   isUnlocked: (id: string) => boolean;
   redeem: (input: string) => RedeemResult;
-  setOverlay: (id: OverlayId, on: boolean) => void;
-}
-
-function initOverlays(): Record<OverlayId, boolean> {
-  const active = loadArr(KEY_OVERLAYS);
-  return { snow: active.includes("snow"), sakura: active.includes("sakura") };
 }
 
 export const useSecretStore = create<SecretState>((set, get) => ({
   unlocked: loadArr(KEY_UNLOCKED),
-  overlays: initOverlays(),
 
   isUnlocked: (id) => get().unlocked.includes(id),
 
@@ -93,26 +73,10 @@ export const useSecretStore = create<SecretState>((set, get) => ({
       set({ unlocked });
     }
 
-    if (reward.kind === "overlay") {
-      const oid = reward.id as OverlayId;
-      const next = !get().overlays[oid];
-      get().setOverlay(oid, next);
-      return { status: next ? "on" : "off", kind: "overlay", id: reward.id, title: reward.title };
-    }
-
-    // theme: одноразовая разблокировка.
     return {
       status: wasKnown ? "already" : "unlocked",
-      kind: reward.kind,
       id: reward.id,
       title: reward.title,
     };
-  },
-
-  setOverlay: (id, on) => {
-    const overlays = { ...get().overlays, [id]: on };
-    set({ overlays });
-    const active = (Object.keys(overlays) as OverlayId[]).filter((k) => overlays[k]);
-    persist(KEY_OVERLAYS, active);
   },
 }));

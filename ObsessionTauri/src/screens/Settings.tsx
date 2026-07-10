@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 
 import { useSettingsStore } from "../store/settingsStore";
 import { useThemeStore, THEMES, type Theme } from "../store/themeStore";
-import { useSecretStore, type OverlayId } from "../store/secretStore";
+import { useSecretStore } from "../store/secretStore";
 import { GlassPanel } from "../design/components/GlassPanel";
 import { AuroraCore } from "../design/components/AuroraCore";
 import { RainCore } from "../design/components/RainCore";
@@ -54,7 +54,6 @@ export function SettingsScreen() {
               <GlassPanel>
                 <SectionLabel>Оформление</SectionLabel>
                 <ThemePicker />
-                <OverlayToggles />
               </GlassPanel>
             </StaggerItem>
 
@@ -187,31 +186,6 @@ export function SettingsScreen() {
   );
 }
 
-// Тумблеры оверлеев — показываются только для уже открытых пасхалок (снег,
-// сакура), чтобы можно было выключить, не вводя код повторно. Пока ничего не
-// открыто — раздел не появляется, тайна сохраняется.
-const OVERLAY_LABELS: { id: OverlayId; label: string }[] = [
-  { id: "snow", label: "Снег" },
-  { id: "sakura", label: "Сакура" },
-];
-
-function OverlayToggles() {
-  const unlocked = useSecretStore((s) => s.unlocked);
-  const overlays = useSecretStore((s) => s.overlays);
-  const setOverlay = useSecretStore((s) => s.setOverlay);
-  const visible = OVERLAY_LABELS.filter((o) => unlocked.includes(o.id));
-  if (visible.length === 0) return null;
-  return (
-    <div className="mt-3 border-t border-white/5 pt-1">
-      {visible.map((o) => (
-        <Row key={o.id} label={o.label}>
-          <Switch checked={overlays[o.id]} onChange={(v) => setOverlay(o.id, v)} />
-        </Row>
-      ))}
-    </div>
-  );
-}
-
 // Окошко пасхалок: ввод кодового слова открывает скрытые бонусы. Если награда —
 // тема, сразу переключаемся на неё, чтобы бонус было видно немедленно.
 function SecretBox() {
@@ -229,12 +203,6 @@ function SecretBox() {
       const themed = THEMES.find((t) => t.secret === res.id);
       if (themed) setTheme(themed.id);
       setMsg({ tone: "ok", text: `Открыто: ${res.title}` });
-      setValue("");
-    } else if (res.status === "on") {
-      setMsg({ tone: "ok", text: `${res.title} — включено` });
-      setValue("");
-    } else if (res.status === "off") {
-      setMsg({ tone: "dim", text: `${res.title} — выключено` });
       setValue("");
     } else if (res.status === "already") {
       setMsg({ tone: "dim", text: `Уже открыто: ${res.title}` });
