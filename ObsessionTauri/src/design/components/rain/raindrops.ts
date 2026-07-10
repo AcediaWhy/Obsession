@@ -5,6 +5,9 @@ import { random, chance, times, createCanvas } from "./random";
 import { renderActive } from "../../render";
 
 const dropSize = 64;
+// Кап симуляции капель на 60 fps (в пару к рендеру). На высоком герце не считаем
+// физику на 120/180 fps впустую; на 60 Гц — нативно.
+const SIM_FRAME = 1000 / 60;
 
 interface Drop {
   x: number;
@@ -436,16 +439,20 @@ export class Raindrops {
 
   update() {
     if (this.destroyed) return;
+    this.raf = requestAnimationFrame(this.update.bind(this));
     // Окно скрыто/в трее — не считаем физику капель (сбрасываем lastRender, чтобы
-    // после паузы dt не «прыгнул»), лишь держим rAF живым для возобновления.
+    // после паузы dt не «прыгнул»).
     if (!renderActive()) {
       this.lastRender = null;
-      this.raf = requestAnimationFrame(this.update.bind(this));
       return;
     }
+    // Троттлинг до 30 fps: lastRender служит и якорем dt, и меткой троттлинга —
+    // пока кадр не прошёл, пропускаем без пересчёта физики.
+    const now = performance.now();
+    if (this.lastRender != null && now - this.lastRender < SIM_FRAME) return;
+
     this.clearCanvas();
 
-    const now = performance.now();
     if (this.lastRender == null) this.lastRender = now;
     let deltaT = now - this.lastRender;
     let timeScale = deltaT / ((1 / 60) * 1000);
@@ -454,7 +461,5 @@ export class Raindrops {
     this.lastRender = now;
 
     this.updateDrops(timeScale);
-
-    this.raf = requestAnimationFrame(this.update.bind(this));
   }
 }

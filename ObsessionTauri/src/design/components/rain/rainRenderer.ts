@@ -4,6 +4,11 @@ import { simpleVert, waterFrag } from "./shaders";
 import { createCanvas } from "./random";
 import { renderActive } from "../../render";
 
+// Кап отрисовки на 60 fps. Без капа rAF рисует на частоте дисплея (120/180 Гц =
+// втрое больше работы). 60 fps — плавно для ambient и ровный делитель 120/180,
+// без джиттера; на 60-Гц мониторе это нативная частота (потерь нет).
+const DRAW_FRAME = 1000 / 60;
+
 export interface RainRendererOptions {
   renderShadow: boolean;
   minRefraction: number;
@@ -45,6 +50,7 @@ export class RainRenderer {
 
   private raf = 0;
   private destroyed = false;
+  private lastDraw = 0;
 
   // Управляется извне: intensity>1 при активном обходе (не часть оригинала).
   overrideParallax: { x: number; y: number } | null = null;
@@ -108,16 +114,17 @@ export class RainRenderer {
 
   draw() {
     if (this.destroyed) return;
+    this.raf = requestAnimationFrame(this.draw.bind(this));
     // Окно скрыто/в трее — пропускаем дорогой WebGL-проход, держим только rAF.
-    if (!renderActive()) {
-      this.raf = requestAnimationFrame(this.draw.bind(this));
-      return;
-    }
+    if (!renderActive()) return;
+    // Троттлинг до 30 fps.
+    const now = performance.now();
+    if (now - this.lastDraw < DRAW_FRAME) return;
+    this.lastDraw = now;
     this.gl.useProgram(this.gl.program);
     this.gl.createUniform("2f", "parallax", this.parallaxX, this.parallaxY);
     this.updateTexture();
     this.gl.draw();
-    this.raf = requestAnimationFrame(this.draw.bind(this));
   }
 
   updateTextures() {
