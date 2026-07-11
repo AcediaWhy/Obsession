@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useDpiStore } from "../../store/dpiStore";
 import { useProxyStore } from "../../store/proxyStore";
-import { renderActive } from "../render";
+import { createRenderLoop, FPS_FIELD } from "../render";
 
 // Реактивная среда темы «Ophanim»: нисходящие столпы света (глориоль) + парящие
 // пылинки в лучах. В покое — тускло-золотое; при активном обходе/прокси лучи
@@ -64,20 +64,8 @@ export function OphanimField() {
 
     let t = 0;
     let warm = 0;
-    let raf = 0;
-    let last = 0;
-    const FRAME = 1000 / 30;
 
-    const draw = (now: number) => {
-      raf = requestAnimationFrame(draw);
-      if (!renderActive()) {
-        last = 0; // сброс, чтобы после паузы dt не «прыгнул»
-        return;
-      }
-      if (now - last < FRAME) return;
-      const dt = last ? Math.min((now - last) / 1000, 0.1) : 0.033;
-      last = now;
-
+    const draw = (dt: number) => {
       t += dt;
       warm += ((hotRef.current ? 1 : 0) - warm) * (1 - Math.exp(-dt * 2.4));
       ctx.clearRect(0, 0, w, h);
@@ -128,10 +116,12 @@ export function OphanimField() {
       }
       ctx.globalCompositeOperation = "source-over";
     };
-    raf = requestAnimationFrame(draw);
+    // Кап 60 fps: полноэкранный фон под backdrop-filter-панелями (см. AuroraField).
+    const loop = createRenderLoop(draw, { fps: FPS_FIELD });
+    loop.start();
 
     return () => {
-      cancelAnimationFrame(raf);
+      loop.dispose();
       window.removeEventListener("resize", resize);
     };
   }, []);

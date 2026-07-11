@@ -2,12 +2,12 @@
 import { GL } from "./gl";
 import { simpleVert, waterFrag } from "./shaders";
 import { createCanvas } from "./random";
-import { renderActive } from "../../render";
+import { createRenderLoop, FPS_RAIN, type RenderLoop } from "../../render";
 
-// Кап отрисовки на 60 fps. Без капа rAF рисует на частоте дисплея (120/180 Гц =
-// втрое больше работы). 60 fps — плавно для ambient и ровный делитель 120/180,
-// без джиттера; на 60-Гц мониторе это нативная частота (потерь нет).
-const DRAW_FRAME = 1000 / 60;
+// Дождь — тяжёлая полноэкранная WebGL-сцена и это ГЛОБАЛЬНЫЙ фон на всех экранах
+// (App → HeroField). Кап FPS_RAIN через createRenderLoop: раньше порог 1000/60
+// сравнивался «ножом» с интервалом кадра (на 60/120 Гц два vsync = ровно
+// 16.67 мс), и джиттер rAF-таймстампов ронял кадры — статтер 60↔30 fps.
 
 export interface RainRendererOptions {
   renderShadow: boolean;
@@ -45,12 +45,12 @@ export class RainRenderer {
   width = 0;
   height = 0;
   textures: Tex[] = [];
+  glTextures: WebGLTexture[] = [];
   parallaxX = 0;
   parallaxY = 0;
 
-  private raf = 0;
+  private loop: RenderLoop | null = null;
   private destroyed = false;
-  private lastDraw = 0;
 
   // Управляется извне: intensity>1 при активном обходе (не часть оригинала).
   overrideParallax: { x: number; y: number } | null = null;
@@ -96,7 +96,7 @@ export class RainRenderer {
     gl.createUniform("1f", "parallaxBg", this.options.parallaxBg);
     gl.createUniform("1f", "parallaxFg", this.options.parallaxFg);
 
-    gl.createTexture(null, 0);
+    this.glTextures.push(gl.createTexture(null, 0));
 
     this.textures = [
       { name: "textureShine", img: this.imageShine == null ? createCanvas(2, 2) : this.imageShine },
@@ -105,22 +105,19 @@ export class RainRenderer {
     ];
 
     this.textures.forEach((texture, i) => {
-      gl.createTexture(texture.img, i + 1);
+      this.glTextures.push(gl.createTexture(texture.img, i + 1));
       gl.createUniform("1i", texture.name, i + 1);
     });
 
-    this.draw();
+    // Первый кадр — синхронно (как раньше), дальше цикл ведёт хелпер:
+    // гейт видимости, кап fps и каденция — в одном месте.
+    this.renderFrame();
+    this.loop = createRenderLoop(() => this.renderFrame(), { fps: FPS_RAIN });
+    this.loop.start();
   }
 
-  draw() {
+  private renderFrame() {
     if (this.destroyed) return;
-    this.raf = requestAnimationFrame(this.draw.bind(this));
-    // Окно скрыто/в трее — пропускаем дорогой WebGL-проход, держим только rAF.
-    if (!renderActive()) return;
-    // Троттлинг до 30 fps.
-    const now = performance.now();
-    if (now - this.lastDraw < DRAW_FRAME) return;
-    this.lastDraw = now;
     this.gl.useProgram(this.gl.program);
     this.gl.createUniform("2f", "parallax", this.parallaxX, this.parallaxY);
     this.updateTexture();
@@ -141,6 +138,19 @@ export class RainRenderer {
 
   destroy() {
     this.destroyed = true;
-    cancelAnimationFrame(this.raf);
+    this.loop?.dispose();
+    this.loop = null;
+    // Освобождаем GPU-ресурсы: текстуры + буферы/программу/контекст.
+    const gl = this.gl?.gl;
+    if (gl) {
+      for (const tex of this.glTextures) gl.deleteTexture(tex);
+    }
+    this.glTextures = [];
+    this.gl?.destroy();
+    // Рвём ссылки на большие канвасы (fg/bg) и water map, чтобы GC их собрал.
+    this.textures = [];
+    this.imageShine = null;
+    this.imageFg = null as unknown as TexImageSource;
+    this.imageBg = null as unknown as TexImageSource;
   }
 }

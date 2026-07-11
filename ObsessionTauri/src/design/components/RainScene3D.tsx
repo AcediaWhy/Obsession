@@ -4,7 +4,7 @@ import { useProxyStore } from "../../store/proxyStore";
 import { Raindrops } from "./rain/raindrops";
 import { RainRenderer } from "./rain/rainRenderer";
 import { createCanvas } from "./rain/random";
-import { renderActive } from "../render";
+import { createRenderLoop } from "../render";
 
 // Тема «Rain»: дождь на стекле — порт codrops/RainEffect (vanilla WebGL, без R3F).
 // CPU-симуляция капель (raindrops) пишет water map, шейдер water.frag преломляет
@@ -123,25 +123,19 @@ export default function RainScene3D() {
     };
     window.addEventListener("pointermove", onMove);
 
-    let smoothRaf = 0;
-    const smooth = () => {
-      // Окно скрыто/в трее — не гоняем параллакс, держим только rAF живым.
-      if (!renderActive()) {
-        smoothRaf = requestAnimationFrame(smooth);
-        return;
-      }
+    // Без капа: сглаживание `* 0.06 за кадр` калибровано на пер-кадровый шаг,
+    // сам по себе цикл копеечный. Гейт видимости — в хелпере.
+    const smoothLoop = createRenderLoop(() => {
       parallax.x += (target.x - parallax.x) * 0.06;
       parallax.y += (target.y - parallax.y) * 0.06;
       if (renderer) {
         renderer.parallaxX = parallax.x;
         renderer.parallaxY = parallax.y;
-        // «Гроза» при активном обходе: капли крупнее/чаще.
         raindrops!.options.rainChance = hotRef.current ? 0.5 : 0.3;
         raindrops!.options.rainLimit = hotRef.current ? 16 : 10;
       }
-      smoothRaf = requestAnimationFrame(smooth);
-    };
-    smoothRaf = requestAnimationFrame(smooth);
+    });
+    smoothLoop.start();
 
     const onResize = () => {
       canvas.width = window.innerWidth;
@@ -151,7 +145,7 @@ export default function RainScene3D() {
 
     return () => {
       disposed = true;
-      cancelAnimationFrame(smoothRaf);
+      smoothLoop.dispose();
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("resize", onResize);
       renderer?.destroy();

@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useDpiStore } from "../../store/dpiStore";
 import { useProxyStore } from "../../store/proxyStore";
-import { renderActive } from "../render";
+import { createRenderLoop, FPS_FIELD } from "../render";
 
 // Фон темы «Fallen Down» (вайб Undertale, абстрактно): чёрная пустота, в которой
 // редко и медленно мерцают серебристо-белые пиксельные звёзды-сверкания — как
@@ -23,7 +23,6 @@ export function FallenField() {
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
     let w = 0;
     let h = 0;
 
@@ -63,9 +62,11 @@ export function FallenField() {
     const resize = () => {
       w = canvas.clientWidth;
       h = canvas.clientHeight;
-      canvas.width = Math.max(1, Math.round(w * dpr));
-      canvas.height = Math.max(1, Math.round(h * dpr));
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      // Рисуем 1:1 в CSS-пикселях (без множителя dpr): на HiDPI это в разы
+      // меньше fill-rate, а пиксель-арт звёзд дотягивает imageRendering:pixelated.
+      canvas.width = Math.max(1, w);
+      canvas.height = Math.max(1, h);
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.imageSmoothingEnabled = false;
       seed();
     };
@@ -96,19 +97,8 @@ export function FallenField() {
 
     let t = 0;
     let warm = 0;
-    let raf = 0;
-    let last = 0;
-    const FRAME = 1000 / 30;
 
-    const draw = (now: number) => {
-      raf = requestAnimationFrame(draw);
-      if (!renderActive()) {
-        last = 0;
-        return;
-      }
-      if (now - last < FRAME) return;
-      const dt = last ? Math.min((now - last) / 1000, 0.08) : 0.033;
-      last = now;
+    const draw = (dt: number) => {
       t += dt;
       warm += ((hotRef.current ? 1 : 0) - warm) * (1 - Math.exp(-dt * 2.2));
 
@@ -132,10 +122,12 @@ export function FallenField() {
 
       ctx.globalCompositeOperation = "source-over";
     };
-    raf = requestAnimationFrame(draw);
+    // Кап 60 fps: полноэкранный фон под backdrop-filter-панелями (см. AuroraField).
+    const loop = createRenderLoop(draw, { fps: FPS_FIELD });
+    loop.start();
 
     return () => {
-      cancelAnimationFrame(raf);
+      loop.dispose();
       window.removeEventListener("resize", resize);
     };
   }, []);

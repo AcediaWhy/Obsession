@@ -1,19 +1,25 @@
 import { useEffect, useRef } from "react";
 import { motion } from "framer-motion";
-import { renderActive } from "../render";
+import { CORE_HERO_MIN_SIZE, coreFps, createRenderLoop, useRenderActive, type RenderLoop } from "../render";
+import { createSpriteCache } from "./glowSprite";
 
 type Props = {
   active: boolean;
   busy?: boolean;
   onClick: () => void;
   size?: number;
+  paused?: boolean;
 };
 
 // «Офаним» — престольное колесо (Иез. 1): колёса-в-колёсах, вращающиеся сквозь
 // друг друга под разными осями, усеянные глазами, в ореоле глориоли. В покое —
 // тускло-золотое, глаза прикрыты; при активации разгоняется, теплеет в магенту,
 // глаза раскрываются. Альтернативный hero к «Aurora», та же семантика состояний.
-export function OphanimCore({ active, busy = false, onClick, size = 240 }: Props) {
+export function OphanimCore({ active, busy = false, onClick, size = 240, paused = false }: Props) {
+  // Ореолы гасим, когда окно скрыто ИЛИ это застывшее превью невыбранной темы
+  // (paused): framer-motion гоняет их на компоновщике (WAAPI) и сам на скрытие не
+  // реагирует — жёг бы CPU в трее и в Настройках (6 превью × 2 ореола).
+  const renderOn = useRenderActive() && !paused;
   return (
     <motion.button
       onClick={onClick}
@@ -34,15 +40,23 @@ export function OphanimCore({ active, busy = false, onClick, size = 240 }: Props
             : "radial-gradient(circle, rgba(253,224,71,0.18), transparent 68%)",
           filter: "blur(10px)",
         }}
-        animate={{
-          opacity: active ? [0.7, 1, 0.7] : [0.5, 0.7, 0.5],
-          scale: active ? [1, 1.05, 1] : 1,
-        }}
-        transition={{ duration: active ? 3.4 : 5, repeat: Infinity, ease: "easeInOut" }}
+        animate={
+          renderOn
+            ? {
+                opacity: active ? [0.7, 1, 0.7] : [0.5, 0.7, 0.5],
+                scale: active ? [1, 1.05, 1] : 1,
+              }
+            : { opacity: active ? 0.85 : 0.6, scale: 1 }
+        }
+        transition={
+          renderOn
+            ? { duration: active ? 3.4 : 5, repeat: Infinity, ease: "easeInOut" }
+            : { duration: 0.3 }
+        }
       />
 
       {/* Колёса-в-колёсах на canvas. */}
-      <OphanimCanvas active={active} busy={busy} size={size} />
+      <OphanimCanvas active={active} busy={busy} size={size} paused={paused} />
 
       {/* Стеклянная кромка престола. */}
       <motion.div
@@ -54,8 +68,8 @@ export function OphanimCore({ active, busy = false, onClick, size = 240 }: Props
             : "inset 0 0 26px 2px rgba(253,224,71,0.20), 0 0 16px 1px rgba(234,179,8,0.22)",
           border: "1px solid rgba(255,255,255,0.06)",
         }}
-        animate={{ opacity: active ? [0.8, 1, 0.8] : [0.55, 0.75, 0.55] }}
-        transition={{ duration: 2.6, repeat: Infinity, ease: "easeInOut" }}
+        animate={renderOn ? { opacity: active ? [0.8, 1, 0.8] : [0.55, 0.75, 0.55] } : { opacity: active ? 0.9 : 0.65 }}
+        transition={renderOn ? { duration: 2.6, repeat: Infinity, ease: "easeInOut" } : { duration: 0.3 }}
       />
 
       {/* Метка состояния. */}
@@ -97,10 +111,32 @@ const WHEELS: Wheel[] = [
   { r: 0.30, axis: -Math.PI / 4, tiltSpeed: 0.62, tiltPhase: 4.7, spin: -0.5, eyes: 8, lw: 0.014, cold: [253, 230, 138], hot: [244, 114, 182] },
 ];
 
-function OphanimCanvas({ active, busy, size }: { active: boolean; busy: boolean; size: number }) {
+// Свечение глаза, запечённое в спрайт по корзинам warm — свой кэш на колесо
+// (у каждого свои cold/hot). В оригинале стопы (min(ea*1.4,1), ea, 0): яркость
+// уходит в globalAlpha = min(ea*1.4, 1), в спрайте остаётся рампа (1, 1/1.4, 0).
+// Раньше: до 40 createRadialGradient каждый кадр.
+const eyeSprites = WHEELS.map((wh) =>
+  createSpriteCache(9, 64, (sctx, px, k) => {
+    const r = Math.round(wh.cold[0] + (wh.hot[0] - wh.cold[0]) * k);
+    const g = Math.round(wh.cold[1] + (wh.hot[1] - wh.cold[1]) * k);
+    const b = Math.round(wh.cold[2] + (wh.hot[2] - wh.cold[2]) * k);
+    const R = px / 2;
+    const grad = sctx.createRadialGradient(R, R, 0, R, R, R);
+    grad.addColorStop(0, "rgba(255,255,255,1)");
+    grad.addColorStop(0.4, `rgba(${r},${g},${b},${1 / 1.4})`);
+    grad.addColorStop(1, "rgba(0,0,0,0)");
+    sctx.fillStyle = grad;
+    sctx.fillRect(0, 0, px, px);
+  }),
+);
+
+function OphanimCanvas({ active, busy, size, paused }: { active: boolean; busy: boolean; size: number; paused: boolean }) {
   const ref = useRef<HTMLCanvasElement>(null);
   const stateRef = useRef({ active, busy });
   stateRef.current = { active, busy };
+  const loopRef = useRef<RenderLoop | null>(null);
+  const pausedRef = useRef(paused);
+  pausedRef.current = paused;
 
   useEffect(() => {
     const canvas = ref.current;
@@ -108,7 +144,9 @@ function OphanimCanvas({ active, busy, size }: { active: boolean; busy: boolean;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    // Превью (size<160) рисуем в 1×: мягким свечениям хватает, а пикселей — и
+    // работы композитору — вчетверо меньше. Герой остаётся чётким (dpr до 2).
+    const dpr = size >= CORE_HERO_MIN_SIZE ? Math.min(window.devicePixelRatio || 1, 2) : 1;
     canvas.width = size * dpr;
     canvas.height = size * dpr;
     ctx.scale(dpr, dpr);
@@ -117,8 +155,12 @@ function OphanimCanvas({ active, busy, size }: { active: boolean; busy: boolean;
     const cy = size / 2;
     let t = 0;
     let warm = 0; // 0..1 плавный «разогрев»
-    let raf = 0;
-    let last = 0;
+
+    // Маска-феатеринг статична (центр/радиусы от size) — строим один раз.
+    const mask = ctx.createRadialGradient(cx, cy, size * 0.2, cx, cy, size * 0.5);
+    mask.addColorStop(0, "rgba(0,0,0,1)");
+    mask.addColorStop(0.78, "rgba(0,0,0,1)");
+    mask.addColorStop(1, "rgba(0,0,0,0)");
 
     // Точка на наклонённом эллипсе: локальные (rx·cosA, ry·sinA) → поворот на axis.
     const ellipsePt = (a: number, rx: number, ry: number, axis: number) => {
@@ -129,15 +171,7 @@ function OphanimCanvas({ active, busy, size }: { active: boolean; busy: boolean;
       return { x: cx + lx * c - ly * s, y: cy + lx * s + ly * c };
     };
 
-    const draw = (now: number) => {
-      raf = requestAnimationFrame(draw);
-      if (!renderActive()) {
-        last = 0; // сброс, чтобы после паузы dt не «прыгнул»
-        return;
-      }
-      const dt = last ? Math.min((now - last) / 1000, 0.1) : 0.016;
-      last = now;
-
+    const draw = (dt: number) => {
       const { active: on, busy: loading } = stateRef.current;
       t += dt;
       warm += ((on ? 1 : 0) - warm) * (1 - Math.exp(-dt * 2.6));
@@ -147,7 +181,7 @@ function OphanimCanvas({ active, busy, size }: { active: boolean; busy: boolean;
 
       const spinBoost = 1 + warm * 1.1; // при активации всё крутится быстрее
 
-      for (const wh of WHEELS) {
+      for (const [wi, wh] of WHEELS.entries()) {
         const rx = wh.r * size;
         // ry «переворачивается» в 3D: от ребра (~0.12) до полного круга.
         const yScale = 0.12 + 0.88 * Math.abs(Math.sin(t * wh.tiltSpeed * spinBoost + wh.tiltPhase));
@@ -191,16 +225,12 @@ function OphanimCanvas({ active, busy, size }: { active: boolean; busy: boolean;
           const open = Math.min(1, openBase * (0.6 + 0.4 * blink) + chase * 0.6);
           const rad = wh.lw * size * (1.6 + open * 1.6);
 
-          const glow = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, rad * 2.4);
           const ea = (0.22 + warm * 0.5) * depth * (0.4 + 0.6 * open);
-          glow.addColorStop(0, `rgba(255,255,255,${Math.min(ea * 1.4, 1)})`);
-          glow.addColorStop(0.4, `rgba(${r},${g},${b},${ea})`);
-          glow.addColorStop(1, "rgba(0,0,0,0)");
-          ctx.fillStyle = glow;
-          ctx.beginPath();
-          ctx.arc(p.x, p.y, rad * 2.4, 0, Math.PI * 2);
-          ctx.fill();
+          const R = rad * 2.4;
+          ctx.globalAlpha = Math.min(ea * 1.4, 1);
+          ctx.drawImage(eyeSprites[wi](warm), p.x - R, p.y - R, R * 2, R * 2);
         }
+        ctx.globalAlpha = 1;
       }
 
       // Глориоль-ядро в центре — «дышит».
@@ -218,17 +248,31 @@ function OphanimCanvas({ active, busy, size }: { active: boolean; busy: boolean;
 
       // Феатеринг в мягкий круг: гасим всё за пределами радиального маска.
       ctx.globalCompositeOperation = "destination-in";
-      const mask = ctx.createRadialGradient(cx, cy, size * 0.2, cx, cy, size * 0.5);
-      mask.addColorStop(0, "rgba(0,0,0,1)");
-      mask.addColorStop(0.78, "rgba(0,0,0,1)");
-      mask.addColorStop(1, "rgba(0,0,0,0)");
       ctx.fillStyle = mask;
       ctx.fillRect(0, 0, size, size);
       ctx.globalCompositeOperation = "source-over";
     };
-    raf = requestAnimationFrame(draw);
-    return () => cancelAnimationFrame(raf);
+    // Превью в Настройках монтируются уже застывшими (paused): хелпер рисует
+    // один кадр и глушит rAF. paused НЕ в deps — ховер не пересоздаёт эффект.
+    const loop = createRenderLoop(draw, { fps: coreFps(size), paused: pausedRef.current });
+    loopRef.current = loop;
+    loop.start();
+    return () => {
+      loop.dispose();
+      loopRef.current = null;
+    };
   }, [size]);
+
+  // Пауза/продолжение без тир-дауна эффекта: состояние анимации (t/warm) живёт.
+  useEffect(() => {
+    loopRef.current?.setPaused(paused);
+  }, [paused]);
+
+  // Застывшее превью перерисовываем при смене active/busy (выбор темы меняет
+  // цвет замершего кадра) — раньше это давал полный ремоунт эффекта.
+  useEffect(() => {
+    if (paused) loopRef.current?.invalidate();
+  }, [active, busy, paused]);
 
   return (
     <canvas

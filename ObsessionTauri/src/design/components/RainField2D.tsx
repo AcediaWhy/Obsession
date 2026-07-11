@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useDpiStore } from "../../store/dpiStore";
 import { useProxyStore } from "../../store/proxyStore";
-import { renderActive } from "../render";
+import { createRenderLoop, FPS_FIELD } from "../render";
 
 // Запасной 2D-фон темы «Rain» (id japan) — показывается, только если WebGL
 // недоступен или 3D-сцена упала. Косые струи дождя на холодном сланце, редкая
@@ -55,19 +55,8 @@ export function RainField2D() {
     let rippleAcc = 0;
 
     let warm = 0;
-    let raf = 0;
-    let last = 0;
-    const FRAME = 1000 / 30;
 
-    const draw = (now: number) => {
-      raf = requestAnimationFrame(draw);
-      if (!renderActive()) {
-        last = 0;
-        return;
-      }
-      if (now - last < FRAME) return;
-      const dt = last ? Math.min((now - last) / 1000, 0.08) : 0.033;
-      last = now;
+    const draw = (dt: number) => {
       warm += ((hotRef.current ? 1 : 0) - warm) * (1 - Math.exp(-dt * 2.2));
 
       ctx.clearRect(0, 0, w, h);
@@ -113,10 +102,12 @@ export function RainField2D() {
       }
       ctx.globalCompositeOperation = "source-over";
     };
-    raf = requestAnimationFrame(draw);
+    // Кап 60 fps: полноэкранный фон под backdrop-filter-панелями (см. AuroraField).
+    const loop = createRenderLoop(draw, { fps: FPS_FIELD });
+    loop.start();
 
     return () => {
-      cancelAnimationFrame(raf);
+      loop.dispose();
       window.removeEventListener("resize", resize);
     };
   }, []);

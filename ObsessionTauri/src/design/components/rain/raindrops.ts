@@ -2,12 +2,9 @@
 // Максимально дословно (структура, формулы, константы сохранены), добавлены типы
 // и метод destroy() для остановки rAF при размонтировании React-компонента.
 import { random, chance, times, createCanvas } from "./random";
-import { renderActive } from "../../render";
+import { createRenderLoop, FPS_RAIN, type RenderLoop } from "../../render";
 
 const dropSize = 64;
-// Кап симуляции капель на 60 fps (в пару к рендеру). На высоком герце не считаем
-// физику на 120/180 fps впустую; на 60 Гц — нативно.
-const SIM_FRAME = 1000 / 60;
 
 interface Drop {
   x: number;
@@ -106,9 +103,8 @@ export class Raindrops {
   dropsGfx: HTMLCanvasElement[] = [];
   clearDropletsGfx!: HTMLCanvasElement;
   textureCleaningIterations = 0;
-  lastRender: number | null = null;
 
-  private raf = 0;
+  private loop: RenderLoop | null = null;
   private destroyed = false;
 
   constructor(
@@ -149,12 +145,31 @@ export class Raindrops {
     this.drops = [];
     this.dropsGfx = [];
     this.renderDropsGfx();
-    this.update();
+    // Кап FPS_RAIN (в пару к рендеру): физика дождя тяжёлая, на высоком герце
+    // не считаем её на 120/180/240 fps впустую. Гейт видимости — тоже в хелпере.
+    this.loop = createRenderLoop((dt) => this.step(dt), { fps: FPS_RAIN });
+    this.loop.start();
   }
 
   destroy() {
     this.destroyed = true;
-    cancelAnimationFrame(this.raf);
+    this.loop?.dispose();
+    this.loop = null;
+    // Освобождаем оффскрин-канвасы: ~255 спрайтов капель (dropSize²), маску
+    // очистки и два полноэкранных буфера. Обнуляем размеры — так WebView2
+    // отпускает backing store сразу, не дожидаясь GC.
+    const release = (c: HTMLCanvasElement | undefined | null) => {
+      if (c) {
+        c.width = 0;
+        c.height = 0;
+      }
+    };
+    for (const g of this.dropsGfx) release(g);
+    this.dropsGfx = [];
+    release(this.clearDropletsGfx);
+    release(this.canvas);
+    release(this.droplets);
+    this.drops = [];
   }
 
   drawDroplet(x: number, y: number, r: number) {
@@ -437,29 +452,17 @@ export class Raindrops {
     this.drops = newDrops;
   }
 
-  update() {
+  private step(dt: number) {
     if (this.destroyed) return;
-    this.raf = requestAnimationFrame(this.update.bind(this));
-    // Окно скрыто/в трее — не считаем физику капель (сбрасываем lastRender, чтобы
-    // после паузы dt не «прыгнул»).
-    if (!renderActive()) {
-      this.lastRender = null;
-      return;
-    }
-    // Троттлинг до 30 fps: lastRender служит и якорем dt, и меткой троттлинга —
-    // пока кадр не прошёл, пропускаем без пересчёта физики.
-    const now = performance.now();
-    if (this.lastRender != null && now - this.lastRender < SIM_FRAME) return;
-
     this.clearCanvas();
-
-    if (this.lastRender == null) this.lastRender = now;
-    let deltaT = now - this.lastRender;
-    let timeScale = deltaT / ((1 / 60) * 1000);
-    if (timeScale > 1.1) timeScale = 1.1;
+    // timeScale — от реального dt (хелпер уже клампит его maxDt), а не от
+    // «идеального» кадра: прежний потолок 1.1 на каждом пропущенном кадре
+    // (deltaT≈33 мс → timeScale 2.0 → кламп 1.1) вёл физику в полскорости —
+    // дождь буквально замедлялся. Потолок 2.0 оставлен как страховка формул
+    // (Math.pow(0.x, timeScale), коллизии) от взрыва после фриза.
+    let timeScale = dt * 60;
+    if (timeScale > 2) timeScale = 2;
     timeScale *= this.options.globalTimeScale;
-    this.lastRender = now;
-
     this.updateDrops(timeScale);
   }
 }

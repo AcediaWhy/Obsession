@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useDpiStore } from "../../store/dpiStore";
 import { useProxyStore } from "../../store/proxyStore";
-import { renderActive } from "../render";
+import { createRenderLoop, FPS_FIELD } from "../render";
 
 // Реактивная среда: полноэкранные шторы полярного сияния. В покое — прохладный
 // индиго/циан-дрейф; при активном обходе/прокси пространство «разогревается» —
@@ -56,20 +56,8 @@ export function AuroraField() {
 
     let t = 0;
     let warm = 0;
-    let raf = 0;
-    let last = 0;
-    const FRAME = 1000 / 60; // кап 60 fps: плавно на любом герце, но не жжём 120/180
 
-    const draw = (now: number) => {
-      raf = requestAnimationFrame(draw);
-      if (!renderActive()) {
-        last = 0; // сброс, чтобы после паузы dt не «прыгнул»
-        return;
-      }
-      if (now - last < FRAME) return; // throttle
-      const dt = last ? Math.min((now - last) / 1000, 0.1) : 0.033;
-      last = now;
-
+    const draw = (dt: number) => {
       // Время и разогрев — кадронезависимые (одинаковая скорость на любом мониторе).
       t += dt;
       warm += ((hotRef.current ? 1 : 0) - warm) * (1 - Math.exp(-dt * 2.4));
@@ -118,10 +106,14 @@ export function AuroraField() {
       }
       ctx.globalCompositeOperation = "source-over";
     };
-    raf = requestAnimationFrame(draw);
+    // Кап 60 fps: полноэкранный фон под backdrop-filter-панелями — каждый его
+    // кадр заставляет их пере-блюриваться, на 120–180 Гц без капа это главный
+    // пожиратель main-thread.
+    const loop = createRenderLoop(draw, { fps: FPS_FIELD });
+    loop.start();
 
     return () => {
-      cancelAnimationFrame(raf);
+      loop.dispose();
       window.removeEventListener("resize", resize);
     };
   }, []);

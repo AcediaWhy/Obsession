@@ -18,11 +18,17 @@ export function getContext(
   return context;
 }
 
+export interface BuiltProgram {
+  program: WebGLProgram;
+  texCoordBuffer: WebGLBuffer | null;
+  positionBuffer: WebGLBuffer | null;
+}
+
 export function createProgram(
   gl: WebGLRenderingContext,
   vertexScript: string,
   fragScript: string,
-): WebGLProgram | null {
+): BuiltProgram | null {
   const vertexShader = createShader(gl, vertexScript, gl.VERTEX_SHADER);
   const fragShader = createShader(gl, fragScript, gl.FRAGMENT_SHADER);
   if (!vertexShader || !fragShader) return null;
@@ -35,8 +41,17 @@ export function createProgram(
   if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
     console.error("Error in program linking:", gl.getProgramInfoLog(program));
     gl.deleteProgram(program);
+    gl.deleteShader(vertexShader);
+    gl.deleteShader(fragShader);
     return null;
   }
+
+  // После линковки шейдеры больше не нужны — помечаем к удалению (они
+  // освободятся вместе с программой). Без этого утекают на каждый mount темы.
+  gl.detachShader(program, vertexShader);
+  gl.detachShader(program, fragShader);
+  gl.deleteShader(vertexShader);
+  gl.deleteShader(fragShader);
 
   const positionLocation = gl.getAttribLocation(program, "a_position");
   const texCoordLocation = gl.getAttribLocation(program, "a_texCoord");
@@ -56,7 +71,7 @@ export function createProgram(
   gl.enableVertexAttribArray(positionLocation);
   gl.vertexAttribPointer(positionLocation, 2, gl.FLOAT, false, 0, 0);
 
-  return program;
+  return { program, texCoordBuffer, positionBuffer: buffer };
 }
 
 export function createShader(
