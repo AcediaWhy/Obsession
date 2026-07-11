@@ -8,7 +8,8 @@ import { AuroraCore } from "../design/components/AuroraCore";
 import { RainCore } from "../design/components/RainCore";
 import { OphanimCore } from "../design/components/OphanimCore";
 import { FallenCore } from "../design/components/FallenCore";
-import { RussiaCore } from "../design/components/RussiaCore";
+import { FirefliesCore } from "../design/components/FirefliesCore";
+import { HearthCore } from "../design/components/HearthCore";
 import { Stagger, StaggerItem } from "../design/components/Stagger";
 import {
   Button,
@@ -23,13 +24,21 @@ import { Icon } from "../design/components/icons";
 const AI_PROVIDERS = ["malw", "geohide"];
 
 export function SettingsScreen() {
-  const s = useSettingsStore();
+  // Точечные селекторы (как в Overview): подписка на весь стор перерисовывала бы
+  // весь экран — с ThemePicker и его канвасами — на каждый флип saving/saved
+  // автосохранения. saving/saved читает сам SaveIndicator.
+  const loaded = useSettingsStore((s) => s.loaded);
+  const bootstrap = useSettingsStore((s) => s.bootstrap);
+  const cfg = useSettingsStore((s) => s.settings);
+  const error = useSettingsStore((s) => s.error);
+  const elevated = useSettingsStore((s) => s.elevated);
+  const autostart = useSettingsStore((s) => s.autostart);
+  const setAutostart = useSettingsStore((s) => s.setAutostart);
+  const patch = useSettingsStore((s) => s.patch);
 
   useEffect(() => {
-    if (!s.loaded) s.bootstrap();
+    if (!loaded) bootstrap();
   }, []);
-
-  const cfg = s.settings;
 
   return (
     <div className="flex h-full flex-col gap-4">
@@ -39,12 +48,12 @@ export function SettingsScreen() {
           <h1 className="font-display text-3xl font-bold text-gradient">Настройки</h1>
           <p className="text-sm text-ink-muted">Параметры приложения · сохраняются автоматически</p>
         </div>
-        <SaveIndicator saving={s.saving} saved={s.saved} />
+        <SaveIndicator />
       </div>
 
       {!cfg ? (
         <GlassPanel className="flex flex-1 items-center justify-center text-sm text-ink-muted">
-          {s.error ? s.error : "Загрузка настроек…"}
+          {error ? error : "Загрузка настроек…"}
         </GlassPanel>
       ) : (
         <div className="grid flex-1 grid-cols-2 gap-4 overflow-y-auto pr-1">
@@ -67,8 +76,8 @@ export function SettingsScreen() {
                     hint="Запускать Obsession при входе в систему"
                   >
                     <Switch
-                      checked={s.autostart}
-                      onChange={(v) => s.setAutostart(v)}
+                      checked={autostart}
+                      onChange={(v) => setAutostart(v)}
                     />
                   </Row>
                   <Row
@@ -77,7 +86,7 @@ export function SettingsScreen() {
                   >
                     <Switch
                       checked={cfg.start_minimized}
-                      onChange={(v) => s.patch({ start_minimized: v })}
+                      onChange={(v) => patch({ start_minimized: v })}
                     />
                   </Row>
                   <Row
@@ -86,7 +95,7 @@ export function SettingsScreen() {
                   >
                     <Switch
                       checked={cfg.minimize_to_tray}
-                      onChange={(v) => s.patch({ minimize_to_tray: v })}
+                      onChange={(v) => patch({ minimize_to_tray: v })}
                     />
                   </Row>
                   <Row
@@ -95,7 +104,7 @@ export function SettingsScreen() {
                   >
                     <Switch
                       checked={cfg.reduce_motion}
-                      onChange={(v) => s.patch({ reduce_motion: v })}
+                      onChange={(v) => patch({ reduce_motion: v })}
                     />
                   </Row>
                 </div>
@@ -112,7 +121,7 @@ export function SettingsScreen() {
                       <Select
                         value={cfg.ai_provider || "malw"}
                         options={AI_PROVIDERS}
-                        onChange={(v) => s.patch({ ai_provider: v })}
+                        onChange={(v) => patch({ ai_provider: v })}
                       />
                     </div>
                   </Row>
@@ -132,7 +141,7 @@ export function SettingsScreen() {
                     <TextField
                       type="number"
                       value={String(cfg.proxy_port)}
-                      onChange={(v) => s.patch({ proxy_port: Number(v) || 1443 })}
+                      onChange={(v) => patch({ proxy_port: Number(v) || 1443 })}
                     />
                   </div>
                   <div className="flex flex-col gap-1.5">
@@ -140,7 +149,7 @@ export function SettingsScreen() {
                     <TextField
                       value={cfg.fake_tls_domain}
                       placeholder="напр. www.google.com"
-                      onChange={(v) => s.patch({ fake_tls_domain: v })}
+                      onChange={(v) => patch({ fake_tls_domain: v })}
                     />
                   </div>
                 </div>
@@ -154,14 +163,14 @@ export function SettingsScreen() {
                 <div className="divide-y divide-white/5">
                   <Row label="Права администратора" hint="Нужны для DPI-обхода и правки hosts">
                     <span
-                      className={`text-xs font-semibold ${s.elevated ? "text-ok" : "text-warn"}`}
+                      className={`text-xs font-semibold ${elevated ? "text-ok" : "text-warn"}`}
                     >
-                      {s.elevated ? "Есть" : "Нет"}
+                      {elevated ? "Есть" : "Нет"}
                     </span>
                   </Row>
                   <Row label="Онбординг" hint="Приветственный экран первого запуска">
                     {cfg.has_completed_onboarding ? (
-                      <Button variant="ghost" onClick={() => s.patch({ has_completed_onboarding: false })}>
+                      <Button variant="ghost" onClick={() => patch({ has_completed_onboarding: false })}>
                         Показать снова
                       </Button>
                     ) : (
@@ -239,6 +248,9 @@ function SecretBox() {
 
 // Выбор темы живыми плитками-превью: каждая крутит свой hero в мини-масштабе.
 // Скрытые темы (с полем secret) показываются только после разблокировки.
+// Все превью живут постоянно: после спрайтовой оптимизации шесть мини-ядер
+// стоят копейки, а механика «замри, если не выбран/не наведён» давала уродливые
+// стоп-кадры при переключении темы.
 function ThemePicker() {
   const theme = useThemeStore((s) => s.theme);
   const setTheme = useThemeStore((s) => s.setTheme);
@@ -288,8 +300,10 @@ function ThemeTile({
           <OphanimCore active={selected} onClick={() => {}} size={104} />
         ) : id === "fallendown" ? (
           <FallenCore active={selected} onClick={() => {}} size={104} />
-        ) : id === "russia" ? (
-          <RussiaCore active={selected} onClick={() => {}} size={104} />
+        ) : id === "fireflies" ? (
+          <FirefliesCore active={selected} onClick={() => {}} size={104} />
+        ) : id === "hearth" ? (
+          <HearthCore active={selected} onClick={() => {}} size={104} />
         ) : id === "japan" ? (
           <RainCore active={selected} onClick={() => {}} size={104} />
         ) : (
@@ -306,7 +320,11 @@ function ThemeTile({
   );
 }
 
-function SaveIndicator({ saving, saved }: { saving: boolean; saved: boolean }) {
+// Бейдж автосохранения подписан на saving/saved сам: их флипы (saving → saved →
+// таймаут) перерисовывают только его, а не весь экран с превью-канвасами.
+function SaveIndicator() {
+  const saving = useSettingsStore((s) => s.saving);
+  const saved = useSettingsStore((s) => s.saved);
   return (
     <div className="flex items-center gap-2 rounded-full bg-white/5 px-3 py-1.5 text-xs font-medium">
       {saving ? (
@@ -325,3 +343,4 @@ function SaveIndicator({ saving, saved }: { saving: boolean; saved: boolean }) {
     </div>
   );
 }
+

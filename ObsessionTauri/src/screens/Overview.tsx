@@ -12,6 +12,7 @@ import { Button } from "../design/components/atoms";
 import { Uptime } from "../design/components/Uptime";
 import { Icon } from "../design/components/icons";
 import { spring } from "../design/tokens";
+import { useRenderActive } from "../design/render";
 
 const CATEGORY_LABELS: Record<string, string> = {
   discord: "Discord",
@@ -28,9 +29,20 @@ const AI_STATUS_LABEL: Record<string, string> = {
 };
 
 export function OverviewScreen() {
-  const dpi = useDpiStore();
-  const proxy = useProxyStore();
-  const hosts = useHostsStore();
+  // Точечные селекторы вместо подписки на весь стор: экран не должен
+  // ре-рендериться на изменения testingLabel/testResults/netStats и пр., которые
+  // он не показывает (актуально во время DPI-теста — там частые set в цикле).
+  const dpiActive = useDpiStore((s) => s.active);
+  const dpiSelectedCategories = useDpiStore((s) => s.selectedCategories);
+  const dpiTransitioning = useDpiStore((s) => s.transitioning);
+  const dpiStart = useDpiStore((s) => s.start);
+  const dpiStop = useDpiStore((s) => s.stop);
+  const proxyRunning = useProxyStore((s) => s.running);
+  const proxyAvailable = useProxyStore((s) => s.available);
+  const proxyPort = useProxyStore((s) => s.port);
+  const hostsStatus = useHostsStore((s) => s.status);
+  const hostsLocalVersion = useHostsStore((s) => s.localVersion);
+  const hostsProvider = useHostsStore((s) => s.provider);
   const reduceMotion = useSettingsStore((s) => s.settings?.reduce_motion);
   const [net, setNet] = useState<NetworkInfo | null>(null);
 
@@ -38,10 +50,13 @@ export function OverviewScreen() {
     api.getNetworkIdentity().then(setNet).catch(() => {});
   }, []);
 
-  const protectedNow = dpi.active;
-  const breathing = protectedNow && !reduceMotion;
-  const activeCats = dpi.selectedCategories.map((c) => CATEGORY_LABELS[c] ?? c);
-  const canToggle = !dpi.transitioning && dpi.selectedCategories.length > 0;
+  const protectedNow = dpiActive;
+  // Гасим «дыхание» глаза, когда окно скрыто: это тоже бесконечная
+  // framer-motion-анимация (WAAPI), иначе жгла бы CPU в свёрнутом виде.
+  const renderOn = useRenderActive();
+  const breathing = protectedNow && !reduceMotion && renderOn;
+  const activeCats = dpiSelectedCategories.map((c) => CATEGORY_LABELS[c] ?? c);
+  const canToggle = !dpiTransitioning && dpiSelectedCategories.length > 0;
 
   return (
     <div className="flex h-full flex-col gap-4 overflow-y-auto pr-1">
@@ -101,9 +116,9 @@ export function OverviewScreen() {
           <Button
             variant={protectedNow ? "ghost" : "primary"}
             disabled={!canToggle}
-            onClick={() => (dpi.active ? dpi.stop() : dpi.start())}
+            onClick={() => (dpiActive ? dpiStop() : dpiStart())}
           >
-            {dpi.transitioning
+            {dpiTransitioning
               ? protectedNow
                 ? "Выключаю…"
                 : "Включаю…"
@@ -120,12 +135,12 @@ export function OverviewScreen() {
           <StatusCard
             icon={<Icon.Bolt size={18} />}
             title="DPI-обход"
-            on={dpi.active}
+            on={dpiActive}
             onLabel="Активен"
             offLabel="Выключен"
             detail={
-              dpi.selectedCategories.length
-                ? dpi.selectedCategories
+              dpiSelectedCategories.length
+                ? dpiSelectedCategories
                     .map((c) => CATEGORY_LABELS[c] ?? c)
                     .join(", ")
                 : "Категории не выбраны"
@@ -137,13 +152,13 @@ export function OverviewScreen() {
           <StatusCard
             icon={<Icon.Send size={18} />}
             title="Telegram-прокси"
-            on={proxy.running}
+            on={proxyRunning}
             onLabel="Работает"
-            offLabel={proxy.available ? "Выключен" : "Недоступен"}
+            offLabel={proxyAvailable ? "Выключен" : "Недоступен"}
             detail={
-              proxy.running
-                ? `MTProto на 127.0.0.1:${proxy.port}`
-                : proxy.available
+              proxyRunning
+                ? `MTProto на 127.0.0.1:${proxyPort}`
+                : proxyAvailable
                   ? "Готов к запуску"
                   : "TgWsProxy.exe не найден"
             }
@@ -154,14 +169,14 @@ export function OverviewScreen() {
           <StatusCard
             icon={<Icon.Robot size={18} />}
             title="ИИ-разблокировка"
-            on={hosts.status === "installed" || hosts.status === "outdated"}
-            onLabel={hosts.status === "outdated" ? "Обновить" : "Установлено"}
-            offLabel={AI_STATUS_LABEL[hosts.status] ?? "не установлено"}
-            warn={hosts.status === "outdated"}
+            on={hostsStatus === "installed" || hostsStatus === "outdated"}
+            onLabel={hostsStatus === "outdated" ? "Обновить" : "Установлено"}
+            offLabel={AI_STATUS_LABEL[hostsStatus] ?? "не установлено"}
+            warn={hostsStatus === "outdated"}
             detail={
-              hosts.localVersion
-                ? `Провайдер ${hosts.provider} · v${hosts.localVersion}`
-                : `Провайдер ${hosts.provider}`
+              hostsLocalVersion
+                ? `Провайдер ${hostsProvider} · v${hostsLocalVersion}`
+                : `Провайдер ${hostsProvider}`
             }
           />
         </StaggerItem>
