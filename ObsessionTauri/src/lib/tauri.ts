@@ -3,6 +3,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
@@ -213,6 +214,12 @@ export const win = {
   minimize: () => getCurrentWindow().minimize(),
   toggleMaximize: () => getCurrentWindow().toggleMaximize(),
   close: () => getCurrentWindow().close(),
+  // Показ/скрытие именно веб-вью: в свёрнутом (iconic) окне композитор WebView2
+  // продолжает рисовать кадры — hide() гасит рендер до ~0% CPU, show() возвращает.
+  showWebview: () => getCurrentWebview().show(),
+  hideWebview: () => getCurrentWebview().hide(),
+  onFocusChanged: (cb: (focused: boolean) => void): Promise<UnlistenFn> =>
+    getCurrentWindow().onFocusChanged(({ payload }) => cb(payload)),
 };
 
 export const clipboard = { write: writeText };

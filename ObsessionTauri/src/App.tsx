@@ -21,7 +21,7 @@ import { useThemeStore } from "./store/themeStore";
 import { useSettingsStore } from "./store/settingsStore";
 import { Onboarding } from "./design/components/Onboarding";
 import { Toaster } from "./design/components/Toaster";
-import { on } from "./lib/tauri";
+import { on, win } from "./lib/tauri";
 import { setWindowShown } from "./design/render";
 import { toast } from "./store/toastStore";
 
@@ -46,7 +46,17 @@ export default function App() {
 
     // Пауза анимаций при скрытии окна в трей (сигнал из Rust дополняет
     // Visibility API, который в WebView2 не всегда срабатывает на hide()).
-    const unlistenVis = on.windowVisibility((visible) => setWindowShown(visible));
+    // Плюс гасим/возвращаем рендер веб-вью: свёрнутое (iconic) окно композитор
+    // WebView2 продолжает рисовать, а hide() веб-вью убирает эту нагрузку до ~0%.
+    const unlistenVis = on.windowVisibility((visible) => {
+      setWindowShown(visible);
+      void (visible ? win.showWebview() : win.hideWebview());
+    });
+    // Мгновенный возврат рендера при развороте (фокус приходит раньше, чем
+    // подтверждение 300мс-поллера) — чтобы не мелькнул пустой кадр.
+    const unlistenFocus = win.onFocusChanged((focused) => {
+      if (focused) void win.showWebview();
+    });
 
     // Значимые ошибки бэкенда (падение winws, сбой Глаз/прокси) — всплывают
     // тостом, чтобы пользователь заметил их, не открывая боковой лог.
@@ -69,6 +79,7 @@ export default function App() {
       unlistenDpi.then((fn) => fn());
       unlistenProxy.then((fn) => fn());
       unlistenVis.then((fn) => fn());
+      unlistenFocus.then((fn) => fn());
       unlistenErr.then((fn) => fn());
       if (!ric) window.clearTimeout(warmTimer);
     };

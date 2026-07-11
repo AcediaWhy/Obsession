@@ -184,8 +184,8 @@ function SoulCanvas({ active, busy, size, paused }: { active: boolean; busy: boo
       }
       ctx.globalCompositeOperation = "source-over";
     };
-    // Превью в Настройках монтируются уже застывшими (paused): хелпер рисует
-    // один кадр и глушит rAF. paused НЕ в deps — ховер не пересоздаёт эффект.
+    // paused из Настроек не передаётся — превью живут живыми (helper крутит цикл на
+    // coreFps). paused НЕ в deps: ховер не пересоздаёт эффект. В трее цикл гасит гейт.
     // Кламп dt — дефолтный 0.1: прежний 0.05 при капе 20 fps постоянно
     // срезал реальный интервал и замедлял сердцебиение на ~9%.
     const loop = createRenderLoop(draw, { fps: coreFps(size), paused: pausedRef.current });
