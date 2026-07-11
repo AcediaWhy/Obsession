@@ -147,6 +147,49 @@ pub fn run() {
                 });
             }
 
+            // Надёжный детектор видимости окна для паузы анимаций. Событийный путь
+            // в связке tao+WebView2 капризен: сворачивание/разворот не всегда шлют
+            // Resized, а window.hide() не даёт visibilitychange. Причём tao-обёртки
+            // is_minimized()/is_visible() под WebView2 ВРУТ (лагают/не видят внешний
+            // минимайз) — из-за этого сворачивание не паузило анимации и окно жгло
+            // CPU в трее. Берём состояние напрямую из Win32 (IsIconic/IsWindowVisible)
+            // — авторитетный источник — и шлём window-visibility при изменении.
+            // Интервал 300мс: пауза срабатывает почти мгновенно, нагрузка околонулевая.
+            {
+                let h = handle.clone();
+                std::thread::spawn(move || {
+                    let mut last_shown: Option<bool> = None;
+                    loop {
+                        std::thread::sleep(std::time::Duration::from_millis(300));
+                        let Some(win) = h.get_webview_window("main") else {
+                            continue;
+                        };
+                        #[cfg(windows)]
+                        let shown = match win.hwnd() {
+                            Ok(h) => unsafe {
+                                use windows::Win32::Foundation::HWND;
+                                use windows::Win32::UI::WindowsAndMessaging::{
+                                    IsIconic, IsWindowVisible,
+                                };
+                                // Реконструируем HWND нашей версии windows-крейта из
+                                // сырого указателя: у tauri своя версия крейта, прямая
+                                // передача её HWND не типизируется.
+                                let hwnd = HWND(h.0 as _);
+                                IsWindowVisible(hwnd).as_bool() && !IsIconic(hwnd).as_bool()
+                            },
+                            Err(_) => continue,
+                        };
+                        #[cfg(not(windows))]
+                        let shown = win.is_visible().unwrap_or(true)
+                            && !win.is_minimized().unwrap_or(false);
+                        if last_shown != Some(shown) {
+                            last_shown = Some(shown);
+                            let _ = h.emit("window-visibility", shown);
+                        }
+                    }
+                });
+            }
+
             // Окно создано скрытым. Показываем, если не выбран старт в трее —
             // иначе приложение живёт в трее до клика по иконке.
             if !start_minimized {
@@ -167,9 +210,9 @@ pub fn run() {
                     .unwrap()
                     .minimize_to_tray;
                 if minimize {
-                    // Сворачиваем в трей вместо выхода. Сообщаем фронту, что окно
-                    // скрыто — WebView2 не всегда шлёт visibilitychange на hide(),
-                    // а без него анимации продолжали бы жечь CPU в трее.
+                    // Сворачиваем в трей вместо выхода. Немедленно сообщаем фронту,
+                    // что окно скрыто; поллер (см. setup) всё равно продублирует —
+                    // но так пауза анимаций срабатывает без задержки.
                     api.prevent_close();
                     let _ = window.hide();
                     let _ = app.emit("window-visibility", false);

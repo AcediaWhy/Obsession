@@ -1,7 +1,16 @@
 import { win } from "../../lib/tauri";
+import { setWindowShown } from "../render";
 
 // Кастомный титлбар: drag-регион + кнопки управления окном.
 export function CustomTitleBar() {
+  // Оптимистичная пауза: гасим анимации сразу по клику на сворачивание, не дожидаясь
+  // Rust-поллера (~300мс). Поллер затем подтверждает состояние и вернёт shown=true
+  // при разворачивании — он остаётся источником правды.
+  const minimize = () => {
+    setWindowShown(false);
+    void win.minimize();
+  };
+
   return (
     <div className="drag-region flex h-10 items-center justify-between px-4">
       <div className="flex items-center gap-2">
@@ -11,7 +20,7 @@ export function CustomTitleBar() {
         </span>
       </div>
       <div className="no-drag flex items-center gap-1">
-        <WinButton label="—" onClick={() => win.minimize()} />
+        <WinButton label="—" onClick={minimize} />
         <WinButton label="▢" onClick={() => win.toggleMaximize()} small />
         <WinButton label="✕" onClick={() => win.close()} danger />
       </div>

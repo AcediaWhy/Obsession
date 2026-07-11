@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from "react";
+import { onRenderActiveChange, renderActive } from "../render";
 
-// Живой таймер аптайма — тикает, пока обход/прокси активны.
+// Живой таймер аптайма — тикает, пока обход/прокси активны. В трее/свёрнутом окне
+// интервал паузится (как и все анимации): elapsed считается от абсолютного времени
+// старта, поэтому при возврате значение мгновенно пересчитывается без потери точности.
 export function Uptime({ active }: { active: boolean }) {
   const [elapsed, setElapsed] = useState(0);
   const startRef = useRef<number | null>(null);
@@ -12,12 +15,32 @@ export function Uptime({ active }: { active: boolean }) {
       return;
     }
     startRef.current = Date.now();
-    const id = setInterval(() => {
+
+    let id: ReturnType<typeof setInterval> | null = null;
+    const tick = () => {
       if (startRef.current) {
         setElapsed(Math.floor((Date.now() - startRef.current) / 1000));
       }
-    }, 1000);
-    return () => clearInterval(id);
+    };
+    const startTicking = () => {
+      if (id != null) return;
+      tick(); // сразу подтягиваем актуальное значение (без задержки до 1с)
+      id = setInterval(tick, 1000);
+    };
+    const stopTicking = () => {
+      if (id != null) {
+        clearInterval(id);
+        id = null;
+      }
+    };
+
+    if (renderActive()) startTicking();
+    const unsub = onRenderActiveChange((a) => (a ? startTicking() : stopTicking()));
+
+    return () => {
+      unsub();
+      stopTicking();
+    };
   }, [active]);
 
   if (!active) return null;
