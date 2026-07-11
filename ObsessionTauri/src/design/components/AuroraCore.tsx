@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { motion } from "framer-motion";
 import { CORE_HERO_MIN_SIZE, coreFps, createRenderLoop, useRenderActive, type RenderLoop } from "../render";
+import { createSpriteCache } from "./glowSprite";
 
 type Props = {
   active: boolean;
@@ -97,15 +98,51 @@ type Ribbon = {
   freq: number; // «частота» волны по вертикали
   speed: number; // скорость дрейфа фазы
   phase: number; // стартовая фаза
-  cold: [number, number, number]; // цвет в покое (r,g,b)
+  rays: number; // число вертикальных лучей-полос внутри шторы
+  cold: [number, number, number]; // цвет в покое (r,g,b) — индиго/циан/бирюза
   hot: [number, number, number]; // цвет при активации
 };
 
 const RIBBONS: Ribbon[] = [
-  { x: 0.30, width: 0.20, amp: 0.05, freq: 0.9, speed: 0.34, phase: 0.0, cold: [99, 102, 241], hot: [139, 92, 246] },
-  { x: 0.46, width: 0.24, amp: 0.06, freq: 1.2, speed: 0.46, phase: 1.7, cold: [34, 211, 238], hot: [240, 171, 252] },
-  { x: 0.60, width: 0.18, amp: 0.055, freq: 1.0, speed: 0.30, phase: 3.1, cold: [129, 140, 248], hot: [253, 230, 138] },
-  { x: 0.70, width: 0.16, amp: 0.05, freq: 1.4, speed: 0.52, phase: 4.6, cold: [56, 189, 248], hot: [34, 211, 238] },
+  { x: 0.30, width: 0.20, amp: 0.05, freq: 0.9, speed: 0.34, phase: 0.0, rays: 5, cold: [99, 102, 241], hot: [139, 92, 246] },
+  { x: 0.46, width: 0.24, amp: 0.06, freq: 1.2, speed: 0.46, phase: 1.7, rays: 6, cold: [45, 212, 191], hot: [240, 171, 252] },
+  { x: 0.60, width: 0.18, amp: 0.055, freq: 1.0, speed: 0.30, phase: 3.1, rays: 5, cold: [34, 211, 238], hot: [253, 230, 138] },
+  { x: 0.70, width: 0.16, amp: 0.05, freq: 1.4, speed: 0.52, phase: 4.6, rays: 4, cold: [16, 185, 129], hot: [34, 211, 238] },
+];
+
+// Искорка-звезда позади лент (мягкое ядро + крест-блик), запечена в спрайт по
+// корзинам яркости — тот же язык, что звёзды фона (см. AuroraField).
+const coreGlint = createSpriteCache(5, 40, (sctx, px, k) => {
+  const R = px / 2;
+  const b = 0.55 + k * 0.45;
+  const core = sctx.createRadialGradient(R, R, 0, R, R, R * 0.5);
+  core.addColorStop(0, `rgba(255,255,255,${b})`);
+  core.addColorStop(0.5, `rgba(202,222,255,${b * 0.4})`);
+  core.addColorStop(1, "rgba(202,222,255,0)");
+  sctx.fillStyle = core;
+  sctx.fillRect(0, 0, px, px);
+  const spike = (horizontal: boolean) => {
+    const g = horizontal
+      ? sctx.createLinearGradient(0, R, px, R)
+      : sctx.createLinearGradient(R, 0, R, px);
+    g.addColorStop(0, "rgba(220,235,255,0)");
+    g.addColorStop(0.5, `rgba(235,244,255,${b * 0.7})`);
+    g.addColorStop(1, "rgba(220,235,255,0)");
+    sctx.fillStyle = g;
+    if (horizontal) sctx.fillRect(0, R - 1, px, 2);
+    else sctx.fillRect(R - 1, 0, 2, px);
+  };
+  spike(true);
+  spike(false);
+});
+
+// Фиксированные искры внутри круга (позиции детерминированы — стабильны между
+// перемонтированиями). Доли размера от центра; держим внутри маски (r<0.42).
+const SPARKS = [
+  { dx: -0.24, dy: -0.2, r: 1.6, spd: 0.7, ph: 0.0 },
+  { dx: 0.26, dy: -0.14, r: 1.3, spd: 1.1, ph: 1.9 },
+  { dx: -0.12, dy: 0.26, r: 1.5, spd: 0.9, ph: 3.4 },
+  { dx: 0.2, dy: 0.22, r: 1.2, spd: 1.3, ph: 5.0 },
 ];
 
 function AuroraCanvas({ active, busy, size, paused }: { active: boolean; busy: boolean; size: number; paused: boolean }) {
@@ -147,6 +184,16 @@ function AuroraCanvas({ active, busy, size, paused }: { active: boolean; busy: b
 
       ctx.clearRect(0, 0, size, size);
       ctx.globalCompositeOperation = "lighter";
+
+      // Искры-звёзды позади лент — мягко мерцают.
+      for (const sp of SPARKS) {
+        const tw = 0.4 + 0.6 * (0.5 + 0.5 * Math.sin(t * sp.spd + sp.ph));
+        const a = tw * (0.5 + warm * 0.4);
+        const R = sp.r * 5;
+        ctx.globalAlpha = a;
+        ctx.drawImage(coreGlint(a), size / 2 + sp.dx * size - R, size / 2 + sp.dy * size - R, R * 2, R * 2);
+      }
+      ctx.globalAlpha = 1;
 
       const step = 6;
       for (const rb of RIBBONS) {
@@ -192,6 +239,28 @@ function AuroraCanvas({ active, busy, size, paused }: { active: boolean; busy: b
         grad.addColorStop(1.0, `rgba(${r},${g},${b},0)`);
         ctx.fillStyle = grad;
         ctx.fill();
+
+        // Лучи-полосы внутри ленты — «расчёсанная» текстура сияния (как в фоне).
+        const rr = Math.min(r + 40, 255);
+        const rg = Math.min(g + 40, 255);
+        const rayGrad = ctx.createLinearGradient(0, 0, 0, size);
+        rayGrad.addColorStop(0.0, `rgba(${rr},${rg},${b},0)`);
+        rayGrad.addColorStop(0.4, `rgba(${rr},${rg},${b},1)`);
+        rayGrad.addColorStop(1.0, `rgba(${rr},${rg},${b},0)`);
+        ctx.strokeStyle = rayGrad;
+        ctx.lineWidth = 1;
+        for (let i = 0; i < rb.rays; i++) {
+          const off = (i / (rb.rays - 1) - 0.5) * rb.width * size * 0.85;
+          const shimmer = 0.1 + 0.18 * (0.5 + 0.5 * Math.sin(t * (1.4 + rb.speed * 3) + i * 1.7 + rb.phase));
+          ctx.globalAlpha = shimmer * (0.6 + warm * 0.8) * flick;
+          ctx.beginPath();
+          for (let y = 0; y <= size; y += step) {
+            const x = centerAt(y) + off;
+            y === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+          }
+          ctx.stroke();
+        }
+        ctx.globalAlpha = 1;
       }
 
       // Мягкое ядро-свечение в центре — «дышит».

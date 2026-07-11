@@ -4,9 +4,9 @@ import { useRenderActive } from "../render";
 import { AuroraField } from "./AuroraField";
 import { OphanimField } from "./OphanimField";
 import { FallenField } from "./FallenField";
-import { FirefliesField } from "./FirefliesField";
-import { HearthField } from "./HearthField";
 import { RainField2D } from "./RainField2D";
+import { CatnapField } from "./CatnapField";
+import { MidnightField } from "./MidnightField";
 
 // 3D-сцена «Rain» (id japan) грузится лениво (three.js только при выборе темы)
 // и только если доступен WebGL; при любой ошибке рендера — откат на 2D-дождь
@@ -49,8 +49,10 @@ export function HeroField() {
   const renderOn = useRenderActive();
   if (theme === "ophanim") return <OphanimField />;
   if (theme === "fallendown") return <FallenField />;
-  if (theme === "fireflies") return <FirefliesField />;
-  if (theme === "hearth") return <HearthField />;
+  // Видео-темы: <video> паузится по гейту видимости внутри VideoField,
+  // декодер в трее не работает — размонтировать, как Rain, не нужно.
+  if (theme === "catnap") return <CatnapField />;
+  if (theme === "midnight") return <MidnightField />;
   if (theme === "japan") {
     // В трее показываем лёгкий 2D-дождь-заглушку (почти бесплатен и сразу
     // паузится) вместо WebGL-сцены — визуально та же тема, без утечки контекста.

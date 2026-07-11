@@ -8,8 +8,8 @@ import { AuroraCore } from "../design/components/AuroraCore";
 import { RainCore } from "../design/components/RainCore";
 import { OphanimCore } from "../design/components/OphanimCore";
 import { FallenCore } from "../design/components/FallenCore";
-import { FirefliesCore } from "../design/components/FirefliesCore";
-import { HearthCore } from "../design/components/HearthCore";
+import { CatnapCore } from "../design/components/CatnapCore";
+import { MidnightCore } from "../design/components/MidnightCore";
 import { Stagger, StaggerItem } from "../design/components/Stagger";
 import {
   Button,
@@ -300,10 +300,10 @@ function ThemeTile({
           <OphanimCore active={selected} onClick={() => {}} size={104} />
         ) : id === "fallendown" ? (
           <FallenCore active={selected} onClick={() => {}} size={104} />
-        ) : id === "fireflies" ? (
-          <FirefliesCore active={selected} onClick={() => {}} size={104} />
-        ) : id === "hearth" ? (
-          <HearthCore active={selected} onClick={() => {}} size={104} />
+        ) : id === "catnap" ? (
+          <CatnapCore active={selected} onClick={() => {}} size={104} />
+        ) : id === "midnight" ? (
+          <MidnightCore active={selected} onClick={() => {}} size={104} />
         ) : id === "japan" ? (
           <RainCore active={selected} onClick={() => {}} size={104} />
         ) : (

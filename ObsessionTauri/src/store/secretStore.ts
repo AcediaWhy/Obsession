@@ -18,6 +18,8 @@ function norm(s: string): string {
 
 const REGISTRY: Reward[] = [
   { id: "fallendown", title: "Fallen Down", keys: ["fallendown"] },
+  { id: "catnap", title: "Catnap", keys: ["catnap", "мурлыка", "мур"] },
+  { id: "midnight", title: "Midnight", keys: ["midnight", "полночь", "фонарь"] },
 ];
 
 export type RedeemResult =
