@@ -7,6 +7,9 @@ export class GL {
   program: WebGLProgram;
   width: number;
   height: number;
+  private texCoordBuffer: WebGLBuffer | null;
+  private positionBuffer: WebGLBuffer | null;
+  private quadReady = false;
 
   constructor(
     canvas: HTMLCanvasElement,
@@ -20,7 +23,11 @@ export class GL {
     const gl = WebGL.getContext(canvas, options);
     if (!gl) throw new Error("WebGL недоступен");
     this.gl = gl;
-    this.program = WebGL.createProgram(gl, vert, frag)!;
+    const built = WebGL.createProgram(gl, vert, frag);
+    if (!built) throw new Error("WebGL: не удалось собрать программу");
+    this.program = built.program;
+    this.texCoordBuffer = built.texCoordBuffer;
+    this.positionBuffer = built.positionBuffer;
     this.useProgram(this.program);
   }
 
@@ -46,7 +53,25 @@ export class GL {
   }
 
   draw() {
-    WebGL.setRectangle(this.gl, -1, -1, 2, 2);
+    // Полноэкранный квад статичен — заливаем позиционный буфер один раз,
+    // а не перезаливаем Float32Array каждый кадр.
+    if (!this.quadReady) {
+      WebGL.setRectangle(this.gl, -1, -1, 2, 2);
+      this.quadReady = true;
+    }
     this.gl.drawArrays(this.gl.TRIANGLES, 0, 6);
+  }
+
+  /** Освобождает GPU-ресурсы: буферы, программу и контекст.
+   *  Без этого каждый вход/выход темы Rain течёт WebGL-контекст (браузер
+   *  держит ~16 живых) + текстуры. Звать при размонтировании. */
+  destroy() {
+    const gl = this.gl;
+    if (this.texCoordBuffer) gl.deleteBuffer(this.texCoordBuffer);
+    if (this.positionBuffer) gl.deleteBuffer(this.positionBuffer);
+    if (this.program) gl.deleteProgram(this.program);
+    const lose = gl.getExtension("WEBGL_lose_context");
+    if (lose) lose.loseContext();
+    this.quadReady = false;
   }
 }

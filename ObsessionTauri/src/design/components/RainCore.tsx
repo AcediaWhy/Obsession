@@ -1,19 +1,24 @@
 import { useEffect, useRef } from "react";
 import { motion } from "framer-motion";
-import { renderActive } from "../render";
+import { CORE_HERO_MIN_SIZE, coreFps, createRenderLoop, useRenderActive, type RenderLoop } from "../render";
 
 type Props = {
   active: boolean;
   busy?: boolean;
   onClick: () => void;
   size?: number;
+  paused?: boolean;
 };
 
 // Ядро темы «Rain»: поверхность воды. От падающих капель расходятся
 // концентрические круги-рябь. В покое — редкие спокойные круги; при активации
 // («гроза усиливается») капли падают чаще, рябь плотнее и ярче. Только вода и
 // свет, никакой геометрии — форма читается органично в любом состоянии.
-export function RainCore({ active, busy = false, onClick, size = 240 }: Props) {
+export function RainCore({ active, busy = false, onClick, size = 240, paused = false }: Props) {
+  // Ореолы гасим, когда окно скрыто ИЛИ это застывшее превью невыбранной темы
+  // (paused): framer-motion гоняет их на компоновщике (WAAPI) и сам на скрытие не
+  // реагирует — жёг бы CPU в трее и в Настройках (6 превью × 2 ореола).
+  const renderOn = useRenderActive() && !paused;
   return (
     <motion.button
       onClick={onClick}
@@ -34,15 +39,23 @@ export function RainCore({ active, busy = false, onClick, size = 240 }: Props) {
             : "radial-gradient(circle, rgba(122,152,190,0.18), transparent 68%)",
           filter: "blur(10px)",
         }}
-        animate={{
-          opacity: active ? [0.7, 1, 0.7] : [0.5, 0.7, 0.5],
-          scale: active ? [1, 1.05, 1] : 1,
-        }}
-        transition={{ duration: active ? 3.2 : 5, repeat: Infinity, ease: "easeInOut" }}
+        animate={
+          renderOn
+            ? {
+                opacity: active ? [0.7, 1, 0.7] : [0.5, 0.7, 0.5],
+                scale: active ? [1, 1.05, 1] : 1,
+              }
+            : { opacity: active ? 0.85 : 0.6, scale: 1 }
+        }
+        transition={
+          renderOn
+            ? { duration: active ? 3.2 : 5, repeat: Infinity, ease: "easeInOut" }
+            : { duration: 0.3 }
+        }
       />
 
       {/* Поверхность воды с расходящейся рябью. */}
-      <RippleCanvas active={active} busy={busy} size={size} />
+      <RippleCanvas active={active} busy={busy} size={size} paused={paused} />
 
       {/* Тонкий «стеклянный» ободок. */}
       <motion.div
@@ -54,8 +67,8 @@ export function RainCore({ active, busy = false, onClick, size = 240 }: Props) {
             : "inset 0 0 26px 2px rgba(122,152,190,0.20), 0 0 16px 1px rgba(122,152,190,0.22)",
           border: "1px solid rgba(255,255,255,0.06)",
         }}
-        animate={{ opacity: active ? [0.8, 1, 0.8] : [0.55, 0.75, 0.55] }}
-        transition={{ duration: 2.6, repeat: Infinity, ease: "easeInOut" }}
+        animate={renderOn ? { opacity: active ? [0.8, 1, 0.8] : [0.55, 0.75, 0.55] } : { opacity: active ? 0.9 : 0.65 }}
+        transition={renderOn ? { duration: 2.6, repeat: Infinity, ease: "easeInOut" } : { duration: 0.3 }}
       />
 
       {/* Метка состояния. */}
@@ -86,10 +99,13 @@ type Ripple = {
   strength: number; // 0..1 сила круга
 };
 
-function RippleCanvas({ active, busy, size }: { active: boolean; busy: boolean; size: number }) {
+function RippleCanvas({ active, busy, size, paused }: { active: boolean; busy: boolean; size: number; paused: boolean }) {
   const ref = useRef<HTMLCanvasElement>(null);
   const stateRef = useRef({ active, busy });
   stateRef.current = { active, busy };
+  const loopRef = useRef<RenderLoop | null>(null);
+  const pausedRef = useRef(paused);
+  pausedRef.current = paused;
 
   useEffect(() => {
     const canvas = ref.current;
@@ -97,7 +113,9 @@ function RippleCanvas({ active, busy, size }: { active: boolean; busy: boolean; 
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    // Превью (size<160) рисуем в 1×: мягким свечениям хватает, а пикселей — и
+    // работы композитору — вчетверо меньше. Герой остаётся чётким (dpr до 2).
+    const dpr = size >= CORE_HERO_MIN_SIZE ? Math.min(window.devicePixelRatio || 1, 2) : 1;
     canvas.width = size * dpr;
     canvas.height = size * dpr;
     ctx.scale(dpr, dpr);
@@ -106,8 +124,12 @@ function RippleCanvas({ active, busy, size }: { active: boolean; busy: boolean; 
     let spawnAcc = 0; // накопитель порождения капель
     let t = 0;
     let warm = 0; // 0..1 плавный «разогрев» при активации
-    let raf = 0;
-    let last = 0;
+
+    // Маска-феатеринг статична (центр/радиусы от size) — строим один раз.
+    const mask = ctx.createRadialGradient(size / 2, size / 2, size * 0.2, size / 2, size / 2, size * 0.5);
+    mask.addColorStop(0, "rgba(0,0,0,1)");
+    mask.addColorStop(0.74, "rgba(0,0,0,1)");
+    mask.addColorStop(1, "rgba(0,0,0,0)");
 
     // Капли падают ближе к центру, но с разбросом — живая поверхность.
     const spawnRipple = (hot: number) => {
@@ -124,15 +146,7 @@ function RippleCanvas({ active, busy, size }: { active: boolean; busy: boolean; 
       if (ripples.length > 48) ripples.shift();
     };
 
-    const draw = (now: number) => {
-      raf = requestAnimationFrame(draw);
-      if (!renderActive()) {
-        last = 0; // сброс, чтобы dt не «прыгнул» после паузы
-        return;
-      }
-      const dt = last ? Math.min((now - last) / 1000, 0.1) : 0.016;
-      last = now;
-
+    const draw = (dt: number) => {
       const { active: on, busy: loading } = stateRef.current;
       t += dt;
       warm += ((on ? 1 : 0) - warm) * (1 - Math.exp(-dt * 2.6));
@@ -214,17 +228,31 @@ function RippleCanvas({ active, busy, size }: { active: boolean; busy: boolean; 
 
       // Феатеринг в мягкий круг: свет только внутри радиальной маски.
       ctx.globalCompositeOperation = "destination-in";
-      const mask = ctx.createRadialGradient(size / 2, size / 2, size * 0.2, size / 2, size / 2, size * 0.5);
-      mask.addColorStop(0, "rgba(0,0,0,1)");
-      mask.addColorStop(0.74, "rgba(0,0,0,1)");
-      mask.addColorStop(1, "rgba(0,0,0,0)");
       ctx.fillStyle = mask;
       ctx.fillRect(0, 0, size, size);
       ctx.globalCompositeOperation = "source-over";
     };
-    raf = requestAnimationFrame(draw);
-    return () => cancelAnimationFrame(raf);
+    // Превью в Настройках монтируются уже застывшими (paused): хелпер рисует
+    // один кадр и глушит rAF. paused НЕ в deps — ховер не пересоздаёт эффект.
+    const loop = createRenderLoop(draw, { fps: coreFps(size), paused: pausedRef.current });
+    loopRef.current = loop;
+    loop.start();
+    return () => {
+      loop.dispose();
+      loopRef.current = null;
+    };
   }, [size]);
+
+  // Пауза/продолжение без тир-дауна эффекта: состояние анимации (t/warm) живёт.
+  useEffect(() => {
+    loopRef.current?.setPaused(paused);
+  }, [paused]);
+
+  // Застывшее превью перерисовываем при смене active/busy (выбор темы меняет
+  // цвет замершего кадра) — раньше это давал полный ремоунт эффекта.
+  useEffect(() => {
+    if (paused) loopRef.current?.invalidate();
+  }, [active, busy, paused]);
 
   return (
     <canvas
