@@ -25,12 +25,65 @@
   --glass-specular: rgba(255, 255, 255, 0.22);
 }
 
+/* Тема Aurora (дефолт) — полярное сияние: индиго/циан + бирюза. Акценты берёт из
+   :root; здесь только прохладное индиго-стекло и бирюзовый градиент заголовков,
+   чтобы UI перекликался с обновлённым фоном. Отдельный блок (а не :root), чтобы
+   Fallen Down остался на нейтральном стекле пустоты. */
+[data-theme="aurora"] {
+  --glass-bg: linear-gradient(
+    180deg,
+    rgba(18, 22, 42, 0.42),
+    rgba(10, 14, 28, 0.36)
+  );
+  --glass-border: rgba(150, 180, 255, 0.12);
+  --glass-specular: rgba(200, 220, 255, 0.2);
+}
+
+/* Градиент заголовков: белый → циан → бирюза (новый акцент сияния). */
+[data-theme="aurora"] .text-gradient {
+  background: linear-gradient(120deg, #eaf0ff 0%, #7dd3fc 48%, #2dd4bf 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+[data-theme="aurora"] ::-webkit-scrollbar-thumb {
+  background: rgba(129, 140, 248, 0.2);
+}
+[data-theme="aurora"] ::-webkit-scrollbar-thumb:hover {
+  background: rgba(129, 140, 248, 0.4);
+}
+
 /* Тема Ophanim — тёплое золото → магента/фуксия. Переключается data-атрибутом
-   на корне (см. App.tsx). Все accent-утилиты Tailwind теплеют автоматически. */
+   на корне (см. App.tsx). Все accent-утилиты Tailwind теплеют автоматически.
+   Стекло — тёплое тёмное золото: панели как закопчённые витражи. */
 [data-theme="ophanim"] {
   --accent: 234 179 8;
   --accent-cyan: 240 171 252;
   --accent-violet: 217 70 239;
+
+  --glass-bg: linear-gradient(
+    180deg,
+    rgba(36, 26, 10, 0.5),
+    rgba(20, 14, 6, 0.44)
+  );
+  --glass-border: rgba(253, 224, 71, 0.14);
+  --glass-specular: rgba(255, 236, 180, 0.2);
+}
+
+/* Градиент заголовков: золото → магента, как разогрев глориоли. */
+[data-theme="ophanim"] .text-gradient {
+  background: linear-gradient(120deg, #fff7df 0%, #fde68a 45%, #e879f9 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+[data-theme="ophanim"] ::-webkit-scrollbar-thumb {
+  background: rgba(253, 224, 71, 0.2);
+}
+[data-theme="ophanim"] ::-webkit-scrollbar-thumb:hover {
+  background: rgba(253, 224, 71, 0.4);
 }
 
 /* Скрытая тема Fallen Down — монохромная пустота (вайб Undertale): чёрный фон,
@@ -42,49 +95,98 @@
   --accent-violet: 180 84 104;
 }
 
-/* Тема Fireflies — летний сумрак: перемигивающиеся светлячки над тёмным лугом.
-   Акцент — тёплый жёлто-зелёный огонёк на фоне сумеречного индиго. */
-[data-theme="fireflies"] {
-  --accent: 196 214 122;
-  --accent-cyan: 86 132 138;
-  --accent-violet: 92 96 150;
-}
-
-[data-theme="fireflies"] .text-gradient {
-  background: linear-gradient(120deg, #e6ee9c 0%, #a9c98a 44%, #8b90c8 100%);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-}
-
-/* Тема Hearth — тёплый очаг: тлеющие угли, искры, янтарный свет в тёмной комнате.
-   Тёплая гамма целиком, включая стекло. */
-[data-theme="hearth"] {
-  --accent: 230 148 70;
-  --accent-cyan: 240 190 120;
-  --accent-violet: 196 92 64;
+/* ─── Тема Catnap ─────────────────────────────────────────────────────────────
+   Секретная видео-тема: вагон в закатном золоте, спящий кот. Тёплый лофи:
+   закатный апельсин, золото, терракота. Стекло плотное и тёмное — яркий закат
+   за панелями иначе съедает текст. */
+[data-theme="catnap"] {
+  --accent: 244 150 88;
+  --accent-cyan: 255 204 138;
+  --accent-violet: 214 116 92;
 
   --glass-bg: linear-gradient(
     180deg,
-    rgba(255, 210, 160, 0.10),
-    rgba(30, 18, 10, 0.36)
+    rgba(38, 20, 12, 0.62),
+    rgba(24, 12, 8, 0.55)
   );
-  --glass-border: rgba(240, 190, 120, 0.18);
-  --glass-specular: rgba(255, 224, 180, 0.24);
+  --glass-border: rgba(255, 196, 140, 0.16);
+  --glass-blur: 16px;
+  --glass-sat: 112%;
+  --glass-specular: rgba(255, 220, 180, 0.22);
 }
 
-[data-theme="hearth"] .text-gradient {
-  background: linear-gradient(120deg, #ffd9a0 0%, #f0a95a 50%, #d67a3a 100%);
+/* Кремово-закатный градиент заголовков — «солнце в окне вагона». */
+[data-theme="catnap"] .text-gradient {
+  background: linear-gradient(120deg, #fff1dc 0%, #ffc98e 45%, #e88a4a 100%);
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
 }
 
-[data-theme="hearth"] ::-webkit-scrollbar-thumb {
-  background: rgba(240, 190, 120, 0.22);
+[data-theme="catnap"] ::-webkit-scrollbar-thumb {
+  background: rgba(255, 196, 140, 0.22);
 }
-[data-theme="hearth"] ::-webkit-scrollbar-thumb:hover {
-  background: rgba(240, 190, 120, 0.42);
+[data-theme="catnap"] ::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 196, 140, 0.42);
+}
+
+/* ─── Тема Midnight ───────────────────────────────────────────────────────────
+   Секретная видео-тема: ч/б фонари в ночном тумане. Холодный монохром: серебро
+   и сталь. saturate < 100% у стекла обесцвечивает всё за панелью — «плёночный»
+   приём, панели выглядят частью ч/б кадра. */
+[data-theme="midnight"] {
+  --accent: 202 214 226;
+  --accent-cyan: 232 240 248;
+  --accent-violet: 148 160 176;
+
+  --glass-bg: linear-gradient(
+    180deg,
+    rgba(16, 18, 24, 0.55),
+    rgba(8, 10, 14, 0.48)
+  );
+  --glass-border: rgba(200, 214, 228, 0.14);
+  --glass-blur: 14px;
+  --glass-sat: 60%;
+  --glass-specular: rgba(220, 232, 244, 0.18);
+}
+
+/* Серебристый градиент заголовков — свет фонаря сквозь туман. */
+[data-theme="midnight"] .text-gradient {
+  background: linear-gradient(120deg, #f5f8fb 0%, #c3d0dc 45%, #8fa0b2 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+[data-theme="midnight"] ::-webkit-scrollbar-thumb {
+  background: rgba(200, 214, 228, 0.2);
+}
+[data-theme="midnight"] ::-webkit-scrollbar-thumb:hover {
+  background: rgba(200, 214, 228, 0.4);
+}
+
+/* Дыхание закатного света Catnap (CatnapField): диагональная полоса тепла
+   медленно пульсирует. opacity-only — компонуется на GPU без repaint. */
+@keyframes sun-breathe {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* Плёночное зерно Midnight (MidnightField): дискретные сдвиги шумового тайла,
+   как у киноплёнки. transform/opacity-only — компонуется на GPU без repaint;
+   в трее замирает общим правилом [data-hidden] ниже. */
+@keyframes film-grain {
+  0% { transform: translate(0, 0); opacity: 0.05; }
+  20% { transform: translate(-28px, 14px); opacity: 0.06; }
+  40% { transform: translate(12px, -30px); opacity: 0.045; }
+  60% { transform: translate(-16px, -8px); opacity: 0.055; }
+  80% { transform: translate(24px, 22px); opacity: 0.05; }
+  100% { transform: translate(-6px, 30px); opacity: 0.06; }
 }
 
 /* ─── Тема Rain ───────────────────────────────────────────────────────────────

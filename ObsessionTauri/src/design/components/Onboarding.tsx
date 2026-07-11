@@ -11,8 +11,8 @@ import { AuroraCore } from "./AuroraCore";
 import { RainCore } from "./RainCore";
 import { OphanimCore } from "./OphanimCore";
 import { FallenCore } from "./FallenCore";
-import { FirefliesCore } from "./FirefliesCore";
-import { HearthCore } from "./HearthCore";
+import { CatnapCore } from "./CatnapCore";
+import { MidnightCore } from "./MidnightCore";
 import { spring } from "../tokens";
 
 // Приветственный онбординг при первом запуске. Показывается, пока
@@ -40,8 +40,8 @@ function ThemeMiniCore({ id, active }: { id: Theme; active: boolean }) {
   const noop = () => {};
   if (id === "ophanim") return <OphanimCore active={active} onClick={noop} size={size} />;
   if (id === "fallendown") return <FallenCore active={active} onClick={noop} size={size} />;
-  if (id === "fireflies") return <FirefliesCore active={active} onClick={noop} size={size} />;
-  if (id === "hearth") return <HearthCore active={active} onClick={noop} size={size} />;
+  if (id === "catnap") return <CatnapCore active={active} onClick={noop} size={size} />;
+  if (id === "midnight") return <MidnightCore active={active} onClick={noop} size={size} />;
   if (id === "japan") return <RainCore active={active} onClick={noop} size={size} />;
   return <AuroraCore active={active} onClick={noop} size={size} />;
 }
