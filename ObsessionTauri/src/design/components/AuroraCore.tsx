@@ -282,8 +282,8 @@ function AuroraCanvas({ active, busy, size, paused }: { active: boolean; busy: b
       ctx.fillRect(0, 0, size, size);
       ctx.globalCompositeOperation = "source-over";
     };
-    // Превью в Настройках монтируются уже застывшими (paused): хелпер рисует
-    // один кадр и глушит rAF. paused НЕ в deps — ховер не пересоздаёт эффект.
+    // paused из Настроек не передаётся — превью живут живыми (helper крутит цикл на
+    // coreFps). paused НЕ в deps: ховер не пересоздаёт эффект. В трее цикл гасит гейт.
     const loop = createRenderLoop(draw, { fps: coreFps(size), paused: pausedRef.current });
     loopRef.current = loop;
     loop.start();
