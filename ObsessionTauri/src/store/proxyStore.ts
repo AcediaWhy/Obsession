@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import type { UnlistenFn } from "@tauri-apps/api/event";
 import { api, clipboard, on } from "../lib/tauri";
 
 interface ProxyState {
@@ -12,7 +13,7 @@ interface ProxyState {
   error: string;
   copied: boolean;
 
-  bootstrap: () => Promise<void>;
+  bootstrap: () => Promise<UnlistenFn>;
   setPort: (p: number) => void;
   setFakeTlsDomain: (d: string) => void;
   start: () => Promise<void>;
@@ -41,9 +42,12 @@ export const useProxyStore = create<ProxyState>((set, get) => ({
       port: settings.proxy_port,
       fakeTlsDomain: settings.fake_tls_domain,
     });
-    on.proxyStatus((s) =>
+    // Возвращаем UnlistenFn наверх (App) для отписки — иначе слушатель
+    // proxy-status жил бы вечно и дублировался при повторном bootstrap.
+    const unlisten = await on.proxyStatus((s) =>
       set({ running: s.running, link: s.link, lanLink: s.lan_link, transitioning: false }),
     );
+    return unlisten;
   },
 
   setPort: (p) => set({ port: p }),

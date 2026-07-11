@@ -36,8 +36,11 @@ export default function App() {
   // Инициализация сторов и подписок — один раз при старте.
   useEffect(() => {
     const unlisten = initLogStream();
-    useDpiStore.getState().bootstrap();
-    useProxyStore.getState().bootstrap();
+    // bootstrap() каждого стора со статус-подпиской возвращает свой UnlistenFn —
+    // снимаем его в cleanup, чтобы слушатели не жили вечно и не дублировались
+    // при повторном mount (React.StrictMode в dev монтирует эффект дважды).
+    const unlistenDpi = useDpiStore.getState().bootstrap();
+    const unlistenProxy = useProxyStore.getState().bootstrap();
     useHostsStore.getState().bootstrap();
     useSettingsStore.getState().bootstrap();
 
@@ -51,11 +54,10 @@ export default function App() {
       if (e.level === "error") toast.error(e.message, 6000);
     });
 
-    // Прогреваем тяжёлые ленивые сцены (three/WebGL) на простое, чтобы первое
+    // Прогреваем тяжёлую ленивую сцену (three/WebGL) на простое, чтобы первое
     // переключение темы не ждало загрузку чанка.
     const warm = () => {
       import("./design/components/RainScene3D");
-      import("./design/components/RussiaHybrid");
     };
     const ric = (window as unknown as {
       requestIdleCallback?: (cb: () => void) => number;
@@ -64,6 +66,8 @@ export default function App() {
 
     return () => {
       unlisten.then((fn) => fn());
+      unlistenDpi.then((fn) => fn());
+      unlistenProxy.then((fn) => fn());
       unlistenVis.then((fn) => fn());
       unlistenErr.then((fn) => fn());
       if (!ric) window.clearTimeout(warmTimer);

@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import type { UnlistenFn } from "@tauri-apps/api/event";
 import { api, on, type AppConfig, type ConfStat, type DpiProc } from "../lib/tauri";
 
 const CATEGORY_ORDER = ["discord", "youtube_twitch", "gaming", "universal"];
@@ -17,7 +18,7 @@ interface DpiState {
   netStats: Record<string, ConfStat>;
   error: string;
 
-  bootstrap: () => Promise<void>;
+  bootstrap: () => Promise<UnlistenFn>;
   loadStats: () => Promise<void>;
   toggleCategory: (cat: string) => void;
   setConfig: (cat: string, file: string) => void;
@@ -72,8 +73,11 @@ export const useDpiStore = create<DpiState>((set, get) => ({
     // Подписка на статус DPI от бэкенда. НЕ трогает transitioning — им владеют
     // start()/stop() (сбрасывают в finally). Иначе первый же dpi-status снимал
     // блокировку кнопки до конца операции → повторный клик ловил гонку.
-    on.dpiStatus((s) => set({ active: s.active, processes: s.processes }));
+    // Возвращаем UnlistenFn наверх (App) — иначе слушатель жил бы вечно и
+    // дублировался при повторном bootstrap (StrictMode).
+    const unlisten = await on.dpiStatus((s) => set({ active: s.active, processes: s.processes }));
     await get().loadStats();
+    return unlisten;
   },
 
   loadStats: async () => {
