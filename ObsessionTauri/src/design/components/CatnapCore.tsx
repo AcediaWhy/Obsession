@@ -184,14 +184,27 @@ function CatnapCanvas({ active, busy, size, paused }: { active: boolean; busy: b
       ctx.arc(cx, sunY, sunR, 0, Math.PI * 2);
       ctx.fill();
 
-      // Полоса закатной дымки поверх солнца — «горизонт» за стеклом.
+      // Полоса закатной дымки над солнцем — «горизонт» за стеклом. Мягкий
+      // горизонтальный эллипс (сжатый по вертикали радиальный градиент). Раньше
+      // тут был fillRect с градиентом ТОЛЬКО по вертикали: его прямые
+      // левый/правый торцы (x = cx ± 0.36·size) попадали в непрозрачную зону
+      // круговой маски-феатеринга и ТОРЧАЛИ жёсткой полосой за пределами круга
+      // солнца — «шейдер съехал». Эллипс мягок со всех сторон и целиком внутри
+      // диска, торцов нет.
       const hazeA = (0.10 + warm * 0.08) * breath;
-      const haze = ctx.createLinearGradient(0, sunY - size * 0.06, 0, sunY + size * 0.1);
-      haze.addColorStop(0, "rgba(226,120,52,0)");
-      haze.addColorStop(0.5, `rgba(240,150,80,${hazeA})`);
+      ctx.save();
+      ctx.translate(cx, sunY + size * 0.02);
+      ctx.scale(1, 0.32);
+      const hazeR = size * 0.34;
+      const haze = ctx.createRadialGradient(0, 0, 0, 0, 0, hazeR);
+      haze.addColorStop(0, `rgba(240,150,80,${hazeA})`);
+      haze.addColorStop(0.6, `rgba(232,132,64,${hazeA * 0.5})`);
       haze.addColorStop(1, "rgba(226,120,52,0)");
       ctx.fillStyle = haze;
-      ctx.fillRect(cx - size * 0.36, sunY - size * 0.06, size * 0.72, size * 0.16);
+      ctx.beginPath();
+      ctx.arc(0, 0, hazeR, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
 
       // Пылинки в свете — лениво вверх, мерцают медленно.
       for (const m of motes) {

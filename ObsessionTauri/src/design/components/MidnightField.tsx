@@ -30,12 +30,17 @@ export function MidnightField() {
       {/* Мягкая виньетка. */}
       <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,transparent_55%,rgba(0,0,0,0.5))]" />
       {/* Плёночное зерно — поверх всего. Оверскан под translate-сдвиги
-          анимации (до ±30px), чтобы края не оголялись. */}
+          анимации (до ±30px), чтобы края не оголялись.
+          opacity задаём БАЗОВО (~0.05), а не только в @keyframes: при тумблере
+          «Меньше анимаций» правило `animation: none` убирает анимацию, и без
+          базовой opacity шум откатывался бы к 1.0 = каша на весь экран.
+          Во время анимации keyframes (0.045–0.06) базу перебивают. */}
       <div
         className="absolute"
         style={{
           inset: -40,
           backgroundImage: GRAIN,
+          opacity: 0.05,
           animation: "film-grain 0.9s steps(1, end) infinite",
         }}
       />

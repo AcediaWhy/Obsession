@@ -27,7 +27,17 @@ export function VideoField({
       else video.pause();
     };
     sync(renderActive());
-    return onRenderActiveChange(sync);
+    const unsub = onRenderActiveChange(sync);
+    return () => {
+      unsub();
+      // Освобождаем видеодекодер: detached <video> с preload="auto" иначе
+      // держит декодер+буфер дорожки (WebView2 не чистит без явного сброса),
+      // а в трее GC не идёт → на каждой смене видео-темы копится по декодеру
+      // (утечка 200-250 МБ). pause + снять src + load() отпускает ресурс.
+      video.pause();
+      video.removeAttribute("src");
+      video.load();
+    };
   }, []);
 
   return (
