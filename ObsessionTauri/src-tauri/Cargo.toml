@@ -1,6 +1,6 @@
 [package]
 name = "obsession"
-version = "1.0.0"
+version = "1.1.0"
 description = "Obsession — DPI bypass launcher"
 authors = ["VlarpSu"]
 edition = "2021"
@@ -17,6 +17,7 @@ tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-clipboard-manager = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-notification = "2"
+tauri-plugin-global-shortcut = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["process", "io-util", "rt-multi-thread", "macros", "time", "net", "sync"] }
@@ -31,10 +32,17 @@ libloading = "0.8"
 windows = { version = "0.58", features = [
     "Win32_Foundation",
     "Win32_Security",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_ProcessStatus",
     "Win32_System_Threading",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
+# COM-доступ к контроллеру WebView2 для MemoryUsageTargetLevel. Версии обязаны
+# совпадать с теми, что тянет tauri/wry (иначе тип controller() не сойдётся):
+# tauri 2.11 → webview2-com 0.38 (собран на windows 0.61 / windows-core 0.61).
+webview2-com = "0.38"
+windows-core = "0.61"
 
 [profile.release]
 panic = "abort"

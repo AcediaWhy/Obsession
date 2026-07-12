@@ -319,6 +319,41 @@ pub fn save_settings(app: AppHandle, settings: Settings) -> Result<(), String> {
     Ok(())
 }
 
+/// Меняет глобальный хоткей вкл/выкл защиты: снимает прежнюю комбинацию, ставит
+/// новую (пустая строка = выключить) и персистит в настройки. Формат — Tauri-
+/// акселератор с Code-именем клавиши (`Ctrl+Shift+KeyO`). Возвращает ошибку, если
+/// сочетание невалидно или занято другим приложением (прежнее при этом возвращаем).
+#[tauri::command]
+pub fn set_hotkey(app: AppHandle, hotkey: String) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let prev = state.settings.lock().unwrap().hotkey_toggle.clone();
+
+    #[cfg(desktop)]
+    {
+        use tauri_plugin_global_shortcut::GlobalShortcutExt;
+        let gs = app.global_shortcut();
+        if !prev.trim().is_empty() {
+            let _ = gs.unregister(prev.trim());
+        }
+        let next = hotkey.trim();
+        if !next.is_empty() {
+            if let Err(e) = gs.register(next) {
+                // Откат: возвращаем прежнее сочетание, чтобы не остаться без хоткея.
+                if !prev.trim().is_empty() {
+                    let _ = gs.register(prev.trim());
+                }
+                return Err(format!("Сочетание недоступно: {e}"));
+            }
+        }
+    }
+
+    let base = state.paths.base_dir.clone();
+    let mut settings = state.settings.lock().unwrap();
+    settings.hotkey_toggle = hotkey;
+    settings.save(&base).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 // ─── Мозг (авто-восстановление, L3) ───────────────────────────────────────
 
 /// Есть ли живая задача Мозга в состоянии.
