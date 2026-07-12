@@ -27,7 +27,15 @@ export function EyeLogo({ size = 40 }: { size?: number }) {
       else v.pause();
     };
     apply(renderActive());
-    return onRenderActiveChange(apply);
+    const unsub = onRenderActiveChange(apply);
+    return () => {
+      unsub();
+      // Отпускаем видеодекодер при размонтировании/тогле reduce_motion
+      // (тот же teardown, что в VideoField) — иначе detached <video> течёт.
+      v.pause();
+      v.removeAttribute("src");
+      v.load();
+    };
   }, [reduceMotion]);
 
   return (
