@@ -74,7 +74,7 @@ export function RainCore({ active, busy = false, onClick, size = 240, paused = f
       {/* Метка состояния. */}
       <div className="pointer-events-none absolute flex flex-col items-center">
         <span
-          className="text-[11px] font-bold tracking-[0.32em]"
+          className="text-2xs font-bold tracking-[0.32em]"
           style={{
             color: active ? "#BAE6FD" : "#C3D3E4",
             textShadow: active

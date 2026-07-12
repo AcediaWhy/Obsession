@@ -38,7 +38,7 @@ export function TelegramScreen() {
     <div className="flex h-full flex-col gap-4">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="font-display text-3xl font-bold text-gradient">Telegram-прокси</h1>
+          <h1 className="font-display text-3xl font-semibold tracking-tight text-gradient">Telegram-прокси</h1>
           <p className="text-sm text-ink-muted">
             MTProto-прокси через TgWsProxy в один клик
           </p>
@@ -111,7 +111,7 @@ export function TelegramScreen() {
           {s.link && (
             <div className="w-full">
               <SectionLabel>Ссылка tg://proxy</SectionLabel>
-              <div className="rounded-xl border border-glass-border bg-black/30 p-3 font-mono text-[11px] break-all text-accent-cyan">
+              <div className="rounded-xl border border-glass-border bg-black/30 p-3 font-mono text-2xs break-all text-accent-cyan">
                 {s.link}
               </div>
               <div className="mt-2 flex gap-2">

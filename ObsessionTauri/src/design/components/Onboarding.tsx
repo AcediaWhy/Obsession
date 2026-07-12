@@ -21,8 +21,6 @@ import { spring } from "../tokens";
 //
 // Шаги: приветствие → преимущества → выбор темы → авторство.
 
-const APP_VERSION = "1.0.0";
-
 type StepDef = { id: string; render: () => JSX.Element };
 
 // ─── Преимущества (факты из реальных фич приложения) ──────────────────────────
@@ -79,7 +77,7 @@ export function Onboarding() {
             <Icon.Bolt size={40} />
           </motion.div>
           <div>
-            <h2 className="font-display text-3xl font-bold text-gradient">Добро пожаловать в Obsession</h2>
+            <h2 className="font-display text-3xl font-semibold tracking-tight text-gradient">Добро пожаловать в Obsession</h2>
             <p className="mx-auto mt-3 max-w-md text-sm text-ink-soft">
               Единый инструмент для обхода блокировок: DPI, ИИ-сервисы и Telegram.
               Пара минут — и всё готово к работе.
@@ -94,7 +92,7 @@ export function Onboarding() {
       render: () => (
         <div className="flex flex-col gap-5">
           <div className="text-center">
-            <h2 className="font-display text-2xl font-bold text-gradient">Что умеет приложение</h2>
+            <h2 className="font-display text-2xl font-semibold tracking-tight text-gradient">Что умеет приложение</h2>
             <p className="mt-2 text-sm text-ink-muted">Всё в одном месте, без ручной возни с конфигами</p>
           </div>
           <div className="grid grid-cols-2 gap-3">
@@ -125,7 +123,7 @@ export function Onboarding() {
       render: () => (
         <div className="flex flex-col gap-5">
           <div className="text-center">
-            <h2 className="font-display text-2xl font-bold text-gradient">Выберите оформление</h2>
+            <h2 className="font-display text-2xl font-semibold tracking-tight text-gradient">Выберите оформление</h2>
             <p className="mt-2 text-sm text-ink-muted">Можно сменить в любой момент в Настройках</p>
           </div>
           <div className="flex flex-wrap justify-center gap-3">
@@ -172,14 +170,14 @@ export function Onboarding() {
             <Icon.Bolt size={32} />
           </motion.div>
           <div>
-            <h2 className="font-display text-2xl font-bold text-gradient">Готово к запуску</h2>
+            <h2 className="font-display text-2xl font-semibold tracking-tight text-gradient">Готово к запуску</h2>
             <p className="mx-auto mt-3 max-w-sm text-sm text-ink-soft">
               Всё настроено. Начните с экрана «DPI-обход» — выберите категорию и включите ядро.
             </p>
           </div>
           <div className="rounded-xl border border-glass-border bg-white/5 px-5 py-3">
             <div className="text-sm font-semibold text-ink">made by VlarpSu</div>
-            <div className="mt-0.5 text-xs text-ink-muted">Obsession · v{APP_VERSION}</div>
+            <div className="mt-0.5 text-xs tabular-nums text-ink-muted">Obsession · v{__APP_VERSION__}</div>
           </div>
         </div>
       ),

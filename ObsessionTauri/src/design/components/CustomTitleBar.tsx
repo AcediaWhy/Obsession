@@ -20,9 +20,9 @@ export function CustomTitleBar() {
         </span>
       </div>
       <div className="no-drag flex items-center gap-1">
-        <WinButton label="—" onClick={minimize} />
-        <WinButton label="▢" onClick={() => win.toggleMaximize()} small />
-        <WinButton label="✕" onClick={() => win.close()} danger />
+        <WinButton label="—" ariaLabel="Свернуть" onClick={minimize} />
+        <WinButton label="▢" ariaLabel="Развернуть" onClick={() => win.toggleMaximize()} small />
+        <WinButton label="✕" ariaLabel="Закрыть" onClick={() => win.close()} danger />
       </div>
     </div>
   );
@@ -30,11 +30,13 @@ export function CustomTitleBar() {
 
 function WinButton({
   label,
+  ariaLabel,
   onClick,
   danger = false,
   small = false,
 }: {
   label: string;
+  ariaLabel: string;
   onClick: () => void;
   danger?: boolean;
   small?: boolean;
@@ -42,9 +44,11 @@ function WinButton({
   return (
     <button
       onClick={onClick}
+      aria-label={ariaLabel}
       className={[
         "flex h-7 w-7 items-center justify-center rounded-lg text-ink-muted transition-colors",
-        small ? "text-[10px]" : "text-xs",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70",
+        small ? "text-3xs" : "text-xs",
         danger ? "hover:bg-danger/20 hover:text-danger" : "hover:bg-white/10 hover:text-ink",
       ].join(" ")}
     >

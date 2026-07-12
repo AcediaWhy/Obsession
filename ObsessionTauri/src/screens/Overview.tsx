@@ -61,7 +61,7 @@ export function OverviewScreen() {
   return (
     <div className="flex h-full flex-col gap-4 overflow-y-auto pr-1">
       <div>
-        <h1 className="font-display text-3xl font-bold text-gradient">Обзор</h1>
+        <h1 className="font-display text-3xl font-semibold tracking-tight text-gradient">Обзор</h1>
         <p className="text-sm text-ink-muted">Состояние защиты одним взглядом</p>
       </div>
 

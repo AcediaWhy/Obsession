@@ -81,6 +81,8 @@ export interface Settings {
   has_completed_onboarding: boolean;
   auto_recovery: boolean;
   reduce_motion: boolean;
+  /** Глобальный хоткей вкл/выкл защиты (Tauri-акселератор, напр. "Ctrl+Shift+KeyO"). */
+  hotkey_toggle: string;
 }
 
 // ─── Глаза / Мозг (контур надёжности) ───────────────────────────────────────
@@ -170,6 +172,9 @@ export const api = {
   getSettings: () => invoke<Settings>("get_settings"),
   saveSettings: (settings: Settings) =>
     invoke<void>("save_settings", { settings }),
+  // Меняет глобальный хоткей (пустая строка = выключить). Формат — Tauri-
+  // акселератор с Code-именем клавиши ("Ctrl+Shift+KeyO").
+  setHotkey: (hotkey: string) => invoke<void>("set_hotkey", { hotkey }),
 
   listsAll: () => invoke<ListInfo[]>("lists_all"),
   readList: (name: string) => invoke<string>("read_list", { name }),

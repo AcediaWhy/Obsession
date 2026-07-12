@@ -23,9 +23,10 @@ const CATEGORY_LABELS: Record<string, string> = {
   youtube_twitch: "YouTube / Twitch",
   gaming: "Gaming",
   universal: "Universal",
+  atrisk: "Под угрозой",
 };
 
-const CATEGORY_ORDER = ["discord", "youtube_twitch", "gaming", "universal"];
+const CATEGORY_ORDER = ["discord", "youtube_twitch", "gaming", "universal", "atrisk"];
 
 export function DpiScreen() {
   const s = useDpiStore();
@@ -39,7 +40,7 @@ export function DpiScreen() {
       {/* Заголовок. */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="font-display text-3xl font-bold text-gradient">DPI-обход</h1>
+          <h1 className="font-display text-3xl font-semibold tracking-tight text-gradient">DPI-обход</h1>
           <p className="text-sm text-ink-muted">
             Обход блокировок через Zapret (winws)
           </p>
@@ -59,6 +60,8 @@ export function DpiScreen() {
                 <HeroCore
                   active={s.active}
                   busy={s.transitioning}
+                  scanning={s.testing}
+                  alarm={s.testing && Object.values(s.testResults).some((v) => !v)}
                   onClick={() => (s.active ? s.stop() : s.start())}
                 />
               </Parallax>
@@ -118,7 +121,7 @@ export function DpiScreen() {
                           </span>
                           {result !== undefined && (
                             <span
-                              className={`text-[11px] font-semibold ${result ? "text-ok" : "text-danger"}`}
+                              className={`text-2xs font-semibold ${result ? "text-ok" : "text-danger"}`}
                             >
                               {result ? "работает" : "не прошёл"}
                             </span>
@@ -131,7 +134,7 @@ export function DpiScreen() {
                           onChange={(v) => s.setConfig(cat, v)}
                         />
                         {s.netStats[cat]?.conf === current && current && (
-                          <span className="text-[10px] text-ok">
+                          <span className="text-3xs text-ok">
                             ✓ работал {s.netStats[cat].success_count} раз
                           </span>
                         )}

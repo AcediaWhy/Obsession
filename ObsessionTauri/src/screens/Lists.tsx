@@ -43,7 +43,7 @@ export function ListsScreen() {
       {/* Заголовок. */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="font-display text-3xl font-bold text-gradient">Списки</h1>
+          <h1 className="font-display text-3xl font-semibold tracking-tight text-gradient">Списки</h1>
           <p className="text-sm text-ink-muted">
             Домены и IP, попадающие под DPI-обход · по строке на запись, `#` — комментарий
           </p>
@@ -143,12 +143,12 @@ function ListRow({
     >
       <div className="min-w-0">
         <div className="truncate text-sm font-medium text-ink">{label(info.name)}</div>
-        <div className="mt-0.5 text-[11px] text-ink-muted">
+        <div className="mt-0.5 text-2xs text-ink-muted">
           {isIpset ? `${Math.round(info.bytes / 1024)} КБ` : `${info.entries} записей`}
         </div>
       </div>
       {isIpset && (
-        <span className="shrink-0 rounded-md bg-warn/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase text-warn">
+        <span className="shrink-0 rounded-md bg-warn/15 px-1.5 py-0.5 text-3xs font-semibold uppercase text-warn">
           ipset
         </span>
       )}
@@ -215,7 +215,7 @@ function NewListForm({
         </Button>
       </div>
       {disabled && disabledHint && (
-        <p className="text-[11px] text-warn">{disabledHint}</p>
+        <p className="text-2xs text-warn">{disabledHint}</p>
       )}
     </div>
   );
@@ -259,7 +259,7 @@ function Editor({
           <div className="flex items-center gap-2">
             <span className="truncate text-base font-semibold text-ink">{label(name)}</span>
             {dirty && (
-              <span className="shrink-0 rounded-md bg-accent/20 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-accent">
+              <span className="shrink-0 rounded-md bg-accent/20 px-1.5 py-0.5 text-3xs font-semibold uppercase text-accent">
                 не сохранено
               </span>
             )}
@@ -303,7 +303,7 @@ function Editor({
 
       {/* Удаление. */}
       <div className="flex items-center justify-between">
-        <p className="text-[11px] text-ink-soft">
+        <p className="text-2xs text-ink-soft">
           Изменения применяются при следующем запуске обхода.
         </p>
         <AnimatePresence mode="wait" initial={false}>

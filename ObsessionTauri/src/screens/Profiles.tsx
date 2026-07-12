@@ -33,7 +33,7 @@ export function ProfilesScreen() {
       {/* Заголовок. */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="font-display text-3xl font-bold text-gradient">Профили</h1>
+          <h1 className="font-display text-3xl font-semibold tracking-tight text-gradient">Профили</h1>
           <p className="text-sm text-ink-muted">
             Пресеты DPI + прокси + ИИ · применение в один клик
           </p>
@@ -157,7 +157,7 @@ function ProfileCard({
           {profile.selected_categories.map((c) => (
             <span
               key={c}
-              className="rounded-md bg-white/8 px-2 py-0.5 text-[11px] font-medium text-ink-soft"
+              className="rounded-md bg-white/8 px-2 py-0.5 text-2xs font-medium text-ink-soft"
             >
               {CATEGORY_LABELS[c] ?? c}
             </span>
