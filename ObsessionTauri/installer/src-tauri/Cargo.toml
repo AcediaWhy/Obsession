@@ -1,0 +1,33 @@
+# Оболочка инсталлера «Obsession Setup»: мини-Tauri-окно в стиле лаунчера,
+# внутри тихо (/S) отрабатывает вшитый NSIS-движок основного приложения.
+# ВАЖНО: имя крейта/бинаря НЕ «obsession» — hooks.nsh гасит Obsession.exe
+# по имени процесса, и сетап не должен убить сам себя.
+
+[package]
+name = "obsession-setup"
+version = "1.1.0"
+description = "Obsession Setup — фирменный инсталлер"
+authors = ["VlarpSu"]
+edition = "2021"
+
+[lib]
+name = "obsession_setup_lib"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+# Известные папки (Desktop может быть перенесён OneDrive — env-путь врал бы).
+dirs = "6"
+# Детект WebView2 по реестру для фолбэка на видимый стоковый NSIS.
+winreg = "0.55"
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true
