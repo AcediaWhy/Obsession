@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import { motion } from "framer-motion";
 import { CORE_HERO_MIN_SIZE, coreFps, createRenderLoop, useRenderActive, type RenderLoop } from "../render";
 import { createSpriteCache } from "./glowSprite";
+import { drawGreatEye } from "./ophanimEye";
 
 type Props = {
   active: boolean;
@@ -9,13 +10,18 @@ type Props = {
   onClick: () => void;
   size?: number;
   paused?: boolean;
+  // Реактивная телеметрия щита (передаёт только hero на экране DPI; превью — нет,
+  // поэтому дефолт false): scanning = идёт тест/автоподбор конфигов (Око «ищет»),
+  // alarm = среди результатов теста есть провал (тревога, прищур, красный обод).
+  scanning?: boolean;
+  alarm?: boolean;
 };
 
 // «Офаним» — престольное колесо (Иез. 1): колёса-в-колёсах, вращающиеся сквозь
 // друг друга под разными осями, усеянные глазами, в ореоле глориоли. В покое —
 // тускло-золотое, глаза прикрыты; при активации разгоняется, теплеет в магенту,
 // глаза раскрываются. Альтернативный hero к «Aurora», та же семантика состояний.
-export function OphanimCore({ active, busy = false, onClick, size = 240, paused = false }: Props) {
+export function OphanimCore({ active, busy = false, onClick, size = 240, paused = false, scanning = false, alarm = false }: Props) {
   // Ореолы гасим, когда окно скрыто ИЛИ это застывшее превью невыбранной темы
   // (paused): framer-motion гоняет их на компоновщике (WAAPI) и сам на скрытие не
   // реагирует — жёг бы CPU в трее и в Настройках (6 превью × 2 ореола).
@@ -56,7 +62,7 @@ export function OphanimCore({ active, busy = false, onClick, size = 240, paused 
       />
 
       {/* Колёса-в-колёсах на canvas. */}
-      <OphanimCanvas active={active} busy={busy} size={size} paused={paused} />
+      <OphanimCanvas active={active} busy={busy} size={size} paused={paused} scanning={scanning} alarm={alarm} />
 
       {/* Стеклянная кромка престола. */}
       <motion.div
@@ -72,20 +78,10 @@ export function OphanimCore({ active, busy = false, onClick, size = 240, paused 
         transition={renderOn ? { duration: 2.6, repeat: Infinity, ease: "easeInOut" } : { duration: 0.3 }}
       />
 
-      {/* Метка состояния. */}
-      <div className="pointer-events-none absolute flex flex-col items-center">
-        <span
-          className="text-[11px] font-bold tracking-[0.32em]"
-          style={{
-            color: active ? "#F5D0FE" : "#FDE68A",
-            textShadow: active
-              ? "0 0 14px rgba(240,171,252,0.8)"
-              : "0 0 12px rgba(234,179,8,0.7)",
-          }}
-        >
-          {busy ? "···" : active ? "ON" : "OFF"}
-        </span>
-      </div>
+      {/* Без центральной ON/OFF-метки: она впечатывалась в радужку Великого Ока и
+          сливалась с ним. Состояние несёт само Око (открыто+магента = вкл,
+          дремотно-золото = выкл, рябь пробуждения на колёсах = busy), а на экране
+          DPI под ядром уже есть текстовая подпись состояния. */}
     </motion.button>
   );
 }
@@ -130,10 +126,26 @@ const eyeSprites = WHEELS.map((wh) =>
   }),
 );
 
-function OphanimCanvas({ active, busy, size, paused }: { active: boolean; busy: boolean; size: number; paused: boolean }) {
+// Великое Око вынесено в общий модуль ./ophanimEye (посадка в гнездо + дедуп с Field).
+
+function OphanimCanvas({
+  active,
+  busy,
+  size,
+  paused,
+  scanning,
+  alarm,
+}: {
+  active: boolean;
+  busy: boolean;
+  size: number;
+  paused: boolean;
+  scanning: boolean;
+  alarm: boolean;
+}) {
   const ref = useRef<HTMLCanvasElement>(null);
-  const stateRef = useRef({ active, busy });
-  stateRef.current = { active, busy };
+  const stateRef = useRef({ active, busy, scanning, alarm });
+  stateRef.current = { active, busy, scanning, alarm };
   const loopRef = useRef<RenderLoop | null>(null);
   const pausedRef = useRef(paused);
   pausedRef.current = paused;
@@ -172,79 +184,107 @@ function OphanimCanvas({ active, busy, size, paused }: { active: boolean; busy: 
     };
 
     const draw = (dt: number) => {
-      const { active: on, busy: loading } = stateRef.current;
+      const { active: on, busy: loading, scanning: scan, alarm: alarmed } = stateRef.current;
       t += dt;
-      warm += ((on ? 1 : 0) - warm) * (1 - Math.exp(-dt * 2.6));
+      // Настроение стражи: покой → пробуждение (busy) → скан (testing) → бдение (on).
+      const warmTarget = on ? 1 : scan ? 0.6 : loading ? 0.4 : 0;
+      warm += (warmTarget - warm) * (1 - Math.exp(-dt * 2.6));
 
       ctx.clearRect(0, 0, size, size);
       ctx.globalCompositeOperation = "lighter";
 
       const spinBoost = 1 + warm * 1.1; // при активации всё крутится быстрее
 
-      for (const [wi, wh] of WHEELS.entries()) {
-        const rx = wh.r * size;
-        // ry «переворачивается» в 3D: от ребра (~0.12) до полного круга.
-        const yScale = 0.12 + 0.88 * Math.abs(Math.sin(t * wh.tiltSpeed * spinBoost + wh.tiltPhase));
-        const ry = rx * yScale;
+      // Око — престольная ступица, вокруг которой ВЬЮТСЯ колёса, а не крутятся
+      // позади. Поэтому каждое колесо рисуется в ДВА захода с сортировкой по
+      // глубине 3D-наклона: дальняя половина (уходит от зрителя) — ПОД Оком,
+      // ближняя (идёт к зрителю) — ПОВЕРХ. Раскол по большой оси эллипса (a=0,π)
+      // на радиусе rx — заведомо снаружи Ока. Глубина: z ∝ sin(a)·cosP.
+      const eyeR = size * 0.19;
+      const clearR = eyeR * 1.15; // «чистая зона» лица Ока: глаза-спрайты внутри — всегда позади
 
-        // Цвет обода: лерп cold→hot по warm.
-        const [cr, cg, cb] = wh.cold;
-        const [hr, hg, hb] = wh.hot;
-        const r = Math.round(cr + (hr - cr) * warm);
-        const g = Math.round(cg + (hg - cg) * warm);
-        const b = Math.round(cb + (hb - cb) * warm);
+      const paintWheelLayer = (near: boolean) => {
+        for (const [wi, wh] of WHEELS.entries()) {
+          const rx = wh.r * size;
+          const phase = t * wh.tiltSpeed * spinBoost + wh.tiltPhase;
+          const cosP = Math.cos(phase); // знак = глубина наклона (±к зрителю)
+          // ry «переворачивается» в 3D: от ребра (~0.12) до полного круга.
+          const ry = rx * (0.12 + 0.88 * Math.abs(Math.sin(phase)));
 
-        // Обод колеса: два штриха — широкий тусклый (свечение) + узкий яркий.
-        const rimA = 0.10 + warm * 0.16;
-        ctx.beginPath();
-        for (let i = 0; i <= 64; i++) {
-          const a = (i / 64) * Math.PI * 2;
-          const p = ellipsePt(a, rx, ry, wh.axis);
-          i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y);
+          // Цвет обода: лерп cold→hot по warm.
+          const [cr, cg, cb] = wh.cold;
+          const [hr, hg, hb] = wh.hot;
+          const r = Math.round(cr + (hr - cr) * warm);
+          const g = Math.round(cg + (hg - cg) * warm);
+          const b = Math.round(cb + (hb - cb) * warm);
+          const rimA = 0.1 + warm * 0.16;
+
+          // Половина обода по глубине: при cosP≥0 ближе верхняя дуга a∈(0,π).
+          const drawUpper = near === cosP >= 0;
+          const i0 = drawUpper ? 0 : 32;
+          const i1 = drawUpper ? 32 : 64;
+          const traceRim = () => {
+            ctx.beginPath();
+            for (let i = i0; i <= i1; i++) {
+              const a = (i / 64) * Math.PI * 2;
+              const p = ellipsePt(a, rx, ry, wh.axis);
+              i === i0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y);
+            }
+          };
+          // Обод: два штриха — широкий тусклый (свечение) + узкий яркий.
+          ctx.strokeStyle = `rgba(${r},${g},${b},${rimA * 0.5})`;
+          ctx.lineWidth = wh.lw * size * 3;
+          traceRim();
+          ctx.stroke();
+          ctx.strokeStyle = `rgba(${Math.min(r + 30, 255)},${Math.min(g + 30, 255)},${b},${rimA})`;
+          ctx.lineWidth = wh.lw * size;
+          traceRim();
+          ctx.stroke();
+
+          // Глаза по ободу — бегут, раскрываются с warm, «моргают». Та же глубинная
+          // сортировка; внутри чистой зоны — только задний проход (Око перекрывает,
+          // иначе яркий глаз поверх зрачка читался бы как мусор).
+          const openBase = 0.18 + warm * 0.82;
+          for (let e = 0; e < wh.eyes; e++) {
+            const a = (e / wh.eyes) * Math.PI * 2 + t * wh.spin * spinBoost;
+            const p = ellipsePt(a, rx, ry, wh.axis);
+            const dist = Math.hypot(p.x - cx, p.y - cy);
+            if (dist < clearR) {
+              if (near) continue;
+            } else if ((Math.sin(a) * cosP >= 0) !== near) {
+              continue;
+            }
+            // Глаза на «дальней» стороне (верх наклона) тусклее → ощущение объёма.
+            const depth = 0.55 + 0.45 * (0.5 + 0.5 * Math.sin(a + wh.axis));
+            // Индивидуальное моргание + бегущая вспышка при busy.
+            const blink = 0.5 + 0.5 * Math.sin(t * 2.2 + e * 1.3 + wh.tiltPhase);
+            const chase = loading ? Math.max(0, Math.sin(t * 5 - e * (6.283 / wh.eyes))) : 0;
+            const open = Math.min(1, openBase * (0.6 + 0.4 * blink) + chase * 0.6);
+            const rad = wh.lw * size * (1.6 + open * 1.6);
+
+            const ea = (0.22 + warm * 0.5) * depth * (0.4 + 0.6 * open);
+            const R = rad * 2.4;
+            ctx.globalAlpha = Math.min(ea * 1.4, 1);
+            ctx.drawImage(eyeSprites[wi](warm), p.x - R, p.y - R, R * 2, R * 2);
+          }
+          ctx.globalAlpha = 1;
         }
-        ctx.closePath();
-        ctx.strokeStyle = `rgba(${r},${g},${b},${rimA * 0.5})`;
-        ctx.lineWidth = wh.lw * size * 3;
-        ctx.stroke();
-        ctx.strokeStyle = `rgba(${Math.min(r + 30, 255)},${Math.min(g + 30, 255)},${b},${rimA})`;
-        ctx.lineWidth = wh.lw * size;
-        ctx.stroke();
+      };
 
-        // Глаза по ободу — бегут по кругу, раскрываются с warm, «моргают».
-        const openBase = 0.18 + warm * 0.82;
-        for (let e = 0; e < wh.eyes; e++) {
-          const a = (e / wh.eyes) * Math.PI * 2 + t * wh.spin * spinBoost;
-          const p = ellipsePt(a, rx, ry, wh.axis);
-          // Глаза на «дальней» стороне (верх наклона) тусклее → ощущение объёма.
-          const depth = 0.55 + 0.45 * (0.5 + 0.5 * Math.sin(a + wh.axis));
-          // Индивидуальное моргание + бегущая вспышка при busy.
-          const blink = 0.5 + 0.5 * Math.sin(t * 2.2 + e * 1.3 + wh.tiltPhase);
-          const chase = loading
-            ? Math.max(0, Math.sin(t * 5 - e * (6.283 / wh.eyes)))
-            : 0;
-          const open = Math.min(1, openBase * (0.6 + 0.4 * blink) + chase * 0.6);
-          const rad = wh.lw * size * (1.6 + open * 1.6);
+      // Дальние половины колёс — уходят ПОД Око.
+      paintWheelLayer(false);
 
-          const ea = (0.22 + warm * 0.5) * depth * (0.4 + 0.6 * open);
-          const R = rad * 2.4;
-          ctx.globalAlpha = Math.min(ea * 1.4, 1);
-          ctx.drawImage(eyeSprites[wi](warm), p.x - R, p.y - R, R * 2, R * 2);
-        }
-        ctx.globalAlpha = 1;
-      }
+      // ─── Великое Око в центре: престольная ступица, обвитая колёсами. ───
+      drawGreatEye(ctx, cx, cy, eyeR, {
+        t,
+        warm,
+        scanning: scan,
+        alarmed,
+        bloomAlpha: 0.3 + warm * 0.42,
+      });
 
-      // Глориоль-ядро в центре — «дышит».
-      const breathe = 0.5 + Math.sin(t * 1.6) * 0.5;
-      const coreR = size * (0.15 + warm * 0.05 + breathe * 0.02);
-      const core = ctx.createRadialGradient(cx, cy, 0, cx, cy, coreR);
-      const ca = 0.34 + warm * 0.36;
-      core.addColorStop(0, `rgba(255,251,235,${ca})`);
-      core.addColorStop(0.5, warm > 0.5 ? `rgba(240,171,252,${ca * 0.5})` : `rgba(250,204,21,${ca * 0.5})`);
-      core.addColorStop(1, "rgba(0,0,0,0)");
-      ctx.fillStyle = core;
-      ctx.beginPath();
-      ctx.arc(cx, cy, coreR, 0, Math.PI * 2);
-      ctx.fill();
+      // Ближние половины — проходят ПОВЕРХ Ока: вот оно «вокруг», а не «позади».
+      paintWheelLayer(true);
 
       // Феатеринг в мягкий круг: гасим всё за пределами радиального маска.
       ctx.globalCompositeOperation = "destination-in";
@@ -272,7 +312,7 @@ function OphanimCanvas({ active, busy, size, paused }: { active: boolean; busy: 
   // цвет замершего кадра) — раньше это давал полный ремоунт эффекта.
   useEffect(() => {
     if (paused) loopRef.current?.invalidate();
-  }, [active, busy, paused]);
+  }, [active, busy, scanning, alarm, paused]);
 
   return (
     <canvas
