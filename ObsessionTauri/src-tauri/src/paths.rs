@@ -4,7 +4,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-pub const APP_VERSION: &str = "1.0.2";
+pub const APP_VERSION: &str = "1.0.4";
 pub const APP_DATA_FOLDER: &str = "Obsession";
 pub const WINWS_EXE: &str = "winws.exe";
 pub const TGPROXY_EXE: &str = "tg_ws_proxy.exe";

@@ -2,6 +2,14 @@
   "schema_version": 1,
   "winws_compat": ">=0.9.0",
   "categories": {
+    "atrisk": {
+      "default": [
+        "atrisk_1.conf",
+        "atrisk_2.conf",
+        "atrisk_3.conf"
+      ],
+      "by_asn_region": {}
+    },
     "discord": {
       "default": [
         "discord_1.conf",
