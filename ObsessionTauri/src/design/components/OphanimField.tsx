@@ -3,14 +3,19 @@ import { useDpiStore } from "../../store/dpiStore";
 import { useProxyStore } from "../../store/proxyStore";
 import { createRenderLoop, FPS_FIELD } from "../render";
 import { createSpriteCache } from "./glowSprite";
+import { drawGreatEye } from "./ophanimEye";
 
 // Реактивная среда темы «Ophanim» — «престольное видение» (Иез. 1):
-// - большое призрачное колесо-в-колесе справа вверху, усеянное глазами;
-// - редкие глаза, мягко открывающиеся в темноте и наблюдающие;
-// - нисходящие столпы света (глориоль) с нимбами-дугами у источника;
+// - созвездие колёс-в-колёсах (главное справа вверху с Великим Оком в ступице,
+//   меньшее слева внизу, дальнее призрачное у центра) — усеяны глазами;
+// - лучи славы, радиально расходящиеся от престольного Ока (проступают в бдении);
+// - редкие глаза, мягко открывающиеся в темноте; иногда один впивается «взором»;
+// - нисходящие столпы света с холодным сапфировым подтоном покоя (Иез. 1:26);
 // - пылинки, парящие в лучах.
-// В покое — тускло-золотое, глаза прикрыты; при активном обходе/прокси всё
-// разгорается и теплеет в магенту, глаза открываются чаще и шире.
+// Настроение читается из телеметрии щита (dpiStore/proxyStore): покой →
+// пробуждение (transitioning) → скан конфигов (testing) → бдение (обход/прокси
+// активны). Тепло растёт золото→магента, глаза открываются чаще и шире, сапфир
+// покоя отступает, вспыхивают лучи славы.
 
 const TAU = Math.PI * 2;
 
@@ -34,6 +39,26 @@ const eyeSprite = createSpriteCache(9, 64, (sctx, px, k) => {
   sctx.fillRect(0, 0, px, px);
 });
 
+// Радужка Великого Ока теперь в общем модуле ./ophanimEye (drawGreatEye) —
+// вместе с усадкой в гнездо; дубль-спрайт здесь убран.
+
+// Луч славы — мягкий клин, вершина у ступицы (сверху), тает к концу. Запечён по
+// корзинам warm; поворот/масштаб на кадре — никакого createLinearGradient в цикле.
+const gloryRay = createSpriteCache(9, 128, (sctx, px, k) => {
+  const [r, g, b] = lerpC(GOLD, MAGENTA, k);
+  const grad = sctx.createLinearGradient(0, 0, 0, px);
+  grad.addColorStop(0, `rgba(${r},${g},${b},0.85)`);
+  grad.addColorStop(0.5, `rgba(${r},${g},${b},0.26)`);
+  grad.addColorStop(1, "rgba(0,0,0,0)");
+  sctx.fillStyle = grad;
+  sctx.beginPath();
+  sctx.moveTo(px / 2, 0); // вершина у ступицы
+  sctx.lineTo(px * 0.86, px);
+  sctx.lineTo(px * 0.14, px);
+  sctx.closePath();
+  sctx.fill();
+});
+
 // Глаз в темноте: жизненный цикл закрыт → открывается → смотрит → закрывается.
 // Позиция и размер перевыбираются на каждое закрытие; координаты — доли
 // экрана, чтобы переживать resize.
@@ -45,14 +70,21 @@ type DarkEye = {
   tLeft: number; // осталось в текущем состоянии, сек
   dur: number; // полная длительность состояния, сек
   driftPh: number; // фаза дрейфа зрачка и моргания
+  gaze: boolean; // редкий «пристальный взор» — дольше, шире зрачок, медленно гаснет
 };
 
 export function OphanimField() {
   const dpiActive = useDpiStore((s) => s.active);
   const proxyRunning = useProxyStore((s) => s.running);
+  const transitioning = useDpiStore((s) => s.transitioning);
+  const testing = useDpiStore((s) => s.testing);
+  const testResults = useDpiStore((s) => s.testResults);
   const hot = dpiActive || proxyRunning;
-  const hotRef = useRef(hot);
-  hotRef.current = hot;
+  // Тревога — среди результатов текущего теста есть провал.
+  const alarm = testing && Object.values(testResults).some((v) => !v);
+  // Всё настроение — в ref, чтобы цикл не пересоздавался на смене состояния.
+  const moodRef = useRef({ hot, scanning: testing, alarm, transitioning });
+  moodRef.current = { hot, scanning: testing, alarm, transitioning };
 
   const ref = useRef<HTMLCanvasElement>(null);
 
@@ -76,7 +108,8 @@ export function OphanimField() {
     resize();
     window.addEventListener("resize", resize);
 
-    // Наклонные столпы света, нисходящие сверху.
+    // Наклонные столпы света, нисходящие сверху. Левый столп холодно-сапфировый
+    // в покое (Иез. 1:26 «как вид камня сапфира») — тёплая тема с холодной тенью.
     type Shaft = {
       x: number; // доля ширины (верхняя точка)
       width: number; // доля ширины
@@ -87,7 +120,7 @@ export function OphanimField() {
       hot: [number, number, number];
     };
     const shafts: Shaft[] = [
-      { x: 0.22, width: 0.10, lean: 0.06, speed: 0.5, phase: 0.0, cold: [234, 179, 8], hot: [232, 121, 249] },
+      { x: 0.22, width: 0.10, lean: 0.06, speed: 0.5, phase: 0.0, cold: [92, 116, 196], hot: [232, 121, 249] },
       { x: 0.40, width: 0.14, lean: -0.05, speed: 0.36, phase: 1.4, cold: [253, 224, 71], hot: [240, 171, 252] },
       { x: 0.60, width: 0.11, lean: 0.07, speed: 0.6, phase: 2.7, cold: [250, 204, 21], hot: [217, 70, 239] },
       { x: 0.80, width: 0.09, lean: -0.06, speed: 0.44, phase: 4.1, cold: [253, 230, 138], hot: [244, 114, 182] },
@@ -110,9 +143,10 @@ export function OphanimField() {
       e.fy = 0.15 + Math.random() * 0.68;
       e.size = 20 + Math.random() * 20;
       e.driftPh = Math.random() * TAU;
+      e.gaze = false;
     };
     const darkEyes: DarkEye[] = Array.from({ length: 5 }, (_, i) => {
-      const e: DarkEye = { fx: 0, fy: 0, size: 0, state: 0, tLeft: 3 + i * 4 + Math.random() * 4, dur: 1, driftPh: 0 };
+      const e: DarkEye = { fx: 0, fy: 0, size: 0, state: 0, tLeft: 3 + i * 4 + Math.random() * 4, dur: 1, driftPh: 0, gaze: false };
       spawnEye(e);
       return e;
     });
@@ -148,10 +182,73 @@ export function OphanimField() {
 
     let t = 0;
     let warm = 0;
+    let wave = -1; // фаза бегущей «волны моргания» по ободу главного колеса; -1 = неактивна
+    let waveCd = 12 + Math.random() * 10; // до первой волны, сек
+
+    // Колесо-в-колесе: два кольца (внешнее почти круглое + внутреннее,
+    // «переворачивающееся» в 3D) и бегущие по ободу глаза. waveRim=true — по
+    // ободу катится «волна моргания» (сигнатурное событие «Взор»).
+    const drawWheel = (
+      wcx: number, wcy: number, wR: number,
+      axisBase: number, inPhase: number, spin: number, eyes: number, alpha: number, waveRim: boolean,
+    ) => {
+      const rim = lerpC([234, 179, 8], MAGENTA, warm);
+      const rimA = (0.05 + warm * 0.05) * alpha;
+      const spinBoost = 1 + warm * 0.8;
+
+      const axisOut = axisBase + 0.08 * Math.sin(t * 0.04 + inPhase);
+      strokeRing(wcx, wcy, wR, wR * 0.96, axisOut, rim, rimA, 2);
+      const yScaleIn = 0.15 + 0.85 * Math.abs(Math.sin(t * (TAU / 45) * spinBoost + inPhase + 2.1));
+      const axisIn = axisBase + 1.2 + 0.05 * Math.sin(t * 0.06 + inPhase + 1);
+      strokeRing(wcx, wcy, wR * 0.62, wR * 0.62 * yScaleIn, axisIn, rim, rimA * 1.1, 1.6);
+
+      // Глаза по внешнему ободу: медленно бегут, поодиночке моргают, на «дальней»
+      // стороне тусклее (объём). Волна добавляет бегущую вспышку раскрытия.
+      for (let e = 0; e < eyes; e++) {
+        const a = (e / eyes) * TAU + t * spin * spinBoost;
+        const p = ellipsePt(wcx, wcy, a, wR, wR * 0.96, axisOut);
+        const depth = 0.55 + 0.45 * (0.5 + 0.5 * Math.sin(a + axisOut));
+        const blink = 0.5 + 0.5 * Math.sin(t * 0.9 + e * 1.7);
+        let bump = 0;
+        if (waveRim && wave >= 0) {
+          const an = ((a % TAU) + TAU) % TAU;
+          let d = Math.abs(an - wave);
+          d = Math.min(d, TAU - d);
+          bump = Math.exp(-(d * d) / 0.25) * 0.85; // σ≈0.35 рад
+        }
+        const ea = (0.10 + warm * 0.20) * depth * (0.35 + 0.65 * blink + bump);
+        const rad = 3 + warm * 2 + blink * 1 + bump * 2;
+        const R = rad * 2.4;
+        ctx.globalAlpha = Math.min(ea * 1.4, 1);
+        ctx.drawImage(eyeSprite(warm), p.x - R, p.y - R, R * 2, R * 2);
+      }
+      ctx.globalAlpha = 1;
+    };
+
+    // Великое Око рисует общий модуль ./ophanimEye (drawGreatEye) — усадка в
+    // гнездо-ступицу; на выходе он оставляет comp="lighter" для dark-eyes/motes.
 
     const draw = (dt: number) => {
+      const { hot: isHot, scanning, alarm: alarmed, transitioning: waking } = moodRef.current;
       t += dt;
-      warm += ((hotRef.current ? 1 : 0) - warm) * (1 - Math.exp(-dt * 2.4));
+      // Настроение стражи: покой → пробуждение (transitioning) → скан (testing) →
+      // бдение (hot). Больше уровней warm, чем прежнее вкл/выкл.
+      const warmTarget = isHot ? 1 : scanning ? 0.6 : waking ? 0.4 : 0;
+      warm += (warmTarget - warm) * (1 - Math.exp(-dt * 2.4));
+
+      // «Взор» — редкая волна моргания катится по ободу главного колеса (аналог
+      // падающей звезды Aurora). В бдении/скане чаще.
+      if (wave >= 0) {
+        wave += dt * (TAU / 1.3); // прокатывается за ~1.3 с
+        if (wave > TAU + 0.6) wave = -1;
+      } else {
+        waveCd -= dt;
+        if (waveCd <= 0) {
+          wave = 0;
+          waveCd = (16 + Math.random() * 16) * (1 - warm * 0.45);
+        }
+      }
+
       ctx.clearRect(0, 0, w, h);
       ctx.globalCompositeOperation = "lighter";
 
@@ -194,37 +291,40 @@ export function OphanimField() {
         ctx.stroke();
       }
 
-      // ── Большое колесо-в-колесе справа вверху. ──
-      const wcx = 0.74 * w;
-      const wcy = 0.18 * h;
-      const wR = 0.55 * h;
-      const rim = lerpC([234, 179, 8], MAGENTA, warm);
-      const rimA = 0.05 + warm * 0.05;
-      const spinBoost = 1 + warm * 0.8;
-
-      // Внешнее кольцо — почти круг, ось лениво покачивается.
-      const axisOut = -0.3 + 0.08 * Math.sin(t * 0.04);
-      strokeRing(wcx, wcy, wR, wR * 0.96, axisOut, rim, rimA, 2);
-      // Внутреннее — «переворачивается» в 3D сквозь внешнее (период ~45 с).
-      const yScaleIn = 0.15 + 0.85 * Math.abs(Math.sin(t * (TAU / 45) * spinBoost + 2.1));
-      const axisIn = 0.9 + 0.05 * Math.sin(t * 0.06 + 1);
-      strokeRing(wcx, wcy, wR * 0.62, wR * 0.62 * yScaleIn, axisIn, rim, rimA * 1.1, 1.6);
-
-      // Глаза по внешнему ободу: медленно бегут, поодиночке моргают,
-      // на «дальней» стороне тусклее (объём).
-      const EYES = 16;
-      for (let e = 0; e < EYES; e++) {
-        const a = (e / EYES) * TAU + t * 0.06 * spinBoost;
-        const p = ellipsePt(wcx, wcy, a, wR, wR * 0.96, axisOut);
-        const depth = 0.55 + 0.45 * (0.5 + 0.5 * Math.sin(a + axisOut));
-        const blink = 0.5 + 0.5 * Math.sin(t * 0.9 + e * 1.7);
-        const ea = (0.10 + warm * 0.20) * depth * (0.35 + 0.65 * blink);
-        const rad = 3 + warm * 2 + blink * 1;
-        const R = rad * 2.4;
-        ctx.globalAlpha = Math.min(ea * 1.4, 1);
-        ctx.drawImage(eyeSprite(warm), p.x - R, p.y - R, R * 2, R * 2);
+      // ── Лучи славы от престольного Ока — радиальная глориоль. Гейт по warm:
+      //    в покое погашены (сцена спокойна), в бдении вспыхивают. ──
+      const gcx = 0.74 * w;
+      const gcy = 0.18 * h;
+      const glory = warm * 0.16;
+      if (glory > 0.015) {
+        const rays = 12;
+        const rayLen = 0.85 * Math.hypot(w, h);
+        const rayW = 0.24 * h;
+        for (let i = 0; i < rays; i++) {
+          const a = (i / rays) * TAU + t * 0.03;
+          ctx.save();
+          ctx.translate(gcx, gcy);
+          ctx.rotate(a);
+          ctx.globalAlpha = glory * (0.7 + 0.3 * Math.sin(t * 0.8 + i));
+          ctx.drawImage(gloryRay(warm), -rayW / 2, 0, rayW, rayLen);
+          ctx.restore();
+        }
+        ctx.globalAlpha = 1;
       }
-      ctx.globalAlpha = 1;
+
+      // ── Созвездие колёс: главное справа вверху (с Оком в ступице), меньшее
+      //    слева внизу, дальнее призрачное у центра (только кольца — глубина). ──
+      drawWheel(0.74 * w, 0.18 * h, 0.55 * h, -0.3, 0, 0.06, 16, 1, true);
+      drawWheel(0.2 * w, 0.82 * h, 0.34 * h, 0.5, 2.3, -0.08, 11, 0.7, false);
+      drawWheel(0.46 * w, 0.5 * h, 0.16 * h, 1.1, 4.0, 0.05, 0, 0.4, false);
+      drawGreatEye(ctx, 0.74 * w, 0.18 * h, 0.55 * h * 0.34, {
+        t,
+        warm,
+        scanning,
+        alarmed,
+        bloomAlpha: 0.16 + warm * 0.46,
+        socketDepth: 0.8,
+      });
 
       // ── Глаза, открывающиеся в темноте. ──
       for (const e of darkEyes) {
@@ -236,10 +336,12 @@ export function OphanimField() {
             e.dur = e.tLeft = 0.8;
           } else if (e.state === 1) {
             e.state = 2;
-            e.dur = e.tLeft = 2 + Math.random() * 3;
+            // Редкий «пристальный взор» — держится дольше, гаснет медленнее.
+            e.gaze = Math.random() < 0.18;
+            e.dur = e.tLeft = e.gaze ? 3.2 + Math.random() * 2.5 : 2 + Math.random() * 3;
           } else if (e.state === 2) {
             e.state = 3;
-            e.dur = e.tLeft = 0.7;
+            e.dur = e.tLeft = e.gaze ? 1.5 : 0.7;
           } else {
             e.state = 0;
             e.dur = e.tLeft = (6 + Math.random() * 10) * (1 - warm * 0.5);
@@ -248,10 +350,11 @@ export function OphanimField() {
         }
         if (e.state === 0) continue;
 
-        // Открытость века: подъём/спад по состоянию + редкое быстрое моргание.
+        // Открытость века: подъём/спад по состоянию + редкое быстрое моргание
+        // (у «взора» — ровный немигающий взгляд).
         let openK =
           e.state === 1 ? 1 - e.tLeft / e.dur : e.state === 3 ? e.tLeft / e.dur : 1;
-        if (e.state === 2) {
+        if (e.state === 2 && !e.gaze) {
           openK *= 1 - 0.92 * Math.pow(Math.max(0, Math.sin(t * 2.6 + e.driftPh * 3)), 32);
         }
         if (openK < 0.03) continue;
@@ -274,14 +377,14 @@ export function OphanimField() {
         const look = Math.sin(t * 0.5 + e.driftPh) * e.size * 0.08;
         const irisR = e.size * 0.30;
         const R = irisR * 2.2;
-        ctx.globalAlpha = 0.32 * openK * (0.7 + 0.3 * warm);
+        ctx.globalAlpha = 0.32 * openK * (0.7 + 0.3 * warm) * (e.gaze ? 1.15 : 1);
         ctx.drawImage(eyeSprite(warm), ex + look - R, ey - R, R * 2, R * 2);
         ctx.globalAlpha = 1;
 
-        // Зрачок — тёмная точка поверх свечения.
+        // Зрачок — тёмная точка поверх свечения; у «взора» расширен.
         ctx.globalCompositeOperation = "source-over";
         ctx.beginPath();
-        ctx.arc(ex + look, ey, irisR * 0.34 * (0.7 + 0.3 * openK), 0, TAU);
+        ctx.arc(ex + look, ey, irisR * 0.34 * (0.7 + 0.3 * openK) * (e.gaze ? 1.25 : 1), 0, TAU);
         ctx.fillStyle = "rgba(10,8,4,0.85)";
         ctx.fill();
         ctx.globalCompositeOperation = "lighter";
@@ -329,6 +432,15 @@ export function OphanimField() {
     <div className="pointer-events-none absolute inset-0 overflow-hidden">
       {/* Базовый градиент глубины — тёплое тёмное золото. */}
       <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_50%_0%,#161006_0%,#0a0806_46%,#050404_100%)]" />
+      {/* Сапфировая тень престола по низу — холодный подтон покоя (Иез. 1:26),
+          отступает, когда престол теплеет в магенту. */}
+      <div
+        className="absolute inset-0 transition-opacity duration-[1400ms]"
+        style={{
+          background: "radial-gradient(ellipse at 50% 116%, rgba(56,74,150,0.22), transparent 58%)",
+          opacity: hot ? 0 : 1,
+        }}
+      />
       {/* Мягкие тёплые пятна для объёма. */}
       <div
         className="absolute left-[20%] -top-[6%] h-[420px] w-[420px] rounded-full opacity-35"
