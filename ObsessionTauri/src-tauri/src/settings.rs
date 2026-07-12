@@ -22,6 +22,10 @@ pub struct Settings {
     /// Меньше анимаций: гасит canvas/WebGL-фон и Framer-циклы (a11y + экономия
     /// CPU/батареи). Default false; фронт также уважает `prefers-reduced-motion`.
     pub reduce_motion: bool,
+    /// Глобальный хоткей вкл/выкл защиты — Tauri-акселератор с Code-именем клавиши
+    /// (напр. `Ctrl+Shift+KeyO`). Пустая строка = хоткей выключен. Меняется
+    /// командой `set_hotkey`; регистрируется при старте.
+    pub hotkey_toggle: String,
 }
 
 impl Default for Settings {
@@ -37,6 +41,7 @@ impl Default for Settings {
             has_completed_onboarding: false,
             auto_recovery: false,
             reduce_motion: false,
+            hotkey_toggle: "Ctrl+Shift+KeyO".to_string(),
         }
     }
 }

@@ -19,6 +19,7 @@ mod ranking;
 mod settings;
 mod state;
 mod util;
+mod webmem;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -91,6 +92,19 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
+        // Глобальный хоткей: единственный обработчик — на нажатие переключаем
+        // защиту (та же логика, что у тумблера в трее). Саму комбинацию
+        // регистрируем в setup (там доступен AppHandle и можно мягко пережить,
+        // если сочетание занято другим приложением).
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, _shortcut, event| {
+                    if event.state() == tauri_plugin_global_shortcut::ShortcutState::Pressed {
+                        toggle_dpi(app);
+                    }
+                })
+                .build(),
+        )
         .setup(|app| {
             let handle = app.handle().clone();
             let resource_dir = handle.path().resource_dir()?;
@@ -99,6 +113,7 @@ pub fn run() {
             // Старт свёрнутым: читаем ДО передачи settings во владение AppState.
             let start_minimized = settings.start_minimized;
             let auto_recovery = settings.auto_recovery;
+            let hotkey_toggle = settings.hotkey_toggle.clone();
             app.manage(AppState::new(paths, settings));
 
             // Подчищаем зависшие winws от предыдущего жёсткого выхода (иначе новый
@@ -119,6 +134,18 @@ pub fn run() {
             }
 
             build_tray(app)?;
+
+            // Глобальный хоткей (по умолчанию Ctrl+Shift+O) — вкл/выкл защиты из
+            // любого места, в т.ч. из свёрнутого в трей окна. Сочетание берём из
+            // настроек (меняется командой set_hotkey). Пустое = выключен; занятость
+            // сочетания другим приложением не фатальна — логируем и продолжаем.
+            #[cfg(desktop)]
+            if !hotkey_toggle.trim().is_empty() {
+                use tauri_plugin_global_shortcut::GlobalShortcutExt;
+                if let Err(e) = handle.global_shortcut().register(hotkey_toggle.as_str()) {
+                    util::emit_log(&handle, "warn", "Хоткей", &format!("Не удалось включить «{hotkey_toggle}»: {e}"));
+                }
+            }
 
             // Синхронизация галочек трея с реальным состоянием DPI/прокси —
             // ловим те же события статуса, что и фронтенд.
@@ -159,6 +186,9 @@ pub fn run() {
                 let h = handle.clone();
                 std::thread::spawn(move || {
                     let mut last_shown: Option<bool> = None;
+                    // Обратный отсчёт до трима рабочего набора после скрытия в трей
+                    // (в тиках по 300мс). 0 = трим не запланирован.
+                    let mut trim_after: u32 = 0;
                     loop {
                         std::thread::sleep(std::time::Duration::from_millis(300));
                         let Some(win) = h.get_webview_window("main") else {
@@ -185,6 +215,18 @@ pub fn run() {
                         if last_shown != Some(shown) {
                             last_shown = Some(shown);
                             let _ = h.emit("window-visibility", shown);
+                            // Экономия RAM в трее: LOW при скрытии, NORMAL на показе.
+                            // Фронт уже выставил IsVisible=false (getCurrentWebview
+                            // .hide()) — повторно его НЕ трогаем (тек. GDI, см. webmem).
+                            webmem::set_low_memory(&h, !shown);
+                            // Трим рабочего набора отложенно: даём Chromium осесть
+                            // после LOW, и только если окно всё ещё скрыто.
+                            trim_after = if shown { 0 } else { 5 };
+                        } else if trim_after > 0 && !shown {
+                            trim_after -= 1;
+                            if trim_after == 0 {
+                                webmem::trim_working_set();
+                            }
                         }
                     }
                 });
@@ -246,6 +288,7 @@ pub fn run() {
             commands::hosts_uninstall,
             commands::get_settings,
             commands::save_settings,
+            commands::set_hotkey,
             commands::lists_all,
             commands::read_list,
             commands::save_list,
@@ -404,6 +447,18 @@ fn toggle_dpi(app: &tauri::AppHandle) {
             };
             let _ = dpi::start_many(&app, &configs).await;
         }
+        // Уведомление по факту состояния после операции: тумблер вызывается из
+        // трея и глобального хоткея, где нет экранного фидбэка, как у кнопки в UI.
+        let now_active = {
+            let st = app.state::<AppState>();
+            let a = !st.dpi.lock().unwrap().procs.is_empty();
+            a
+        };
+        util::notify_now(
+            &app,
+            "Obsession",
+            if now_active { "Защита включена" } else { "Защита выключена" },
+        );
     });
 }
 
