@@ -32,7 +32,7 @@ export function Diagnostics() {
         <SectionLabel>Диагностика</SectionLabel>
         {results && (
           <span
-            className={`text-[11px] font-semibold ${
+            className={`text-2xs font-semibold tabular-nums ${
               okCount === total ? "text-ok" : okCount === 0 ? "text-danger" : "text-warn"
             }`}
           >
@@ -74,7 +74,7 @@ export function Diagnostics() {
                     />
                     <span className="text-ink-soft">{r.name}</span>
                   </span>
-                  <span className={`text-[11px] ${r.ok ? "text-ink-muted" : "text-danger"}`}>
+                  <span className={`text-2xs tabular-nums ${r.ok ? "text-ink-muted" : "text-danger"}`}>
                     {r.ok ? `${r.ms} мс` : "недоступен"}
                   </span>
                 </div>

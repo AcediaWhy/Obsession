@@ -27,12 +27,12 @@ export function NavRail({
       <div className="mb-8 flex items-center gap-3 px-2">
         <EyeLogo size={40} />
         <div className="leading-tight">
-          <div className="font-display text-lg font-bold text-ink">Obsession</div>
-          <div className="text-[11px] tracking-widest text-ink-muted">V1.0.0</div>
+          <div className="wordmark font-display text-lg font-semibold tracking-tight text-ink">Obsession</div>
+          <div className="font-mono text-2xs tabular-nums tracking-widest text-ink-muted">V{__APP_VERSION__}</div>
         </div>
       </div>
 
-      <div className="mb-2 px-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-ink-muted">
+      <div className="mb-2 px-2 text-3xs font-semibold uppercase tracking-[0.14em] text-ink-muted">
         Меню
       </div>
 
@@ -43,7 +43,7 @@ export function NavRail({
             <button
               key={it.id}
               onClick={() => onSelect(it.id)}
-              className="no-drag relative flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm transition-colors"
+              className="no-drag relative flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
             >
               {isActive && (
                 <motion.div
@@ -62,7 +62,7 @@ export function NavRail({
                 {it.label}
               </span>
               {it.soon && (
-                <span className="relative z-10 ml-auto rounded-md bg-white/8 px-1.5 py-0.5 text-[9px] font-semibold uppercase text-ink-muted">
+                <span className="relative z-10 ml-auto rounded-md bg-white/8 px-1.5 py-0.5 text-3xs font-semibold uppercase text-ink-muted">
                   soon
                 </span>
               )}
@@ -71,7 +71,7 @@ export function NavRail({
         })}
       </div>
 
-      <div className="mt-auto px-2 text-[11px] text-ink-muted">made by VlarpSu</div>
+      <div className="mt-auto px-2 text-3xs text-ink-muted opacity-70">made by VlarpSu</div>
     </nav>
   );
 }

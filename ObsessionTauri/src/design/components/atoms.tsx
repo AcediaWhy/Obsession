@@ -31,7 +31,7 @@ export function Button({
       onClick={onClick}
       disabled={disabled}
       className={[
-        "no-drag rounded-xl px-4 py-2.5 text-sm font-semibold transition-all disabled:cursor-not-allowed disabled:opacity-50",
+        "no-drag rounded-xl px-4 py-2.5 text-sm font-semibold transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:cursor-not-allowed disabled:opacity-50",
         styles[variant],
         className,
       ].join(" ")}
@@ -85,7 +85,7 @@ export function Chip({
       onClick={onClick}
       disabled={disabled}
       className={[
-        "no-drag rounded-xl px-3.5 py-2 text-sm font-medium transition-all disabled:opacity-40",
+        "no-drag rounded-xl px-3.5 py-2 text-sm font-medium transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:opacity-40",
         active
           ? "bg-accent/20 text-ink border border-accent/50 shadow-glow"
           : "bg-white/5 text-ink-soft border border-glass-border hover:bg-white/10",
@@ -155,7 +155,7 @@ export function TextField({
 
 export function SectionLabel({ children }: { children: ReactNode }) {
   return (
-    <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-ink-muted">
+    <div className="mb-2 text-2xs font-semibold uppercase tracking-[0.14em] text-ink-muted">
       {children}
     </div>
   );
@@ -179,7 +179,7 @@ export function Switch({
       disabled={disabled}
       onClick={() => onChange(!checked)}
       className={[
-        "no-drag relative h-6 w-11 shrink-0 rounded-full border transition-colors disabled:opacity-40",
+        "no-drag relative h-6 w-11 shrink-0 rounded-full border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:opacity-40",
         checked
           ? "border-accent/50 bg-accent/30 shadow-glow"
           : "border-glass-border bg-white/5",

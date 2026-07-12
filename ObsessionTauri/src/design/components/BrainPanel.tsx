@@ -88,7 +88,7 @@ export function BrainPanel() {
               <span className={`font-semibold ${PHASE_TONE[status.phase]}`}>
                 {PHASE_LABEL[status.phase]}
                 {status.ladderLevel !== "none" && (
-                  <span className="ml-1 text-[11px] text-ink-muted">
+                  <span className="ml-1 text-2xs tabular-nums text-ink-muted">
                     · {status.ladderLevel.toUpperCase()}
                   </span>
                 )}
@@ -109,7 +109,7 @@ export function BrainPanel() {
             {status.asnRegion && (
               <div className="flex items-center justify-between">
                 <span className="text-ink-muted">Сеть</span>
-                <span className="text-[11px] text-ink-muted">{status.asnRegion}</span>
+                <span className="text-2xs tabular-nums text-ink-muted">{status.asnRegion}</span>
               </div>
             )}
           </motion.div>
@@ -117,7 +117,7 @@ export function BrainPanel() {
       </AnimatePresence>
 
       {enabled && !status && (
-        <p className="px-1 text-[11px] text-ink-muted">
+        <p className="px-1 text-2xs text-ink-muted">
           Запустите обход — Мозг подключится к сессии.
         </p>
       )}

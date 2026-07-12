@@ -73,7 +73,7 @@ export function MidnightCore({ active, busy = false, onClick, size = 240, paused
       {/* Метка состояния. */}
       <div className="pointer-events-none absolute flex flex-col items-center">
         <span
-          className="text-[11px] font-bold tracking-[0.32em]"
+          className="text-2xs font-bold tracking-[0.32em]"
           style={{
             color: active ? "#EAF2FA" : "#C9D6E2",
             textShadow: active

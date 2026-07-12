@@ -35,10 +35,21 @@ export default {
         warn: "#FBBF24",
         danger: "#F87171",
       },
+      // Локальные шрифты с кириллицей (см. src/styles/fonts.css). Единая семья
+      // IBM Plex: Plex Sans — заголовки/логотип (display) + тело (sans);
+      // Plex Mono — метрики/логи/код, со slashed-zero (0↔O) через feature-settings.
       fontFamily: {
-        sans: ['"Plus Jakarta Sans"', "system-ui", "sans-serif"],
-        display: ['"Space Grotesk"', '"Plus Jakarta Sans"', "sans-serif"],
-        mono: ['"JetBrains Mono"', "ui-monospace", "monospace"],
+        sans: ['"IBM Plex Sans"', "system-ui", "sans-serif"],
+        display: ['"IBM Plex Sans"', "sans-serif"],
+        mono: ['"IBM Plex Mono", ui-monospace, monospace', { fontFeatureSettings: '"zero"' }],
+      },
+      // Типо-шкала: добавляем микроразмеры (убираем россыпь text-[9..11px]) и
+      // подтягиваем h1 (плотнее интерлиньяж + отрицательный трекинг). Дефолтные
+      // xs/sm/base НЕ трогаем — иначе поедет вертикальный ритм всего UI.
+      fontSize: {
+        "3xs": ["0.625rem", { lineHeight: "0.875rem", letterSpacing: "0.02em" }],
+        "2xs": ["0.6875rem", { lineHeight: "1rem", letterSpacing: "0.01em" }],
+        "3xl": ["1.875rem", { lineHeight: "2.15rem", letterSpacing: "-0.02em" }],
       },
       borderRadius: {
         xl2: "1.25rem",

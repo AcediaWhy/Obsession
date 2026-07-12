@@ -1,5 +1,5 @@
-@import url("https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap");
-
+/* Шрифты подключаются локально из ./fonts.css (импортируется раньше в main.tsx).
+   Больше НЕ тянем их с Google CDN — офлайн-безопасно, приватно, с кириллицей. */
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -231,7 +231,11 @@ body,
 }
 
 body {
-  @apply bg-base text-ink font-sans antialiased;
+  /* База 500 (IBM Plex Sans Medium): при 400 тело смотрелось жидковато на тёмном
+     стекле. Заголовки и явные веса (font-semibold/bold) перекрывают это как обычно.
+     optimizeLegibility включает кернинг/лигатуры — буквы «прорисованы» аккуратнее. */
+  @apply bg-base text-ink font-sans font-medium antialiased;
+  text-rendering: optimizeLegibility;
   overflow: hidden;
   user-select: none;
 }
@@ -331,7 +335,9 @@ body {
   opacity: 1;
 }
 
-/* Градиентная заливка текста (заголовки). */
+/* Градиентная заливка текста (заголовки). Мягкая диффузная тень (большой blur, без
+   тугого сдвига) даёт лёгкий объём — заголовок будто чуть приподнят над поверхностью,
+   но без эффекта тиснения/«3D». На тёмных темах почти незаметна, объём там от веса. */
 .text-gradient {
   background: linear-gradient(
     120deg,
@@ -342,6 +348,38 @@ body {
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
+  text-shadow: 0 2px 14px rgba(0, 0, 0, 0.3);
+}
+
+/* Логотип «Obsession»: тонкая глубина + свечение по акценту темы — бренд «дышит»
+   вместе с темой, оставаясь чистым белым (без градиента). */
+.wordmark {
+  text-shadow:
+    0 1px 1px rgba(0, 0, 0, 0.5),
+    0 0 22px rgb(var(--accent) / 0.35);
+}
+
+/* На «громких» видео-темах (Catnap/Midnight/Rain) поднимаем читаемость мелкого
+   текста, который вне стеклянных панелей тонул в пёстром фоне:
+   1) чуть плотнее и тоньше тень-ореол под всем текстом (лучше для 11–12px);
+   2) приглушённые подписи (text-ink-muted / -soft) поднимаем по яркости — #6B7189
+      на фоне Rain сливался. Оверрайд специфичнее утилиты Tailwind, поэтому
+      перекрывает её только на этих темах. Aurora (дефолт) оставляем как есть —
+      фон там спокойный; заголовки и логотип сохраняют свои тени (правила выше). */
+[data-theme="catnap"] body,
+[data-theme="midnight"] body,
+[data-theme="japan"] body {
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+}
+[data-theme="catnap"] .text-ink-muted,
+[data-theme="midnight"] .text-ink-muted,
+[data-theme="japan"] .text-ink-muted {
+  color: rgb(156 164 187);
+}
+[data-theme="catnap"] .text-ink-soft,
+[data-theme="midnight"] .text-ink-soft,
+[data-theme="japan"] .text-ink-soft {
+  color: rgb(205 212 228);
 }
 
 input,

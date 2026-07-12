@@ -15,12 +15,12 @@ export function LogStream({ height = 200 }: { height?: number }) {
   return (
     <div className="flex flex-col">
       <div className="mb-2 flex items-center justify-between">
-        <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-ink-muted">
+        <span className="text-2xs font-semibold uppercase tracking-[0.14em] text-ink-muted">
           Лог
         </span>
         <button
           onClick={clear}
-          className="no-drag text-[11px] text-ink-muted transition-colors hover:text-ink-soft"
+          className="no-drag text-2xs text-ink-muted transition-colors hover:text-ink-soft"
         >
           очистить
         </button>
@@ -28,7 +28,7 @@ export function LogStream({ height = 200 }: { height?: number }) {
       <div
         ref={ref}
         style={{ height }}
-        className="overflow-y-auto rounded-xl border border-glass-border bg-black/30 p-3 font-mono text-[11.5px] leading-relaxed"
+        className="overflow-y-auto rounded-xl border border-glass-border bg-black/30 p-3 font-mono text-2xs tabular-nums leading-relaxed"
       >
         {lines.length === 0 && (
           <div className="text-ink-muted">Лог пуст. Действия появятся здесь.</div>

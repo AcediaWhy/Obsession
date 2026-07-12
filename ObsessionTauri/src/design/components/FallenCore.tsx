@@ -74,7 +74,7 @@ export function FallenCore({ active, busy = false, onClick, size = 240, paused =
       {/* Метка состояния под сердцем. */}
       <div className="pointer-events-none absolute flex flex-col items-center" style={{ marginTop: size * 0.34 }}>
         <span
-          className="text-[11px] font-bold tracking-[0.32em]"
+          className="text-2xs font-bold tracking-[0.32em]"
           style={{
             color: active ? "#FFC4C7" : "#B79398",
             textShadow: active

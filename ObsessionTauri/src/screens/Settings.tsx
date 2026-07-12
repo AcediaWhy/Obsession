@@ -20,6 +20,7 @@ import {
   TextField,
 } from "../design/components/atoms";
 import { Icon } from "../design/components/icons";
+import { api } from "../lib/tauri";
 
 const AI_PROVIDERS = ["malw", "geohide"];
 
@@ -45,7 +46,7 @@ export function SettingsScreen() {
       {/* Заголовок + индикатор автосохранения. */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="font-display text-3xl font-bold text-gradient">Настройки</h1>
+          <h1 className="font-display text-3xl font-semibold tracking-tight text-gradient">Настройки</h1>
           <p className="text-sm text-ink-muted">Параметры приложения · сохраняются автоматически</p>
         </div>
         <SaveIndicator />
@@ -177,6 +178,7 @@ export function SettingsScreen() {
                       <span className="text-xs font-semibold text-ink-soft">Не пройден</span>
                     )}
                   </Row>
+                  <HotkeyRow />
                 </div>
               </GlassPanel>
             </StaggerItem>
@@ -341,6 +343,113 @@ function SaveIndicator() {
         <span className="text-ink-muted">Автосохранение</span>
       )}
     </div>
+  );
+}
+
+// ─── Настраиваемый глобальный хоткей ──────────────────────────────────────────
+// Хранится как Tauri-акселератор с Code-именем клавиши (то, что даёт
+// KeyboardEvent.code): "Ctrl+Shift+KeyO". Захват читает модификаторы + code
+// напрямую, поэтому формат всегда совпадает с тем, что парсит бэкенд.
+const DEFAULT_HOTKEY = "Ctrl+Shift+KeyO";
+
+const MOD_LABEL: Record<string, string> = { Ctrl: "Ctrl", Alt: "Alt", Shift: "Shift", Super: "Win" };
+const ARROW_LABEL: Record<string, string> = { ArrowUp: "↑", ArrowDown: "↓", ArrowLeft: "←", ArrowRight: "→" };
+// Чистые модификаторы: ждём, пока к ним не добавят основную клавишу.
+const MODIFIER_CODES = new Set([
+  "ControlLeft", "ControlRight", "ShiftLeft", "ShiftRight",
+  "AltLeft", "AltRight", "MetaLeft", "MetaRight", "OSLeft", "OSRight",
+]);
+
+// Человекочитаемое сочетание: "Ctrl+Shift+KeyO" → "Ctrl + Shift + O".
+function formatHotkey(accel: string): string {
+  if (!accel) return "выключен";
+  return accel
+    .split("+")
+    .map((t) => {
+      if (MOD_LABEL[t]) return MOD_LABEL[t];
+      if (t.startsWith("Key")) return t.slice(3);
+      if (t.startsWith("Digit")) return t.slice(5);
+      if (t.startsWith("Numpad")) return "Num " + t.slice(6);
+      return ARROW_LABEL[t] ?? t; // F5, Space, Enter, Tab, …
+    })
+    .join(" + ");
+}
+
+function HotkeyRow() {
+  const current = useSettingsStore((s) => s.settings?.hotkey_toggle ?? "");
+  const [capturing, setCapturing] = useState(false);
+  const [err, setErr] = useState("");
+
+  const commit = async (accel: string) => {
+    setCapturing(false);
+    setErr("");
+    try {
+      await api.setHotkey(accel);
+      // Синхронизируем локальную копию настроек (бэкенд уже персистнул).
+      const s = useSettingsStore.getState().settings;
+      if (s) useSettingsStore.setState({ settings: { ...s, hotkey_toggle: accel } });
+    } catch (e) {
+      setErr(String(e));
+    }
+  };
+
+  return (
+    <Row label="Горячая клавиша" hint="Вкл/выкл защиты — работает даже из трея">
+      <div className="flex flex-col items-end gap-1">
+        {capturing ? (
+          <button
+            autoFocus
+            onBlur={() => {
+              setCapturing(false);
+              setErr("");
+            }}
+            onKeyDown={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              if (e.code === "Escape") {
+                setCapturing(false);
+                setErr("");
+                return;
+              }
+              if (MODIFIER_CODES.has(e.code)) return; // ждём основную клавишу
+              const mods: string[] = [];
+              if (e.ctrlKey) mods.push("Ctrl");
+              if (e.altKey) mods.push("Alt");
+              if (e.shiftKey) mods.push("Shift");
+              if (e.metaKey) mods.push("Super");
+              if (mods.length === 0) {
+                setErr("Добавьте Ctrl, Alt, Shift или Win");
+                return;
+              }
+              void commit([...mods, e.code].join("+"));
+            }}
+            className="no-drag animate-pulse rounded-lg border border-accent/60 bg-accent/10 px-3 py-1.5 text-xs text-ink focus-visible:outline-none"
+          >
+            Нажмите сочетание…
+          </button>
+        ) : (
+          <button
+            onClick={() => {
+              setCapturing(true);
+              setErr("");
+            }}
+            className="no-drag rounded-lg border border-glass-border bg-white/5 px-3 py-1.5 font-mono text-xs text-ink-soft transition-colors hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
+          >
+            {formatHotkey(current)}
+          </button>
+        )}
+        {err ? (
+          <span className="max-w-[190px] text-right text-3xs text-danger">{err}</span>
+        ) : !capturing && current !== DEFAULT_HOTKEY ? (
+          <button
+            onClick={() => void commit(DEFAULT_HOTKEY)}
+            className="no-drag text-3xs text-ink-muted transition-colors hover:text-ink-soft focus-visible:outline-none"
+          >
+            сбросить по умолчанию
+          </button>
+        ) : null}
+      </div>
+    </Row>
   );
 }
 
