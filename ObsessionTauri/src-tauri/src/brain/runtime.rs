@@ -165,8 +165,9 @@ async fn exec(
                     .map(|(c, _)| c.as_str())
                     .collect::<Vec<_>>()
                     .join(", ");
-                crate::util::notify(
+                crate::util::notify_throttled(
                     app,
+                    "recover",
                     "Obsession — обход восстановлен",
                     &format!("Авто-восстановление переключило стратегию ({cats})."),
                 );

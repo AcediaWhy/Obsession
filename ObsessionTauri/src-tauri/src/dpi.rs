@@ -166,8 +166,9 @@ pub async fn start(app: &AppHandle, category: &str, config_file: &str) -> Result
                 );
             }
             // Нативное уведомление: обход отвалился без нашего участия.
-            util::notify(
+            util::notify_throttled(
                 &app_mon,
+                "down",
                 "Obsession — обход прерван",
                 &format!("Процесс обхода «{cat_mon}» неожиданно завершился. Возможно, защита не работает."),
             );
