@@ -9,8 +9,11 @@
 //! Приложение:
 //!   1. Запускает CLI с `--port/--secret[/--fake-tls-domain]` и ловит
 //!      напечатанную им ссылку `tg://proxy?server=127.0.0.1&port=<port>&secret=dd...`.
-//!   2. Для доступа с телефона поднимает TCP-форвардер `<lan_ip>:<port>` →
-//!      `127.0.0.1:<port>` и отдаёт ту же ссылку с LAN IP вместо 127.0.0.1.
+//!   2. Для доступа с телефона поднимает TCP-форвардер `0.0.0.0:<port>` →
+//!      `127.0.0.1:<port>` (слушает ВСЕ интерфейсы — телефон может прийти на
+//!      любой адрес ПК) и отдаёт ту же ссылку с LAN IP вместо 127.0.0.1.
+//!      LAN IP выбирается через `util::lan_ip_for_phone` (реальная физ. карта,
+//!      не VPN/виртуальный адаптер).
 
 use std::process::Stdio;
 use std::time::Duration;
@@ -90,7 +93,10 @@ fn remove_firewall_rule() {}
 
 /// Запускает прокси. Возвращает `tg://proxy?...` ссылку.
 pub async fn start(app: &AppHandle, port: u16, fake_tls_domain: &str) -> Result<String, String> {
-    stop(app).await;
+    if stop(app).await {
+        // Кого-то убили — даём Windows момент освободить порт перед новым биндом.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
 
     let (exe, bin_dir, cache_path) = {
         let state = app.state::<AppState>();
@@ -100,7 +106,7 @@ pub async fn start(app: &AppHandle, port: u16, fake_tls_domain: &str) -> Result<
         }
     };
 
-    let local_ip = util::local_ip();
+    let lan = util::lan_ip_for_phone();
     let secret = gen_secret();
     let mut args: Vec<String> = vec![
         "--port".into(),
@@ -198,16 +204,31 @@ pub async fn start(app: &AppHandle, port: u16, fake_tls_domain: &str) -> Result<
         return Err("Прокси завершился сразу после запуска.".to_string());
     }
 
-    // LAN-ссылка для телефона: заменяем 127.0.0.1 на LAN IP.
-    let lan_link = if local_ip != "127.0.0.1" {
-        // Для доступа с телефона поднимаем форвардер с LAN IP на локальный MTProto.
-        let bind = format!("{local_ip}:{port}");
+    // LAN-ссылка для телефона: тот же прокси, но с адресом, по которому до ПК
+    // достучится телефон в общей Wi-Fi (см. util::lan_ip_for_phone).
+    let lan_link = if lan.ip != "127.0.0.1" {
+        // Форвардер слушает ВСЕ интерфейсы (0.0.0.0), а не выбранный IP: телефон
+        // может прийти на любой адрес ПК. Прежний бинд на конкретный IP давал
+        // «connection refused», если авто-выбор адреса промахивался.
+        let bind = format!("0.0.0.0:{port}");
         let target = format!("127.0.0.1:{port}");
+        // Диагностика в UI-лог: какой адрес уехал в QR, все кандидаты и — если
+        // выход в интернет идёт мимо него — предупреждение про VPN/виртуалку.
+        let route_note = match &lan.route_ip {
+            Some(r) if *r != lan.ip => format!(
+                " Выход в интернет через {r} — это VPN/виртуальный адаптер, телефону он недоступен, поэтому взят LAN-адрес."
+            ),
+            _ => String::new(),
+        };
         util::emit_log(
             app,
             "info",
             "proxy",
-            &format!("Форвардер {bind} → {target} для доступа с телефона"),
+            &format!(
+                "Телефон: адрес для QR {}:{port} (форвардер слушает 0.0.0.0:{port}). Найденные LAN-адреса: [{}].{route_note}",
+                lan.ip,
+                lan.candidates.join(", ")
+            ),
         );
         if let Err(e) = add_firewall_rule(port) {
             util::emit_log(
@@ -222,8 +243,14 @@ pub async fn start(app: &AppHandle, port: u16, fake_tls_domain: &str) -> Result<
             let state = app.state::<AppState>();
             state.proxy.lock().unwrap().forwarder = Some(forwarder);
         }
-        Some(link.replace("127.0.0.1", &local_ip))
+        Some(link.replace("127.0.0.1", &lan.ip))
     } else {
+        util::emit_log(
+            app,
+            "warn",
+            "proxy",
+            "LAN-адрес для телефона не найден — QR будет работать только на этом ПК.",
+        );
         None
     };
 
@@ -243,30 +270,60 @@ pub async fn start(app: &AppHandle, port: u16, fake_tls_domain: &str) -> Result<
     Ok(link)
 }
 
-/// Останавливает прокси (по своему PID) и TCP-форвардер.
-pub async fn stop(app: &AppHandle) {
-    let pid = {
+/// Останавливает прокси и TCP-форвардер. Возвращает true, если было что убивать.
+///
+/// ВАЖНО: TgWsProxy — PyInstaller-onefile, то есть ДВА процесса: наш PID — это
+/// бутлоадер-родитель, а реальный Python-код (он и держит порт) — его ребёнок
+/// с тем же именем образа. `taskkill /PID` без `/T` убивал только родителя:
+/// прокси продолжал работать при «выключенном» UI, а рестарт падал с занятым
+/// портом. Поэтому убиваем дерево (/T) и добиваем сирот по имени образа
+/// (остатки прошлых сессий или падения лаунчера).
+pub async fn stop(app: &AppHandle) -> bool {
+    let (pid, image) = {
         let state = app.state::<AppState>();
+        let image = state
+            .paths
+            .tgproxy_path()
+            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()));
         let mut p = state.proxy.lock().unwrap();
         if let Some(h) = p.forwarder.take() {
             h.abort();
         }
-        if let Some(pid) = p.pid.take() {
+        let pid = p.pid.take();
+        if pid.is_some() {
             p.stopping = true;
             p.link = String::new();
             p.lan_link = None;
-            Some(pid)
-        } else {
-            None
         }
+        (pid, image)
     };
     remove_firewall_rule();
+    let mut killed = false;
     if let Some(pid) = pid {
+        killed = true;
         let _ = util::std_command("taskkill")
-            .args(["/F", "/PID", &pid.to_string()])
+            .args(["/F", "/T", "/PID", &pid.to_string()])
             .output();
     }
+    // Добивание по имени образа: после /T обычно никого нет, успех = были сироты.
+    if let Some(image) = image {
+        let swept = util::std_command("taskkill")
+            .args(["/F", "/T", "/IM", &image])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if swept {
+            killed = true;
+            util::emit_log(
+                app,
+                "warn",
+                "proxy",
+                "[tg] Добиты осиротевшие процессы прокси.",
+            );
+        }
+    }
     emit_status(app);
+    killed
 }
 
 pub fn current_link(app: &AppHandle) -> String {
@@ -332,12 +389,16 @@ async fn run_forwarder(bind_addr: String, target_addr: String) {
             Ok(c) => c,
             Err(_) => continue,
         };
+        // MTProto — поток мелких пакетов; без TCP_NODELAY алгоритм Нейгла
+        // копит их и добавляет задержку (жалобы «работает медленно»).
+        let _ = client.set_nodelay(true);
         let target = target_addr.clone();
         tokio::spawn(async move {
             let server = match tokio::net::TcpStream::connect(&target).await {
                 Ok(s) => s,
                 Err(_) => return,
             };
+            let _ = server.set_nodelay(true);
             let (mut cr, mut cw) = client.into_split();
             let (mut sr, mut sw) = server.into_split();
             let c2s = tokio::io::copy(&mut cr, &mut sw);

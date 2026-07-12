@@ -18,6 +18,7 @@ tauri-plugin-clipboard-manager = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-notification = "2"
 tauri-plugin-global-shortcut = "2"
+tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["process", "io-util", "rt-multi-thread", "macros", "time", "net", "sync"] }
@@ -26,6 +27,9 @@ regex = "1"
 rand = "0.8"
 chrono = "0.4"
 sha2 = "0.10"
+# Перечисление сетевых адаптеров: выбрать LAN-адрес для QR телефона, отсекая
+# VPN/виртуальные интерфейсы (см. util::lan_ip_for_phone).
+if-addrs = "0.15"
 
 [target.'cfg(windows)'.dependencies]
 libloading = "0.8"
