@@ -1,5 +1,9 @@
 //! Общие утилиты: спавн команд без консольного окна и эмит событий в UI.
 
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
+
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -50,9 +54,66 @@ pub fn emit_log(app: &AppHandle, level: &str, source: &str, message: &str) {
     append_log_file(app, &ts, level, source, message);
 }
 
-/// Показывает нативное уведомление Windows. Ошибки глушим — уведомление не
-/// критично (например, если пользователь отключил их в системе).
-pub fn notify(app: &AppHandle, title: &str, body: &str) {
+/// Минимальный интервал между всплывающими уведомлениями одного типа. Во время
+/// шторма ТСПУ авто-восстановление щёлкает стратегиями пачками — без троттла
+/// Windows заваливает пользователя тостами быстрее, чем он успевает их закрыть.
+const NOTIFY_COOLDOWN: Duration = Duration::from_secs(45);
+
+/// Троттл-состояние на ключ (обычно = заголовок класса события).
+struct NotifyGate {
+    last: Option<Instant>,
+    /// Сколько уведомлений подавлено с момента последнего показанного.
+    suppressed: u32,
+}
+
+fn notify_gates() -> &'static Mutex<HashMap<String, NotifyGate>> {
+    static G: OnceLock<Mutex<HashMap<String, NotifyGate>>> = OnceLock::new();
+    G.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Показывает нативное уведомление Windows с троттлингом и схлопыванием.
+///
+/// В пределах [`NOTIFY_COOLDOWN`] повторные уведомления с тем же `key` НЕ
+/// всплывают, а копятся счётчиком; когда окно остынет, ближайшее уведомление
+/// добавит к тексту «(+N за это время)» — так пачка сотни переключений даёт
+/// одно-два тоста вместо спама. Внутри-приложение лог/тосты этот троттл не
+/// трогает — там полная хронология.
+///
+/// `key` группирует однотипные события (напр. `"recover"`, `"down"`); разные
+/// ключи троттлятся независимо.
+pub fn notify_throttled(app: &AppHandle, key: &str, title: &str, body: &str) {
+    let now = Instant::now();
+    let suppressed_before = {
+        let mut gates = notify_gates().lock().unwrap();
+        let gate = gates.entry(key.to_string()).or_insert(NotifyGate {
+            last: None,
+            suppressed: 0,
+        });
+        let cool = gate
+            .last
+            .map(|t| now.duration_since(t) < NOTIFY_COOLDOWN)
+            .unwrap_or(false);
+        if cool {
+            // Ещё остываем — подавляем, но считаем.
+            gate.suppressed = gate.suppressed.saturating_add(1);
+            return;
+        }
+        // Показываем: фиксируем время и забираем накопленный счётчик.
+        gate.last = Some(now);
+        std::mem::take(&mut gate.suppressed)
+    };
+
+    let body = if suppressed_before > 0 {
+        format!("{body} (+{suppressed_before} за это время)")
+    } else {
+        body.to_string()
+    };
+    notify_now(app, title, &body);
+}
+
+/// Показывает нативное уведомление Windows без троттла. Ошибки глушим —
+/// уведомление не критично (например, если пользователь отключил их в системе).
+pub(crate) fn notify_now(app: &AppHandle, title: &str, body: &str) {
     use tauri_plugin_notification::NotificationExt;
     let _ = app
         .notification()
