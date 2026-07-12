@@ -89,6 +89,18 @@ pub fn run() {
     }
 
     tauri::Builder::default()
+        // Single-instance ПЕРВЫМ плагином (требование tauri-plugin-single-instance):
+        // второй запуск лаунчера не плодит процесс/трей-иконку, а поднимает уже
+        // открытое окно первого инстанса. Срабатывает уже после UAC-релонча выше
+        // (не-elevated процесс выходит до Builder, лок берёт elevated-инстанс).
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(win) = app.get_webview_window("main") {
+                let _ = win.show();
+                let _ = win.unminimize();
+                let _ = win.set_focus();
+                let _ = app.emit("window-visibility", true);
+            }
+        }))
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
@@ -259,7 +271,13 @@ pub fn run() {
                     let _ = window.hide();
                     let _ = app.emit("window-visibility", false);
                 } else {
+                    // Полное закрытие (не сворачивание): гасим Глаза/Мозг/процессы
+                    // и явно выходим. Раньше здесь был только shutdown() без exit —
+                    // процесс жил дальше за счёт трей-иконки, и она «зависала»
+                    // призраком в трее (особенно у второго инстанса). app.exit(0)
+                    // корректно уносит процесс и его иконку.
                     shutdown(&app);
+                    app.exit(0);
                 }
             }
         })
@@ -309,9 +327,31 @@ pub fn run() {
         });
 }
 
-/// Единый координатор завершения: гасит все дочерние процессы (winws + прокси).
-/// Идемпотентен — безопасен при повторном вызове.
+/// Единый координатор завершения: гасит «Глаза», «Мозг» и все дочерние процессы
+/// (winws + прокси). Идемпотентен — безопасен при повторном вызове.
 fn shutdown(app: &tauri::AppHandle) {
+    // КРИТИЧНО перед выходом: гасим «Глаза» (WinDivert sniff). Их поток захвата
+    // залипает в БЛОКИРУЮЩЕМ `WinDivertRecv` — это kernel IOCTL к драйверу.
+    // Пока recv не разбужен через `WinDivertShutdown`, `ExitProcess` не может
+    // завершить поток, застрявший внутри драйвера, и процесс «зависает», пока
+    // Windows не прибьёт его принудительно. Ровно поэтому выход из трея висел
+    // ТОЛЬКО когда DPI (а с ним «Глаза») запущен. `stop()` будит recv и джойнит
+    // потоки — быстро и детерминированно.
+    #[cfg(windows)]
+    {
+        let eyes = app.state::<AppState>().eyes.lock().unwrap().take();
+        if let Some(h) = eyes {
+            h.stop();
+        }
+    }
+    // Останавливаем задачу «Мозга» (авто-восстановление), если поднята — иначе
+    // её tokio-таск и тикер продолжают крутиться на выходе.
+    {
+        let brain = app.state::<AppState>().brain.lock().unwrap().take();
+        if let Some(h) = brain {
+            h.shutdown();
+        }
+    }
     // Синхронно убиваем свои процессы (в exit-хуке async-рантайм может не успеть).
     let (dpi_pids, proxy_pid) = {
         let state = app.state::<AppState>();
@@ -325,8 +365,10 @@ fn shutdown(app: &tauri::AppHandle) {
             .output();
     }
     if let Some(pid) = proxy_pid {
+        // /T обязателен: TgWsProxy — PyInstaller-onefile, реальный прокси —
+        // дочерний процесс бутлоадера (см. proxy::stop).
         let _ = util::std_command("taskkill")
-            .args(["/F", "/PID", &pid.to_string()])
+            .args(["/F", "/T", "/PID", &pid.to_string()])
             .output();
     }
 }

@@ -4,7 +4,11 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-pub const APP_VERSION: &str = "1.0.4";
+/// Версия набора bundled-ассетов = версия крейта. Когда она меняется, при
+/// следующем старте `extract_assets` перезаписывает распакованные в appdata
+/// файлы (иконки/конфиги/бинарники), иначе старые копии остаются навсегда.
+/// Берём из Cargo, чтобы гейт не разъезжался с реальной версией приложения.
+pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const APP_DATA_FOLDER: &str = "Obsession";
 pub const WINWS_EXE: &str = "winws.exe";
 pub const TGPROXY_EXE: &str = "tg_ws_proxy.exe";
@@ -100,9 +104,14 @@ impl Paths {
         self.icons_dir().join("tray.ico")
     }
 
-    /// Иконка трея для активного состояния (обход/прокси включены).
+    /// Иконка трея для активного состояния (обход/прокси включены). Раньше это
+    /// была отдельная картинка `tray-active.png` — на релизе там осталась старая
+    /// космо-аватарка («чёрная дыра»), и `refresh_tray` при включении обхода
+    /// менял глаз на неё. Активное состояние теперь показывает ТОТ ЖЕ глаз, что и
+    /// покой (различие несут тултип и галочки меню), поэтому возвращаем ту же
+    /// `tray.ico`, а не отдельный файл.
     pub fn tray_active_icon_path(&self) -> PathBuf {
-        self.icons_dir().join("tray-active.png")
+        self.icons_dir().join("tray.ico")
     }
 
     pub fn config_path(&self, category: &str, conf_file: &str) -> PathBuf {
