@@ -17,3 +17,10 @@ src-tauri/gen/schemas/
 # Локальные артефакты иконок (бэкап старых + исходник для регенерации)
 src-tauri/icons.space-backup/
 icon-source.png
+
+# Инсталлер-оболочка «Obsession Setup» (node_modules/ и dist/ покрыты выше)
+installer/src-tauri/target/
+installer/src-tauri/gen/schemas/
+installer/src-tauri/payload/
+installer/src-tauri/gen-version.conf.json
+dist-release/

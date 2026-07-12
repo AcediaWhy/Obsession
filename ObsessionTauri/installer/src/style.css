@@ -1,0 +1,349 @@
+/* Дистиллят дизайн-системы Obsession для окна инсталлера.
+   Токены и градиенты — из src/styles/globals.css основного приложения
+   (дефолтная Aurora: пустота #0A0B10, индиго/циан); шрифты — те же локальные
+   woff2, что и в лаунчере (см. src/styles/fonts.css, оттуда же unicode-range). */
+
+/* ── IBM Plex Sans — вариативный (диапазон весов обязателен) ── */
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 100 700;
+  font-display: swap;
+  src: url("../../src/assets/fonts/ibm-plex-sans-cyrillic.woff2") format("woff2");
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+}
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 100 700;
+  font-display: swap;
+  src: url("../../src/assets/fonts/ibm-plex-sans-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+/* ── IBM Plex Mono — 400/500 (пути, версия, стадии) ── */
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("../../src/assets/fonts/ibm-plex-mono-400-cyrillic.woff2") format("woff2");
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("../../src/assets/fonts/ibm-plex-mono-400-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("../../src/assets/fonts/ibm-plex-mono-500-cyrillic.woff2") format("woff2");
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("../../src/assets/fonts/ibm-plex-mono-500-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+:root {
+  --bg: #0a0b10;
+  /* rgb-триплеты, как в основном приложении: rgb(var(--x) / a) */
+  --accent: 99 102 241;
+  --accent-cyan: 34 211 238;
+  --glass-bg: linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.025));
+  --glass-border: rgba(255, 255, 255, 0.08);
+  --font-sans: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", Consolas, monospace;
+  color-scheme: dark;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body, #app { height: 100%; }
+body {
+  background: var(--bg);
+  color: rgba(255, 255, 255, 0.92);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  overflow: hidden;
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: default;
+}
+button { font: inherit; color: inherit; background: none; border: 0; cursor: default; }
+#app { display: flex; flex-direction: column; position: relative; }
+
+/* Дышащее индиго/циан-сияние Авроры из-за нижней кромки (opacity-only). */
+.glow {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(
+    120% 95% at 50% 120%,
+    rgb(var(--accent) / 0.26) 0%,
+    rgb(var(--accent-cyan) / 0.1) 40%,
+    transparent 68%
+  );
+  animation: glow-breathe 7s ease-in-out infinite;
+}
+@keyframes glow-breathe {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
+}
+
+/* ── Титлбар (drag-регион) ── */
+.titlebar {
+  position: relative;
+  z-index: 2;
+  flex: none;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 6px 0 14px;
+}
+.titlebar-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.32em;
+  color: rgba(255, 255, 255, 0.28);
+}
+.titlebar-btns { display: flex; gap: 2px; }
+.tb-btn {
+  width: 36px;
+  height: 28px;
+  border-radius: 8px;
+  color: rgba(255, 255, 255, 0.4);
+  font-size: 13px;
+  line-height: 1;
+  transition: background 0.15s, color 0.15s;
+}
+.tb-btn:hover { background: rgba(255, 255, 255, 0.07); color: rgba(255, 255, 255, 0.9); }
+.tb-close:hover { background: rgba(248, 113, 113, 0.18); color: #fecaca; }
+.hidden { visibility: hidden; }
+
+/* ── Сцена шага ── */
+.stage {
+  flex: 1;
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 48px;
+  min-height: 0;
+}
+.step {
+  width: 100%;
+  max-width: 480px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  animation: step-in 0.3s ease both;
+}
+.step-center { align-items: center; text-align: center; }
+@keyframes step-in {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* Живой глаз — тайл как EyeLogo основного приложения: фиксированная тёмная
+   подложка (не токен темы), чтобы полупрозрачные края глаза не подкрашивались. */
+.eye-tile {
+  flex: none;
+  overflow: hidden;
+  border-radius: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: #050609;
+  box-shadow: 0 0 44px rgb(var(--accent) / 0.16);
+}
+.eye-tile video, .eye-tile img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+.wordmark {
+  font-weight: 600;
+  font-size: 26px;
+  letter-spacing: 0.38em;
+  margin-left: 0.38em; /* компенсация трейлинг-трекинга — оптический центр */
+  background: linear-gradient(120deg, #eaf0ff 0%, #7dd3fc 48%, #2dd4bf 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.version {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  color: rgba(255, 255, 255, 0.35);
+  font-feature-settings: "zero";
+}
+.tagline { font-size: 13px; color: rgba(255, 255, 255, 0.55); }
+
+.step-title { font-weight: 600; font-size: 17px; letter-spacing: 0.02em; }
+
+/* ── Стекло и панель параметров ── */
+.glass {
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: 14px;
+}
+.options-panel { display: flex; flex-direction: column; gap: 12px; padding: 18px 20px; }
+.field-label { font-size: 12px; color: rgba(255, 255, 255, 0.5); }
+.path-row { display: flex; gap: 8px; }
+.path-input {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-feature-settings: "zero";
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.8);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.2;
+}
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.75);
+  width: fit-content;
+}
+.check input {
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  flex: none;
+  border-radius: 5px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.04);
+  display: grid;
+  place-content: center;
+  transition: background 0.15s, border-color 0.15s;
+}
+.check input::before {
+  content: "";
+  width: 9px;
+  height: 9px;
+  transform: scale(0);
+  transition: transform 0.12s ease;
+  background: #fff;
+  clip-path: polygon(14% 44%, 0 65%, 50% 100%, 100% 16%, 80% 0%, 43% 62%);
+}
+.check input:checked { background: rgb(var(--accent)); border-color: transparent; }
+.check input:checked::before { transform: scale(1); }
+
+.hint { font-family: var(--font-mono); font-size: 10.5px; color: rgba(255, 255, 255, 0.35); }
+
+/* ── Прогресс ── */
+.progress-track {
+  width: 100%;
+  max-width: 380px;
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+.progress-fill {
+  height: 100%;
+  width: 0;
+  border-radius: inherit;
+  background: linear-gradient(90deg, rgb(var(--accent)), rgb(var(--accent-cyan)));
+  box-shadow: 0 0 18px rgb(var(--accent) / 0.55);
+  transition: width 0.25s ease;
+}
+.stage-line {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.45);
+  font-feature-settings: "zero";
+  word-break: break-all;
+}
+
+/* ── Ошибка ── */
+.error-panel {
+  border-color: rgba(248, 113, 113, 0.35);
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 440px;
+}
+.error-title { font-weight: 600; font-size: 15px; color: #fca5a5; }
+.error-msg {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.6);
+  word-break: break-word;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* ── Футер: навигация + степпер ── */
+.footer {
+  position: relative;
+  z-index: 2;
+  flex: none;
+  height: 64px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 20px;
+}
+.foot-left, .foot-right { min-width: 170px; display: flex; }
+.foot-right { justify-content: flex-end; }
+.dots { display: flex; gap: 8px; }
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.14);
+  transition: background 0.2s, box-shadow 0.2s;
+}
+.dot.done { background: rgb(var(--accent) / 0.45); }
+.dot.active { background: rgb(var(--accent)); box-shadow: 0 0 10px rgb(var(--accent) / 0.8); }
+.dot.error { background: #f87171; box-shadow: 0 0 10px rgba(248, 113, 113, 0.8); }
+
+/* ── Кнопки ── */
+.btn {
+  font-weight: 500;
+  font-size: 13px;
+  border-radius: 10px;
+  padding: 10px 22px;
+  border: 1px solid transparent;
+  transition: filter 0.15s, background 0.15s, box-shadow 0.2s, color 0.15s;
+}
+.btn-primary {
+  color: #fff;
+  background: linear-gradient(180deg, rgb(113 116 246), rgb(88 91 230));
+  border-color: rgb(129 140 248 / 0.5);
+  box-shadow: 0 2px 14px rgb(var(--accent) / 0.25);
+}
+.btn-primary:hover { filter: brightness(1.09); box-shadow: 0 2px 24px rgb(var(--accent) / 0.5); }
+.btn-primary:active { filter: brightness(0.95); }
+.btn-ghost {
+  color: rgba(255, 255, 255, 0.7);
+  background: rgba(255, 255, 255, 0.045);
+  border-color: rgba(255, 255, 255, 0.09);
+}
+.btn-ghost:hover { background: rgba(255, 255, 255, 0.09); color: rgba(255, 255, 255, 0.9); }
+.btn-sm { padding: 8px 14px; font-size: 12px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .glow, .step { animation: none; }
+  .progress-fill { transition: none; }
+}
