@@ -30,8 +30,14 @@ Thumbs.db
 .idea/
 *.swp
 
+# --- Инструменты и dev-логи (не часть приложения) ---
+.agents/
+skills-lock.json
+.codex-dev/
+
 # --- Прочие проекты, не относящиеся к репозиторию (лежат локально) ---
 tg-ws-proxy-1.8.1/
+tg-ws-proxy-1.8.1.modern/
 Smart-Zapret-Launcher-1.62/
 ObessionLauncher/
 LarpingLauncher/
