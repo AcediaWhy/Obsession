@@ -2,7 +2,7 @@ import { create } from "zustand";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { api, on, type AppConfig, type ConfStat, type DpiProc } from "../lib/tauri";
 
-const CATEGORY_ORDER = ["discord", "youtube_twitch", "gaming", "universal"];
+const CATEGORY_ORDER = ["discord", "youtube_twitch", "gaming", "universal", "atrisk"];
 
 interface DpiState {
   config: AppConfig | null;
