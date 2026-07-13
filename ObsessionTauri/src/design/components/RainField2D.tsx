@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useDpiStore } from "../../store/dpiStore";
 import { useProxyStore } from "../../store/proxyStore";
-import { createRenderLoop, FPS_FIELD } from "../render";
+import { createRenderLoop, FPS_FIELD, type RenderLoop } from "../render";
 
 // Запасной 2D-фон темы «Rain» (id japan) — показывается, только если WebGL
 // недоступен или 3D-сцена упала. Косые струи дождя на холодном сланце, редкая
@@ -14,6 +14,7 @@ export function RainField2D() {
   hotRef.current = hot;
 
   const ref = useRef<HTMLCanvasElement>(null);
+  const loopRef = useRef<RenderLoop | null>(null);
 
   useEffect(() => {
     const canvas = ref.current;
@@ -48,13 +49,19 @@ export function RainField2D() {
       seed();
     };
     resize();
-    window.addEventListener("resize", resize);
+    // resize стирает кадр — под reduce-motion дорисуем стоп-кадр (живому — no-op).
+    const onResize = () => {
+      resize();
+      loop.invalidate();
+    };
+    window.addEventListener("resize", onResize);
 
     type Ripple = { x: number; y: number; r: number; alpha: number };
     const ripples: Ripple[] = [];
     let rippleAcc = 0;
 
-    let warm = 0;
+    // Сеем от текущего состояния щита — вход в тему без прогрева на глазах.
+    let warm = hotRef.current ? 1 : 0;
 
     const draw = (dt: number) => {
       warm += ((hotRef.current ? 1 : 0) - warm) * (1 - Math.exp(-dt * 2.2));
@@ -104,13 +111,20 @@ export function RainField2D() {
     };
     // Кап 60 fps: полноэкранный фон под backdrop-filter-панелями (см. AuroraField).
     const loop = createRenderLoop(draw, { fps: FPS_FIELD });
+    loopRef.current = loop;
     loop.start();
 
     return () => {
       loop.dispose();
-      window.removeEventListener("resize", resize);
+      loopRef.current = null;
+      window.removeEventListener("resize", onResize);
     };
   }, []);
+
+  // Под reduce-motion кадр статичен, но смену состояния щита отражаем стоп-кадром.
+  useEffect(() => {
+    loopRef.current?.invalidate();
+  }, [hot]);
 
   return (
     <div className="pointer-events-none absolute inset-0 overflow-hidden">

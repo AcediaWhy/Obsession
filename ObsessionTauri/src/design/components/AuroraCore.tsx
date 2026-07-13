@@ -25,8 +25,7 @@ export function AuroraCore({ active, busy = false, onClick, size = 240, paused =
       disabled={busy}
       whileHover={{ scale: 1.03 }}
       whileTap={{ scale: 0.97 }}
-      data-snow="round"
-      className="no-drag snow-surface relative flex items-center justify-center disabled:cursor-wait"
+      className="no-drag relative flex items-center justify-center disabled:cursor-wait"
       style={{ width: size, height: size }}
     >
       {/* Внешнее свечение-ореол — дышит, теплеет при активации. */}
@@ -167,7 +166,9 @@ function AuroraCanvas({ active, busy, size, paused }: { active: boolean; busy: b
     ctx.scale(dpr, dpr);
 
     let t = 0;
-    let warm = 0; // 0..1 плавный переход к «разогреву»
+    // 0..1 «разогрев»; сеем от текущего состояния — маунт при включённом щите
+    // (смена темы/экрана) сразу тёплый, без прогрева на глазах.
+    let warm = stateRef.current.active ? 1 : 0;
 
     // Маска-феатеринг статична (центр/радиусы от size, стопы постоянны) —
     // строим один раз, а не пересоздаём каждый кадр.
@@ -298,10 +299,11 @@ function AuroraCanvas({ active, busy, size, paused }: { active: boolean; busy: b
     loopRef.current?.setPaused(paused);
   }, [paused]);
 
-  // Застывшее превью перерисовываем при смене active/busy (выбор темы меняет
-  // цвет замершего кадра) — раньше это давал полный ремоунт эффекта.
+  // Застывший кадр (превью paused ИЛИ стоп-кадр reduce-motion) перерисовываем
+  // при смене active/busy — замерший кадр следует состоянию. На живом цикле
+  // invalidate — no-op.
   useEffect(() => {
-    if (paused) loopRef.current?.invalidate();
+    loopRef.current?.invalidate();
   }, [active, busy, paused]);
 
   return (

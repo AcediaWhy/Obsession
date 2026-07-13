@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useDpiStore } from "../../store/dpiStore";
 import { useProxyStore } from "../../store/proxyStore";
-import { createRenderLoop, FPS_FIELD } from "../render";
+import { createRenderLoop, FPS_FIELD, type RenderLoop } from "../render";
 import { createSpriteCache } from "./glowSprite";
 
 // Реактивная среда «Aurora»: звёздное небо, над ним — шторы полярного сияния с
@@ -48,6 +48,7 @@ export function AuroraField() {
   hotRef.current = hot;
 
   const ref = useRef<HTMLCanvasElement>(null);
+  const loopRef = useRef<RenderLoop | null>(null);
 
   useEffect(() => {
     const canvas = ref.current;
@@ -97,7 +98,13 @@ export function AuroraField() {
       seedStars();
     };
     resize();
-    window.addEventListener("resize", resize);
+    // resize меняет размеры канваса и стирает кадр — под reduce-motion
+    // (замерший цикл) дорисовываем стоп-кадр; на живом цикле invalidate — no-op.
+    const onResize = () => {
+      resize();
+      loop.invalidate();
+    };
+    window.addEventListener("resize", onResize);
 
     // Крупные вертикальные шторы, дрейфующие по горизонтали. В палитре —
     // индиго/циан вперемешку с бирюзой/изумрудом; hot теплеет в магенту.
@@ -114,7 +121,9 @@ export function AuroraField() {
     ];
 
     let t = 0;
-    let warm = 0;
+    // Сеем от текущего состояния щита: при входе в тему с уже включённым
+    // обходом сцена сразу «тёплая», без прогрева на глазах (~1 с).
+    let warm = hotRef.current ? 1 : 0;
 
     const draw = (dt: number) => {
       // Время и разогрев — кадронезависимые (одинаковая скорость на любом мониторе).
@@ -269,13 +278,21 @@ export function AuroraField() {
     // FPS_FIELD (без капа): полноэкранный фон под backdrop-filter-панелями; циклы
     // полностью встают в трее по renderActive (см. render.ts).
     const loop = createRenderLoop(draw, { fps: FPS_FIELD });
+    loopRef.current = loop;
     loop.start();
 
     return () => {
       loop.dispose();
-      window.removeEventListener("resize", resize);
+      loopRef.current = null;
+      window.removeEventListener("resize", onResize);
     };
   }, []);
+
+  // Под reduce-motion кадр статичен, но смену состояния щита отражаем:
+  // дорисовываем один стоп-кадр (на живом цикле — no-op).
+  useEffect(() => {
+    loopRef.current?.invalidate();
+  }, [hot]);
 
   return (
     <div className="pointer-events-none absolute inset-0 overflow-hidden">

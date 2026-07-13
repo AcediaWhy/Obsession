@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useDpiStore } from "../../store/dpiStore";
 import { useProxyStore } from "../../store/proxyStore";
-import { createRenderLoop, FPS_FIELD } from "../render";
+import { createRenderLoop, FPS_FIELD, type RenderLoop } from "../render";
 import { createSpriteCache } from "./glowSprite";
 import { drawGreatEye } from "./ophanimEye";
 
@@ -87,6 +87,7 @@ export function OphanimField() {
   moodRef.current = { hot, scanning: testing, alarm, transitioning };
 
   const ref = useRef<HTMLCanvasElement>(null);
+  const loopRef = useRef<RenderLoop | null>(null);
 
   useEffect(() => {
     const canvas = ref.current;
@@ -106,7 +107,12 @@ export function OphanimField() {
       ctx.setTransform(Q, 0, 0, Q, 0, 0);
     };
     resize();
-    window.addEventListener("resize", resize);
+    // resize стирает кадр — под reduce-motion дорисуем стоп-кадр (живому — no-op).
+    const onResize = () => {
+      resize();
+      loop.invalidate();
+    };
+    window.addEventListener("resize", onResize);
 
     // Наклонные столпы света, нисходящие сверху. Левый столп холодно-сапфировый
     // в покое (Иез. 1:26 «как вид камня сапфира») — тёплая тема с холодной тенью.
@@ -181,7 +187,9 @@ export function OphanimField() {
     };
 
     let t = 0;
-    let warm = 0;
+    // Сеем от текущего настроения стражи — вход в тему без прогрева на глазах.
+    const mood0 = moodRef.current;
+    let warm = mood0.hot ? 1 : mood0.scanning ? 0.6 : mood0.transitioning ? 0.4 : 0;
     let wave = -1; // фаза бегущей «волны моргания» по ободу главного колеса; -1 = неактивна
     let waveCd = 12 + Math.random() * 10; // до первой волны, сек
 
@@ -420,13 +428,20 @@ export function OphanimField() {
     };
     // Кап 60 fps: полноэкранный фон под backdrop-filter-панелями (см. AuroraField).
     const loop = createRenderLoop(draw, { fps: FPS_FIELD });
+    loopRef.current = loop;
     loop.start();
 
     return () => {
       loop.dispose();
-      window.removeEventListener("resize", resize);
+      loopRef.current = null;
+      window.removeEventListener("resize", onResize);
     };
   }, []);
+
+  // Под reduce-motion кадр статичен, но смену настроения стражи отражаем стоп-кадром.
+  useEffect(() => {
+    loopRef.current?.invalidate();
+  }, [hot, transitioning, testing, alarm]);
 
   return (
     <div className="pointer-events-none absolute inset-0 overflow-hidden">

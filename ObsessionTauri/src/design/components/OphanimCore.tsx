@@ -32,8 +32,7 @@ export function OphanimCore({ active, busy = false, onClick, size = 240, paused 
       disabled={busy}
       whileHover={{ scale: 1.03 }}
       whileTap={{ scale: 0.97 }}
-      data-snow="round"
-      className="no-drag snow-surface relative flex items-center justify-center disabled:cursor-wait"
+      className="no-drag relative flex items-center justify-center disabled:cursor-wait"
       style={{ width: size, height: size }}
     >
       {/* Глориоль — внешний ореол святости, дышит и теплеет при активации. */}
@@ -166,7 +165,10 @@ function OphanimCanvas({
     const cx = size / 2;
     const cy = size / 2;
     let t = 0;
-    let warm = 0; // 0..1 плавный «разогрев»
+    // 0..1 «разогрев»; сеем от текущего настроения — маунт при включённом щите
+    // сразу тёплый, без прогрева на глазах.
+    const s0 = stateRef.current;
+    let warm = s0.active ? 1 : s0.scanning ? 0.6 : s0.busy ? 0.4 : 0;
 
     // Маска-феатеринг статична (центр/радиусы от size) — строим один раз.
     const mask = ctx.createRadialGradient(cx, cy, size * 0.2, cx, cy, size * 0.5);
@@ -311,7 +313,8 @@ function OphanimCanvas({
   // Застывшее превью перерисовываем при смене active/busy (выбор темы меняет
   // цвет замершего кадра) — раньше это давал полный ремоунт эффекта.
   useEffect(() => {
-    if (paused) loopRef.current?.invalidate();
+    // Живой цикл: no-op; замерший (paused/reduce-motion) — дорисовать кадр.
+    loopRef.current?.invalidate();
   }, [active, busy, scanning, alarm, paused]);
 
   return (
