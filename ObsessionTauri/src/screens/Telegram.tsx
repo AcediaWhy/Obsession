@@ -3,6 +3,7 @@ import QRCode from "qrcode";
 
 import { useProxyStore } from "../store/proxyStore";
 import { GlassPanel } from "../design/components/GlassPanel";
+import { StaggerItem } from "../design/components/Stagger";
 import { LogStream } from "../design/components/LogStream";
 import { HeroCore } from "../design/components/HeroCore";
 import { Parallax } from "../design/parallax";
@@ -42,7 +43,7 @@ export function TelegramScreen() {
 
   return (
     <div className="flex h-full flex-col gap-4">
-      <div className="flex items-center justify-between">
+      <StaggerItem standalone className="flex items-center justify-between">
         <div>
           <h1 className="font-display text-3xl font-semibold tracking-tight text-gradient">Telegram-прокси</h1>
           <p className="text-sm text-ink-muted">
@@ -53,7 +54,7 @@ export function TelegramScreen() {
           <Uptime active={s.running} />
           <StatusBadge active={s.running} labelOn="Запущен" labelOff="Остановлен" />
         </div>
-      </div>
+      </StaggerItem>
 
       <div className="grid flex-1 grid-cols-[1fr_360px] gap-4 overflow-hidden">
         <GlassPanel scroll contentClassName="flex flex-col items-center gap-6">

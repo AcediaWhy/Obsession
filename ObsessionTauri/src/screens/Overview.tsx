@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { motion } from "framer-motion";
+import { AnimatePresence, motion } from "framer-motion";
 
 import { useDpiStore } from "../store/dpiStore";
 import { useProxyStore } from "../store/proxyStore";
@@ -11,7 +11,7 @@ import { Stagger, StaggerItem } from "../design/components/Stagger";
 import { Button } from "../design/components/atoms";
 import { Uptime } from "../design/components/Uptime";
 import { Icon } from "../design/components/icons";
-import { spring } from "../design/tokens";
+import { dur, ease, spring } from "../design/tokens";
 import { useRenderActive } from "../design/render";
 
 const CATEGORY_LABELS: Record<string, string> = {
@@ -60,10 +60,10 @@ export function OverviewScreen() {
 
   return (
     <div className="flex h-full flex-col gap-4 overflow-y-auto pr-1">
-      <div>
+      <StaggerItem standalone>
         <h1 className="font-display text-3xl font-semibold tracking-tight text-gradient">Обзор</h1>
         <p className="text-sm text-ink-muted">Состояние защиты одним взглядом</p>
-      </div>
+      </StaggerItem>
 
       {/* Командный центр: живой глаз-герой + главное действие. */}
       <GlassPanel glow={protectedNow}>
@@ -82,7 +82,9 @@ export function OverviewScreen() {
                 : spring.soft
             }
             className={[
-              "relative flex h-16 w-16 shrink-0 items-center justify-center rounded-full border transition-colors",
+              // Доводка цвета/свечения 0.5с — состояние «протекает» в новое,
+              // в одном темпе с glow панели и бейджами.
+              "relative flex h-16 w-16 shrink-0 items-center justify-center rounded-full border transition-[color,background-color,border-color,box-shadow] duration-500",
               protectedNow
                 ? "border-ok/40 bg-ok/15 text-ok shadow-glow"
                 : "border-glass-border bg-white/5 text-ink-muted",
@@ -101,15 +103,41 @@ export function OverviewScreen() {
 
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-3">
-              <span className={`text-2xl font-bold ${protectedNow ? "text-ink" : "text-ink-soft"}`}>
-                {protectedNow ? "Под защитой" : "Защита выключена"}
-              </span>
+              {/* Статус и подпись свапаются кроссфейдом (mode="wait", только
+                  opacity): без движения, просто одно состояние растворяется в
+                  другое. grid-стопка держит место — строка не схлопывается на
+                  кадры, пока уходящий текст ещё жив. */}
+              <div className="grid">
+                <AnimatePresence mode="wait" initial={false}>
+                  <motion.span
+                    key={protectedNow ? "on" : "off"}
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0, transition: { duration: dur.fast, ease: ease.exit } }}
+                    transition={{ duration: dur.base, ease: ease.enter }}
+                    className={`col-start-1 row-start-1 whitespace-nowrap text-2xl font-bold ${protectedNow ? "text-ink" : "text-ink-soft"}`}
+                  >
+                    {protectedNow ? "Под защитой" : "Защита выключена"}
+                  </motion.span>
+                </AnimatePresence>
+              </div>
               <Uptime active={protectedNow} />
             </div>
-            <div className="mt-1 truncate text-sm text-ink-muted">
-              {protectedNow
-                ? `Глаз открыт · обход активен${activeCats.length ? ` · ${activeCats.join(", ")}` : ""}`
-                : "Один клик — и обход включится с текущими настройками"}
+            <div className="mt-1 grid">
+              <AnimatePresence mode="wait" initial={false}>
+                <motion.div
+                  key={protectedNow ? "on" : "off"}
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0, transition: { duration: dur.fast, ease: ease.exit } }}
+                  transition={{ duration: dur.base, ease: ease.enter }}
+                  className="col-start-1 row-start-1 truncate text-sm text-ink-muted"
+                >
+                  {protectedNow
+                    ? `Глаз открыт · обход активен${activeCats.length ? ` · ${activeCats.join(", ")}` : ""}`
+                    : "Один клик — и обход включится с текущими настройками"}
+                </motion.div>
+              </AnimatePresence>
             </div>
           </div>
 
@@ -131,7 +159,7 @@ export function OverviewScreen() {
 
       {/* Карточки сервисов. */}
       <Stagger className="grid grid-cols-2 gap-4">
-        <StaggerItem>
+        <StaggerItem glass>
           <StatusCard
             icon={<Icon.Bolt size={18} />}
             title="DPI-обход"
@@ -148,7 +176,7 @@ export function OverviewScreen() {
           />
         </StaggerItem>
 
-        <StaggerItem>
+        <StaggerItem glass>
           <StatusCard
             icon={<Icon.Send size={18} />}
             title="Telegram-прокси"
@@ -165,7 +193,7 @@ export function OverviewScreen() {
           />
         </StaggerItem>
 
-        <StaggerItem>
+        <StaggerItem glass>
           <StatusCard
             icon={<Icon.Robot size={18} />}
             title="ИИ-разблокировка"
@@ -181,7 +209,7 @@ export function OverviewScreen() {
           />
         </StaggerItem>
 
-        <StaggerItem>
+        <StaggerItem glass>
           <StatusCard
             icon={<Icon.Globe size={18} />}
             title="Сеть"
@@ -239,8 +267,10 @@ function StatusCard({
         </span>
         <span className="text-sm font-semibold text-ink">{title}</span>
         <span className="ml-auto flex items-center gap-1.5">
-          <span className={`h-2 w-2 rounded-full ${dot} ${on ? "animate-pulse" : ""}`} />
-          <span className={`text-xs font-semibold ${tone}`}>{on ? onLabel : offLabel}</span>
+          <span className={`h-2 w-2 rounded-full transition-colors duration-500 ${dot} ${on ? "animate-pulse" : ""}`} />
+          <span className={`text-xs font-semibold transition-colors duration-500 ${tone}`}>
+            {on ? onLabel : offLabel}
+          </span>
         </span>
       </div>
       <p className="truncate text-xs text-ink-muted">{detail}</p>

@@ -1,5 +1,8 @@
 import { useEffect, useRef, useState } from "react";
+import { AnimatePresence, motion } from "framer-motion";
+
 import { onRenderActiveChange, renderActive } from "../render";
+import { dur, ease, spring } from "../tokens";
 
 // Живой таймер аптайма — тикает, пока обход/прокси активны. В трее/свёрнутом окне
 // интервал паузится (как и все анимации): elapsed считается от абсолютного времени
@@ -43,21 +46,34 @@ export function Uptime({ active }: { active: boolean }) {
     };
   }, [active]);
 
-  if (!active) return null;
-
   const mm = String(Math.floor(elapsed / 60)).padStart(2, "0");
   const ss = String(elapsed % 60).padStart(2, "0");
 
+  // Появление/уход — пружиной, не телепортом. layout — чтобы соседи (StatusBadge
+  // в шапках Dpi/Telegram, у них тоже layout) раздвигались тем же движением.
+  // initial={false} — при открытии экрана с уже активной защитой пилюля не
+  // «выпрыгивает», а просто есть.
   return (
-    <div className="flex items-center gap-2 rounded-full bg-white/5 px-3 py-1.5">
-      {/* Пульсирующий пинг-индикатор. */}
-      <span className="relative flex h-2 w-2">
-        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-ok opacity-75" />
-        <span className="relative inline-flex h-2 w-2 rounded-full bg-ok" />
-      </span>
-      <span className="font-mono text-xs tabular-nums text-ink-soft">
-        {mm}:{ss}
-      </span>
-    </div>
+    <AnimatePresence initial={false}>
+      {active && (
+        <motion.div
+          layout
+          initial={{ opacity: 0, scale: 0.85 }}
+          animate={{ opacity: 1, scale: 1 }}
+          exit={{ opacity: 0, scale: 0.9, transition: { duration: dur.fast, ease: ease.exit } }}
+          transition={spring.expand}
+          className="flex items-center gap-2 rounded-full bg-white/5 px-3 py-1.5"
+        >
+          {/* Пульсирующий пинг-индикатор. */}
+          <span className="relative flex h-2 w-2">
+            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-ok opacity-75" />
+            <span className="relative inline-flex h-2 w-2 rounded-full bg-ok" />
+          </span>
+          <span className="font-mono text-xs tabular-nums text-ink-soft">
+            {mm}:{ss}
+          </span>
+        </motion.div>
+      )}
+    </AnimatePresence>
   );
 }

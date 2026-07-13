@@ -59,6 +59,9 @@ export default {
         glow: "0 0 24px -4px rgb(var(--accent) / 0.55)",
         "glow-lg": "0 0 48px -6px rgb(var(--accent) / 0.65)",
         "glow-cyan": "0 0 32px -4px rgb(var(--accent-cyan) / 0.55)",
+        // Красное свечение danger-кнопок: язык глубины (glow у primary/active)
+        // не должен рваться на единственном «плоском» варианте.
+        "glow-danger": "0 0 24px -4px rgba(248,113,113,0.45)",
         glass: "0 8px 32px -8px rgba(0,0,0,0.6), inset 0 1px 0 0 rgba(255,255,255,0.06)",
       },
       backdropBlur: {
