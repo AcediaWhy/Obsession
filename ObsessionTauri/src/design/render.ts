@@ -22,38 +22,46 @@ let active = true;
 // явный сигнал из Rust (скрытие в трей). Окно «видимо» только когда оба за.
 let domVisible = true;
 let windowShown = true;
+// Пауза раскладывается на ДВЕ независимые причины (важно для стоп-кадра):
+//  • hidden — окно реально скрыто (трей/свёрнуто/другой стол): не рисуем вовсе.
+//    Простую потерю фокуса скрытием не считаем — иначе анимация замирала бы
+//    при каждом клике мимо окна, что выглядит как баг.
+//  • still  — reduce-motion (флаг настроек ИЛИ системный prefers-reduced-motion):
+//    цикл рисует РОВНО ОДИН кадр и замирает — canvas-темы выглядят статичными
+//    постерами (глаз/сердце/солнце на месте), а не пустотой.
+let hidden = false;
+let still = false;
 const listeners = new Set<Listener>();
 
 const mediaQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
 const settingsMotion = () => !useSettingsStore.getState().settings?.reduce_motion;
 
-function compute(): boolean {
-  // Пауза, только когда окно реально скрыто (свёрнуто / трей / другой рабочий
-  // стол). Простую потерю фокуса скрытием не считаем — иначе анимация замирала
-  // бы при каждом клике мимо окна, что выглядит как баг.
-  // Также уважаем системную настройку и флаг reduce_motion из настроек.
-  return domVisible && windowShown && settingsMotion() && !mediaQuery.matches;
-}
-
-function set(next: boolean) {
-  if (next === active) return;
-  active = next;
-  listeners.forEach((cb) => cb(next));
+function recompute() {
+  const nextHidden = !(domVisible && windowShown);
+  const nextStill = !settingsMotion() || mediaQuery.matches;
+  if (nextHidden === hidden && nextStill === still) return;
+  hidden = nextHidden;
+  still = nextStill;
+  active = !hidden && !still;
+  // Уведомляем на любую смену пары (hidden, still), а не только active: циклам
+  // нужно отличать «скрылись» от «замерли со стоп-кадром» (см. createRenderLoop).
+  // Повторный вызов с тем же active для остальных подписчиков безвреден.
+  listeners.forEach((cb) => cb(active));
 }
 
 if (typeof document !== "undefined") {
   document.addEventListener("visibilitychange", () => {
     domVisible = document.visibilityState !== "hidden";
-    set(compute());
+    recompute();
   });
   domVisible = document.visibilityState !== "hidden";
-  active = compute();
+  recompute();
 
   // Уважаем системную настройку reduce-motion и флаг из настроек приложения.
-  mediaQuery.addEventListener("change", () => set(compute()));
+  mediaQuery.addEventListener("change", recompute);
   useSettingsStore.subscribe((state, prevState) => {
     if (state.settings?.reduce_motion !== prevState.settings?.reduce_motion) {
-      set(compute());
+      recompute();
     }
   });
 }
@@ -82,12 +90,31 @@ export function setWindowShown(shown: boolean) {
     document.documentElement.setAttribute("data-hidden", "true");
   }
   document.dispatchEvent(new Event("visibilitychange"));
-  set(compute());
+  recompute();
 }
 
-/** true, если сейчас имеет смысл рисовать кадр. */
+/** true, если сейчас имеет смысл рисовать кадры непрерывно. */
 export function renderActive(): boolean {
   return active;
+}
+
+/** true, если окно реально скрыто (трей/свёрнуто) — не рисовать вовсе. */
+export function renderHidden(): boolean {
+  return hidden;
+}
+
+/** true, если включён reduce-motion — рисуется один стоп-кадр. */
+export function renderStill(): boolean {
+  return still;
+}
+
+/**
+ * React-хук «анимации отключены» (флаг настроек ИЛИ системный
+ * prefers-reduced-motion). Для framer-переходов, которые reducedMotion="always"
+ * не глушит (opacity, height): transition={off ? { duration: 0 } : ...}.
+ */
+export function useMotionOff(): boolean {
+  return useSyncExternalStore(onRenderActiveChange, renderStill, renderStill);
 }
 
 /**
@@ -176,8 +203,8 @@ export function createRenderLoop(
   const tick = (now: number) => {
     raf = 0;
     if (disposed) return;
-    if (!renderActive()) {
-      // lastDraw=0 → после паузы dt не «прыгнет»; возобновит подписка ниже.
+    if (renderHidden()) {
+      // Окно скрыто: не рисуем; lastDraw=0 → после паузы dt не «прыгнет».
       lastDraw = 0;
       nextDue = 0;
       return;
@@ -192,12 +219,14 @@ export function createRenderLoop(
     // после лага/паузы — ресинк от now, без burst-догона.
     if (frame) nextDue = nextDue + frame > now ? nextDue + frame : now + frame;
     draw(dt, now);
-    if (paused) return; // paused: один кадр — и замерли (raf уже 0)
+    // paused/reduce-motion: один кадр — и замерли (raf уже 0). Под reduce-motion
+    // сцена остаётся видимым статичным «постером», а не пустым канвасом.
+    if (paused || renderStill()) return;
     raf = requestAnimationFrame(tick);
   };
 
   const start = () => {
-    if (!disposed && !raf && renderActive()) raf = requestAnimationFrame(tick);
+    if (!disposed && !raf && !renderHidden()) raf = requestAnimationFrame(tick);
   };
   const stop = () => {
     if (raf) {
@@ -205,7 +234,16 @@ export function createRenderLoop(
       raf = 0;
     }
   };
-  const unsub = onRenderActiveChange((a) => (a ? start() : stop()));
+  const unsub = onRenderActiveChange(() => {
+    if (renderHidden()) {
+      stop();
+      return;
+    }
+    // Видимы: продолжаем (или, под reduce-motion, дорисуем один стоп-кадр —
+    // tick сам замрёт). lastDraw=0 → возврат из любой паузы без скачка dt.
+    lastDraw = 0;
+    start();
+  });
 
   return {
     start,
@@ -217,7 +255,7 @@ export function createRenderLoop(
       start(); // paused=true: дорисовать «застывший» кадр; false: продолжить
     },
     invalidate() {
-      if (paused) start();
+      if (paused || renderStill()) start();
     },
     dispose() {
       disposed = true;

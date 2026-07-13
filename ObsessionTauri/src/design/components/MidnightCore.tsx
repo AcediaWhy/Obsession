@@ -24,8 +24,7 @@ export function MidnightCore({ active, busy = false, onClick, size = 240, paused
       disabled={busy}
       whileHover={{ scale: 1.03 }}
       whileTap={{ scale: 0.97 }}
-      data-snow="round"
-      className="no-drag snow-surface relative flex items-center justify-center disabled:cursor-wait"
+      className="no-drag relative flex items-center justify-center disabled:cursor-wait"
       style={{ width: size, height: size }}
     >
       {/* Внешнее свечение-ореол — холодный свет, рассеянный туманом. */}
@@ -149,7 +148,8 @@ function MidnightCanvas({ active, busy, size, paused }: { active: boolean; busy:
     });
 
     let t = 0;
-    let warm = 0;
+    // Сеем от текущего состояния — маунт при включённом щите сразу тёплый.
+    let warm = stateRef.current.active ? 1 : 0;
 
     // Маска-феатеринг статична — строим один раз.
     const mask = ctx.createRadialGradient(cx, cy, size * 0.2, cx, cy, size * 0.5);
@@ -242,7 +242,8 @@ function MidnightCanvas({ active, busy, size, paused }: { active: boolean; busy:
 
   // Застывшее превью перерисовываем при смене active/busy.
   useEffect(() => {
-    if (paused) loopRef.current?.invalidate();
+    // Живой цикл: no-op; замерший (paused/reduce-motion) — дорисовать кадр.
+    loopRef.current?.invalidate();
   }, [active, busy, paused]);
 
   return (
