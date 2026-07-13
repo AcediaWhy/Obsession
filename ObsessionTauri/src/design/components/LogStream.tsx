@@ -28,7 +28,7 @@ export function LogStream({ height = 200 }: { height?: number }) {
       <div
         ref={ref}
         style={{ height }}
-        className="overflow-y-auto rounded-xl border border-glass-border bg-black/30 p-3 font-mono text-2xs tabular-nums leading-relaxed"
+        className="scroll-fade overflow-y-auto rounded-xl border border-glass-border bg-black/30 p-3 font-mono text-2xs tabular-nums leading-relaxed"
       >
         {lines.length === 0 && (
           <div className="text-ink-muted">Лог пуст. Действия появятся здесь.</div>

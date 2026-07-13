@@ -17,6 +17,7 @@ import {
 } from "../design/components/atoms";
 import { Uptime } from "../design/components/Uptime";
 import { Icon } from "../design/components/icons";
+import { spring } from "../design/tokens";
 
 const CATEGORY_LABELS: Record<string, string> = {
   discord: "Discord",
@@ -38,7 +39,7 @@ export function DpiScreen() {
   return (
     <div className="flex h-full flex-col gap-4">
       {/* Заголовок. */}
-      <div className="flex items-center justify-between">
+      <StaggerItem standalone className="flex items-center justify-between">
         <div>
           <h1 className="font-display text-3xl font-semibold tracking-tight text-gradient">DPI-обход</h1>
           <p className="text-sm text-ink-muted">
@@ -49,7 +50,7 @@ export function DpiScreen() {
           <Uptime active={s.active} />
           <StatusBadge active={s.active} />
         </div>
-      </div>
+      </StaggerItem>
 
       <div className="grid flex-1 grid-cols-[1fr_360px] gap-4 overflow-hidden">
         {/* Левая колонка: питание + категории. */}
@@ -112,7 +113,7 @@ export function DpiScreen() {
                         initial={{ opacity: 0, height: 0, y: -6 }}
                         animate={{ opacity: 1, height: "auto", y: 0 }}
                         exit={{ opacity: 0, height: 0, y: -6 }}
-                        transition={{ type: "spring", stiffness: 320, damping: 30 }}
+                        transition={spring.expand}
                         className="flex flex-col gap-1.5 overflow-hidden"
                       >
                         <div className="flex items-center justify-between">

@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from "framer-motion";
 
 import { api, on, type BrainStatus } from "../../lib/tauri";
 import { SectionLabel, Switch } from "./atoms";
+import { spring } from "../tokens";
 
 // Debug-читалка контура надёжности: тумблер авто-восстановления (Мозг L3) +
 // живой агрегированный статус машины состояний (`brain://status`). Намеренно
@@ -80,7 +81,7 @@ export function BrainPanel() {
             initial={{ opacity: 0, height: 0 }}
             animate={{ opacity: 1, height: "auto" }}
             exit={{ opacity: 0, height: 0 }}
-            transition={{ type: "spring", stiffness: 320, damping: 30 }}
+            transition={spring.expand}
             className="flex flex-col gap-1 overflow-hidden rounded-lg bg-white/5 px-3 py-2 text-sm"
           >
             <div className="flex items-center justify-between">

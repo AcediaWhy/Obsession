@@ -6,6 +6,7 @@ import { useThemeStore, THEMES, type Theme } from "../../store/themeStore";
 import { useSecretStore } from "../../store/secretStore";
 import { GlassPanel } from "./GlassPanel";
 import { Button } from "./atoms";
+import { EyeLogo } from "./EyeLogo";
 import { Icon } from "./icons";
 import { AuroraCore } from "./AuroraCore";
 import { RainCore } from "./RainCore";
@@ -13,7 +14,7 @@ import { OphanimCore } from "./OphanimCore";
 import { FallenCore } from "./FallenCore";
 import { CatnapCore } from "./CatnapCore";
 import { MidnightCore } from "./MidnightCore";
-import { spring } from "../tokens";
+import { spring, cascade, dur, ease } from "../tokens";
 
 // Приветственный онбординг при первом запуске. Показывается, пока
 // settings.has_completed_onboarding === false; по «Готово»/«Пропустить»
@@ -68,13 +69,15 @@ export function Onboarding() {
       id: "welcome",
       render: () => (
         <div className="flex flex-col items-center gap-6 text-center">
+          {/* Первым встречает живой глаз — идентичность Obsession, а не
+              абстрактная молния (она остаётся финальному шагу как «к запуску»). */}
           <motion.div
             initial={{ scale: 0.8, opacity: 0 }}
             animate={{ scale: 1, opacity: 1 }}
             transition={spring.soft}
-            className="flex h-20 w-20 items-center justify-center rounded-2xl bg-gradient-to-br from-accent to-accent-violet shadow-glow"
+            className="rounded-2xl shadow-glow"
           >
-            <Icon.Bolt size={40} />
+            <EyeLogo size={80} />
           </motion.div>
           <div>
             <h2 className="font-display text-3xl font-semibold tracking-tight text-gradient">Добро пожаловать в Obsession</h2>
@@ -101,7 +104,7 @@ export function Onboarding() {
                 key={f.title}
                 initial={{ opacity: 0, y: 12 }}
                 animate={{ opacity: 1, y: 0 }}
-                transition={{ ...spring.soft, delay: 0.05 * i }}
+                transition={{ ...spring.soft, delay: cascade.step * i }}
                 className="flex gap-3 rounded-xl border border-glass-border bg-white/5 p-3"
               >
                 <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-accent/15 text-accent-cyan">
@@ -134,7 +137,7 @@ export function Onboarding() {
                   key={th.id}
                   onClick={() => setTheme(th.id)}
                   className={[
-                    "no-drag group relative flex flex-col items-center gap-2 rounded-xl border p-3 transition-all",
+                    "no-drag group relative flex flex-col items-center gap-2 rounded-xl border p-3 transition-[color,background-color,border-color,box-shadow,opacity]",
                     selected
                       ? "border-accent/60 bg-accent/10 shadow-glow"
                       : "border-glass-border bg-white/5 hover:bg-white/10",
@@ -195,7 +198,7 @@ export function Onboarding() {
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          transition={{ duration: 0.28, ease: "easeOut" }}
+          transition={{ duration: dur.base, ease: ease.enter }}
           className="fixed inset-0 z-50 flex items-center justify-center bg-base/70 backdrop-blur-sm"
         >
           <GlassPanel spotlight={false} className="w-[620px] max-w-[92vw] p-8">
@@ -207,7 +210,7 @@ export function Onboarding() {
                   initial={{ opacity: 0, x: 24 }}
                   animate={{ opacity: 1, x: 0 }}
                   exit={{ opacity: 0, x: -24 }}
-                  transition={{ duration: 0.24, ease: "easeOut" }}
+                  transition={{ duration: dur.base, ease: ease.enter }}
                 >
                   {steps[step].render()}
                 </motion.div>
@@ -221,7 +224,7 @@ export function Onboarding() {
                   <span
                     key={i}
                     className={[
-                      "h-1.5 rounded-full transition-all",
+                      "h-1.5 rounded-full transition-[width,background-color]",
                       i === step ? "w-5 bg-accent" : "w-1.5 bg-white/15",
                     ].join(" ")}
                   />

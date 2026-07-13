@@ -256,6 +256,42 @@ body {
   background: rgba(255, 255, 255, 0.16);
 }
 
+/* Fade-маска скроллящегося контента ВНУТРИ стеклянных панелей: строки не
+   режутся об кромку, а растворяются за 14px до неё. Маска висит на внутренней
+   скролл-обёртке (GlassPanel scroll), НЕ на .glass — specular-кромка и
+   spotlight живут на оболочке и остаются нетронутыми. Вертикальные паддинги
+   контента должны быть >= высоты фейда, иначе строки тают заметно раньше края. */
+.scroll-fade {
+  mask-image: linear-gradient(
+    180deg,
+    transparent 0,
+    #000 14px,
+    #000 calc(100% - 14px),
+    transparent 100%
+  );
+  -webkit-mask-image: linear-gradient(
+    180deg,
+    transparent 0,
+    #000 14px,
+    #000 calc(100% - 14px),
+    transparent 100%
+  );
+}
+
+/* Транзишен интерактивных поверхностей (кнопки, чипы, плитки). Цвета — быстрые
+   (отклик), box-shadow — медленный: свечение «расцветает» за 0.35 с, а не
+   щёлкает. transform в списке НЕТ намеренно — его ведёт framer (whileTap/Hover).
+   Одна причина существования класса: в Tailwind transition-[...] задаёт ОДНУ
+   длительность на весь список, а здесь у тени своя. */
+.btn-anim {
+  transition:
+    color 0.2s ease,
+    background-color 0.2s ease,
+    border-color 0.2s ease,
+    opacity 0.2s ease,
+    box-shadow 0.45s ease;
+}
+
 /* Область перетаскивания окна (кастомный титлбар). */
 .drag-region {
   -webkit-app-region: drag;
@@ -303,7 +339,7 @@ body {
     transparent 60%
   );
   opacity: 0;
-  transition: opacity 0.35s ease;
+  transition: opacity 0.45s ease;
   pointer-events: none;
 }
 .spotlight:hover::after {
@@ -328,7 +364,7 @@ body {
   -webkit-mask-composite: xor;
   mask-composite: exclude;
   opacity: 0;
-  transition: opacity 0.3s ease;
+  transition: opacity 0.45s ease;
   pointer-events: none;
 }
 .glass:hover > .spotlight-ring {
@@ -348,7 +384,10 @@ body {
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
-  text-shadow: 0 2px 14px rgba(0, 0, 0, 0.3);
+  /* drop-shadow вместо text-shadow: text-shadow рисуется ЗА прозрачными глифами
+     и просвечивал сквозь них, мутня градиент (заметно на светлом серебре
+     Midnight); drop-shadow строится по альфе уже отрисованного градиента. */
+  filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.35));
 }
 
 /* Логотип «Obsession»: тонкая глубина + свечение по акценту темы — бренд «дышит»
@@ -385,6 +424,33 @@ body {
 input,
 textarea {
   user-select: text;
+}
+
+/* ─── Морф темы ───────────────────────────────────────────────────────────────
+   При смене темы App вешает data-theme-morph на корень на ~0.5 с (App.tsx):
+   все цветовые свойства, производные от переменных темы (--accent, --glass-*),
+   доводятся до новых значений транзишеном вместо ката. Градиенты (--glass-bg,
+   .text-gradient) браузер интерполировать не умеет — их кат маскируется
+   кроссфейдом фона (AnimatePresence в App) и общим переливом остальных цветов.
+   Нюансы:
+   • 0.6s < таймер 0.65s (App) — транзишены успевают закончиться до снятия
+     атрибута, откат к обычным transition-правилам происходит уже на целевых
+     значениях;
+   • opacity/transform в списке НЕТ намеренно: их покадрово ведёт framer-motion,
+     CSS-транзишен поверх инлайн-стилей дал бы «хвост» на каждом кадре;
+   • правило стоит ДО блока reduce-motion, чтобы тот всегда побеждал (сам морф
+     под reduce-motion и так не включается — двойная страховка). */
+[data-theme-morph="true"] *,
+[data-theme-morph="true"] *::before,
+[data-theme-morph="true"] *::after {
+  transition:
+    color 0.6s ease,
+    background-color 0.6s ease,
+    border-color 0.6s ease,
+    box-shadow 0.6s ease,
+    text-shadow 0.6s ease,
+    fill 0.6s ease,
+    stroke 0.6s ease !important;
 }
 
 /* Reduce-motion: глушим CSS-анимации и переходы, когда включён флаг

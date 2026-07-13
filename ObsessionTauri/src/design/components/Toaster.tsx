@@ -17,6 +17,8 @@ const TONE: Record<ToastKind, { ring: string; text: string; icon: ReactNode }> =
 export function Toaster() {
   const toasts = useToastStore((s) => s.toasts);
   const dismiss = useToastStore((s) => s.dismiss);
+  const pause = useToastStore((s) => s.pause);
+  const resume = useToastStore((s) => s.resume);
 
   return (
     <div className="pointer-events-none fixed right-4 top-12 z-50 flex w-80 flex-col gap-2">
@@ -31,6 +33,9 @@ export function Toaster() {
               animate={{ opacity: 1, x: 0, scale: 1 }}
               exit={{ opacity: 0, x: 40, scale: 0.96 }}
               transition={spring.snappy}
+              // Пока курсор над тостом — автоскрытие стоит: его читают.
+              onMouseEnter={() => pause(t.id)}
+              onMouseLeave={() => resume(t.id)}
               className={[
                 "glass pointer-events-auto flex items-start gap-2.5 rounded-xl border px-3.5 py-2.5 shadow-glass",
                 tone.ring,

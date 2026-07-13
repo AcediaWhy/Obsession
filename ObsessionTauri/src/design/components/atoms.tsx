@@ -1,6 +1,8 @@
 import { motion } from "framer-motion";
 import type { ReactNode } from "react";
 
+import { spring } from "../tokens";
+
 // ─── Button ───────────────────────────────────────────────────────────────
 
 type BtnProps = {
@@ -23,15 +25,22 @@ export function Button({
       "bg-accent/90 hover:bg-accent text-white shadow-glow hover:shadow-glow-lg",
     ghost:
       "bg-white/5 hover:bg-white/10 text-ink-soft border border-glass-border",
-    danger: "bg-danger/85 hover:bg-danger text-white",
+    danger: "bg-danger/85 hover:bg-danger text-white shadow-glow-danger",
   };
   return (
     <motion.button
-      whileTap={{ scale: 0.97 }}
+      // Подъём на hover + прижатие на tap — пружиной flick (чётко, без желе).
+      // y вместо scale: кнопки бывают широкими, масштаб на них заметно «дышит»
+      // по краям, а вертикальный сдвиг читается как честный физический подъём.
+      whileHover={disabled ? undefined : { y: -1 }}
+      whileTap={disabled ? undefined : { y: 0, scale: 0.97 }}
+      transition={spring.flick}
       onClick={onClick}
       disabled={disabled}
       className={[
-        "no-drag rounded-xl px-4 py-2.5 text-sm font-semibold transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:cursor-not-allowed disabled:opacity-50",
+        // btn-anim: цвета быстрые, glow расцветает 0.35s; transform не трогаем —
+        // его ведёт framer (whileHover/Tap), CSS-транзишен поверх дал бы «резину».
+        "no-drag btn-anim rounded-xl px-4 py-2.5 text-sm font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:cursor-not-allowed disabled:opacity-50",
         styles[variant],
         className,
       ].join(" ")}
@@ -52,18 +61,25 @@ export function StatusBadge({
   labelOn?: string;
   labelOff?: string;
 }) {
+  // layout: в шапках Dpi/Telegram слева появляется Uptime-пилюля — бейдж
+  // отъезжает пружиной, а не рывком. Цвет точки/текста и свечение доводятся
+  // медленно (0.5s) — смена состояния «протекает», как glow у кнопок.
   return (
-    <div className="flex items-center gap-2 rounded-full bg-white/5 px-3 py-1.5 text-xs font-medium">
+    <motion.div
+      layout
+      transition={spring.expand}
+      className="flex items-center gap-2 rounded-full bg-white/5 px-3 py-1.5 text-xs font-medium"
+    >
       <span
         className={[
-          "h-2 w-2 rounded-full transition-colors",
+          "h-2 w-2 rounded-full transition-[background-color,box-shadow] duration-500",
           active ? "bg-ok shadow-[0_0_10px_2px_rgba(52,211,153,0.7)]" : "bg-ink-muted",
         ].join(" ")}
       />
-      <span className={active ? "text-ok" : "text-ink-muted"}>
+      <span className={`transition-colors duration-500 ${active ? "text-ok" : "text-ink-muted"}`}>
         {active ? labelOn : labelOff}
       </span>
-    </div>
+    </motion.div>
   );
 }
 
@@ -85,7 +101,7 @@ export function Chip({
       onClick={onClick}
       disabled={disabled}
       className={[
-        "no-drag rounded-xl px-3.5 py-2 text-sm font-medium transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:opacity-40",
+        "no-drag btn-anim rounded-xl px-3.5 py-2 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:opacity-40",
         active
           ? "bg-accent/20 text-ink border border-accent/50 shadow-glow"
           : "bg-white/5 text-ink-soft border border-glass-border hover:bg-white/10",
@@ -187,7 +203,7 @@ export function Switch({
     >
       <motion.span
         layout
-        transition={{ type: "spring", stiffness: 500, damping: 34 }}
+        transition={spring.flick}
         className={[
           "absolute rounded-full",
           checked

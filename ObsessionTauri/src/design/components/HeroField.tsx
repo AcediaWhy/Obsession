@@ -1,5 +1,5 @@
 import { Component, lazy, Suspense, type ReactNode } from "react";
-import { useThemeStore } from "../../store/themeStore";
+import type { Theme } from "../../store/themeStore";
 import { useRenderActive } from "../render";
 import { AuroraField } from "./AuroraField";
 import { OphanimField } from "./OphanimField";
@@ -37,9 +37,11 @@ class Fallback3D extends Component<{ children: ReactNode; fallback: ReactNode },
   }
 }
 
-// Диспетчер реактивного фона по выбранной теме.
-export function HeroField() {
-  const theme = useThemeStore((s) => s.theme);
+// Диспетчер реактивного фона по выбранной теме. Тема приходит ПРОПОМ (а не из
+// стора): при кроссфейде смены темы AnimatePresence держит уходящую ветку с
+// последним значением пропа — если бы диспетчер читал стор сам, старая ветка
+// мгновенно переключилась бы на новую тему и кроссфейд выродился в кат.
+export function HeroField({ theme }: { theme: Theme }) {
   // Пока окно скрыто (трей/сворачивание) — размонтируем тяжёлую WebGL-сцену Rain
   // целиком. Её rAF-циклы и так паузятся по renderActive, НО живой WebGL-контекст
   // + полноэкранные текстуры остаются на GPU и держат compositor WebView2 занятым

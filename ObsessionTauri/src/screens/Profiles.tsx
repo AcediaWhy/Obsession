@@ -7,6 +7,7 @@ import { GlassPanel } from "../design/components/GlassPanel";
 import { Stagger, StaggerItem } from "../design/components/Stagger";
 import { Button, SectionLabel, TextField } from "../design/components/atoms";
 import { Icon } from "../design/components/icons";
+import { spring } from "../design/tokens";
 
 const CATEGORY_LABELS: Record<string, string> = {
   discord: "Discord",
@@ -31,14 +32,12 @@ export function ProfilesScreen() {
   return (
     <div className="flex h-full flex-col gap-4">
       {/* Заголовок. */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="font-display text-3xl font-semibold tracking-tight text-gradient">Профили</h1>
-          <p className="text-sm text-ink-muted">
-            Пресеты DPI + прокси + ИИ · применение в один клик
-          </p>
-        </div>
-      </div>
+      <StaggerItem standalone>
+        <h1 className="font-display text-3xl font-semibold tracking-tight text-gradient">Профили</h1>
+        <p className="text-sm text-ink-muted">
+          Пресеты DPI + прокси + ИИ · применение в один клик
+        </p>
+      </StaggerItem>
 
       <div className="grid flex-1 grid-cols-[360px_1fr] gap-4 overflow-hidden">
         {/* Сохранение текущего состояния. */}
@@ -123,7 +122,7 @@ function ProfileCard({
       initial={{ opacity: 0, y: -6 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, height: 0, y: -6 }}
-      transition={{ type: "spring", stiffness: 320, damping: 30 }}
+      transition={spring.expand}
       className="rounded-xl border border-glass-border bg-white/5 p-4"
     >
       <div className="flex items-start justify-between gap-3">

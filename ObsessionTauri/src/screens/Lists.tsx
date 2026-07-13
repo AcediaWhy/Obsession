@@ -41,14 +41,12 @@ export function ListsScreen() {
   return (
     <div className="flex h-full flex-col gap-4">
       {/* Заголовок. */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="font-display text-3xl font-semibold tracking-tight text-gradient">Списки</h1>
-          <p className="text-sm text-ink-muted">
-            Домены и IP, попадающие под DPI-обход · по строке на запись, `#` — комментарий
-          </p>
-        </div>
-      </div>
+      <StaggerItem standalone>
+        <h1 className="font-display text-3xl font-semibold tracking-tight text-gradient">Списки</h1>
+        <p className="text-sm text-ink-muted">
+          Домены и IP, попадающие под DPI-обход · по строке на запись, `#` — комментарий
+        </p>
+      </StaggerItem>
 
       <div className="grid flex-1 grid-cols-[300px_1fr] gap-4 overflow-hidden">
         {/* Левая колонка: файлы + создание. */}
@@ -135,7 +133,7 @@ function ListRow({
     <button
       onClick={onSelect}
       className={[
-        "no-drag flex w-full items-center justify-between gap-2 rounded-xl border px-3 py-2 text-left transition-all",
+        "no-drag flex w-full items-center justify-between gap-2 rounded-xl border px-3 py-2 text-left transition-[color,background-color,border-color,box-shadow,opacity]",
         selected
           ? "border-accent/50 bg-accent/15 shadow-glow"
           : "border-glass-border bg-white/5 hover:bg-white/10",

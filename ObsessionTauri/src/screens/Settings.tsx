@@ -44,13 +44,13 @@ export function SettingsScreen() {
   return (
     <div className="flex h-full flex-col gap-4">
       {/* Заголовок + индикатор автосохранения. */}
-      <div className="flex items-center justify-between">
+      <StaggerItem standalone className="flex items-center justify-between">
         <div>
           <h1 className="font-display text-3xl font-semibold tracking-tight text-gradient">Настройки</h1>
           <p className="text-sm text-ink-muted">Параметры приложения · сохраняются автоматически</p>
         </div>
         <SaveIndicator />
-      </div>
+      </StaggerItem>
 
       {!cfg ? (
         <GlassPanel className="flex flex-1 items-center justify-center text-sm text-ink-muted">
@@ -60,7 +60,7 @@ export function SettingsScreen() {
         <div className="grid flex-1 grid-cols-2 gap-4 overflow-y-auto pr-1">
           <Stagger className="flex flex-col gap-4">
             {/* Оформление — выбор визуальной темы hero/фона. */}
-            <StaggerItem>
+            <StaggerItem glass>
               <GlassPanel>
                 <SectionLabel>Оформление</SectionLabel>
                 <ThemePicker />
@@ -68,7 +68,7 @@ export function SettingsScreen() {
             </StaggerItem>
 
             {/* Общие. */}
-            <StaggerItem>
+            <StaggerItem glass>
               <GlassPanel>
                 <SectionLabel>Общие</SectionLabel>
                 <div className="divide-y divide-white/5">
@@ -113,7 +113,7 @@ export function SettingsScreen() {
             </StaggerItem>
 
             {/* ИИ. */}
-            <StaggerItem>
+            <StaggerItem glass>
               <GlassPanel>
                 <SectionLabel>ИИ-разблокировка</SectionLabel>
                 <div className="divide-y divide-white/5">
@@ -133,7 +133,7 @@ export function SettingsScreen() {
 
           <Stagger className="flex flex-col gap-4">
             {/* Telegram-прокси. */}
-            <StaggerItem>
+            <StaggerItem glass>
               <GlassPanel>
                 <SectionLabel>Telegram-прокси</SectionLabel>
                 <div className="flex flex-col gap-3">
@@ -158,7 +158,7 @@ export function SettingsScreen() {
             </StaggerItem>
 
             {/* Система (только чтение). */}
-            <StaggerItem>
+            <StaggerItem glass>
               <GlassPanel>
                 <SectionLabel>Система</SectionLabel>
                 <div className="divide-y divide-white/5">
@@ -184,7 +184,7 @@ export function SettingsScreen() {
             </StaggerItem>
 
             {/* Окошко пасхалок. */}
-            <StaggerItem>
+            <StaggerItem glass>
               <GlassPanel>
                 <SectionLabel>· · ·</SectionLabel>
                 <SecretBox />
@@ -290,7 +290,7 @@ function ThemeTile({
     <button
       onClick={onSelect}
       className={[
-        "no-drag group relative flex flex-col items-center gap-2 rounded-xl border p-3 transition-all",
+        "no-drag group relative flex flex-col items-center gap-2 rounded-xl border p-3 transition-[color,background-color,border-color,box-shadow,opacity]",
         selected
           ? "border-accent/60 bg-accent/10 shadow-glow"
           : "border-glass-border bg-white/5 hover:bg-white/10",

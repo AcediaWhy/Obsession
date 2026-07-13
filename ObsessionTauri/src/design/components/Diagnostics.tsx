@@ -4,6 +4,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { api, type DiagResult } from "../../lib/tauri";
 import { Button, SectionLabel } from "./atoms";
 import { Icon } from "./icons";
+import { spring } from "../tokens";
 
 // Виджет диагностики: полноценный HTTPS-GET к заблокированным ресурсам через
 // бэкенд. Отвечает на главный вопрос пользователя — «обход реально работает?».
@@ -55,7 +56,7 @@ export function Diagnostics() {
               initial={{ opacity: 0, height: 0 }}
               animate={{ opacity: 1, height: "auto" }}
               exit={{ opacity: 0, height: 0 }}
-              transition={{ type: "spring", stiffness: 320, damping: 30 }}
+              transition={spring.expand}
               className="flex flex-col gap-1 overflow-hidden"
             >
               {results.map((r) => (
