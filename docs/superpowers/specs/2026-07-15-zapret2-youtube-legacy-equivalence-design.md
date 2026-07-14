@@ -21,23 +21,30 @@
 multidisorder + split-pos=1,midsld + fooling=md5sig,badseq
 ```
 
-Эквивалентный профиль Zapret2:
+Итоговый эквивалентный профиль Zapret2:
 
 ```text
-multidisorder:pos=1,midsld:tcp_md5:tcp_seq=-10000
+multidisorder_legacy:pos=1,midsld
 ```
 
-Текущий предварительный `fake` с модификацией ClientHello удаляется из
-YouTube TLS-профиля. Фильтры остаются прежними: TCP/443, TLS ClientHello и
-hostlist категории `youtube_twitch`.
+Обычный `multidisorder` в Zapret2 не является точным эквивалентом nfqws1: он
+работает с полностью reassembled ClientHello и меняет порядок сегментации.
+Debug-проверка подтвердила корректное распознавание `youtube.com`, совпадение
+hostlist и выбор `youtube_tls`, но соединение после отправки пересобранного
+ClientHello не завершалось. `multidisorder_legacy` обрабатывает исходные части
+reassembly отдельно и сохраняет порядок nfqws1. Параметры `tcp_md5/tcp_seq` не
+переносятся на реальные сегменты: в nfqws1 они относились к fooling-фазе, а их
+прямое применение в Lua делало отправленные части непригодными для сервера.
+
+Фильтры остаются прежними: TCP/443, TLS ClientHello и hostlist категории
+`youtube_twitch`.
 
 ### YouTube QUIC
 
-Оставить fake QUIC Initial из встроенного проверенного blob, но привести число
-повторов к рабочему Legacy-конфигу:
+Использовать встроенный стандартный fake QUIC Initial Zapret2:
 
 ```text
-fake:blob=quic_google:repeats=8
+fake:blob=fake_default_quic:repeats=6
 ```
 
 Фильтры остаются прежними: UDP/443, QUIC Initial и hostlist категории
@@ -45,23 +52,31 @@ fake:blob=quic_google:repeats=8
 
 ### Версионирование и доставка
 
-- повысить версию `builtin.base` с `0.2.0` до `0.2.1`;
+- итоговая версия `builtin.base` — `0.2.3`;
 - Discord-профиль и его поведение не менять;
 - в dev-режиме исходный Strategy Pack должен перезаписывать устаревшую копию в
-  AppData после rebuild, чтобы live-проверка использовала именно `0.2.1`;
+  AppData после rebuild, чтобы live-проверка использовала именно `0.2.3`;
 - целостность Lua и blob продолжает проверяться существующим manifest loader.
 
 ## Проверка
 
 1. Автоматические тесты manifest/builder и `cargo fmt --check`.
-2. В AppData загружен pack `builtin.base` версии `0.2.1`.
+2. В AppData загружен pack `builtin.base` версии `0.2.3`.
 3. Zapret2 запускает ровно `discord_tls_text`, `youtube_tls`, `youtube_quic`.
 4. Discord открывается и отправляет текстовые сообщения.
 5. Главная страница YouTube открывается.
-6. Видео YouTube стабильно воспроизводится не менее 10 минут.
+6. Видео YouTube загружает 4K и быстро продолжает воспроизведение после
+   перемотки; отдельный формальный soak не менее 10 минут остаётся расширенной
+   проверкой стабильности.
 
-Если сайт не откроется, pack откатывается к `0.2.0`, а следующим отдельным
-экспериментом проверяется официальный базовый порядок `fake -> multidisorder`.
+## Результат live-проверки
+
+- `0.2.1` с прямым переносом fooling-аргументов не открыл YouTube;
+- `0.2.2` с обычным `fake -> multidisorder` также не открыл YouTube;
+- debug `0.2.2` доказал, что ошибка не связана с hostlist, SNI, выбором профиля
+  или загрузкой Lua;
+- `0.2.3` с `multidisorder_legacy` открыл Discord и YouTube;
+- пользователь подтвердил загрузку видео 4K и быструю перемотку.
 
 ## Вне области изменения
 
