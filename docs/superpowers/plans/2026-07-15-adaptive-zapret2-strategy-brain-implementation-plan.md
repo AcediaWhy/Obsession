@@ -89,6 +89,44 @@ git diff --check
 git diff -- <явно перечисленные файлы>
 ```
 
+### 2.4 Прогресс адаптивного Мозга после создания плана
+
+- [x] Task 0: создан изолированный модуль `adaptive_strategy` без runtime side
+  effects.
+- [x] Task 1: реализован Safe Strategy DSL со schema version, стабильным
+  candidate id, нормализованным JSON и запретом unknown fields.
+- [x] Task 2: реализован backend validator с allowlist функций, blobs, payload,
+  positions, ranges и bounded числовыми параметрами.
+- [x] Task 3: реализован compiler DSL -> `Zapret2Profile`; проверен инвариант
+  bare `--new` только между профилями.
+- [x] Task 4: реализован deterministic generator для YouTube/Discord с dedup,
+  исключением current/tried, приоритетом network-confirmed и лимитом 12.
+- [ ] Task 5: отдельный Adaptive Strategy Cache.
+- [ ] Task 6: чистая Recovery State Machine.
+- [ ] Task 7: Probe Evaluator.
+- [ ] Task 8+: runtime, settings, frontend и live acceptance.
+
+Новые файлы:
+
+- `ObsessionTauri/src-tauri/src/adaptive_strategy/mod.rs`;
+- `ObsessionTauri/src-tauri/src/adaptive_strategy/dsl.rs`;
+- `ObsessionTauri/src-tauri/src/adaptive_strategy/validator.rs`;
+- `ObsessionTauri/src-tauri/src/adaptive_strategy/compiler.rs`;
+- `ObsessionTauri/src-tauri/src/adaptive_strategy/generator.rs`.
+
+Проверки checkpoint:
+
+- adaptive unit tests: `25 passed`;
+- полный Rust-набор: `184 passed, 0 failed`;
+- `cargo check`: успешно, warning-шум нового не подключённого runtime временно
+  подавлен локально в модуле до Task 8;
+- `cargo fmt -- --check`: успешно;
+- `git diff --check`: успешно.
+
+Код первой части пока не закоммичен: `lib.rs` уже содержит более ранние
+модернизационные изменения, поэтому перед staging требуется отдельный scoped
+review/partial staging, а не коммит всего файла.
+
 ---
 
 ## 3. Принятые архитектурные решения
