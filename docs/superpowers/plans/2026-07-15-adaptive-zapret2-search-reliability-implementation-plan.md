@@ -85,9 +85,14 @@
 
 1. Получать canonical fingerprint effective transport profile.
 2. Исключать baseline, tried и equivalent argv до увеличения attempt.
-3. Генерировать одну безопасную мутацию относительно baseline.
-4. Выбирать тип мутации по failure stage последней попытки.
-5. Сохранить общий лимит 12 реально запущенных уникальных кандидатов.
+3. Реализовать утверждённую Discord TLS ladder: 7 base-adjacent мутаций и 5
+   атомарных allowlisted/upstream-рецептов.
+4. Сохранить точный bundled baseline только для calibration/rollback.
+5. Проверять validator и effective fingerprint до расходования attempt.
+6. Гарантировать 12 уникальных Discord-кандидатов при пустом tried set.
+7. Сохранять deterministic order для TLS failure и evidence-based reorder для
+   Reset/Blackhole.
+8. Добавить unit tests на размер, порядок, уникальность и исключение baseline.
 
 ## Task 6: Status, UI and regression verification
 
