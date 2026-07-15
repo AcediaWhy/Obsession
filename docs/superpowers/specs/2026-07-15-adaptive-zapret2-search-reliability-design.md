@@ -220,7 +220,10 @@ Reset/Blackhole counters и типизированные причины.
 шаге он получает baseline, выбранную transport line, множество fingerprints и
 evidence последней попытки. Он создаёт следующий кандидат изменением одного
 безопасного параметра относительно baseline. Это сохраняет объяснимость и
-позволяет связать результат с конкретной мутацией.
+позволяет связать результат с конкретной мутацией. Исключение составляют
+атомарные upstream-рецепты из официальных Zapret2 config.default, docs и
+blockcheck2: они считаются одной allowlisted мутацией и не разбираются на
+промежуточные потенциально бессмысленные комбинации.
 
 Общий вход генератора:
 
@@ -253,6 +256,49 @@ Known-good seeds могут использоваться как каталог �
 как неизменяемая очередь. Результат предыдущего кандидата обязан влиять на
 следующий выбор. С одинаковым baseline и evidence порядок остаётся
 детерминированным.
+
+### 9.1 Discord TLS mutation ladder
+
+Рабочий bundled-профиль discord_tls_text остаётся baseline:
+
+~~~text
+fake:blob=tls_google:tcp_ts=-30000:tcp_ts_up:repeats=4
+multisplit:pos=1
+~~~
+
+Его effective fingerprint всегда исключается из результатов. После исключения
+генератор обязан вернуть до 12 уникальных валидных Discord TLS-кандидатов в
+следующем детерминированном порядке:
+
+1. baseline с repeats=2;
+2. baseline с repeats=6;
+3. baseline с multisplit:pos=2;
+4. baseline с multisplit:pos=1,midsld;
+5. baseline с заменой split на multidisorder:pos=1,midsld;
+6. baseline с заменой split на multidisorder_legacy:pos=1,midsld;
+7. baseline с заменой blob на fake_default_tls;
+8. upstream blockcheck2: fake:blob=fake_default_tls:tcp_ts=-1000;
+9. upstream config.default:
+   fake:blob=fake_default_tls:tcp_md5:tcp_seq=-10000 +
+   multidisorder:pos=1,midsld;
+10. upstream docs:
+    fake:blob=fake_default_tls:tcp_md5:tcp_seq=-10000:repeats=6 +
+    multidisorder:pos=midsld;
+11. fakedsplit:blob=tls_google:pos=1,midsld:tcp_ts=-30000:tcp_ts_up:repeats=4;
+12. fakeddisorder:blob=tls_google:pos=1,midsld:tcp_ts=-30000:tcp_ts_up:repeats=4.
+
+Матрица не является случайным brute force. Каждый элемент должен:
+
+- проходить Safe Strategy DSL validator;
+- иметь уникальный effective fingerprint;
+- отличаться от bundled baseline и уже проверенных кандидатов;
+- сохранять payload=tls_client_hello и ограничение out-range=-d10;
+- не включать Discord QUIC/media/STUN, которые остаются вне текущего scope.
+
+При failure_stage=tls порядок выше сохраняется: ближайшие мутации рабочей базы
+проверяются раньше upstream-рецептов и faked-вариантов. Negative Eyes evidence
+по-прежнему может изменить приоритет в пользу менее агрессивных вариантов, но
+не добавляет параметры вне allowlist.
 
 ## 10. State machine и результаты
 
