@@ -1,41 +1,108 @@
 <div align="center">
 
-<img src="ObsessionTauri/icon-source.png" width="116" alt="Obsession" />
+<img src="ObsessionTauri/src-tauri/icons/128x128@2x.png" width="120" alt="Obsession — Око" />
 
 # Obsession
 
-**DPI-обход, ИИ-разблокировка и Telegram-прокси — в одном окне.**
+### Око, которое смотрит на того, кто смотрит на тебя.
 
-Десктоп-лаунчер на [Tauri](https://tauri.app/): нативный Rust-бэкенд и React-фронтенд
-в дизайне _Aurora Glass_ (тёмный glassmorphism, живые Three.js-фоны).
+DPI-обход, ИИ-разблокировка и Telegram-прокси — в одном окне.
 
-![Platform](https://img.shields.io/badge/platform-Windows-00b3b3?style=flat-square)
+![Windows](https://img.shields.io/badge/Windows-10%2F11-0078D6?style=flat-square&logo=windows&logoColor=white)
+![Version](https://img.shields.io/badge/version-1.1.0-8a63d2?style=flat-square)
 ![Tauri](https://img.shields.io/badge/Tauri-2-24C8DB?style=flat-square&logo=tauri&logoColor=white)
-![Rust](https://img.shields.io/badge/Rust-stable-CE4A2F?style=flat-square&logo=rust&logoColor=white)
-![React](https://img.shields.io/badge/React-18-61DAFB?style=flat-square&logo=react&logoColor=black)
-![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?style=flat-square&logo=typescript&logoColor=white)
-![Version](https://img.shields.io/badge/version-1.0-8a63d2?style=flat-square)
+
+<br/>
+
+<!-- Когда появится публичная ссылка на инсталлер — замените #установка на прямой URL -->
+[![Скачать Obsession Setup](https://img.shields.io/badge/%E2%86%93-%D0%A1%D0%BA%D0%B0%D1%87%D0%B0%D1%82%D1%8C%20Obsession%20Setup-8a63d2?style=for-the-badge)](#установка)
+
+<sub>Установщик ~22 МБ · Windows 10/11 · x64 · без зависимостей</sub>
 
 </div>
 
 ---
 
-## ✨ Что умеет
+## Что это
 
-| | Возможность | Детали |
-|:--:|---|---|
-| 🛡️ | **DPI-обход** | winws / Zapret. Категории Discord · YouTube/Twitch · Gaming · Universal. Выбор конфигов, тест и авто-подбор, рейтинг надёжности стратегий, лог в реальном времени. |
-| 🧠 | **Авто-восстановление обхода** | Контур **Глаза → Менеджер сети → Мозг**: наблюдает за трафиком, распознаёт вмешательство ТСПУ и сам переподбирает рабочую стратегию под текущую сеть. |
-| 🤖 | **ИИ-разблокировка** | Доступ к ChatGPT, Claude, Gemini, Perplexity, Poe, HuggingFace, Midjourney через системный `hosts`. Провайдеры Malw / GeoHide, атомарная запись + бэкап + flushdns, авто-проверка обновлений. |
-| ✈️ | **Telegram-прокси** | MTProto-через-WebSocket в один клик (headless TgWsProxy). Ссылка `tg://proxy`, **QR для телефона** по LAN, пресеты Fake-TLS, диск-кэш CF-доменов. |
-| 📊 | **Обзор** | Сетевая идентичность и сводный статус обхода / прокси / ИИ на одном экране. |
-| 🗂️ | **Профили и списки** | Наборы настроек и встроенный редактор доменных списков. |
-| 🎨 | **Темы и атмосфера** | Aurora Glass, дождь (Three.js), «Russia» (фото-глубина), скрытые темы, оверлеи (снег / сакура), режим «меньше анимаций». |
-| ⚙️ | **Система** | Динамическая иконка трея, нативные уведомления, тосты, кастомный титлбар, UAC-элевация, автозапуск, онбординг, персист настроек. |
+**Obsession** — десктоп-приложение для Windows, которое возвращает доступ к заблокированному: обходит DPI-фильтрацию (ТСПУ), открывает ИИ-сервисы и поднимает Telegram-прокси. Один экран, один клик, всё в комплекте — отдельные утилиты ставить не нужно.
+
+А главное — если ТСПУ подстраивается, Obsession замечает это сам и молча чинит обход. Отсюда и имя.
 
 ---
 
-## 🧰 Стек
+## Установка
+
+1. **Скачайте** [«Obsession Setup»](#).
+2. **Запустите** `ObsessionV2.exe` — установщик проведёт через 4 шага (Аврора и глаз прилагаются).
+3. **Разрешите запрос UAC.** Без прав администратора не работают winws (обход) и запись в `hosts` (ИИ).
+4. **Готово.** Obsession живёт в трее — открывайте по клику на иконку-глаз.
+
+> [!NOTE]
+> Прямой ссылки на установщик пока нет — подставьте её в шаг 1 (сейчас там `#`).
+
+<!-- Замените # в шаге 1 на ссылку: GitHub Releases или прямая -->
+
+<sub>~22 МБ · Windows 10/11 x64. Всё внутри — winws, WinDivert, TgWsProxy, конфиги и списки распаковываются в <code>%APPDATA%\Obsession</code> при первом запуске.</sub>
+
+---
+
+## Возможности
+
+| | Возможность | Детали |
+|:--:|---|---|
+| `net` | **Самовосстановление обхода** | Контур **Глаза → Менеджер сети → Мозг**: наблюдает за трафиком, распознаёт вмешательство ТСПУ и сам переподбирает рабочую стратегию под текущую сеть. → [как это работает](#самовосстановление-обхода) |
+| `dpi` | **DPI-обход** | winws / Zapret. Категории Discord · YouTube/Twitch · Gaming · Universal. Выбор конфигов, тест и авто-подбор, рейтинг надёжности стратегий, лог в реальном времени. |
+| `ai` | **ИИ-разблокировка** | ChatGPT, Claude, Gemini, Perplexity, Poe, HuggingFace, Midjourney через системный `hosts`. Провайдеры Malw / GeoHide, атомарная запись + бэкап + flushdns, авто-проверка обновлений. |
+| `tg` | **Telegram-прокси** | MTProto-через-WebSocket в один клик (headless TgWsProxy). Ссылка `tg://proxy`, **QR для телефона** по LAN, пресеты Fake-TLS, диск-кэш CF-доменов. |
+| `hub` | **Обзор** | Сетевая идентичность и сводный статус обхода / прокси / ИИ на одном экране. |
+| `cfg` | **Профили и списки** | Наборы настроек и встроенный редактор доменных списков. |
+| `ui` | **Темы и атмосфера** | Aurora Glass с живыми Three.js-фонами. Темы Aurora · Ophanim · Rain и скрытые. → [галерея](#темы-и-атмосфера) |
+| `sys` | **Система** | Динамическая иконка трея, нативные уведомления, тосты, кастомный титлбар, UAC-элевация, автозапуск, онбординг, персист настроек. |
+
+---
+
+## Самовосстановление обхода
+
+ТСПУ не статичны — они подстраиваются. Поэтому обход в Obsession замкнут в петлю: приложение смотрит на собственный трафик, замечает, когда соединение начинают «резать», и меняет стратегию, пока канал снова не станет чистым. Нажимать ничего не нужно.
+
+```text
+ Глаза  ──▶  Менеджер сети  ──▶  Мозг  ──▶  чистый канал
+ смотрит     ловит ТСПУ          чинит обход
+ └────────────────────  ↻ повтор  ─────────────────────┘
+```
+
+---
+
+## Темы и атмосфера
+
+Интерфейс построен на **Aurora Glass** — тёмном glassmorphism с живыми Three.js-фонами. Три открытые темы (**Aurora · Ophanim · Rain**) и скрытые, которые нужно найти. Для слабых машин есть режим «меньше анимаций».
+
+<div align="center">
+<table>
+<tr>
+<td align="center"><img src="ObsessionTauri/public/rain/city.jpg" width="260" alt="Тема Rain — город под дождём" /><br/><sub><b>Rain</b></sub></td>
+<td align="center"><img src="ObsessionTauri/public/catnap/poster.jpg" width="260" alt="Скрытая тема Catnap — спящий кот в закатном вагоне" /><br/><sub><b>Catnap</b> · скрытая</sub></td>
+<td align="center"><img src="ObsessionTauri/public/midnight/poster.jpg" width="260" alt="Скрытая тема Midnight — фонарь в ночном тумане" /><br/><sub><b>Midnight</b> · скрытая</sub></td>
+</tr>
+</table>
+<sub>Постеры выше — живые фоны тем, а не статичные экраны.</sub>
+</div>
+
+---
+
+<details>
+<summary><b>Для разработчиков — сборка из исходников</b></summary>
+
+<br/>
+
+Пользователю сборка не нужна — есть [инсталлер](#установка). Этот раздел для тех, кто хочет запустить проект из исходников.
+
+### Стек
+
+![Rust](https://img.shields.io/badge/Rust-stable-CE4A2F?style=flat-square&logo=rust&logoColor=white)
+![React](https://img.shields.io/badge/React-18-61DAFB?style=flat-square&logo=react&logoColor=black)
+![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?style=flat-square&logo=typescript&logoColor=white)
 
 | Слой | Технологии |
 |---|---|
@@ -43,11 +110,11 @@
 | **Frontend** | React 18 · TypeScript · Vite · Tailwind CSS · Framer Motion · Zustand |
 | **Графика** | Three.js (`@react-three/fiber`, `drei`, `postprocessing`) |
 
----
+### Требования
 
-## 🚀 Быстрый старт
+[Node.js](https://nodejs.org/) 18+ · [Rust](https://www.rust-lang.org/tools/install) (stable) · [зависимости Tauri](https://tauri.app/start/prerequisites/) для вашей ОС.
 
-**Требования:** [Node.js](https://nodejs.org/) 18+ · [Rust](https://www.rust-lang.org/tools/install) (stable) · [зависимости Tauri](https://tauri.app/start/prerequisites/) для вашей ОС.
+### Запуск и сборка
 
 ```bash
 cd ObsessionTauri
@@ -56,21 +123,14 @@ npm run tauri dev      # dev-режим с hot-reload
 ```
 
 > [!WARNING]
-> В **dev**-сборке приложение не запрашивает права администратора, поэтому реальный
-> обход winws и запись в `hosts` не работают. Для полной проверки собери release.
-
-### Сборка
+> В **dev**-сборке приложение не запрашивает права администратора, поэтому реальный обход winws и запись в `hosts` не работают. Для полной проверки собери release.
 
 ```bash
-cd ObsessionTauri
 npm run tauri build    # release + NSIS-инсталлятор (при запуске запросит UAC)
+npm run build:setup    # фирменный установщик «Obsession Setup» → dist-release/
 ```
 
-Готовый установщик появится в `ObsessionTauri/src-tauri/target/release/bundle/`.
-
----
-
-## 🗺️ Архитектура
+### Архитектура
 
 ```
 ObsessionTauri/
@@ -96,17 +156,11 @@ ObsessionTauri/
     └── lib.rs               окно, трей, уведомления, shutdown-хук
 ```
 
-Ресурсы (winws, WinDivert, TgWsProxy, конфиги, списки, иконки) лежат в
-`ObsessionTauri/src-tauri/resources/` и при первом запуске распаковываются в
-`%APPDATA%\Obsession`.
+Ресурсы (winws, WinDivert, TgWsProxy, конфиги, списки, иконки) лежат в `ObsessionTauri/src-tauri/resources/` и при первом запуске распаковываются в `%APPDATA%\Obsession`.
+
+</details>
 
 ---
-
-## 📦 Репозиторий
-
-Под контролем версий только `ObsessionTauri/`. Другие лаунчеры на диске
-(`LarpingLauncher`, `ObessionLauncher`, `Goida-AI-Unlocker`, `Smart-Zapret-Launcher`,
-`tg-ws-proxy`) намеренно исключены через `.gitignore`.
 
 <div align="center">
 <sub>Сделано с одержимостью 👁️</sub>
