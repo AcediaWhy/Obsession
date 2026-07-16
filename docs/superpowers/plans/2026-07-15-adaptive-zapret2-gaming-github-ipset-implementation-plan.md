@@ -7,6 +7,12 @@
 профилями, сохранив adaptive search только для проверяемого TLS/QUIC control
 plane и показывая в UI реальные effective Zapret2 profiles.
 
+**Статус на 2026-07-15:** Tasks 1-5 реализованы. Автоматические пункты Task 6
+пройдены: `cargo fmt --check`, 231 Rust test, `npm run build` и реальный
+`winws2 --dry-run` для пяти Gaming-профилей. Загружены 120 доменов и 30 995
+IP/подсетей; argv завершился `command line parameters verified`. Остаётся
+Windows live acceptance для GitHub, Gaming control endpoints и выбранной игры.
+
 ## Task 1: Typed profile and manifest schema
 
 **Files:**

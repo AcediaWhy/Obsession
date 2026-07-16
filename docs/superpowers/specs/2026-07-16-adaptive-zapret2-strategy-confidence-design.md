@@ -185,7 +185,9 @@ prepared | recommended | confirmed
 
 Правила миграции:
 
-- существующие валидные confirmed cache entries получают `confirmed`;
+- существующие валидные Discord/YouTube cache entries получают `confirmed`;
+- legacy Gaming entries не переносятся: старые доступные endpoints не доказывали
+  recovery и после миграции вычисляются как Prepared;
 - builtin profiles не записываются в adaptive cache и вычисляются как Prepared;
 - cross-category derived candidate записывается только как `recommended`;
 - APIs, называющиеся `confirmed_candidate_*`, обязаны фильтровать trust;
@@ -279,7 +281,8 @@ Gaming + GitHub не показывает «обход не найден», ес
 
 ### Unit
 
-- legacy cache entry мигрирует в Confirmed;
+- legacy Discord/YouTube cache entry мигрирует в Confirmed;
+- legacy Gaming cache entry сбрасывается до Prepared;
 - Prepared profile не появляется в confirmed lookup;
 - Recommended entry не проходит confirmed lookup;
 - TLS source не создаёт QUIC recommendation;
@@ -289,6 +292,9 @@ Gaming + GitHub не показывает «обход не найден», ес
 - одиночный DNS base recheck failure выполняет retry;
 - двойной DNS failure становится ProbeUnreliable;
 - session DNS cache используется candidate и rollback;
+- Discord TLS калибровка изолирует стабильно недоступный core target только
+  когда другой core target выдержал полный quorum;
+- отсутствие жизнеспособных Discord targets остаётся ProbeUnreliable;
 - доступный Gaming endpoint не создаёт Confirmed.
 
 ### Integration
@@ -299,6 +305,10 @@ Gaming + GitHub не показывает «обход не найден», ес
 - реальный recovery + confirm повышает только точную category/transport пару;
 - reset recommendation не удаляет source confirmation;
 - существующие Discord/YouTube confirmed overrides продолжают применяться;
+- candidate и rollback Discord probes используют один session-scoped набор
+  жизнеспособных targets;
+- orphaned frontend transitioning после HMR сверяется с backend snapshot и не
+  оставляет HeroCore в ложном busy-состоянии;
 - UI вне Zapret2 не меняется.
 
 ### Live Windows acceptance
@@ -308,7 +318,11 @@ Gaming + GitHub не показывает «обход не найден», ес
 2. Кнопка рекомендации не запускает восьмикандидатный Epic loop.
 3. Recommended profile запускается и корректно откатывается вручную.
 4. YouTube QUIC search не прерывается после одиночного DNS base recheck timeout.
-5. Discord, YouTube TLS и builtin Gaming IPSet не регрессируют.
+5. При TCP timeout discord.com и стабильном gateway.discord.gg Discord search
+   продолжает comparison и пишет исключённый target в технический лог.
+6. Подпись режима находится над управлением, а Быстро, Баланс и Глубоко
+   занимают один ряд из трёх равных колонок внутри Zapret2.
+7. Discord, YouTube TLS и builtin Gaming IPSet не регрессируют.
 
 ## 14. Критерии готовности
 
