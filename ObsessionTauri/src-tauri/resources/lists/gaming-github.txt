@@ -1,0 +1,144 @@
+# Gaming + GitHub control-plane domains for Zapret2.
+# One domain per line; subdomains are matched by the hostlist engine.
+
+# GitHub
+github.com
+githubusercontent.com
+githubassets.com
+github.io
+ghcr.io
+github.dev
+githubcopilot.com
+
+# Epic / Unreal
+unrealengine.com
+fn.gg
+fortnite.com
+fortnite-vod.akamaized.net
+fortnite.net
+
+# EA / Origin / Respawn
+activity.ea.com
+easo.ea.com
+easss.ea.com
+easu.ea.com
+config.ea.com
+dataportal.ea.com
+game-data.ea.com
+api.origin.com
+api1.origin.com
+api2.origin.com
+api3.origin.com
+gos.ea.com
+atlas.gos.ea.com
+gosredirector.ea.com
+blaze.ea.com
+rtm.tnt-ea.com
+apexlegends.com
+respawn.com
+stryder.respawn.com
+projectapex.com
+matchmaking.respawn.com
+titanfall.com
+battlefield.com
+battlelog.com
+easports.com
+companion.ea.com
+stats.ea.com
+battlefield3.com
+battlefield4.com
+battlefield5.com
+battlefield2042.com
+frostbite.com
+
+# Xbox
+xbox.com
+xboxlive.com
+xboxservices.com
+gamepass.com
+xboxgamepass.com
+login.live.com
+login.microsoftonline.com
+auth.xboxlive.com
+xsts.auth.xboxlive.com
+user.auth.xboxlive.com
+title.mgl.xboxlive.com
+xkms.xboxlive.com
+
+# Battle.net
+battle.net
+blizzard.com
+actual.battle.net
+account.battle.net
+shop.battle.net
+
+# Rockstar
+rockstargames.com
+socialclub.rockstargames.com
+rsg.sc
+
+# Roblox
+roblox.com
+rbxcdn.com
+rbxcdn.net
+rbxlabs.com
+robloxlabs.com
+rblx.com
+arkoselabs.com
+ecsv2.roblox.com
+metrics.roblox.com
+apis.roblox.com
+funcaptcha.com
+
+# Riot / League
+leagueoflegends.com
+playruneterra.com
+pvp.net
+lolstatic.com
+lolesports.com
+blitz.gg
+blitz-cdn.blitz.gg
+blitz-desktop.blitz.gg
+
+# Dead by Daylight
+deadbydaylight.com
+dbd.starbreeze.com
+starbreeze.com
+bhvr.com
+behaviourinteractive.com
+
+# VRChat / Photon
+api.vrchat.cloud
+assets.vrchat.com
+files.vrchat.cloud
+pipeline.vrchat.cloud
+status.vrchat.com
+vrchat.cloud
+vrchat.com
+vrchat.net
+cloud.exitgames.com
+ns.exitgames.com
+ns.photonengine.io
+photonengine.io
+
+# Cloud and CDN control endpoints
+cloudflare.com
+cloudflare-ech.com
+cloudflare.net
+challenges.cloudflare.com
+cdnjs.com
+cdnjs.cloudflare.com
+workers.dev
+amazon.com
+amazongames.com
+amazonaws.com
+amazonaws.net
+amazonaws.org
+aws.com
+awsapps.com
+s3.amazonaws.com
+sso.amazonaws.com
+signin.aws.amazon.com
+api.amazon.com
+cloudfront.com
+cloudfront.net

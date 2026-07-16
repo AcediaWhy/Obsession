@@ -1,0 +1,67 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Obsession — политика кодировок и переводов строк (Foundation F.1).
+#
+# В системе core.autocrlf=true, а .gitattributes отсутствовал — из-за этого
+# рабочее дерево накопило СМЕСЬ LF/CRLF (напр. большинство winws .conf стали
+# CRLF). winws/WinDivert-ассеты чувствительны к байтам: BOM уже ломал десинк
+# (см. память winws-config-bom-bug). Здесь фиксируем единый LF в рабочем дереве
+# и защищаем бинарные ресурсы от любой нормализации.
+#
+# Блобы в репозитории уже LF, поэтому правила НЕ создают шумного диффа: git
+# нормализует содержимое при сравнении. Чтобы ФИЗИЧЕСКИ переписать уже
+# «загрязнённые» CRLF-файлы рабочего дерева в LF — ОТДЕЛЬНЫМ коммитом (после
+# текущей работы, чтобы не смешивать EOL-шум с реальными правками) выполнить:
+#     git add --renormalize .
+#     git checkout -- .
+# ─────────────────────────────────────────────────────────────────────────────
+
+# По умолчанию: определяем текст автоматически, в рабочем дереве — всегда LF.
+* text=auto eol=lf
+
+# --- Исходники и конфиги проекта: канонический LF ---
+*.rs     text eol=lf
+*.ts     text eol=lf
+*.tsx    text eol=lf
+*.js     text eol=lf
+*.jsx    text eol=lf
+*.mjs    text eol=lf
+*.cjs    text eol=lf
+*.json   text eol=lf
+*.jsonc  text eol=lf
+*.css    text eol=lf
+*.scss   text eol=lf
+*.html   text eol=lf
+*.md     text eol=lf
+*.toml   text eol=lf
+*.yml    text eol=lf
+*.yaml   text eol=lf
+*.ps1    text eol=lf
+*.sh     text eol=lf
+
+# --- Системно-чувствительные текстовые ассеты: строгий LF, без CRLF/BOM ---
+# winws читает .conf как есть; CRLF/BOM ломали десинк. Держим канонический LF;
+# BOM отсекается в коде при записи.
+*.conf   text eol=lf
+# hostlists / ipset — по одному хосту/подсети в строке.
+*.txt    text eol=lf
+# Strategy Pack / Lua (Zapret2, будущее) — исполняемый код стратегий.
+*.lua    text eol=lf
+
+# --- Бинарные ресурсы: НИКОГДА не нормализовать (иначе повреждение) ---
+# winws.exe, WinDivert.dll/.sys, fake-payloads (.bin), иконки, шрифты, видео.
+*.exe    binary
+*.dll    binary
+*.sys    binary
+*.bin    binary
+*.ico    binary
+*.png    binary
+*.jpg    binary
+*.jpeg   binary
+*.webp   binary
+*.gif    binary
+*.mp4    binary
+*.webm   binary
+*.woff   binary
+*.woff2  binary
+*.ttf    binary
+*.otf    binary
