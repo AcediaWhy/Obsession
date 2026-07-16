@@ -713,6 +713,18 @@ pub(crate) async fn cached_entries_for_overrides(
     entries
 }
 
+fn probe_completion_matches_status(
+    status: &RecoveryStatus,
+    session_id: u64,
+    attempt_id: u64,
+    candidate_id: &str,
+) -> bool {
+    status.phase == RecoveryPhase::CandidateProbe
+        && status.session_id == Some(session_id)
+        && status.attempt_id == Some(attempt_id)
+        && status.candidate_id.as_deref() == Some(candidate_id)
+}
+
 async fn handle_event(
     app: &AppHandle,
     model: &mut RecoveryModel,
@@ -914,6 +926,10 @@ async fn handle_event(
             candidate_id,
             series,
         } => {
+            let status = model.status();
+            if !probe_completion_matches_status(&status, session_id, attempt_id, &candidate_id) {
+                return Vec::new();
+            }
             for batch in &series.rounds {
                 let _ = app.emit("adaptive://probe", batch);
             }
@@ -1852,5 +1868,69 @@ mod tests {
         assert!(input.try_candidate_crashed(9));
         generation.store(0, Ordering::SeqCst);
         assert!(!input.try_candidate_crashed(9));
+    }
+
+    #[test]
+    fn probe_completion_guard_rejects_stale_session_attempt_candidate_and_phase() {
+        let candidate =
+            generator::builtin_baseline_candidates(AdaptiveCategory::YoutubeTwitch)[0].clone();
+        let candidate_id = candidate.candidate_id();
+        let mut model = RecoveryModel::new(RecoveryCfg::default());
+        model.step(RecoveryEvent::DiagnosisConfirmed {
+            category: AdaptiveCategory::YoutubeTwitch,
+            reason: DiagnosisReason::TlsBlackhole,
+        });
+        let actions = model.step(RecoveryEvent::UserStart {
+            category: AdaptiveCategory::YoutubeTwitch,
+            candidates: vec![candidate],
+        });
+        let RecoveryAction::StartCandidate {
+            session_id,
+            attempt_id,
+            ..
+        } = actions[0]
+        else {
+            panic!("expected candidate start");
+        };
+        model.step(RecoveryEvent::CandidateStarted {
+            session_id,
+            attempt_id,
+            candidate_id: candidate_id.clone(),
+            ok: true,
+        });
+
+        let status = model.status();
+        assert!(probe_completion_matches_status(
+            &status,
+            session_id,
+            attempt_id,
+            &candidate_id,
+        ));
+        assert!(!probe_completion_matches_status(
+            &status,
+            session_id + 1,
+            attempt_id,
+            &candidate_id,
+        ));
+        assert!(!probe_completion_matches_status(
+            &status,
+            session_id,
+            attempt_id + 1,
+            &candidate_id,
+        ));
+        assert!(!probe_completion_matches_status(
+            &status,
+            session_id,
+            attempt_id,
+            "stale-candidate",
+        ));
+
+        model.step(RecoveryEvent::UserCancel);
+        assert!(!probe_completion_matches_status(
+            &model.status(),
+            session_id,
+            attempt_id,
+            &candidate_id,
+        ));
     }
 }
