@@ -27,6 +27,20 @@ pub fn std_command<S: AsRef<std::ffi::OsStr>>(program: S) -> std::process::Comma
     std::process::Command::new(program)
 }
 
+/// Расширение std `Mutex`: берёт лок, восстанавливаясь после отравления. Паника
+/// в чужой критсекции не должна каскадно ронять этот путь — особенно горячие
+/// toggle/close/tray-пути и обработчик закрытия на главном event-loop потоке
+/// (где падение `.unwrap()` на отравленном мьютексе повесило бы выход).
+pub trait LockExt<T> {
+    fn lock_recover(&self) -> std::sync::MutexGuard<'_, T>;
+}
+
+impl<T> LockExt<T> for Mutex<T> {
+    fn lock_recover(&self) -> std::sync::MutexGuard<'_, T> {
+        self.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
 /// Уровень лог-сообщения для UI.
 #[derive(Clone, Serialize)]
 pub struct LogPayload {
@@ -87,7 +101,7 @@ fn notify_gates() -> &'static Mutex<HashMap<String, NotifyGate>> {
 pub fn notify_throttled(app: &AppHandle, key: &str, title: &str, body: &str) {
     let now = Instant::now();
     let suppressed_before = {
-        let mut gates = notify_gates().lock().unwrap();
+        let mut gates = notify_gates().lock_recover();
         let gate = gates.entry(key.to_string()).or_insert(NotifyGate {
             last: None,
             suppressed: 0,
@@ -118,12 +132,7 @@ pub fn notify_throttled(app: &AppHandle, key: &str, title: &str, body: &str) {
 /// уведомление не критично (например, если пользователь отключил их в системе).
 pub(crate) fn notify_now(app: &AppHandle, title: &str, body: &str) {
     use tauri_plugin_notification::NotificationExt;
-    let _ = app
-        .notification()
-        .builder()
-        .title(title)
-        .body(body)
-        .show();
+    let _ = app.notification().builder().title(title).body(body).show();
 }
 
 /// Адрес выхода в интернет через «трюк с UDP»: пакет не шлётся, ядро лишь
@@ -146,6 +155,17 @@ pub struct LanIpPick {
     pub candidates: Vec<String>,
     /// Адрес выхода в интернет (если ≠ ip — вероятен VPN/вирт. адаптер).
     pub route_ip: Option<String>,
+    /// CIDR-подсеть выбранного интерфейса (напр. "192.168.1.0/24") для строгого
+    /// firewall-правила `remoteip=`. `None`, если подсеть определить не удалось —
+    /// тогда вызывающий берёт безопасный фолбэк `LocalSubnet`.
+    pub subnet: Option<String>,
+}
+
+/// CIDR-подсеть по IP и маске: `network/prefix` (напр. 192.168.1.0/24).
+pub fn ipv4_cidr(ip: Ipv4Addr, netmask: Ipv4Addr) -> String {
+    let net = u32::from(ip) & u32::from(netmask);
+    let prefix = u32::from(netmask).count_ones();
+    format!("{}/{prefix}", Ipv4Addr::from(net))
 }
 
 /// Выбирает IPv4, по которому телефон в общей Wi-Fi достучится до этого ПК.
@@ -161,9 +181,14 @@ pub fn lan_ip_for_phone() -> LanIpPick {
     let route_ip = route_source_ip();
 
     let mut candidates: Vec<Ipv4Addr> = Vec::new();
+    // Маска выбранного IP — для вычисления CIDR-подсети firewall-правила.
+    let mut netmasks: std::collections::HashMap<Ipv4Addr, Ipv4Addr> =
+        std::collections::HashMap::new();
     if let Ok(ifaces) = if_addrs::get_if_addrs() {
         for iface in ifaces {
-            let IfAddr::V4(v4) = &iface.addr else { continue };
+            let IfAddr::V4(v4) = &iface.addr else {
+                continue;
+            };
             let ip = v4.ip;
             if !ip.is_private() {
                 continue; // только 10/8, 172.16/12, 192.168/16 (отсекает 127/169.254/публичные)
@@ -177,6 +202,7 @@ pub fn lan_ip_for_phone() -> LanIpPick {
             if !candidates.contains(&ip) {
                 candidates.push(ip);
             }
+            netmasks.entry(ip).or_insert(v4.netmask);
         }
     }
     candidates.sort_by_key(|ip| private_rank(*ip));
@@ -200,10 +226,19 @@ pub fn lan_ip_for_phone() -> LanIpPick {
             .unwrap_or_else(|| "127.0.0.1".to_string()),
     };
 
+    // Подсеть выбранного адреса — только если он реальный LAN (не loopback/egress-
+    // фолбэк). Для 127.0.0.1 подсеть не имеет смысла.
+    let subnet = chosen
+        .parse::<Ipv4Addr>()
+        .ok()
+        .filter(|ip| ip.is_private())
+        .and_then(|ip| netmasks.get(&ip).map(|mask| ipv4_cidr(ip, *mask)));
+
     LanIpPick {
         ip: chosen,
         candidates: candidates.iter().map(|ip| ip.to_string()).collect(),
         route_ip: route_ip.map(|ip| ip.to_string()),
+        subnet,
     }
 }
 
@@ -227,10 +262,33 @@ fn private_rank(ip: Ipv4Addr) -> u8 {
 fn is_virtual_adapter(name: &str) -> bool {
     let n = name.to_ascii_lowercase();
     const NEEDLES: &[&str] = &[
-        "vethernet", "hyper-v", "virtualbox", "vmware", "vmnet", "docker", "wsl",
-        "tailscale", "wireguard", "zerotier", "hamachi", "radmin", "loopback", "virtual",
-        "vpn", "tap", "tun", "outline", "openvpn", "nordvpn", "mullvad", "proton",
-        "surfshark", "expressvpn", "anyconnect", "forti", "globalprotect",
+        "vethernet",
+        "hyper-v",
+        "virtualbox",
+        "vmware",
+        "vmnet",
+        "docker",
+        "wsl",
+        "tailscale",
+        "wireguard",
+        "zerotier",
+        "hamachi",
+        "radmin",
+        "loopback",
+        "virtual",
+        "vpn",
+        "tap",
+        "tun",
+        "outline",
+        "openvpn",
+        "nordvpn",
+        "mullvad",
+        "proton",
+        "surfshark",
+        "expressvpn",
+        "anyconnect",
+        "forti",
+        "globalprotect",
     ];
     NEEDLES.iter().any(|needle| n.contains(needle))
 }
@@ -242,6 +300,10 @@ fn append_log_file(app: &AppHandle, ts: &str, level: &str, source: &str, message
         return;
     };
     let file = state.paths.logs_dir().join("app.log");
+    // Сериализуем аппенды из разных потоков (поток Глаз, async-задачи, главный):
+    // без лока их writeln! могли бы переплестись в одной строке файла.
+    static LOG_LOCK: Mutex<()> = Mutex::new(());
+    let _guard = LOG_LOCK.lock_recover();
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -269,4 +331,35 @@ pub struct ProxyStatusPayload {
     pub running: bool,
     pub link: String,
     pub lan_link: Option<String>,
+    /// Активна ли LAN-публикация (0.0.0.0 forwarder + firewall).
+    pub lan_published: bool,
+    /// Unix-время (сек) авто-закрытия LAN-публикации; null = без авто-закрытия.
+    pub lan_expiry_unix: Option<u64>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ipv4_cidr_computes_network_and_prefix() {
+        assert_eq!(
+            ipv4_cidr(
+                Ipv4Addr::new(192, 168, 1, 37),
+                Ipv4Addr::new(255, 255, 255, 0)
+            ),
+            "192.168.1.0/24"
+        );
+        assert_eq!(
+            ipv4_cidr(Ipv4Addr::new(10, 5, 6, 7), Ipv4Addr::new(255, 0, 0, 0)),
+            "10.0.0.0/8"
+        );
+        assert_eq!(
+            ipv4_cidr(
+                Ipv4Addr::new(172, 20, 130, 5),
+                Ipv4Addr::new(255, 255, 0, 0)
+            ),
+            "172.20.0.0/16"
+        );
+    }
 }

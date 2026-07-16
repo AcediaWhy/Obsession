@@ -20,7 +20,7 @@
 
 use std::ffi::c_void;
 use std::path::Path;
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -40,17 +40,44 @@ const FLAG_NO_INSTALL: u64 = 0x0010;
 /// Максимальный размер сетевого пакета (с запасом на джамбо-кадры не идём —
 /// TLS ClientHello укладывается с большим запасом).
 const PACKET_BUF: usize = 65535;
+/// Жёсткая граница backlog capture -> tracker. При переполнении лучше потерять
+/// отдельное наблюдение, чем бесконечно наращивать RAM.
+const PACKET_QUEUE_CAP: usize = 4096;
+const TRACKER_TICK: Duration = Duration::from_millis(250);
+const DROP_LOG_INTERVAL: Duration = Duration::from_secs(5);
+
+struct TickDeadline {
+    period: Duration,
+    next: Instant,
+}
+
+impl TickDeadline {
+    fn new(now: Instant, period: Duration) -> Self {
+        Self {
+            period,
+            next: now + period,
+        }
+    }
+
+    fn wait(&self, now: Instant) -> Duration {
+        self.next.saturating_duration_since(now)
+    }
+
+    /// Возвращает true не чаще одного раза за period. Пропущенные интервалы
+    /// скипаются, поэтому после задержки нет burst-догона.
+    fn take_due(&mut self, now: Instant) -> bool {
+        if now < self.next {
+            return false;
+        }
+        self.next = now + self.period;
+        true
+    }
+}
 
 /// Сигнатуры экспортов WinDivert.dll (см. windivert.h 2.2).
-type FnOpen =
-    unsafe extern "system" fn(*const u8, u8, i16, u64) -> *mut c_void;
-type FnRecv = unsafe extern "system" fn(
-    *mut c_void,
-    *mut u8,
-    u32,
-    *mut u32,
-    *mut WinDivertAddress,
-) -> i32;
+type FnOpen = unsafe extern "system" fn(*const u8, u8, i16, u64) -> *mut c_void;
+type FnRecv =
+    unsafe extern "system" fn(*mut c_void, *mut u8, u32, *mut u32, *mut WinDivertAddress) -> i32;
 type FnClose = unsafe extern "system" fn(*mut c_void) -> i32;
 type FnShutdown = unsafe extern "system" fn(*mut c_void, u32) -> i32;
 
@@ -187,9 +214,31 @@ pub struct EyesHandle {
 impl EyesHandle {
     /// Останавливает наблюдение: будит recv через shutdown, ждёт завершения потоков.
     pub fn stop(mut self) {
-        self.stop
-            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
         // Разбудить заблокированный WinDivertRecv.
+        unsafe {
+            (self.divert.shutdown)(self.divert.handle, SHUTDOWN_BOTH);
+        }
+        if let Some(h) = self.capture.take() {
+            let _ = h.join();
+        }
+        if let Some(h) = self.tracker.take() {
+            let _ = h.join();
+        }
+    }
+}
+
+impl Drop for EyesHandle {
+    /// Страховка на случай, если хэндл дропнули без явного `stop()` (перезапись
+    /// `AppState.eyes`, паника и т.п.): без неё потоки capture/tracker держали бы
+    /// `Arc<WinDivert>` и жили до конца процесса — утечка двух потоков и хэндла
+    /// драйвера. `stop()` забирает JoinHandle'ы через `.take()`, поэтому после
+    /// него этот Drop — no-op (двойного shutdown/join не будет).
+    fn drop(&mut self) {
+        if self.capture.is_none() && self.tracker.is_none() {
+            return;
+        }
+        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
         unsafe {
             (self.divert.shutdown)(self.divert.handle, SHUTDOWN_BOTH);
         }
@@ -210,19 +259,17 @@ const FILTER: &str = "tcp and (tcp.SrcPort == 443 or tcp.DstPort == 443)";
 ///
 /// `dll_path` — путь к нашей `WinDivert.dll` (обычно `bin_dir()/WinDivert.dll`).
 /// `on_observation` вызывается для каждого готового per-flow вердикта.
-pub fn start<F>(
-    dll_path: &Path,
-    cfg: Config,
-    on_observation: F,
-) -> Result<EyesHandle, String>
+pub fn start<F>(dll_path: &Path, cfg: Config, on_observation: F) -> Result<EyesHandle, String>
 where
     F: Fn(Observation) + Send + 'static,
 {
     let divert = Arc::new(unsafe { WinDivert::open(dll_path, FILTER)? });
     let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
-    // Канал: поток захвата -> поток трекинга.
-    let (tx, rx): (Sender<ParsedPacket>, Receiver<ParsedPacket>) = mpsc::channel();
+    // Bounded канал: поток захвата -> поток трекинга. Capture не блокируется
+    // на полном канале, чтобы backlog не переехал в WinDivert/kernel buffers.
+    let (tx, rx): (SyncSender<ParsedPacket>, Receiver<ParsedPacket>) =
+        mpsc::sync_channel(PACKET_QUEUE_CAP);
 
     // Поток захвата: блокирующий recv, декод, отправка в трекер.
     let capture = {
@@ -232,12 +279,29 @@ where
             .name("eyes-capture".into())
             .spawn(move || {
                 let mut buf = vec![0u8; PACKET_BUF];
+                let mut dropped = 0u64;
+                let mut last_drop_log: Option<Instant> = None;
                 while !stop.load(std::sync::atomic::Ordering::SeqCst) {
                     match unsafe { divert.recv_into(&mut buf) } {
                         Some((len, outbound)) => {
                             if let Some(pkt) = decode_ip_tcp(&buf[..len], outbound) {
-                                if tx.send(pkt).is_err() {
-                                    break; // трекер ушёл
+                                match tx.try_send(pkt) {
+                                    Ok(()) => {}
+                                    Err(TrySendError::Full(_)) => {
+                                        dropped = dropped.saturating_add(1);
+                                        let now = Instant::now();
+                                        let should_log = last_drop_log
+                                            .map(|last| now.duration_since(last) >= DROP_LOG_INTERVAL)
+                                            .unwrap_or(true);
+                                        if should_log {
+                                            eprintln!(
+                                                "[eyes] очередь capture переполнена: отброшено {dropped} пакетов"
+                                            );
+                                            dropped = 0;
+                                            last_drop_log = Some(now);
+                                        }
+                                    }
+                                    Err(TrySendError::Disconnected(_)) => break,
                                 }
                             }
                         }
@@ -263,9 +327,10 @@ where
             .spawn(move || {
                 let mut table = FlowTable::new(cfg);
                 let start = Instant::now();
-                let tick = Duration::from_millis(250);
+                let mut tick = TickDeadline::new(Instant::now(), TRACKER_TICK);
                 loop {
-                    match rx.recv_timeout(tick) {
+                    let wait = tick.wait(Instant::now());
+                    match rx.recv_timeout(wait) {
                         Ok(pkt) => {
                             let now = start.elapsed().as_millis() as u64;
                             if let Some(obs) = table.on_packet(&pkt, now) {
@@ -275,10 +340,14 @@ where
                         Err(RecvTimeoutError::Timeout) => {}
                         Err(RecvTimeoutError::Disconnected) => break,
                     }
-                    // На каждом пробуждении прогоняем тик таймаутов.
-                    let now = start.elapsed().as_millis() as u64;
-                    for obs in table.on_tick(now) {
-                        on_observation(obs);
+                    // Пакеты могут будить tracker тысячами раз в секунду, но полный
+                    // O(flows) tick выполняется только по временному дедлайну.
+                    let wall_now = Instant::now();
+                    if tick.take_due(wall_now) {
+                        let now = start.elapsed().as_millis() as u64;
+                        for obs in table.on_tick(now) {
+                            on_observation(obs);
+                        }
                     }
                     if stop.load(std::sync::atomic::Ordering::SeqCst) {
                         break;
@@ -294,4 +363,27 @@ where
         tracker: Some(tracker),
         divert,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tick_deadline_is_time_driven_and_skips_missed_intervals() {
+        let start = Instant::now();
+        let period = Duration::from_millis(250);
+        let mut tick = TickDeadline::new(start, period);
+
+        assert!(!tick.take_due(start + Duration::from_millis(1)));
+        assert!(tick.take_due(start + period));
+        // Тысячи packet wakeups внутри следующего периода не создают ticks.
+        for millis in 251..500 {
+            assert!(!tick.take_due(start + Duration::from_millis(millis)));
+        }
+        assert!(tick.take_due(start + Duration::from_millis(500)));
+        // Большой лаг даёт один tick, а не пачку накопленных.
+        assert!(tick.take_due(start + Duration::from_secs(5)));
+        assert!(!tick.take_due(start + Duration::from_secs(5)));
+    }
 }

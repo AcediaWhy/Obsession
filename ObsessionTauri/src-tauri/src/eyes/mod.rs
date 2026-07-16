@@ -27,13 +27,15 @@ pub mod capture;
 pub mod fake_filter;
 pub mod flow;
 pub mod parse;
+pub mod quic;
 pub mod signal;
 
 #[cfg(test)]
 mod replay;
 
 pub use flow::{Config, FlowTable};
-pub use signal::{Observation, Verdict};
+pub use quic::{classify_udp, UdpKind};
+pub use signal::{Diagnosis, Observation, Verdict};
 
 #[cfg(windows)]
 pub use capture::{start, EyesHandle};

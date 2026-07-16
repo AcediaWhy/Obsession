@@ -7,8 +7,9 @@ use tauri::{AppHandle, Manager};
 
 use crate::hosts::Provider;
 use crate::profiles::Profile;
-use crate::settings::Settings;
+use crate::settings::{Settings, SettingsPatch};
 use crate::state::AppState;
+use crate::util::LockExt;
 
 #[derive(Serialize)]
 pub struct AppConfig {
@@ -65,38 +66,286 @@ pub struct DpiConfigArg {
     pub config_file: String,
 }
 
-#[tauri::command]
-pub async fn dpi_start(app: AppHandle, configs: Vec<DpiConfigArg>) -> Result<Vec<u32>, String> {
-    // Ворота: сериализуем со stop/test, чтобы старт не прервался на середине
-    // (иначе Глаза поднимутся на уже убитый winws — обход не детектится).
-    let state = app.state::<AppState>();
-    let _gate = state.dpi_gate.lock().await;
-    let pairs: Vec<(String, String)> = configs
-        .into_iter()
-        .map(|c| (c.category, c.config_file))
-        .collect();
-    let pids = crate::dpi::start_many(&app, &pairs).await?;
-    // Если Мозг включён — открываем сессию (сбор кандидатов + резолв сети).
-    if brain_is_running(&app) {
-        let ev = crate::brain::runtime::build_session_start(&app, pairs).await;
-        send_brain_event(&app, ev);
+fn runtime_is_shutting_down(app: &AppHandle) -> bool {
+    app.state::<AppState>()
+        .shutting_down
+        .load(std::sync::atomic::Ordering::SeqCst)
+}
+
+async fn dpi_start_locked(
+    app: &AppHandle,
+    pairs: Vec<(String, String)>,
+) -> Result<Vec<u32>, String> {
+    if runtime_is_shutting_down(app) {
+        return Err("Приложение завершает работу.".to_string());
+    }
+
+    // Выбор движка (3.4). Legacy — по умолчанию; Zapret2 — ручная Beta и только
+    // если winws2.exe установлен, иначе безопасный откат к Legacy.
+    let decision = {
+        use crate::dpi_engine::{decide_start, EngineKind};
+        let state = app.state::<AppState>();
+        let selected = EngineKind::parse(&state.settings.lock_recover().dpi_engine);
+        let winws2_ok = crate::dpi_engine::resources::validate_engine_resources(
+            &state.paths.base_dir,
+            "zapret2",
+        )
+        .is_ok();
+        decide_start(selected, winws2_ok)
+    };
+
+    {
+        use crate::dpi_engine::EngineDecision;
+        match decision {
+            EngineDecision::RunZapret2 => {
+                // Пробуем Zapret2. При ЛЮБОМ сбое старта — авто-возврат Legacy
+                // (инвариант: неудача Zapret2 не оставляет систему без обхода).
+                // Мозг с Zapret2 НЕ связываем (Beta, не brain-selectable).
+                match crate::dpi::start_zapret2(app, &pairs).await {
+                    Ok(pid) => {
+                        crate::util::emit_log(app, "success", "dpi", "Zapret2 Beta запущен.");
+                        return Ok(vec![pid]);
+                    }
+                    Err(e) => {
+                        crate::util::emit_log(
+                            app,
+                            "error",
+                            "dpi",
+                            &format!("Zapret2 не стартовал ({e}) — возврат к Zapret Legacy."),
+                        );
+                        crate::dpi::persist_engine_selection(app, "legacy")?;
+                        // Проваливаемся в Legacy-путь ниже.
+                    }
+                }
+            }
+            EngineDecision::RunLegacy { fell_back: true } => {
+                crate::util::emit_log(
+                    app,
+                    "warn",
+                    "dpi",
+                    "Zapret2 недоступен (нет winws2.exe) — запускаю Zapret Legacy.",
+                );
+                crate::dpi::persist_engine_selection(app, "legacy")?;
+            }
+            EngineDecision::RunLegacy { fell_back: false } => {}
+            EngineDecision::Stopped => {
+                return Err("Zapret2 недоступен и нет рабочего Legacy-набора.".to_string());
+            }
+        }
+    }
+
+    let pids = crate::dpi::start_many(app, &pairs).await?;
+    if runtime_is_shutting_down(app) {
+        crate::dpi::stop_all(app).await;
+        return Err("Запуск отменён: приложение завершает работу.".to_string());
+    }
+    if brain_is_running(app) {
+        let ev = crate::brain::runtime::build_session_start(app, pairs).await;
+        if runtime_is_shutting_down(app) {
+            crate::dpi::stop_all(app).await;
+            return Err("Запуск отменён: приложение завершает работу.".to_string());
+        }
+        send_brain_event(app, ev).await;
     }
     Ok(pids)
 }
 
-#[tauri::command]
-pub async fn dpi_stop(app: AppHandle) {
+async fn dpi_stop_locked(app: &AppHandle) {
+    // Сначала сообщаем Мозгу — штатный stop не должен выглядеть как сбой.
+    send_brain_event(app, crate::brain::BrainEvent::SessionStop).await;
+    crate::dpi::stop_all(app).await;
+}
+
+pub(crate) async fn dpi_start_session(
+    app: &AppHandle,
+    pairs: Vec<(String, String)>,
+) -> Result<Vec<u32>, String> {
+    if runtime_is_shutting_down(app) {
+        return Err("Приложение завершает работу.".to_string());
+    }
     let state = app.state::<AppState>();
     let _gate = state.dpi_gate.lock().await;
-    // Сначала сообщаем Мозгу — чтобы он не воспринял штатный стоп как сбой.
-    send_brain_event(&app, crate::brain::BrainEvent::SessionStop);
-    crate::dpi::stop_all(&app).await;
+    dpi_start_locked(app, pairs).await
+}
+
+pub(crate) async fn dpi_stop_session(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let _gate = state.dpi_gate.lock().await;
+    dpi_stop_locked(app).await;
+}
+
+/// Общий toggle для UI-independent входов (tray/hotkey). Возвращает итоговый
+/// active state. Использует тот же Brain SessionStart/Stop, что и UI-команды.
+pub(crate) async fn dpi_toggle_session(
+    app: &AppHandle,
+    pairs: Vec<(String, String)>,
+) -> Result<bool, String> {
+    if runtime_is_shutting_down(app) {
+        return Err("Приложение завершает работу.".to_string());
+    }
+    let state = app.state::<AppState>();
+    let _gate = state.dpi_gate.lock().await;
+    if runtime_is_shutting_down(app) {
+        return Err("Приложение завершает работу.".to_string());
+    }
+    let active = !state.dpi.lock_recover().procs.is_empty();
+    if active {
+        dpi_stop_locked(app).await;
+        Ok(false)
+    } else {
+        dpi_start_locked(app, pairs)
+            .await
+            .map(|pids| !pids.is_empty())
+    }
+}
+
+#[tauri::command]
+pub async fn dpi_start(app: AppHandle, configs: Vec<DpiConfigArg>) -> Result<Vec<u32>, String> {
+    let pairs = configs
+        .into_iter()
+        .map(|c| (c.category, c.config_file))
+        .collect();
+    dpi_start_session(&app, pairs).await
+}
+
+#[tauri::command]
+pub async fn dpi_stop(app: AppHandle) {
+    dpi_stop_session(&app).await;
+}
+
+/// Один движок для списка в UI: описание + доступность бинарника.
+#[derive(serde::Serialize)]
+pub struct EngineOption {
+    pub kind: String,
+    pub version: String,
+    pub beta: bool,
+    /// Установлен ли бинарник движка (winws/winws2 присутствует в bin/).
+    pub available: bool,
+    /// Выбран ли этот движок в настройках.
+    pub selected: bool,
+}
+
+/// Список DPI-движков для UI: Legacy (Zapret1) всегда, Zapret2 — как Beta,
+/// available зависит от наличия winws2.exe (поставляется в 3.1).
+#[tauri::command]
+pub fn dpi_engine_list(app: AppHandle) -> Vec<EngineOption> {
+    use crate::dpi_engine::EngineKind;
+    let state = app.state::<AppState>();
+    let selected = state.settings.lock_recover().dpi_engine.clone();
+    let winws_ok =
+        crate::dpi_engine::resources::validate_engine_resources(&state.paths.base_dir, "zapret1")
+            .is_ok();
+    let winws2_ok =
+        crate::dpi_engine::resources::validate_engine_resources(&state.paths.base_dir, "zapret2")
+            .is_ok();
+    [EngineKind::Legacy, EngineKind::Zapret2]
+        .into_iter()
+        .map(|k| {
+            let d = k.describe();
+            let available = match k {
+                EngineKind::Legacy => winws_ok,
+                EngineKind::Zapret2 => winws2_ok,
+            };
+            EngineOption {
+                kind: d.kind.to_string(),
+                version: d.version,
+                beta: d.beta,
+                available,
+                selected: selected == d.kind,
+            }
+        })
+        .collect()
+}
+
+#[tauri::command]
+pub async fn dpi_zapret2_profiles(
+    app: AppHandle,
+    categories: Vec<String>,
+) -> Result<Vec<crate::dpi::Zapret2ProfileDescriptor>, String> {
+    let snapshot = crate::dpi::runtime_snapshot(&app);
+    let (selections, overrides) = match snapshot.launch {
+        Some(crate::state::DpiLaunchSpec::Zapret2 {
+            selections,
+            adaptive_overrides,
+        }) => (selections, adaptive_overrides),
+        _ => {
+            let selections = categories
+                .into_iter()
+                .map(|category| (category, String::new()))
+                .collect::<Vec<_>>();
+            let overrides =
+                crate::adaptive_strategy::runtime::confirmed_overrides_for_current_network(
+                    &app,
+                    &selections,
+                )
+                .await;
+            (selections, overrides)
+        }
+    };
+    let entries =
+        crate::adaptive_strategy::runtime::cached_entries_for_overrides(&app, &overrides).await;
+    crate::dpi::describe_zapret2_profiles(&app, &selections, &overrides, &entries)
+}
+/// Меняет выбранный DPI-движок. Отклоняет выбор недоступного (нет бинарника).
+/// Смена сериализуется dpi_gate — не пересекается с активным start/stop.
+#[tauri::command]
+pub async fn dpi_engine_set(app: AppHandle, engine: String) -> Result<(), String> {
+    use crate::dpi_engine::EngineKind;
+    let kind = EngineKind::parse(&engine);
+    let state = app.state::<AppState>();
+    let winws2_ok =
+        crate::dpi_engine::resources::validate_engine_resources(&state.paths.base_dir, "zapret2")
+            .is_ok();
+    if kind == EngineKind::Zapret2 && !winws2_ok {
+        return Err("Zapret2 недоступен: winws2.exe не установлен.".to_string());
+    }
+    // Сериализуем с активным DPI-циклом, чтобы не переключить движок посреди start.
+    let _gate = state.dpi_gate.lock().await;
+    mutate_settings(&app, |s| s.dpi_engine = kind.name().to_string())?;
+    crate::util::emit_log(
+        &app,
+        "info",
+        "dpi",
+        &format!("DPI-движок переключён на {}", kind.name()),
+    );
+    Ok(())
 }
 
 #[tauri::command]
 pub async fn dpi_test(app: AppHandle, category: String, config_file: String) -> bool {
+    if runtime_is_shutting_down(&app) {
+        return false;
+    }
+    let adaptive_busy = app
+        .state::<AppState>()
+        .adaptive
+        .lock()
+        .ok()
+        .and_then(|value| value.as_ref().map(|handle| handle.status.borrow().phase))
+        .is_some_and(|phase| {
+            !matches!(
+                phase,
+                crate::adaptive_strategy::model::RecoveryPhase::Idle
+                    | crate::adaptive_strategy::model::RecoveryPhase::Suggested
+                    | crate::adaptive_strategy::model::RecoveryPhase::Applied
+                    | crate::adaptive_strategy::model::RecoveryPhase::Exhausted
+                    | crate::adaptive_strategy::model::RecoveryPhase::Cancelled
+            )
+        });
+    if adaptive_busy {
+        crate::util::emit_log(
+            &app,
+            "warn",
+            "adaptive",
+            "Обычный DPI-тест отложен до завершения adaptive search.",
+        );
+        return false;
+    }
     let state = app.state::<AppState>();
     let _gate = state.dpi_gate.lock().await;
+    if runtime_is_shutting_down(&app) {
+        return false;
+    }
     crate::dpi::test(&app, &category, &config_file).await
 }
 
@@ -113,8 +362,15 @@ pub fn dpi_detect_orphaned(app: AppHandle) -> Vec<u32> {
 }
 
 #[tauri::command]
-pub fn dpi_emergency_kill(app: AppHandle) {
-    crate::dpi::emergency_kill_all(&app);
+pub async fn dpi_emergency_kill(app: AppHandle) {
+    let state = app.state::<AppState>();
+    let _gate = state.dpi_gate.lock().await;
+    send_brain_event(&app, crate::brain::BrainEvent::SessionStop).await;
+    // emergency_kill_all делает блокирующий stop_eyes(join) + taskkill /IM —
+    // уводим с tokio-воркера, чтобы не занимать его под dpi_gate.
+    let app2 = app.clone();
+    let _ =
+        tauri::async_runtime::spawn_blocking(move || crate::dpi::emergency_kill_all(&app2)).await;
 }
 
 // ─── Сеть (идентичность для дашборда) ─────────────────────────────────────
@@ -246,6 +502,12 @@ pub async fn proxy_stop(app: AppHandle) {
     crate::proxy::stop(&app).await;
 }
 
+/// Закрывает LAN-публикацию (доступ с телефона), не останавливая локальный прокси.
+#[tauri::command]
+pub async fn proxy_close_lan(app: AppHandle) {
+    crate::proxy::close_lan_publication(&app, "закрыто вручную").await;
+}
+
 #[tauri::command]
 pub fn proxy_link(app: AppHandle) -> String {
     crate::proxy::current_link(&app)
@@ -287,8 +549,8 @@ pub fn open_external_url(url: String) -> Result<(), String> {
 // ─── Hosts (AI) ─────────────────────────────────────────────────────────
 
 #[tauri::command]
-pub async fn hosts_status(provider: String) -> crate::hosts::HostsStatus {
-    crate::hosts::check_status(Provider::parse(&provider)).await
+pub async fn hosts_status(app: AppHandle, provider: String) -> crate::hosts::HostsStatus {
+    crate::hosts::check_status(&app, Provider::parse(&provider)).await
 }
 
 #[tauri::command]
@@ -301,22 +563,111 @@ pub async fn hosts_uninstall(app: AppHandle) -> Result<(), String> {
     crate::hosts::uninstall(&app).await
 }
 
+#[tauri::command]
+pub async fn hosts_restore(app: AppHandle, provider: String) -> Result<(), String> {
+    crate::hosts::restore_last_known_good(&app, Provider::parse(&provider)).await
+}
+
+// ─── Runtime snapshot (resume UI) ─────────────────────────────────────────
+
+#[derive(Serialize)]
+pub struct RuntimeSnapshot {
+    pub dpi: crate::util::DpiStatusPayload,
+    pub proxy: crate::util::ProxyStatusPayload,
+    pub brain: Option<crate::brain::BrainStatus>,
+    pub adaptive: Option<crate::adaptive_strategy::model::RecoveryStatus>,
+}
+
+#[tauri::command]
+pub fn runtime_get_snapshot(app: AppHandle) -> RuntimeSnapshot {
+    let dpi = {
+        let state = app.state::<AppState>();
+        let d = state.dpi.lock_recover();
+        let processes = d
+            .procs
+            .values()
+            .map(|p| crate::util::DpiProcPublic {
+                pid: p.pid,
+                category: p.category.clone(),
+                config_file: p.config_file.clone(),
+            })
+            .collect::<Vec<_>>();
+        crate::util::DpiStatusPayload {
+            active: !processes.is_empty(),
+            processes,
+        }
+    };
+    let proxy = {
+        let state = app.state::<AppState>();
+        let p = state.proxy.lock_recover();
+        crate::util::ProxyStatusPayload {
+            running: p.pid.is_some(),
+            link: p.link.clone(),
+            lan_link: p.lan_link.clone(),
+            lan_published: p.lan_published,
+            lan_expiry_unix: p.lan_expiry_unix,
+        }
+    };
+    let brain = {
+        let state = app.state::<AppState>();
+        state
+            .brain
+            .lock()
+            .ok()
+            .and_then(|guard| guard.as_ref().map(|bh| bh.status.borrow().clone()))
+    };
+    let adaptive = {
+        let state = app.state::<AppState>();
+        state
+            .adaptive
+            .lock()
+            .ok()
+            .and_then(|guard| guard.as_ref().map(|handle| handle.status.borrow().clone()))
+    };
+    RuntimeSnapshot {
+        dpi,
+        proxy,
+        brain,
+        adaptive,
+    }
+}
+
 // ─── Settings ───────────────────────────────────────────────────────────
 
 #[tauri::command]
 pub fn get_settings(app: AppHandle) -> Settings {
     let state = app.state::<AppState>();
-    let s = state.settings.lock().unwrap().clone();
+    let s = state.settings.lock_recover().clone();
     s
 }
 
-#[tauri::command]
-pub fn save_settings(app: AppHandle, settings: Settings) -> Result<(), String> {
+fn mutate_settings<F>(app: &AppHandle, mutate: F) -> Result<Settings, String>
+where
+    F: FnOnce(&mut Settings),
+{
     let state = app.state::<AppState>();
     let base = state.paths.base_dir.clone();
-    settings.save(&base).map_err(|e| e.to_string())?;
-    *state.settings.lock().unwrap() = settings;
-    Ok(())
+    let mut guard = state
+        .settings
+        .lock()
+        .map_err(|_| "settings lock poisoned".to_string())?;
+    let mut next = guard.clone();
+    mutate(&mut next);
+    next.save(&base).map_err(|e| e.to_string())?;
+    *guard = next.clone();
+    Ok(next)
+}
+
+#[tauri::command]
+pub fn update_settings(app: AppHandle, patch: SettingsPatch) -> Result<Settings, String> {
+    mutate_settings(&app, |settings| settings.apply_patch(patch))
+}
+
+/// Backward-compatible full replace. Новый frontend использует update_settings,
+/// чтобы независимые stores не теряли поля друг друга.
+#[tauri::command]
+pub fn save_settings(app: AppHandle, settings: Settings) -> Result<(), String> {
+    mutate_settings(&app, |current| *current = settings).map(|_| ())
 }
 
 /// Меняет глобальный хоткей вкл/выкл защиты: снимает прежнюю комбинацию, ставит
@@ -326,7 +677,7 @@ pub fn save_settings(app: AppHandle, settings: Settings) -> Result<(), String> {
 #[tauri::command]
 pub fn set_hotkey(app: AppHandle, hotkey: String) -> Result<(), String> {
     let state = app.state::<AppState>();
-    let prev = state.settings.lock().unwrap().hotkey_toggle.clone();
+    let prev = state.settings.lock_recover().hotkey_toggle.clone();
 
     #[cfg(desktop)]
     {
@@ -347,10 +698,20 @@ pub fn set_hotkey(app: AppHandle, hotkey: String) -> Result<(), String> {
         }
     }
 
-    let base = state.paths.base_dir.clone();
-    let mut settings = state.settings.lock().unwrap();
-    settings.hotkey_toggle = hotkey;
-    settings.save(&base).map_err(|e| e.to_string())?;
+    if let Err(e) = mutate_settings(&app, |settings| settings.hotkey_toggle = hotkey.clone()) {
+        #[cfg(desktop)]
+        {
+            use tauri_plugin_global_shortcut::GlobalShortcutExt;
+            let gs = app.global_shortcut();
+            if !hotkey.trim().is_empty() {
+                let _ = gs.unregister(hotkey.trim());
+            }
+            if !prev.trim().is_empty() {
+                let _ = gs.register(prev.trim());
+            }
+        }
+        return Err(e);
+    }
     Ok(())
 }
 
@@ -366,14 +727,14 @@ fn brain_is_running(app: &AppHandle) -> bool {
 }
 
 /// Шлёт событие Мозгу, если он запущен (иначе тихо игнорирует).
-fn send_brain_event(app: &AppHandle, ev: crate::brain::BrainEvent) {
-    let tx = {
+async fn send_brain_event(app: &AppHandle, ev: crate::brain::BrainEvent) {
+    let input = {
         let st = app.state::<AppState>();
         let guard = st.brain.lock().ok();
-        guard.and_then(|g| g.as_ref().map(|bh| bh.tx.clone()))
+        guard.and_then(|g| g.as_ref().map(|bh| bh.input.clone()))
     };
-    if let Some(tx) = tx {
-        let _ = tx.send(ev);
+    if let Some(input) = input {
+        let _ = input.send_control(ev).await;
     }
 }
 
@@ -381,7 +742,15 @@ fn send_brain_event(app: &AppHandle, ev: crate::brain::BrainEvent) {
 /// персистит флаг в настройках. Идемпотентно.
 #[tauri::command]
 pub fn brain_set_enabled(app: AppHandle, enabled: bool) -> Result<(), String> {
-    {
+    let previous = app
+        .state::<AppState>()
+        .settings
+        .lock()
+        .map_err(|_| "settings lock poisoned".to_string())?
+        .auto_recovery;
+    mutate_settings(&app, |settings| settings.auto_recovery = enabled)?;
+
+    let runtime_result = (|| {
         let st = app.state::<AppState>();
         let mut guard = st.brain.lock().map_err(|_| "brain lock".to_string())?;
         let running = guard.is_some();
@@ -389,17 +758,15 @@ pub fn brain_set_enabled(app: AppHandle, enabled: bool) -> Result<(), String> {
             *guard = Some(crate::brain::runtime::start(app.clone()));
         } else if !enabled && running {
             if let Some(bh) = guard.take() {
-                let _ = bh.tx.send(crate::brain::BrainEvent::Shutdown);
                 bh.shutdown();
             }
         }
+        Ok::<(), String>(())
+    })();
+    if let Err(e) = runtime_result {
+        let _ = mutate_settings(&app, |settings| settings.auto_recovery = previous);
+        return Err(e);
     }
-    // Персист флага.
-    let st = app.state::<AppState>();
-    let base = st.paths.base_dir.clone();
-    let mut settings = st.settings.lock().unwrap();
-    settings.auto_recovery = enabled;
-    settings.save(&base).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -411,6 +778,172 @@ pub fn brain_get_status(app: AppHandle) -> Option<crate::brain::BrainStatus> {
     let bh = guard.as_ref()?;
     let status = bh.status.borrow().clone();
     Some(status)
+}
+
+// ─── Adaptive Zapret2 Strategy Brain ───────────────────────────────────────
+
+fn adaptive_category(
+    value: &str,
+) -> Result<crate::adaptive_strategy::dsl::AdaptiveCategory, String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "discord" => Ok(crate::adaptive_strategy::dsl::AdaptiveCategory::Discord),
+        "youtube" | "youtube_twitch" => {
+            Ok(crate::adaptive_strategy::dsl::AdaptiveCategory::YoutubeTwitch)
+        }
+        "gaming" | "gaming_github" => Ok(crate::adaptive_strategy::dsl::AdaptiveCategory::Gaming),
+        _ => Err(format!("Adaptive category не поддерживается: {value}")),
+    }
+}
+
+fn adaptive_transport(
+    value: Option<&str>,
+) -> Result<Option<crate::adaptive_strategy::dsl::StrategyTransport>, String> {
+    match value.map(str::trim).filter(|value| !value.is_empty()) {
+        None => Ok(None),
+        Some("tls") => Ok(Some(crate::adaptive_strategy::dsl::StrategyTransport::Tls)),
+        Some("quic") => Ok(Some(crate::adaptive_strategy::dsl::StrategyTransport::Quic)),
+        Some(value) => Err(format!("Adaptive transport не поддерживается: {value}")),
+    }
+}
+fn adaptive_input(
+    app: &AppHandle,
+) -> Result<crate::adaptive_strategy::runtime::AdaptiveInput, String> {
+    let state = app.state::<AppState>();
+    let guard = state
+        .adaptive
+        .lock()
+        .map_err(|_| "adaptive lock poisoned".to_string())?;
+    guard
+        .as_ref()
+        .map(|handle| handle.input.clone())
+        .ok_or_else(|| "Adaptive runtime не запущен".to_string())
+}
+
+#[tauri::command]
+pub fn adaptive_get_status(
+    app: AppHandle,
+) -> Option<crate::adaptive_strategy::model::RecoveryStatus> {
+    let state = app.state::<AppState>();
+    let guard = state.adaptive.lock().ok()?;
+    guard.as_ref().map(|handle| handle.status.borrow().clone())
+}
+
+#[tauri::command]
+pub async fn adaptive_start_search(
+    app: AppHandle,
+    category: String,
+    transport: Option<String>,
+) -> Result<(), String> {
+    if !app
+        .state::<AppState>()
+        .settings
+        .lock()
+        .map(|settings| settings.adaptive_strategy_enabled)
+        .unwrap_or(false)
+    {
+        return Err("Adaptive Strategy Brain выключен в настройках".to_string());
+    }
+    if !matches!(
+        crate::dpi::runtime_snapshot(&app).launch,
+        Some(crate::state::DpiLaunchSpec::Zapret2 { .. })
+    ) {
+        return Err("Поиск доступен только при активном Zapret2".to_string());
+    }
+    if adaptive_get_status(app.clone()).is_some_and(|status| {
+        matches!(
+            status.phase,
+            crate::adaptive_strategy::model::RecoveryPhase::DiscoveringQuic
+                | crate::adaptive_strategy::model::RecoveryPhase::Calibrating
+                | crate::adaptive_strategy::model::RecoveryPhase::Searching
+                | crate::adaptive_strategy::model::RecoveryPhase::CandidateProbe
+                | crate::adaptive_strategy::model::RecoveryPhase::TemporaryVerification
+                | crate::adaptive_strategy::model::RecoveryPhase::Applying
+                | crate::adaptive_strategy::model::RecoveryPhase::RollingBack
+        )
+    }) {
+        return Err("search_already_running".to_string());
+    }
+    let category = adaptive_category(&category)?;
+    let transport = adaptive_transport(transport.as_deref())?;
+    if category == crate::adaptive_strategy::dsl::AdaptiveCategory::Discord
+        && transport == Some(crate::adaptive_strategy::dsl::StrategyTransport::Quic)
+    {
+        return Err("Discord QUIC/media не входит в adaptive search".to_string());
+    }
+    if category == crate::adaptive_strategy::dsl::AdaptiveCategory::Gaming
+        && !adaptive_get_status(app.clone()).is_some_and(|status| {
+            status.phase == crate::adaptive_strategy::model::RecoveryPhase::Suggested
+                && status.category == Some(crate::adaptive_strategy::dsl::AdaptiveCategory::Gaming)
+        })
+    {
+        return Err("gaming_recovery_requires_failure_evidence".to_string());
+    }
+    adaptive_input(&app)?
+        .start_search(category, transport)
+        .await
+}
+
+#[tauri::command]
+pub async fn adaptive_get_recommendation(
+    app: AppHandle,
+    category: String,
+    transport: String,
+) -> Result<Option<crate::adaptive_strategy::runtime::AdaptiveRecommendationDescriptor>, String> {
+    let category = adaptive_category(&category)?;
+    if category != crate::adaptive_strategy::dsl::AdaptiveCategory::Gaming {
+        return Err("Локальные рекомендации пока доступны только для Gaming + GitHub".into());
+    }
+    let transport = adaptive_transport(Some(&transport))?
+        .ok_or_else(|| "Для рекомендации требуется transport".to_string())?;
+    crate::adaptive_strategy::runtime::gaming_recommendation_for_current_network(&app, transport)
+        .await
+}
+
+#[tauri::command]
+pub async fn adaptive_apply_recommendation(
+    app: AppHandle,
+    category: String,
+    transport: String,
+) -> Result<crate::adaptive_strategy::runtime::AdaptiveRecommendationDescriptor, String> {
+    let category = adaptive_category(&category)?;
+    if category != crate::adaptive_strategy::dsl::AdaptiveCategory::Gaming {
+        return Err("Локальные рекомендации пока доступны только для Gaming + GitHub".into());
+    }
+    let transport = adaptive_transport(Some(&transport))?
+        .ok_or_else(|| "Для рекомендации требуется transport".to_string())?;
+    crate::adaptive_strategy::runtime::apply_gaming_recommendation(&app, transport).await
+}
+
+#[tauri::command]
+pub async fn adaptive_cancel_search(app: AppHandle) -> Result<(), String> {
+    adaptive_input(&app)?.cancel().await
+}
+
+#[tauri::command]
+pub async fn adaptive_confirm_candidate(
+    app: AppHandle,
+    session_id: u64,
+    candidate_id: String,
+) -> Result<(), String> {
+    adaptive_input(&app)?
+        .confirm(session_id, candidate_id)
+        .await
+}
+
+#[tauri::command]
+pub async fn adaptive_reject_candidate(
+    app: AppHandle,
+    session_id: u64,
+    candidate_id: String,
+) -> Result<(), String> {
+    adaptive_input(&app)?.reject(session_id, candidate_id).await
+}
+
+#[tauri::command]
+pub async fn adaptive_reset_saved(app: AppHandle, category: String) -> Result<(), String> {
+    adaptive_input(&app)?
+        .reset_saved(adaptive_category(&category)?)
+        .await
 }
 
 // ─── Списки (домены / IP) ─────────────────────────────────────────────────

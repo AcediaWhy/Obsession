@@ -120,7 +120,11 @@ pub fn trim_working_set() {
         // активны, EmptyWorkingSet им только заставит перечитать страницы.
         let mut targets: Vec<u32> = vec![me];
         for pid in &descendants {
-            if name_of.get(pid).map(|n| n == "msedgewebview2.exe").unwrap_or(false) {
+            if name_of
+                .get(pid)
+                .map(|n| n == "msedgewebview2.exe")
+                .unwrap_or(false)
+            {
                 targets.push(*pid);
             }
         }

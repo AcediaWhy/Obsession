@@ -13,13 +13,21 @@ use serde::{Deserialize, Serialize};
 
 use crate::paths::Paths;
 
-const SCHEMA_VERSION: u32 = 1;
+const SCHEMA_VERSION: u32 = 2;
+
+fn default_engine() -> String {
+    "legacy".to_string()
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CatEntry {
     pub conf: String,
     pub confirmed_at: u64,
     pub success_count: u64,
+    /// Движок, на котором подтверждён conf (WS5). Старые файлы (schema v1) без
+    /// поля мигрируют в "legacy" — единственный движок, что реально работал.
+    #[serde(default = "default_engine")]
+    pub engine: String,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -46,14 +54,24 @@ impl Default for NetCache {
 }
 
 impl NetCache {
-    /// Загружает кэш (пустой при отсутствии/битости/несовместимой схеме).
+    /// Загружает кэш с миграцией вперёд. Раньше любое несовпадение схемы
+    /// ВЫБРАСЫВАЛО обученные данные (потеря L1-кэша при апгрейде) — теперь старые,
+    /// но совместимо-читаемые версии сохраняются и апгрейдятся до текущей схемы.
+    /// Пустой кэш только при отсутствии файла, битом JSON или версии ИЗ БУДУЩЕГО
+    /// (её структуру мы знать не можем — консервативно сбрасываем).
     pub fn load(paths: &Paths) -> Self {
         let text = match std::fs::read_to_string(paths.netcache_path()) {
             Ok(t) => t,
             Err(_) => return Self::default(),
         };
         match serde_json::from_str::<NetCache>(&text) {
-            Ok(c) if c.schema_version == SCHEMA_VERSION => c,
+            // Текущая или более старая схема: serde-default'ы новых полей уже
+            // применились при парсе (engine→"legacy"), поднимаем версию до текущей.
+            Ok(mut c) if c.schema_version <= SCHEMA_VERSION => {
+                c.schema_version = SCHEMA_VERSION;
+                c
+            }
+            // Версия из будущего или битый файл → пустой кэш.
             _ => Self::default(),
         }
     }
@@ -63,10 +81,14 @@ impl NetCache {
         let path = paths.netcache_path();
         let json = serde_json::to_string_pretty(self).unwrap_or_default();
         let tmp = path.with_extension("json.tmp");
-        let write = std::fs::write(&tmp, &json).and_then(|_| std::fs::rename(&tmp, &path));
-        if write.is_err() {
+        // Атомарно: пишем во временный и переименовываем. При неудаче НЕ пишем в
+        // целевой файл напрямую (это оставило бы обрезанный JSON при краше) —
+        // кэш некритичен, просто убираем tmp и попробуем при следующем save.
+        if std::fs::write(&tmp, &json)
+            .and_then(|_| std::fs::rename(&tmp, &path))
+            .is_err()
+        {
             let _ = std::fs::remove_file(&tmp);
-            let _ = std::fs::write(&path, &json);
         }
     }
 
@@ -88,16 +110,27 @@ impl NetCache {
 
     /// Записывает подтверждённо-рабочий `.conf`. Тот же conf → инкремент счётчика;
     /// смена conf → счётчик с 1. `now` — время подтверждения (unix-секунды).
-    pub fn put(&mut self, mac: &str, asn_region: Option<&str>, category: &str, conf: &str, now: u64) {
+    pub fn put(
+        &mut self,
+        mac: &str,
+        asn_region: Option<&str>,
+        category: &str,
+        conf: &str,
+        now: u64,
+    ) {
         let net = self.networks.entry(mac.to_string()).or_default();
         if asn_region.is_some() {
             net.asn_region = asn_region.map(|s| s.to_string());
         }
-        let entry = net.categories.entry(category.to_string()).or_insert(CatEntry {
-            conf: conf.to_string(),
-            confirmed_at: now,
-            success_count: 0,
-        });
+        let entry = net
+            .categories
+            .entry(category.to_string())
+            .or_insert(CatEntry {
+                conf: conf.to_string(),
+                confirmed_at: now,
+                success_count: 0,
+                engine: default_engine(),
+            });
         if entry.conf != conf {
             entry.conf = conf.to_string();
             entry.success_count = 0;
@@ -141,6 +174,39 @@ mod tests {
         let bad = r#"{"schema_version":99,"networks":{}}"#;
         let parsed: NetCache = serde_json::from_str(bad).unwrap();
         assert_ne!(parsed.schema_version, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn migrates_v1_entry_without_engine_to_legacy() {
+        // Старый файл schema v1: у CatEntry НЕТ поля engine — должен читаться и
+        // получить engine="legacy" (миграция вперёд, данные НЕ теряются).
+        let v1 = r#"{
+            "schema_version": 1,
+            "networks": {
+                "aa:bb": {
+                    "asn_region": "AS1_RU",
+                    "categories": {
+                        "yt": {"conf": "yt_3.conf", "confirmed_at": 100, "success_count": 5}
+                    }
+                }
+            }
+        }"#;
+        let c: NetCache = serde_json::from_str(v1).unwrap();
+        // Данные сохранились.
+        assert_eq!(c.get("aa:bb", "yt").as_deref(), Some("yt_3.conf"));
+        let entry = c.networks["aa:bb"].categories["yt"].clone();
+        assert_eq!(entry.success_count, 5);
+        // Отсутствующее поле engine → legacy.
+        assert_eq!(entry.engine, "legacy");
+    }
+
+    #[test]
+    fn future_schema_version_resets_but_old_preserved() {
+        // Версия из будущего структурно неизвестна — но парс сам по себе валиден;
+        // именно load() (не парс) решает сбросить. Проверяем инвариант версии.
+        let future = r#"{"schema_version":5,"networks":{}}"#;
+        let parsed: NetCache = serde_json::from_str(future).unwrap();
+        assert!(parsed.schema_version > SCHEMA_VERSION);
     }
 
     #[test]
