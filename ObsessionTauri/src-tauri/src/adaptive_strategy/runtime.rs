@@ -996,173 +996,165 @@ async fn prepare_search_data(
     };
 
     let paths = app.state::<AppState>().paths.clone();
-    let net_task = {
-        let paths = paths.clone();
-        async_runtime::spawn(async move { crate::netid::resolve(&paths).await })
+    let net_future = async {
+        Ok::<_, PreparationFailure>(cached_or_resolve_network_identity(app, &paths).await)
     };
-    let tuning = search_tuning(app);
-    let dns_cache = SessionDnsCache::new();
-    let targets = if transport == StrategyTransport::Quic {
-        let targets =
-            probe::discover_quic_targets_with_cache(category, tuning.probe_timeout, &dns_cache)
-                .await;
-        if targets.is_empty() {
-            crate::util::emit_log(
-                app,
-                "warn",
-                "adaptive",
-                &format!(
-                    "quic_targets_unavailable: category={} endpoints не объявили HTTP/3",
-                    category.as_key()
-                ),
-            );
-            return Err(PreparationFailure::QuicTargetsUnavailable);
-        }
-        let _ = control_tx
-            .send(RuntimeEvent::PreparationDiscoveryFinished { session_id })
-            .await;
-        targets
-    } else {
-        probe::targets_for(category, transport)
-    };
-
-    let baseline_ids = generator::builtin_baseline_candidates(category)
-        .iter()
-        .map(compiler::effective_fingerprint)
-        .collect::<Vec<_>>()
-        .join(",");
-    crate::util::emit_log(
-        app,
-        "info",
-        "adaptive",
-        &format!(
-            "baseline calibration started: category={} transport={:?} fingerprints=[{}] targets=[{}]",
-            category.as_key(),
-            transport,
-            baseline_ids,
-            targets
-                .iter()
-                .map(|target| target.host)
-                .collect::<Vec<_>>()
-                .join(",")
-        ),
-    );
-
-    let _ = control_tx.try_send(RuntimeEvent::PreparationProgress {
-        session_id,
-        current_round: 0,
-        total_rounds: tuning.candidate_rounds,
-    });
-    evidence.begin(snapshot.generation);
-    let calibration = probe::run_probe_series_for_targets_with_progress_and_cache(
-        category,
-        transport,
-        &targets,
-        tuning.probe_timeout,
-        tuning.candidate_rounds,
-        tuning.required_successes,
-        tuning.probe_interval,
-        &dns_cache,
-        |batch| {
-            let _ = control_tx.try_send(RuntimeEvent::PreparationProgress {
-                session_id,
-                current_round: batch.round,
-                total_rounds: tuning.candidate_rounds,
-            });
-            let _ = app.emit("adaptive://probe", batch);
-        },
-    )
-    .await;
-    let eyes = evidence.snapshot();
-    let mut probe_targets = targets;
-    let mut calibration_result = calibration.evaluate(&eyes);
-    log_probe_series(
-        app,
-        "baseline_calibration",
-        &calibration,
-        &calibration_result,
-    );
-
-    if category == AdaptiveCategory::Discord
-        && transport == StrategyTransport::Tls
-        && !calibration_result.is_success()
-    {
-        let stable_targets = calibration.stable_core_targets(&probe_targets, &eyes);
-        if !stable_targets.is_empty() && stable_targets.len() < probe_targets.len() {
-            let stable_hosts = stable_targets
-                .iter()
-                .map(|target| target.host)
-                .collect::<Vec<_>>();
-            let excluded_hosts = probe_targets
-                .iter()
-                .filter(|target| !stable_hosts.contains(&target.host))
-                .map(|target| target.host)
-                .collect::<Vec<_>>();
-            let restricted = calibration.restricted_to(&stable_targets);
-            let restricted_result = restricted.evaluate(&eyes);
-            if restricted_result.is_success() {
+    let probe_future = async {
+        let tuning = search_tuning(app);
+        let dns_cache = SessionDnsCache::new();
+        let targets = if transport == StrategyTransport::Quic {
+            let targets =
+                probe::discover_quic_targets_with_cache(category, tuning.probe_timeout, &dns_cache)
+                    .await;
+            if targets.is_empty() {
                 crate::util::emit_log(
                     app,
                     "warn",
                     "adaptive",
                     &format!(
-                        "discord_probe_targets_quarantined: excluded=[{}] active=[{}]",
-                        excluded_hosts.join(","),
-                        stable_hosts.join(",")
+                        "quic_targets_unavailable: category={} endpoints не объявили HTTP/3",
+                        category.as_key()
                     ),
                 );
-                log_probe_series(
-                    app,
-                    "baseline_calibration_viable_targets",
-                    &restricted,
-                    &restricted_result,
-                );
-                probe_targets = stable_targets;
-                calibration_result = restricted_result;
+                return Err(PreparationFailure::QuicTargetsUnavailable);
             }
-        }
-    }
+            let _ = control_tx
+                .send(RuntimeEvent::PreparationDiscoveryFinished { session_id })
+                .await;
+            targets
+        } else {
+            probe::targets_for(category, transport)
+        };
 
-    let mode = match classify_session_mode(transport, &calibration_result) {
-        Ok(SearchSessionMode::Recovery) => {
-            crate::util::emit_log(
-                app,
-                "warn",
-                "adaptive",
-                &format!(
-                    "baseline QUIC не работает ({}): recovery search разрешен",
-                    calibration_result.failure_stage.as_str()
-                ),
-            );
-            SearchSessionMode::Recovery
-        }
-        Ok(SearchSessionMode::Comparison) => SearchSessionMode::Comparison,
-        Err(error) => {
-            crate::util::emit_log(
-                app,
-                "error",
-                "adaptive",
-                &format!(
-                    "baseline calibration failed at {}: probe environment unreliable",
-                    calibration_result.failure_stage.as_str()
-                ),
-            );
-            return Err(error);
-        }
-    };
-
-    let net = net_task.await.map_err(|error| {
+        let baseline_ids = generator::builtin_baseline_candidates(category)
+            .iter()
+            .map(compiler::effective_fingerprint)
+            .collect::<Vec<_>>()
+            .join(",");
         crate::util::emit_log(
             app,
-            "error",
+            "info",
             "adaptive",
-            &format!("network identity task failed: {error}"),
+            &format!(
+                "baseline calibration started: category={} transport={:?} fingerprints=[{}] targets=[{}]",
+                category.as_key(),
+                transport,
+                baseline_ids,
+                targets
+                    .iter()
+                    .map(|target| target.host)
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ),
         );
-        PreparationFailure::ProbeUnreliable
-    })?;
-    if let Ok(mut slot) = app.state::<AppState>().netid.lock() {
-        *slot = Some(net.clone());
-    }
+
+        let _ = control_tx.try_send(RuntimeEvent::PreparationProgress {
+            session_id,
+            current_round: 0,
+            total_rounds: tuning.candidate_rounds,
+        });
+        evidence.begin(snapshot.generation);
+        let calibration = probe::run_probe_series_for_targets_with_progress_and_cache(
+            category,
+            transport,
+            &targets,
+            tuning.probe_timeout,
+            tuning.candidate_rounds,
+            tuning.required_successes,
+            tuning.probe_interval,
+            &dns_cache,
+            |batch| {
+                let _ = control_tx.try_send(RuntimeEvent::PreparationProgress {
+                    session_id,
+                    current_round: batch.round,
+                    total_rounds: tuning.candidate_rounds,
+                });
+                let _ = app.emit("adaptive://probe", batch);
+            },
+        )
+        .await;
+        let eyes = evidence.snapshot();
+        let mut probe_targets = targets;
+        let mut calibration_result = calibration.evaluate(&eyes);
+        log_probe_series(
+            app,
+            "baseline_calibration",
+            &calibration,
+            &calibration_result,
+        );
+
+        if category == AdaptiveCategory::Discord
+            && transport == StrategyTransport::Tls
+            && !calibration_result.is_success()
+        {
+            let stable_targets = calibration.stable_core_targets(&probe_targets, &eyes);
+            if !stable_targets.is_empty() && stable_targets.len() < probe_targets.len() {
+                let stable_hosts = stable_targets
+                    .iter()
+                    .map(|target| target.host)
+                    .collect::<Vec<_>>();
+                let excluded_hosts = probe_targets
+                    .iter()
+                    .filter(|target| !stable_hosts.contains(&target.host))
+                    .map(|target| target.host)
+                    .collect::<Vec<_>>();
+                let restricted = calibration.restricted_to(&stable_targets);
+                let restricted_result = restricted.evaluate(&eyes);
+                if restricted_result.is_success() {
+                    crate::util::emit_log(
+                        app,
+                        "warn",
+                        "adaptive",
+                        &format!(
+                            "discord_probe_targets_quarantined: excluded=[{}] active=[{}]",
+                            excluded_hosts.join(","),
+                            stable_hosts.join(",")
+                        ),
+                    );
+                    log_probe_series(
+                        app,
+                        "baseline_calibration_viable_targets",
+                        &restricted,
+                        &restricted_result,
+                    );
+                    probe_targets = stable_targets;
+                    calibration_result = restricted_result;
+                }
+            }
+        }
+
+        let mode = match classify_session_mode(transport, &calibration_result) {
+            Ok(SearchSessionMode::Recovery) => {
+                crate::util::emit_log(
+                    app,
+                    "warn",
+                    "adaptive",
+                    &format!(
+                        "baseline QUIC не работает ({}): recovery search разрешен",
+                        calibration_result.failure_stage.as_str()
+                    ),
+                );
+                SearchSessionMode::Recovery
+            }
+            Ok(SearchSessionMode::Comparison) => SearchSessionMode::Comparison,
+            Err(error) => {
+                crate::util::emit_log(
+                    app,
+                    "error",
+                    "adaptive",
+                    &format!(
+                        "baseline calibration failed at {}: probe environment unreliable",
+                        calibration_result.failure_stage.as_str()
+                    ),
+                );
+                return Err(error);
+            }
+        };
+
+        Ok::<_, PreparationFailure>((probe_targets, dns_cache, mode, tuning.candidate_budget))
+    };
+    let (net, (probe_targets, dns_cache, mode, candidate_budget)) =
+        tokio::try_join!(net_future, probe_future)?;
     let network_key = net.gateway_mac.filter(|value| value != "unknown");
     let cache = AdaptiveStrategyCache::load(&paths);
     let engine = engine_version();
@@ -1197,7 +1189,7 @@ async fn prepare_search_data(
         tried: &empty_tried,
     });
     candidates.retain(|candidate| candidate.transport == transport);
-    candidates.truncate(tuning.candidate_budget);
+    candidates.truncate(candidate_budget);
 
     Ok(PreparedSearch {
         snapshot,
