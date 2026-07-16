@@ -1,7 +1,7 @@
 # Adaptive Zapret2 Gaming + GitHub IP-set Design
 
 **Дата:** 2026-07-15
-**Статус:** утверждённое направление, готово к implementation plan
+**Статус:** реализовано; Windows live acceptance ожидает проверки владельцем
 
 ## 1. Контекст
 
@@ -219,10 +219,13 @@ implementation plan поиска; эта спецификация фиксиру
 
 ## 8. Проверка результата
 
-Control-plane probe set должен покрывать как минимум две независимые группы:
+Control-plane probe set зависит от проверяемого транспорта:
 
-- GitHub: `github.com` и `api.github.com`;
-- Gaming: стабильные HTTPS endpoints минимум двух платформ из bundled списка.
+- TLS core: `github.com` и `www.roblox.com`; `api.github.com` и
+  `www.epicgames.com` остаются optional diagnostics;
+- QUIC core: `www.roblox.com` и `www.epicgames.com`; GitHub endpoints остаются
+  optional, потому что GitHub не гарантирует HTTP/3 и не должен ложно отклонять
+  рабочую QUIC-стратегию.
 
 HTTP-код `4xx` сам по себе не является TLS failure, если соединение, TLS и
 ответ сервера получены. DNS/transport ошибки классифицируются существующим
@@ -232,7 +235,7 @@ evidence pipeline, а Eyes `ServerHello` учитывается только д�
 Candidate подтверждается только если:
 
 1. baseline текущей категории был измерен;
-2. прошли обязательные GitHub и Gaming core probes;
+2. прошли обязательные core probes выбранного транспорта;
 3. нет hard TLS/QUIC failure;
 4. candidate выдержал confirmation round выбранного search mode;
 5. session generation и PID Zapret2 не были изменены внешним действием.

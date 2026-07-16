@@ -101,9 +101,12 @@ git diff -- <явно перечисленные файлы>
   bare `--new` только между профилями.
 - [x] Task 4: реализован deterministic generator для YouTube/Discord с dedup,
   исключением current/tried, приоритетом network-confirmed и лимитом 12.
-- [ ] Task 5: отдельный Adaptive Strategy Cache.
-- [ ] Task 6: чистая Recovery State Machine.
-- [ ] Task 7: Probe Evaluator.
+- [x] Task 5: реализован отдельный Adaptive Strategy Cache с atomic write,
+  изоляцией по сети/category/engine/schema и блокировкой после повторных сбоев.
+- [x] Task 6: реализована чистая Recovery State Machine с session/attempt id,
+  ручным подтверждением и обязательным rollback на reject/timeout/cancel/crash.
+- [x] Task 7: реализован Probe Evaluator для YouTube/Discord с DNS, TCP, TLS,
+  HTTPS и разделением core/optional целей.
 - [ ] Task 8+: runtime, settings, frontend и live acceptance.
 
 Новые файлы:
@@ -112,14 +115,16 @@ git diff -- <явно перечисленные файлы>
 - `ObsessionTauri/src-tauri/src/adaptive_strategy/dsl.rs`;
 - `ObsessionTauri/src-tauri/src/adaptive_strategy/validator.rs`;
 - `ObsessionTauri/src-tauri/src/adaptive_strategy/compiler.rs`;
-- `ObsessionTauri/src-tauri/src/adaptive_strategy/generator.rs`.
+- `ObsessionTauri/src-tauri/src/adaptive_strategy/generator.rs`;
+- `ObsessionTauri/src-tauri/src/adaptive_strategy/cache.rs`;
+- `ObsessionTauri/src-tauri/src/adaptive_strategy/model.rs`;
+- `ObsessionTauri/src-tauri/src/adaptive_strategy/probe.rs`.
 
 Проверки checkpoint:
 
-- adaptive unit tests: `25 passed`;
-- полный Rust-набор: `184 passed, 0 failed`;
-- `cargo check`: успешно, warning-шум нового не подключённого runtime временно
-  подавлен локально в модуле до Task 8;
+- adaptive unit tests: `46 passed`;
+- полный Rust-набор: `205 passed, 0 failed`;
+- `cargo check`: успешно;
 - `cargo fmt -- --check`: успешно;
 - `git diff --check`: успешно.
 
