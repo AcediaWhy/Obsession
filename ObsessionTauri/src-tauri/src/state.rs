@@ -1,38 +1,130 @@
 //! Глобальное состояние приложения, управляемое Tauri (`app.state`).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::AtomicBool;
 use std::sync::Mutex;
 
 use crate::paths::Paths;
 use crate::settings::Settings;
 
+/// Точное описание реально запущенного DPI runtime. Оно не сериализуется и не
+/// заменяет settings: это in-memory snapshot для generation-safe rollback.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DpiLaunchSpec {
+    Legacy {
+        selections: Vec<(String, String)>,
+    },
+    Zapret2 {
+        selections: Vec<(String, String)>,
+        adaptive_overrides: BTreeMap<String, crate::adaptive_strategy::dsl::StrategyCandidate>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DpiRuntimeSnapshot {
+    pub generation: u64,
+    pub launch: Option<DpiLaunchSpec>,
+}
+
 /// Отслеживаемый DPI-процесс winws.
 pub struct DpiProc {
     pub pid: u32,
     pub category: String,
     pub config_file: String,
+    pub generation: u64,
+    pub engine: String,
 }
 
 #[derive(Default)]
 pub struct DpiState {
+    /// Любой start/stop инвалидирует callbacks старого поколения.
+    pub generation: u64,
     /// Активные (свои) процессы winws по PID.
     pub procs: HashMap<u32, DpiProc>,
     /// PID, которые останавливаем намеренно — чтобы монитор не считал это крахом.
     pub stopping: HashSet<u32>,
+    /// Последний реально запущенный Legacy-набор для аварийного возврата из Beta.
+    pub last_legacy_selection: Vec<(String, String)>,
+    /// Точный активный запуск текущего generation. `None` означает stopped или
+    /// промежуточное окно respawn.
+    pub active_launch: Option<DpiLaunchSpec>,
+}
+
+impl DpiState {
+    pub fn advance_generation(&mut self) -> u64 {
+        self.generation = self.generation.wrapping_add(1);
+        if self.generation == 0 {
+            self.generation = 1;
+        }
+        self.generation
+    }
+
+    pub fn is_current_generation(&self, generation: u64) -> bool {
+        generation != 0 && self.generation == generation
+    }
+
+    pub fn runtime_snapshot(&self) -> DpiRuntimeSnapshot {
+        DpiRuntimeSnapshot {
+            generation: self.generation,
+            launch: self.active_launch.clone(),
+        }
+    }
+
+    /// Отделяет неожиданно завершившийся Zapret2 только если PID и generation
+    /// всё ещё принадлежат текущему runtime. Intentional/stale exit → None.
+    pub fn detach_unexpected_zapret2(
+        &mut self,
+        pid: u32,
+        generation: u64,
+    ) -> Option<Vec<(String, String)>> {
+        let intentional = self.stopping.remove(&pid);
+        let owned = self
+            .procs
+            .get(&pid)
+            .is_some_and(|proc| proc.generation == generation && proc.engine == "zapret2");
+        if owned {
+            self.procs.remove(&pid);
+            self.active_launch = None;
+        }
+        if intentional || !owned || !self.is_current_generation(generation) {
+            return None;
+        }
+        Some(self.last_legacy_selection.clone())
+    }
+}
+
+pub struct ProxyForwarder {
+    pub generation: u64,
+    pub handle: tokio::task::JoinHandle<()>,
+}
+
+pub struct ProxyFirewall {
+    pub generation: u64,
+    pub name: String,
 }
 
 #[derive(Default)]
 pub struct ProxyState {
+    /// Монотонное поколение lifecycle. Любой start/stop инвалидирует callbacks
+    /// предыдущего поколения, чтобы старый monitor не очищал новый запуск.
+    pub generation: u64,
     pub pid: Option<u32>,
     pub link: String,
     pub lan_link: Option<String>,
-    pub stopping: bool,
-    pub forwarder: Option<tokio::task::JoinHandle<()>>,
+    pub forwarder: Option<ProxyForwarder>,
+    pub firewall: Option<ProxyFirewall>,
+    /// Активна ли LAN-публикация (0.0.0.0 forwarder + firewall). Снимается по
+    /// таймауту или вручную; локальный 127.0.0.1 прокси при этом продолжает жить.
+    pub lan_published: bool,
+    /// Unix-время (сек) авто-закрытия LAN-публикации; None = без авто-закрытия.
+    pub lan_expiry_unix: Option<u64>,
 }
 
 pub struct AppState {
     pub paths: Paths,
+    /// Выставляется до teardown. Все новые start/test операции после этого
+    /// отклоняются, пока background shutdown ждёт operation gates.
+    pub shutting_down: AtomicBool,
     pub dpi: Mutex<DpiState>,
     /// Сериализует DPI-операции (start_many/stop_all/test) между собой. Без него
     /// частые клики по «Старт» запускают параллельные start/stop, которые топчут
@@ -44,12 +136,17 @@ pub struct AppState {
     /// его между этапами и обрывается досрочно, освобождая обход.
     pub test_cancel: AtomicBool,
     pub proxy: Mutex<ProxyState>,
+    /// Сериализует proxy start/stop между UI, треем и shutdown.
+    pub proxy_gate: tokio::sync::Mutex<()>,
     pub settings: Mutex<Settings>,
     /// Активный наблюдатель трафика («Глаза»), пока запущен winws.
     #[cfg(windows)]
     pub eyes: Mutex<Option<crate::eyes::EyesHandle>>,
     /// Задача «Мозга» (L3), пока включено авто-восстановление.
     pub brain: Mutex<Option<crate::brain::runtime::BrainHandle>>,
+    /// Отдельный coordinator Safe Strategy DSL для Zapret2. Не разделяет
+    /// очереди или state machine с Legacy Brain.
+    pub adaptive: Mutex<Option<crate::adaptive_strategy::runtime::AdaptiveHandle>>,
     /// Последний снимок сетевой идентичности (Менеджер сети, L2).
     pub netid: Mutex<Option<crate::netid::NetIdentity>>,
 }
@@ -58,15 +155,96 @@ impl AppState {
     pub fn new(paths: Paths, settings: Settings) -> Self {
         Self {
             paths,
+            shutting_down: AtomicBool::new(false),
             dpi: Mutex::new(DpiState::default()),
             dpi_gate: tokio::sync::Mutex::new(()),
             test_cancel: AtomicBool::new(false),
             proxy: Mutex::new(ProxyState::default()),
+            proxy_gate: tokio::sync::Mutex::new(()),
             settings: Mutex::new(settings),
             #[cfg(windows)]
             eyes: Mutex::new(None),
             brain: Mutex::new(None),
+            adaptive: Mutex::new(None),
             netid: Mutex::new(None),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dpi_generation_never_uses_zero_after_wrap() {
+        let mut state = DpiState {
+            generation: u64::MAX,
+            ..DpiState::default()
+        };
+        assert_eq!(state.advance_generation(), 1);
+        assert!(state.is_current_generation(1));
+        assert!(!state.is_current_generation(u64::MAX));
+    }
+
+    #[test]
+    fn legacy_selection_survives_generation_changes() {
+        let mut state = DpiState::default();
+        state.last_legacy_selection = vec![("discord".into(), "discord_1.conf".into())];
+        state.advance_generation();
+        assert_eq!(state.last_legacy_selection[0].0, "discord");
+    }
+
+    #[test]
+    fn runtime_snapshot_preserves_exact_launch_spec() {
+        let mut state = DpiState::default();
+        let generation = state.advance_generation();
+        state.active_launch = Some(DpiLaunchSpec::Legacy {
+            selections: vec![("discord".into(), "discord_1.conf".into())],
+        });
+        let snapshot = state.runtime_snapshot();
+        assert_eq!(snapshot.generation, generation);
+        assert_eq!(snapshot.launch, state.active_launch);
+    }
+
+    #[test]
+    fn only_current_unexpected_zapret2_exit_gets_fallback() {
+        let mut state = DpiState::default();
+        let generation = state.advance_generation();
+        state.last_legacy_selection = vec![("discord".into(), "discord_1.conf".into())];
+        state.procs.insert(
+            10,
+            DpiProc {
+                pid: 10,
+                category: "zapret2".into(),
+                config_file: "beta".into(),
+                generation,
+                engine: "zapret2".into(),
+            },
+        );
+        assert_eq!(
+            state.detach_unexpected_zapret2(10, generation),
+            Some(vec![("discord".into(), "discord_1.conf".into())])
+        );
+
+        let next = state.advance_generation();
+        state.procs.insert(
+            11,
+            DpiProc {
+                pid: 11,
+                category: "zapret2".into(),
+                config_file: "beta".into(),
+                generation: next,
+                engine: "zapret2".into(),
+            },
+        );
+        assert_eq!(state.detach_unexpected_zapret2(11, generation), None);
+        assert!(
+            state.procs.contains_key(&11),
+            "stale monitor не трогает новый PID"
+        );
+
+        state.stopping.insert(11);
+        assert_eq!(state.detach_unexpected_zapret2(11, next), None);
+        assert!(!state.procs.contains_key(&11));
     }
 }

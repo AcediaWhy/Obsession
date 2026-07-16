@@ -30,13 +30,18 @@ pub struct BrainCfg {
     pub confirm_min_hellos: u32,
     /// Окно карантина тишины после респавна (Глаза мертвы ~800мс + окно без защиты).
     pub confirm_grace_ms: u64,
-    /// Сколько blackhole-вердиктов в окне взводят предохранитель (Глаза уже строги → 1).
+    /// Сколько blackhole-вердиктов (= отдельных заблэкхоленных потоков) в окне
+    /// взводят предохранитель. Требуем КОРРОБОРАЦИЮ: реальный дроп по направлению
+    /// бьёт много потоков подряд, а брошенный/спекулятивный сокет даёт ровно один.
+    /// Один blackhole больше НЕ морозит рабочий обход (частая причина ложных заморозок).
     pub blackhole_trip: u32,
     /// Минимальный интервал между респавнами — антипровокационный пейсинг L3.
     pub min_switch_interval_ms: u64,
     /// Период тика (для справки; тикер живёт в runtime).
     pub tick_ms: u64,
-    /// Лестница остывания Frozen: 5/10/15 мин. Индексируется `level` (клампится).
+    /// Лестница остывания Frozen: 1/3/5 мин. Первый шаг короткий, чтобы редкое
+    /// ложное/транзиентное срабатывание предохранителя было блипом на минуту, а не
+    /// многоминутным простоем. Индексируется `level` (клампится к последнему).
     pub backoff_schedule: Vec<u64>,
 }
 
@@ -47,10 +52,10 @@ impl Default for BrainCfg {
             switch_after_resets: 3,
             confirm_min_hellos: 2,
             confirm_grace_ms: 15_000,
-            blackhole_trip: 1,
+            blackhole_trip: 3,
             min_switch_interval_ms: 30_000,
             tick_ms: 500,
-            backoff_schedule: vec![300_000, 600_000, 900_000],
+            backoff_schedule: vec![60_000, 180_000, 300_000],
         }
     }
 }
@@ -59,7 +64,7 @@ impl BrainCfg {
     /// Длительность остывания для уровня эскалации (клампится к последнему элементу).
     fn backoff(&self, level: u8) -> u64 {
         if self.backoff_schedule.is_empty() {
-            return 300_000;
+            return 60_000;
         }
         let idx = (level as usize).min(self.backoff_schedule.len() - 1);
         self.backoff_schedule[idx]
@@ -151,7 +156,9 @@ impl CatState {
 
     /// Первый ещё не пробованный кандидат.
     fn next_candidate(&self) -> Option<&Candidate> {
-        self.candidates.iter().find(|c| !self.tried.contains(&c.conf))
+        self.candidates
+            .iter()
+            .find(|c| !self.tried.contains(&c.conf))
     }
 
     /// Источник активного конфига (для статуса). По умолчанию L1.
@@ -282,9 +289,11 @@ impl Brain {
                 net,
                 now,
             } => self.on_session_start(selections, candidates, domain_to_cat, net, now),
-            BrainEvent::Observation { domain, verdict, ts } => {
-                self.on_observation(&domain, verdict, ts)
-            }
+            BrainEvent::Observation {
+                domain,
+                verdict,
+                ts,
+            } => self.on_observation(&domain, verdict, ts),
             BrainEvent::RespawnResult { ok, now } => self.on_respawn_result(ok, now),
             BrainEvent::ProbeResult {
                 category,
@@ -502,7 +511,11 @@ impl Brain {
                 .order
                 .iter()
                 .any(|c| self.window.resets_for(|d| self.domain_in_cat(d, c)) > 0);
-            let new_phase = if any_reset { Phase::Suspect } else { Phase::Healthy };
+            let new_phase = if any_reset {
+                Phase::Suspect
+            } else {
+                Phase::Healthy
+            };
             if new_phase != self.phase {
                 self.phase = new_phase;
                 return vec![Action::EmitStatus(self.status())];
@@ -721,6 +734,18 @@ mod tests {
         assert_eq!(*brain.phase(), Phase::Healthy);
     }
 
+    /// Взводит предохранитель: шлёт `blackhole_trip` blackhole-наблюдений подряд
+    /// (эмулируя несколько заблэкхоленных потоков). Возвращает действия последнего
+    /// шага — StopBypass возникает ровно на достижении порога корроборации.
+    fn trip_blackhole(brain: &mut Brain, base: u64) -> Vec<Action> {
+        let n = BrainCfg::default().blackhole_trip;
+        let mut out = Vec::new();
+        for i in 0..n {
+            out = brain.step(obs("youtube.com", Verdict::Blackhole, base + i as u64));
+        }
+        out
+    }
+
     #[test]
     fn session_start_enters_confirming() {
         let mut b = Brain::new(BrainCfg::default());
@@ -745,11 +770,17 @@ mod tests {
         let mut candidates = HashMap::new();
         candidates.insert(
             "youtube".to_string(),
-            vec![cand("yt_l1.conf", Source::L1), cand("yt_l2.conf", Source::L2)],
+            vec![
+                cand("yt_l1.conf", Source::L1),
+                cand("yt_l2.conf", Source::L2),
+            ],
         );
         candidates.insert(
             "discord".to_string(),
-            vec![cand("dc_l1.conf", Source::L1), cand("dc_l2.conf", Source::L2)],
+            vec![
+                cand("dc_l1.conf", Source::L1),
+                cand("dc_l2.conf", Source::L2),
+            ],
         );
         let mut d2c = HashMap::new();
         d2c.insert("youtube.com".to_string(), "youtube".to_string());
@@ -825,7 +856,9 @@ mod tests {
         assert_eq!(switches(&out), 1);
         assert_eq!(*b.phase(), Phase::Switching);
         // Switch несёт следующего кандидата L2.
-        if let Some(Action::Switch { selections }) = out.iter().find(|a| matches!(a, Action::Switch{..})) {
+        if let Some(Action::Switch { selections }) =
+            out.iter().find(|a| matches!(a, Action::Switch { .. }))
+        {
             assert_eq!(selections[0].1, "yt_l2.conf");
         } else {
             panic!("нет Switch");
@@ -837,7 +870,7 @@ mod tests {
         let mut b = Brain::new(BrainCfg::default());
         start_yt(&mut b, 0);
         confirm_healthy(&mut b, 100);
-        let out = b.step(obs("youtube.com", Verdict::Blackhole, 40_000));
+        let out = trip_blackhole(&mut b, 40_000);
         assert!(out.iter().any(|a| matches!(a, Action::StopBypass)));
         assert!(matches!(b.phase(), Phase::Frozen { .. }));
     }
@@ -847,9 +880,9 @@ mod tests {
         let mut b = Brain::new(BrainCfg::default());
         start_yt(&mut b, 0);
         confirm_healthy(&mut b, 100);
-        // В процессе накопления Reset прилетает Blackhole → предохранитель важнее.
+        // В процессе накопления Reset прилетает серия Blackhole → предохранитель важнее.
         b.step(obs("youtube.com", Verdict::Reset, 40_000));
-        let out = b.step(obs("youtube.com", Verdict::Blackhole, 40_100));
+        let out = trip_blackhole(&mut b, 40_100);
         assert!(out.iter().any(|a| matches!(a, Action::StopBypass)));
         assert!(matches!(b.phase(), Phase::Frozen { .. }));
     }
@@ -859,7 +892,7 @@ mod tests {
         let mut b = Brain::new(BrainCfg::default());
         start_yt(&mut b, 0);
         confirm_healthy(&mut b, 100);
-        b.step(obs("youtube.com", Verdict::Blackhole, 40_000));
+        trip_blackhole(&mut b, 40_000);
         let Phase::Frozen { until, .. } = *b.phase() else {
             panic!("не Frozen");
         };
@@ -869,7 +902,9 @@ mod tests {
         // В until — ровно одна проба.
         let at = b.step(BrainEvent::Tick(until));
         assert_eq!(
-            at.iter().filter(|a| matches!(a, Action::Probe { .. })).count(),
+            at.iter()
+                .filter(|a| matches!(a, Action::Probe { .. }))
+                .count(),
             1
         );
     }
@@ -879,8 +914,12 @@ mod tests {
         let mut b = Brain::new(BrainCfg::default());
         start_yt(&mut b, 0);
         confirm_healthy(&mut b, 100);
-        b.step(obs("youtube.com", Verdict::Blackhole, 40_000));
-        let Phase::Frozen { until: u0, level: l0 } = *b.phase() else {
+        trip_blackhole(&mut b, 40_000);
+        let Phase::Frozen {
+            until: u0,
+            level: l0,
+        } = *b.phase()
+        else {
             panic!();
         };
         assert_eq!(l0, 0);
@@ -904,7 +943,7 @@ mod tests {
         let mut b = Brain::new(BrainCfg::default());
         start_yt(&mut b, 0);
         confirm_healthy(&mut b, 100);
-        b.step(obs("youtube.com", Verdict::Blackhole, 40_000));
+        trip_blackhole(&mut b, 40_000);
         let Phase::Frozen { until, .. } = *b.phase() else {
             panic!();
         };
@@ -933,7 +972,10 @@ mod tests {
             let out = b.step(obs("youtube.com", Verdict::Reset, t + 20));
             // Симулируем успешный респавн, чтобы вернуться в Confirming→(reset снова).
             if switches(&out) == 1 {
-                b.step(BrainEvent::RespawnResult { ok: true, now: t + 30 });
+                b.step(BrainEvent::RespawnResult {
+                    ok: true,
+                    now: t + 30,
+                });
                 // Не добираем hellos, форсим дедлайн — но проще снова слать resets.
             }
             t += cfg.min_switch_interval_ms + 1_000;
@@ -957,7 +999,10 @@ mod tests {
         b.step(obs("youtube.com", Verdict::Reset, base + 10));
         let out = b.step(obs("youtube.com", Verdict::Reset, base + 20));
         assert_eq!(switches(&out), 1);
-        b.step(BrainEvent::RespawnResult { ok: true, now: base + 30 });
+        b.step(BrainEvent::RespawnResult {
+            ok: true,
+            now: base + 30,
+        });
         // Сразу снова resets — но интервал не прошёл → Suspect, без Switch.
         b.step(obs("youtube.com", Verdict::Reset, base + 40));
         b.step(obs("youtube.com", Verdict::Reset, base + 50));

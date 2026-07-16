@@ -15,7 +15,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::net::IpAddr;
 
 use crate::eyes::fake_filter::{is_winws_fake, FakeContext};
-use crate::eyes::parse::{extract_sni, classify_record, ParsedPacket, TlsHandshake, TlsRecord};
+use crate::eyes::parse::{classify_record, extract_sni, ParsedPacket, TlsHandshake, TlsRecord};
 use crate::eyes::signal::{Observation, Verdict};
 
 /// Пороги и таймауты автомата. Все времена — в мс логического времени.
@@ -45,10 +45,16 @@ impl Default for Config {
             hostlist: Vec::new(),
             max_flows: 4096,
             syn_synack_timeout_ms: 3000,
-            armed_silence_timeout_ms: 5000,
+            // Медленная мобильная/загруженная сеть может отдать первый ServerHello
+            // не мгновенно — даём запас, чтобы «медленно, но работает» не читалось
+            // как blackhole. Ложные заморозки дороже небольшой задержки детекта.
+            armed_silence_timeout_ms: 8000,
             done_linger_ms: 2000,
-            min_syn_retx: 2,
-            min_ch_retx: 1,
+            // Ретрансмиты — главная улика «сервер молчит». Один ретрансмит бывает и
+            // на здоровом, но потерянном на линке пакете, поэтому требуем ≥3 (SYN)
+            // и ≥2 (ClientHello): это отсекает единичные сетевые потери.
+            min_syn_retx: 3,
+            min_ch_retx: 2,
             ip_cache_cap: 1024,
         }
     }
@@ -242,6 +248,22 @@ impl FlowTable {
                 f.fake_ctx.note_syn(pkt.ttl, pkt.seq);
             }
             f.last_seen_ms = now;
+            return None;
+        }
+
+        // Исходящий RST/FIN — соединение закрывает САМ клиент. Это не может быть
+        // признаком сетевой блокировки: браузеры штатно бросают спекулятивные TCP
+        // (happy-eyeballs / preconnect / выигрыш QUIC-vs-TCP), отправив FIN/RST.
+        // Снимаем поток без вердикта, иначе тик «дозреет» до ложного blackhole
+        // (`silence+retransmit` / `syn_no_synack`) по потоку, который мы же и
+        // закрыли. Реальный blackhole персистентен: даст молчащие ОТКРЫТЫЕ потоки
+        // (клиент ещё не сдался) либо новые Armed-потоки — их предохранитель поймает.
+        if flags.rst || flags.fin {
+            if let Some(f) = self.flows.get(&pkt.key) {
+                if !f.emitted {
+                    self.flows.remove(&pkt.key);
+                }
+            }
             return None;
         }
 
@@ -564,6 +586,39 @@ mod tests {
         }
     }
 
+    fn out_fin() -> ParsedPacket {
+        ParsedPacket {
+            outbound: true,
+            key: key(),
+            ttl: 128,
+            seq: 2000,
+            flags: TcpFlags {
+                fin: true,
+                ack: true,
+                ..Default::default()
+            },
+            payload: vec![],
+        }
+    }
+
+    fn out_rst(port: u16) -> ParsedPacket {
+        ParsedPacket {
+            outbound: true,
+            key: FlowKey {
+                local_port: port,
+                remote_ip: IP,
+                remote_port: 443,
+            },
+            ttl: 128,
+            seq: 2000,
+            flags: TcpFlags {
+                rst: true,
+                ..Default::default()
+            },
+            payload: vec![],
+        }
+    }
+
     // Помощник из parse::tests недоступен здесь — соберём CH локально через parse-хелпер.
     fn client_hello(sni: &str) -> Vec<u8> {
         // Переиспользуем ту же раскладку, что и в parse::tests.
@@ -710,6 +765,7 @@ mod tests {
         t.on_packet(&mk_syn(2000, 51001), 1000);
         t.on_packet(&mk_syn(2000, 51001), 2000); // retx 1
         t.on_packet(&mk_syn(2000, 51001), 3000); // retx 2
+        t.on_packet(&mk_syn(2000, 51001), 4000); // retx 3 → syn_retx=3 (порог)
         let verdicts = t.on_tick(5000);
         assert_eq!(verdicts.len(), 1);
         assert_eq!(verdicts[0].verdict, Verdict::Blackhole);
@@ -722,12 +778,69 @@ mod tests {
         let mut t = FlowTable::new(cfg());
         t.on_packet(&syn(1000), 0);
         t.on_packet(&out_data(1001, client_hello("www.youtube.com")), 20);
-        // Ретрансмит того же CH (тот же seq) — признак, что ответа нет.
+        // Два ретрансмита того же CH (тот же seq) — сервер молчит (min_ch_retx=2).
         t.on_packet(&out_data(1001, client_hello("www.youtube.com")), 1020);
-        let verdicts = t.on_tick(6000);
+        t.on_packet(&out_data(1001, client_hello("www.youtube.com")), 2020);
+        let verdicts = t.on_tick(9000);
         assert_eq!(verdicts.len(), 1);
         assert_eq!(verdicts[0].verdict, Verdict::Blackhole);
         assert_eq!(verdicts[0].evidence, "silence+retransmit");
+    }
+
+    #[test]
+    fn outbound_fin_cancels_armed_flow_no_blackhole() {
+        // Клиент САМ закрыл Armed-поток (бросил спекулятивный сокет / выиграл
+        // QUIC). Завязка как в armed_silence (CH + 2 ретрансмита, порог достигнут),
+        // но с исходящим FIN — ложного silence+retransmit blackhole быть не должно.
+        let mut t = FlowTable::new(cfg());
+        t.on_packet(&syn(1000), 0);
+        t.on_packet(&out_data(1001, client_hello("www.youtube.com")), 20);
+        t.on_packet(&out_data(1001, client_hello("www.youtube.com")), 1020); // ch_retx=1
+        t.on_packet(&out_data(1001, client_hello("www.youtube.com")), 2020); // ch_retx=2 (порог)
+        assert!(t.on_packet(&out_fin(), 2100).is_none());
+        assert_eq!(t.len(), 0, "Armed-поток снят при клиентском FIN");
+        let verdicts = t.on_tick(9000);
+        assert!(
+            verdicts.is_empty(),
+            "нет blackhole по потоку, который закрыл сам клиент"
+        );
+    }
+
+    #[test]
+    fn outbound_rst_cancels_handshake_no_syn_blackhole() {
+        // SYN + ретрансмиты к УЧЁНОМУ IP (порог syn_no_synack достигнут), но клиент
+        // сам шлёт RST (happy-eyeballs бросает проигравший сокет) → нет blackhole.
+        let mut t = FlowTable::new(cfg());
+        // Учим IP→domain первым рабочим соединением (порт 51000).
+        t.on_packet(&syn(1000), 0);
+        t.on_packet(&out_data(1001, client_hello("www.youtube.com")), 20);
+        t.on_packet(&in_data(server_hello()), 40);
+        // Второе соединение (порт 51001): SYN + 3 ретрансмита, затем клиентский RST.
+        let mk_syn = |seq, port| ParsedPacket {
+            outbound: true,
+            key: FlowKey {
+                local_port: port,
+                remote_ip: IP,
+                remote_port: 443,
+            },
+            ttl: 128,
+            seq,
+            flags: TcpFlags {
+                syn: true,
+                ..Default::default()
+            },
+            payload: vec![],
+        };
+        t.on_packet(&mk_syn(2000, 51001), 1000);
+        t.on_packet(&mk_syn(2000, 51001), 2000); // retx1
+        t.on_packet(&mk_syn(2000, 51001), 3000); // retx2
+        t.on_packet(&mk_syn(2000, 51001), 4000); // retx3 → syn_retx=3 (порог)
+        t.on_packet(&out_rst(51001), 4100); // клиент закрывает соединение
+        let verdicts = t.on_tick(6000);
+        assert!(
+            verdicts.is_empty(),
+            "клиентский RST снимает handshake — нет syn_no_synack blackhole"
+        );
     }
 
     #[test]

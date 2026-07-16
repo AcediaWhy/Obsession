@@ -184,7 +184,10 @@ fn scenario_clean_working() {
             Ev::Pkt(p_in(40001, sh()), 45),
         ],
     );
-    assert_eq!(out, vec![("www.youtube.com".into(), Verdict::Working, "server_hello")]);
+    assert_eq!(
+        out,
+        vec![("www.youtube.com".into(), Verdict::Working, "server_hello")]
+    );
 }
 
 #[test]
@@ -198,7 +201,10 @@ fn scenario_dpi_reset() {
             Ev::Pkt(p_in_rst(40002), 33),
         ],
     );
-    assert_eq!(out, vec![("discord.com".into(), Verdict::Reset, "inbound_rst")]);
+    assert_eq!(
+        out,
+        vec![("discord.com".into(), Verdict::Reset, "inbound_rst")]
+    );
 }
 
 #[test]
@@ -209,14 +215,19 @@ fn scenario_armed_blackhole_silence() {
             Ev::Pkt(p_syn(40003, 128, 1000), 0),
             Ev::Pkt(p_synack(40003), 12),
             Ev::Pkt(p_out(40003, 128, 1001, ch("www.youtube.com")), 20),
-            // ретрансмит CH — ответа нет
+            // два ретрансмита CH — ответа нет (min_ch_retx=2)
             Ev::Pkt(p_out(40003, 128, 1001, ch("www.youtube.com")), 1020),
-            Ev::Tick(7000),
+            Ev::Pkt(p_out(40003, 128, 1001, ch("www.youtube.com")), 2020),
+            Ev::Tick(9000),
         ],
     );
     assert_eq!(
         out,
-        vec![("www.youtube.com".into(), Verdict::Blackhole, "silence+retransmit")]
+        vec![(
+            "www.youtube.com".into(),
+            Verdict::Blackhole,
+            "silence+retransmit"
+        )]
     );
 }
 
@@ -239,7 +250,10 @@ fn scenario_split_and_fake_mixed() {
             Ev::Pkt(p_in(40004, sh()), 40),
         ],
     );
-    assert_eq!(out, vec![("www.youtube.com".into(), Verdict::Working, "server_hello")]);
+    assert_eq!(
+        out,
+        vec![("www.youtube.com".into(), Verdict::Working, "server_hello")]
+    );
 }
 
 #[test]

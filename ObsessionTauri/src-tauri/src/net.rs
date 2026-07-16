@@ -1,47 +1,35 @@
 //! Проверка сетевой доступности (для авто-подбора DPI-конфигов).
-//! Порт из `network_tester.dart`.
+//! Положительный результат требует реального TLS/SNI + HTTP response headers.
 
 use std::time::Duration;
 
-use tokio::net::TcpStream;
-use tokio::time::timeout;
-
-/// Проверяет доступность хоста из URL.
-/// Сначала быстрый TCP-connect на :443, затем fallback на HTTP GET.
-/// Любой полученный ответ считается признаком работающего соединения.
+/// Проверяет доступность URL через HTTPS. Любой HTTP status (включая 403/429)
+/// считается успехом, но один лишь TCP-connect больше не даёт false positive.
 pub async fn test_url(url: &str, timeout_secs: u64) -> bool {
-    let dur = Duration::from_secs(timeout_secs);
-
-    let host = match extract_host(url) {
-        Some(h) => h,
-        None => return false,
-    };
-
-    // 1. TCP-connect на :443 — работает даже если сервер отдаёт 403/429/капчу.
-    if let Ok(Ok(stream)) = timeout(dur, TcpStream::connect((host.as_str(), 443))).await {
-        drop(stream);
-        return true;
-    }
-
-    // 2. Fallback: HTTP GET. Сертификаты валидируются штатно.
-    let client = match reqwest::Client::builder().timeout(dur).build() {
-        Ok(c) => c,
+    let client = match reqwest::Client::builder()
+        .timeout(Duration::from_secs(timeout_secs))
+        .build()
+    {
+        Ok(client) => client,
         Err(_) => return false,
     };
     client.get(url).send().await.is_ok()
 }
 
-fn extract_host(url: &str) -> Option<String> {
-    let without_scheme = url.split("://").nth(1).unwrap_or(url);
-    let host = without_scheme
-        .split('/')
-        .next()?
-        .split(':')
-        .next()?
-        .to_string();
-    if host.is_empty() {
-        None
-    } else {
-        Some(host)
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn plain_tcp_listener_is_not_a_successful_https_probe() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let peer = tokio::spawn(async move {
+            let (_socket, _) = listener.accept().await.unwrap();
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        });
+
+        assert!(!test_url(&format!("https://{addr}/"), 1).await);
+        let _ = peer.await;
     }
 }

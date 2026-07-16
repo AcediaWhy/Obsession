@@ -22,7 +22,8 @@
         "transparent": false,
         "center": true,
         "backgroundColor": "#0A0B10",
-        "visible": false
+        "visible": false,
+        "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --renderer-process-limit=1"
       }
     ],
     "security": {
@@ -43,7 +44,9 @@
       "resources/configs": "configs",
       "resources/lists": "lists",
       "resources/icons": "icons",
-      "resources/ranking.json": "ranking.json"
+      "resources/strategy-packs": "strategy-packs",
+      "resources/ranking.json": "ranking.json",
+      "resources/manifest.json": "manifest.json"
     },
     "windows": {
       "nsis": {

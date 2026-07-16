@@ -1,14 +1,20 @@
 //! Obsession — DPI bypass launcher (Tauri backend).
 
+mod adaptive_strategy;
 mod admin;
+mod ai_probe;
 mod autostart;
 mod brain;
 mod commands;
 mod diag;
 mod dpi;
+mod dpi_engine;
 mod eyes;
 mod hosts;
+mod hosts_snapshot;
+mod hosts_validate;
 mod lists;
+mod lists_validate;
 mod net;
 mod netcache;
 mod netid;
@@ -28,6 +34,11 @@ use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, Tray
 use tauri::{Emitter, Listener, Manager, WindowEvent, Wry};
 
 use state::AppState;
+use util::LockExt;
+
+/// Идёт ли уже завершение приложения. Гейтит `begin_exit`, чтобы крестик/трей и
+/// последующий `RunEvent::ExitRequested` не запустили teardown дважды.
+static SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
 
 /// Пункты-галочки трея, отражающие состояние DPI/прокси. Храним, чтобы
 /// синхронизировать их из слушателей событий статуса.
@@ -128,6 +139,12 @@ pub fn run() {
             let hotkey_toggle = settings.hotkey_toggle.clone();
             app.manage(AppState::new(paths, settings));
 
+            // Adaptive Zapret2 coordinator изолирован от Legacy Brain и всегда
+            // готов принять passive observations/явную команду поиска. До
+            // нажатия пользователя он не меняет DPI runtime.
+            let adaptive = adaptive_strategy::runtime::start(handle.clone());
+            *handle.state::<AppState>().adaptive.lock_recover() = Some(adaptive);
+
             // Подчищаем зависшие winws от предыдущего жёсткого выхода (иначе новый
             // инстанс падает «A copy of winws is already running»).
             #[cfg(windows)]
@@ -142,7 +159,7 @@ pub fn run() {
             // (сессия откроется при следующем dpi_start).
             if auto_recovery {
                 let bh = brain::runtime::start(handle.clone());
-                *handle.state::<AppState>().brain.lock().unwrap() = Some(bh);
+                *handle.state::<AppState>().brain.lock_recover() = Some(bh);
             }
 
             build_tray(app)?;
@@ -155,7 +172,12 @@ pub fn run() {
             if !hotkey_toggle.trim().is_empty() {
                 use tauri_plugin_global_shortcut::GlobalShortcutExt;
                 if let Err(e) = handle.global_shortcut().register(hotkey_toggle.as_str()) {
-                    util::emit_log(&handle, "warn", "Хоткей", &format!("Не удалось включить «{hotkey_toggle}»: {e}"));
+                    util::emit_log(
+                        &handle,
+                        "warn",
+                        "Хоткей",
+                        &format!("Не удалось включить «{hotkey_toggle}»: {e}"),
+                    );
                 }
             }
 
@@ -203,6 +225,11 @@ pub fn run() {
                     let mut trim_after: u32 = 0;
                     loop {
                         std::thread::sleep(std::time::Duration::from_millis(300));
+                        // При выходе прекращаем поллинг: иначе поток вечно дёргает
+                        // webmem/emit на умирающем AppHandle. Штатно завершаемся.
+                        if h.state::<AppState>().shutting_down.load(Ordering::SeqCst) {
+                            break;
+                        }
                         let Some(win) = h.get_webview_window("main") else {
                             continue;
                         };
@@ -271,13 +298,14 @@ pub fn run() {
                     let _ = window.hide();
                     let _ = app.emit("window-visibility", false);
                 } else {
-                    // Полное закрытие (не сворачивание): гасим Глаза/Мозг/процессы
-                    // и явно выходим. Раньше здесь был только shutdown() без exit —
-                    // процесс жил дальше за счёт трей-иконки, и она «зависала»
-                    // призраком в трее (особенно у второго инстанса). app.exit(0)
-                    // корректно уносит процесс и его иконку.
-                    shutdown(&app);
-                    app.exit(0);
+                    // Полное закрытие (не сворачивание). КРИТИЧНО: teardown
+                    // (taskkill + join «Глаз») НЕ делаем прямо здесь — этот
+                    // обработчик крутится на главном потоке событийного цикла, и
+                    // блокирующая работа в нём вешает teardown WebView2/окна на
+                    // Windows (окно «зависало намертво», пока запущен обход).
+                    // Предотвращаем закрытие и уводим весь выход в фоновый поток.
+                    api.prevent_close();
+                    begin_exit(&app);
                 }
             }
         })
@@ -290,6 +318,9 @@ pub fn run() {
             commands::dpi_start,
             commands::dpi_stop,
             commands::dpi_test,
+            commands::dpi_engine_list,
+            commands::dpi_zapret2_profiles,
+            commands::dpi_engine_set,
             commands::dpi_test_cancel,
             commands::dpi_detect_orphaned,
             commands::dpi_emergency_kill,
@@ -299,12 +330,16 @@ pub fn run() {
             commands::proxy_available,
             commands::proxy_start,
             commands::proxy_stop,
+            commands::proxy_close_lan,
             commands::proxy_link,
             commands::open_external_url,
             commands::hosts_status,
             commands::hosts_install,
             commands::hosts_uninstall,
+            commands::hosts_restore,
+            commands::runtime_get_snapshot,
             commands::get_settings,
+            commands::update_settings,
             commands::save_settings,
             commands::set_hotkey,
             commands::lists_all,
@@ -317,67 +352,100 @@ pub fn run() {
             commands::delete_profile,
             commands::brain_set_enabled,
             commands::brain_get_status,
+            commands::adaptive_get_status,
+            commands::adaptive_start_search,
+            commands::adaptive_get_recommendation,
+            commands::adaptive_apply_recommendation,
+            commands::adaptive_cancel_search,
+            commands::adaptive_confirm_candidate,
+            commands::adaptive_reject_candidate,
+            commands::adaptive_reset_saved,
         ])
         .build(tauri::generate_context!())
         .expect("ошибка запуска Obsession")
         .run(|app_handle, event| {
-            if let tauri::RunEvent::ExitRequested { .. } = event {
-                shutdown(app_handle);
+            if let tauri::RunEvent::ExitRequested { api, .. } = event {
+                // Внешний exit сначала переводим в наш gate-aware teardown. Когда
+                // `begin_exit` позднее вызовет app.exit(0), флаг уже выставлен и
+                // второй ExitRequested свободно завершит event loop.
+                if !SHUTTING_DOWN.load(Ordering::SeqCst) {
+                    api.prevent_exit();
+                    begin_exit(app_handle);
+                }
             }
         });
 }
 
-/// Единый координатор завершения: гасит «Глаза», «Мозг» и все дочерние процессы
-/// (winws + прокси). Идемпотентен — безопасен при повторном вызове.
-fn shutdown(app: &tauri::AppHandle) {
-    // КРИТИЧНО перед выходом: гасим «Глаза» (WinDivert sniff). Их поток захвата
-    // залипает в БЛОКИРУЮЩЕМ `WinDivertRecv` — это kernel IOCTL к драйверу.
-    // Пока recv не разбужен через `WinDivertShutdown`, `ExitProcess` не может
-    // завершить поток, застрявший внутри драйвера, и процесс «зависает», пока
-    // Windows не прибьёт его принудительно. Ровно поэтому выход из трея висел
-    // ТОЛЬКО когда DPI (а с ним «Глаза») запущен. `stop()` будит recv и джойнит
-    // потоки — быстро и детерминированно.
-    #[cfg(windows)]
-    {
-        let eyes = app.state::<AppState>().eyes.lock().unwrap().take();
-        if let Some(h) = eyes {
-            h.stop();
-        }
+/// Запускает завершение приложения, НЕ блокируя главный поток (event loop).
+fn begin_exit(app: &tauri::AppHandle) {
+    if SHUTTING_DOWN.swap(true, Ordering::SeqCst) {
+        return;
     }
-    // Останавливаем задачу «Мозга» (авто-восстановление), если поднята — иначе
-    // её tokio-таск и тикер продолжают крутиться на выходе.
-    {
-        let brain = app.state::<AppState>().brain.lock().unwrap().take();
-        if let Some(h) = brain {
-            h.shutdown();
-        }
+    app.state::<AppState>()
+        .shutting_down
+        .store(true, Ordering::SeqCst);
+
+    // Мгновенный визуальный отклик: прячем окно, пока teardown ждёт operation
+    // gates и завершает внешние процессы в background runtime task.
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.hide();
     }
-    // Синхронно убиваем свои процессы (в exit-хуке async-рантайм может не успеть).
-    let (dpi_pids, proxy_pid) = {
-        let state = app.state::<AppState>();
-        let dpi_pids: Vec<u32> = state.dpi.lock().unwrap().procs.keys().copied().collect();
-        let proxy_pid = state.proxy.lock().unwrap().pid;
-        (dpi_pids, proxy_pid)
-    };
-    for pid in dpi_pids {
-        let _ = util::std_command("taskkill")
-            .args(["/F", "/PID", &pid.to_string()])
-            .output();
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        // Последняя страховка от зависшего драйвера/внешнего процесса.
+        std::thread::spawn(|| {
+            std::thread::sleep(std::time::Duration::from_secs(15));
+            std::process::exit(0);
+        });
+        shutdown(&app).await;
+        app.exit(0);
+    });
+}
+
+/// Gate-aware teardown. Флаг shutdown выставлен до входа сюда, поэтому новые
+/// start/test уже отклоняются. Сначала ждём незавершённые операции, затем гасим
+/// Brain/Eyes и дочерние процессы. На главном потоке эта функция не выполняется.
+async fn shutdown(app: &tauri::AppHandle) {
+    let state = app.state::<AppState>();
+
+    // Coordinator может держать временный candidate и для Shutdown обязан
+    // сначала выполнить exact rollback. Поэтому ждём его ДО захвата dpi_gate.
+    let adaptive = state
+        .adaptive
+        .lock()
+        .ok()
+        .and_then(|mut value| value.take());
+    if let Some(handle) = adaptive {
+        handle.shutdown().await;
     }
-    if let Some(pid) = proxy_pid {
-        // /T обязателен: TgWsProxy — PyInstaller-onefile, реальный прокси —
-        // дочерний процесс бутлоадера (см. proxy::stop).
-        let _ = util::std_command("taskkill")
-            .args(["/F", "/T", "/PID", &pid.to_string()])
-            .output();
+
+    let _dpi_gate = state.dpi_gate.lock().await;
+    let _proxy_gate = state.proxy_gate.lock().await;
+
+    let brain = state.brain.lock().ok().and_then(|mut b| b.take());
+    if let Some(handle) = brain {
+        handle.shutdown();
     }
+
+    // stop_all сначала будит WinDivert recv и join-ит Eyes, затем завершает все
+    // tracked winws. PID регистрируются сразу после spawn, поэтому окно orphan
+    // между spawn и ранней проверкой закрыто.
+    dpi::stop_all(app).await;
+    // Уже держим proxy_gate: используем locked-вариант без повторного lock.
+    proxy::stop_locked_async(app).await;
 }
 
 /// Строит иконку в системном трее с меню Показать/Выход.
 fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     let dpi = CheckMenuItem::with_id(app, "toggle_dpi", "DPI-обход", true, false, None::<&str>)?;
-    let proxy =
-        CheckMenuItem::with_id(app, "toggle_proxy", "Telegram-прокси", true, false, None::<&str>)?;
+    let proxy = CheckMenuItem::with_id(
+        app,
+        "toggle_proxy",
+        "Telegram-прокси",
+        true,
+        false,
+        None::<&str>,
+    )?;
     let sep = PredefinedMenuItem::separator(app)?;
     let show = MenuItem::with_id(app, "show", "Показать", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Выход", true, None::<&str>)?;
@@ -402,10 +470,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                     let _ = app.emit("window-visibility", true);
                 }
             }
-            "quit" => {
-                shutdown(app);
-                app.exit(0);
-            }
+            "quit" => begin_exit(app),
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {
@@ -434,10 +499,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
 
     let (idle_path, active_path) = {
         let st = app.state::<AppState>();
-        (
-            st.paths.tray_icon_path(),
-            st.paths.tray_active_icon_path(),
-        )
+        (st.paths.tray_icon_path(), st.paths.tray_active_icon_path())
     };
     let tray = builder.build(app)?;
     app.manage(TrayState {
@@ -455,52 +517,47 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
 fn toggle_dpi(app: &tauri::AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        // Те же ворота, что и у команд dpi_start/dpi_stop — трей и UI не должны
-        // запускать перекрывающиеся start/stop.
-        let state = app.state::<AppState>();
-        let _gate = state.dpi_gate.lock().await;
-        let active = {
+        let configs = {
             let st = app.state::<AppState>();
-            let a = !st.dpi.lock().unwrap().procs.is_empty();
-            a
-        };
-        if active {
-            dpi::stop_all(&app).await;
-        } else {
-            let configs = {
-                let st = app.state::<AppState>();
-                let s = st.settings.lock().unwrap();
-                let cats = if s.selected_categories.is_empty() {
-                    vec!["discord".to_string()]
-                } else {
-                    s.selected_categories.clone()
-                };
-                cats.into_iter()
-                    .map(|c| {
-                        let file = s
-                            .selected_configs
-                            .get(&c)
-                            .cloned()
-                            .filter(|f| !f.is_empty())
-                            .unwrap_or_else(|| default_config(&st.paths.get_configs_for_category(&c)));
-                        (c, file)
-                    })
-                    .collect::<Vec<_>>()
+            let s = st.settings.lock_recover();
+            let selected_categories = if s.dpi_engine == "zapret2" {
+                &s.zapret2_selected_categories
+            } else {
+                &s.selected_categories
             };
-            let _ = dpi::start_many(&app, &configs).await;
-        }
-        // Уведомление по факту состояния после операции: тумблер вызывается из
-        // трея и глобального хоткея, где нет экранного фидбэка, как у кнопки в UI.
-        let now_active = {
-            let st = app.state::<AppState>();
-            let a = !st.dpi.lock().unwrap().procs.is_empty();
-            a
+            let cats = if selected_categories.is_empty() {
+                vec!["discord".to_string()]
+            } else {
+                selected_categories.clone()
+            };
+            cats.into_iter()
+                .map(|c| {
+                    let file = s
+                        .selected_configs
+                        .get(&c)
+                        .cloned()
+                        .filter(|f| !f.is_empty())
+                        .unwrap_or_else(|| default_config(&st.paths.get_configs_for_category(&c)));
+                    (c, file)
+                })
+                .collect::<Vec<_>>()
         };
-        util::notify_now(
-            &app,
-            "Obsession",
-            if now_active { "Защита включена" } else { "Защита выключена" },
-        );
+
+        match commands::dpi_toggle_session(&app, configs).await {
+            Ok(active) => util::notify_now(
+                &app,
+                "Obsession",
+                if active {
+                    "Защита включена"
+                } else {
+                    "Защита выключена"
+                },
+            ),
+            Err(e) => {
+                util::emit_log(&app, "error", "dpi", &e);
+                util::notify_now(&app, "Obsession", "Не удалось переключить защиту");
+            }
+        }
     });
 }
 
@@ -508,20 +565,14 @@ fn toggle_dpi(app: &tauri::AppHandle) {
 fn toggle_proxy(app: &tauri::AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        let running = {
+        let (port, domain) = {
             let st = app.state::<AppState>();
-            let r = st.proxy.lock().unwrap().pid.is_some();
-            r
+            let s = st.settings.lock_recover();
+            (s.proxy_port, s.fake_tls_domain.clone())
         };
-        if running {
-            proxy::stop(&app).await;
-        } else {
-            let (port, domain) = {
-                let st = app.state::<AppState>();
-                let s = st.settings.lock().unwrap();
-                (s.proxy_port, s.fake_tls_domain.clone())
-            };
-            let _ = proxy::start(&app, port, &domain).await;
+        if let Err(e) = proxy::toggle(&app, port, &domain).await {
+            util::emit_log(&app, "error", "proxy", &e);
+            util::notify_now(&app, "Obsession", "Не удалось переключить Telegram-прокси");
         }
     });
 }

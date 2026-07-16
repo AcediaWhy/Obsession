@@ -74,10 +74,7 @@ impl Ranking {
         for (cat, raw_cat) in raw.categories {
             let existing = paths.get_configs_for_category(&cat);
             let keep = |names: Vec<String>| -> Vec<String> {
-                names
-                    .into_iter()
-                    .filter(|n| existing.contains(n))
-                    .collect()
+                names.into_iter().filter(|n| existing.contains(n)).collect()
             };
             let default = keep(raw_cat.default);
             let by_asn_region = raw_cat

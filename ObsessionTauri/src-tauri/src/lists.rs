@@ -100,6 +100,11 @@ pub fn save_list(lists_dir: &Path, name: &str, content: &str) -> Result<(), Stri
     if content.len() > MAX_LIST_BYTES {
         return Err("Список слишком большой (> 5 МБ)".into());
     }
+    // Формат проверяем ДО записи: битые записи (URL/пробелы/мусор в CIDR) попали
+    // бы в файл, который winws читает построчно, и молча ломали бы фильтр.
+    // Тип определяем по имени: ipset* → CIDR/IP, остальное → домены.
+    let kind = crate::lists_validate::ListKind::from_name(name);
+    crate::lists_validate::validate_list(content, kind).into_result()?;
     let path = list_path(lists_dir, name)?;
     let tmp = path.with_extension("txt.tmp");
     let write = std::fs::write(&tmp, content.as_bytes()).and_then(|_| std::fs::rename(&tmp, &path));

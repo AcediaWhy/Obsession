@@ -159,7 +159,10 @@ fn region_slug(region: &str) -> String {
 
 fn is_ipv4(s: &str) -> bool {
     let parts: Vec<&str> = s.split('.').collect();
-    parts.len() == 4 && parts.iter().all(|p| !p.is_empty() && p.parse::<u8>().is_ok())
+    parts.len() == 4
+        && parts
+            .iter()
+            .all(|p| !p.is_empty() && p.parse::<u8>().is_ok())
 }
 
 /// Нормализует MAC в `aa:bb:cc:dd:ee:ff`. Принимает разделители `-`/`:`.
@@ -198,10 +201,13 @@ fn save_cache(paths: &Paths, cache: &NetIdCache) {
     let path = paths.netid_cache_path();
     let json = serde_json::to_string_pretty(cache).unwrap_or_default();
     let tmp = path.with_extension("json.tmp");
-    let write = std::fs::write(&tmp, &json).and_then(|_| std::fs::rename(&tmp, &path));
-    if write.is_err() {
+    // Атомарно: temp + rename. При неудаче НЕ пишем в целевой файл напрямую (это
+    // оставило бы обрезанный JSON при краше) — кэш некритичен, убираем tmp.
+    if std::fs::write(&tmp, &json)
+        .and_then(|_| std::fs::rename(&tmp, &path))
+        .is_err()
+    {
         let _ = std::fs::remove_file(&tmp);
-        let _ = std::fs::write(&path, &json);
     }
 }
 
