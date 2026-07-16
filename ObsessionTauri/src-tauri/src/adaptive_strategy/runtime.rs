@@ -24,6 +24,7 @@ use super::model::{
 };
 use super::probe::{self, ProbeSeries, ProbeTarget, SessionDnsCache};
 use super::recommendation::{self, StrategyRecommendation};
+use super::tasks::SessionTasks;
 use crate::eyes::Verdict;
 use crate::state::{AppState, DpiLaunchSpec, DpiRuntimeSnapshot};
 
@@ -117,6 +118,7 @@ enum RuntimeEvent {
     ProbeFinished {
         session_id: u64,
         attempt_id: u64,
+        generation: u64,
         candidate_id: String,
         series: ProbeSeries,
     },
@@ -298,7 +300,7 @@ struct SessionContext {
     probe_targets: Vec<ProbeTarget>,
     dns_cache: SessionDnsCache,
     session_mode: Option<SearchSessionMode>,
-    preparation_task: Option<JoinHandle<()>>,
+    tasks: SessionTasks,
     last_probe: Option<ProbeSeries>,
 }
 
@@ -813,13 +815,11 @@ async fn handle_event(
                 return actions;
             };
 
-            if let Some(task) = context.preparation_task.take() {
-                task.abort();
-            }
+            context.tasks.abort_all();
             let app = app.clone();
             let tx = control_tx.clone();
             let evidence = evidence.clone();
-            context.preparation_task = Some(async_runtime::spawn(async move {
+            let task = async_runtime::spawn(async move {
                 let result = prepare_search_data(
                     &app, &tx, &evidence, session_id, category, transport, reason,
                 )
@@ -827,7 +827,8 @@ async fn handle_event(
                 let _ = tx
                     .send(RuntimeEvent::PreparationFinished { session_id, result })
                     .await;
-            }));
+            });
+            context.tasks.replace_preparation(task);
             actions
         }
         RuntimeEvent::PreparationDiscoveryFinished { session_id } => {
@@ -843,10 +844,10 @@ async fn handle_event(
             total_rounds,
         }),
         RuntimeEvent::PreparationFinished { session_id, result } => {
-            context.preparation_task.take();
             if model.status().session_id != Some(session_id) {
                 return Vec::new();
             }
+            context.tasks.finish_preparation();
             match result {
                 Ok(prepared) => {
                     if crate::dpi::runtime_snapshot(app).generation != prepared.snapshot.generation
@@ -877,9 +878,7 @@ async fn handle_event(
             }
         }
         RuntimeEvent::Cancel => {
-            if let Some(task) = context.preparation_task.take() {
-                task.abort();
-            }
+            context.tasks.abort_all();
             model.step(RecoveryEvent::UserCancel)
         }
         RuntimeEvent::Confirm {
@@ -923,13 +922,18 @@ async fn handle_event(
         RuntimeEvent::ProbeFinished {
             session_id,
             attempt_id,
+            generation,
             candidate_id,
             series,
         } => {
             let status = model.status();
-            if !probe_completion_matches_status(&status, session_id, attempt_id, &candidate_id) {
+            if context.expected_generation != generation
+                || crate::dpi::runtime_snapshot(app).generation != generation
+                || !probe_completion_matches_status(&status, session_id, attempt_id, &candidate_id)
+            {
                 return Vec::new();
             }
+            context.tasks.finish_probe();
             for batch in &series.rounds {
                 let _ = app.emit("adaptive://probe", batch);
             }
@@ -962,9 +966,7 @@ async fn handle_event(
             }
         }
         RuntimeEvent::Shutdown => {
-            if let Some(task) = context.preparation_task.take() {
-                task.abort();
-            }
+            context.tasks.abort_all();
             model.step(RecoveryEvent::Shutdown)
         }
     }
@@ -1292,10 +1294,11 @@ async fn execute_actions(
                 let category = candidate.category;
                 let transport = candidate.transport;
                 let candidate_id = candidate.candidate_id();
+                let generation = context.expected_generation;
                 let tuning = search_tuning(app);
                 let targets = context.probe_targets.clone();
                 let dns_cache = context.dns_cache.clone();
-                async_runtime::spawn(async move {
+                let task = async_runtime::spawn(async move {
                     tokio::time::sleep(tuning.stabilization_delay).await;
                     let series = probe::run_probe_series_for_targets_with_cache(
                         category,
@@ -1312,11 +1315,13 @@ async fn execute_actions(
                         .send(RuntimeEvent::ProbeFinished {
                             session_id,
                             attempt_id,
+                            generation,
                             candidate_id,
                             series,
                         })
                         .await;
                 });
+                context.tasks.replace_probe(task);
                 None
             }
             RecoveryAction::BeginVerification { .. } => {
