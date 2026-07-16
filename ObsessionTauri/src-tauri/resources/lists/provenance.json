@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "description": "Провенанс встроенных списков доменов/IP (WS6). Фиксирует происхождение, назначение и версию каждого списка. SHA-256 будет добавлен в resources/manifest.json ПОСЛЕ физической ренормализации CRLF→LF (F.1) — до неё байты списков в рабочем дереве нестабильны.",
+  "lists": {
+    "discord.txt": {
+      "kind": "domains",
+      "purpose": "Домены Discord (текст/голос/CDN) для DPI-обхода категории discord",
+      "layer": "builtin"
+    },
+    "youtube_twitch.txt": {
+      "kind": "domains",
+      "purpose": "Домены YouTube/Twitch и их CDN для категории youtube_twitch",
+      "layer": "builtin"
+    },
+    "gaming.txt": {
+      "kind": "domains",
+      "purpose": "Домены игровых магазинов/платформ (Epic, EA, ...) для категории gaming",
+      "layer": "builtin"
+    },
+    "atrisk.txt": {
+      "kind": "domains",
+      "purpose": "Сервисы, работающие в РФ, но под риском блокировки (Steam/PyPI/GitHub) — категория atrisk",
+      "layer": "builtin"
+    },
+    "white-list.txt": {
+      "kind": "domains",
+      "purpose": "Исключения из обхода (рос. сервисы, Steam) — трафик НЕ обходится",
+      "layer": "builtin"
+    },
+    "black-list.txt": {
+      "kind": "domains",
+      "purpose": "Meta (Facebook/Instagram) и прочее, всегда под обходом (universal)",
+      "layer": "builtin"
+    },
+    "ipset-global.txt": {
+      "kind": "ipset",
+      "purpose": "Широкий статический список IP/CIDR (~31k строк) для universal/global обхода",
+      "layer": "builtin",
+      "audit": "БАЙТ-ИДЕНТИЧЕН ipset-gaming.txt (30994 строки). Требует решения владельца: либо оставить общий broad-ipset (риск захвата лишнего трафика + нагрузка), либо разделить gaming на узкий игровой набор. Изменение меняет поведение обхода → проверять живьём."
+    },
+    "ipset-gaming.txt": {
+      "kind": "ipset",
+      "purpose": "IP/CIDR для категории gaming",
+      "layer": "builtin",
+      "audit": "Дубликат ipset-global.txt (см. его audit). Кандидат на замену узким игровым ipset."
+    }
+  }
+}

@@ -1,0 +1,229 @@
+{
+  "schema_version": 1,
+  "pack_id": "builtin.base",
+  "pack_version": "0.3.0",
+  "engine": {
+    "winws2_min": ">=1.0.2",
+    "lua_api": 6
+  },
+  "categories": [
+    "discord",
+    "youtube_twitch",
+    "gaming"
+  ],
+  "protocols": [
+    "tcp",
+    "http",
+    "tls",
+    "udp",
+    "quic"
+  ],
+  "files": [
+    {
+      "path": "lua/zapret-lib.lua",
+      "sha256": "2740b1bc0e728c4283846df94783844082eabd503ce1f86e3429159e1b4e8de3"
+    },
+    {
+      "path": "lua/zapret-antidpi.lua",
+      "sha256": "9ef64f894d920e2ceea05707899f67b206d5009ba762eb5265f409264b34214c"
+    },
+    {
+      "path": "blobs/tls_clienthello_www_google_com.bin",
+      "sha256": "936c2bee4cfb80aa3c426b2dcbcc834b3fbcd1adb17172959dc569c73a14275c"
+    },
+    {
+      "path": "blobs/quic_initial_www_google_com.bin",
+      "sha256": "f4589c57749f956bb30538197a521d7005f8b0a8723b4707e72405e51ddac50a"
+    }
+  ],
+  "blobs": [
+    {
+      "name": "tls_google",
+      "path": "blobs/tls_clienthello_www_google_com.bin"
+    },
+    {
+      "name": "quic_google",
+      "path": "blobs/quic_initial_www_google_com.bin"
+    }
+  ],
+  "strategies": [
+    {
+      "id": "discord_tls_text",
+      "category": "discord",
+      "aggressiveness": 1,
+      "lua": "lua/zapret-antidpi.lua",
+      "transports": [
+        "tcp",
+        "tls"
+      ],
+      "filter_l7": [
+        "tls"
+      ],
+      "payload": [
+        "tls_client_hello"
+      ],
+      "out_range": "-d10",
+      "desync": [
+        "fake:blob=tls_google:tcp_ts=-30000:tcp_ts_up:repeats=4",
+        "multisplit:pos=1"
+      ]
+    },
+    {
+      "id": "youtube_tls",
+      "category": "youtube_twitch",
+      "aggressiveness": 1,
+      "lua": "lua/zapret-antidpi.lua",
+      "transports": [
+        "tcp",
+        "tls"
+      ],
+      "filter_l7": [
+        "tls"
+      ],
+      "payload": [
+        "tls_client_hello"
+      ],
+      "out_range": "-d10",
+      "desync": [
+        "multidisorder_legacy:pos=1,midsld"
+      ]
+    },
+    {
+      "id": "youtube_quic",
+      "category": "youtube_twitch",
+      "aggressiveness": 1,
+      "lua": "lua/zapret-antidpi.lua",
+      "transports": [
+        "udp",
+        "quic"
+      ],
+      "filter_l7": [
+        "quic"
+      ],
+      "payload": [
+        "quic_initial"
+      ],
+      "desync": [
+        "fake:blob=fake_default_quic:repeats=6"
+      ]
+    },
+    {
+      "id": "gaming_control_tls",
+      "category": "gaming",
+      "aggressiveness": 1,
+      "lua": "lua/zapret-antidpi.lua",
+      "transports": [
+        "tcp",
+        "tls"
+      ],
+      "hostlist": "gaming-github.txt",
+      "filter_tcp": "443",
+      "filter_l7": [
+        "tls"
+      ],
+      "payload": [
+        "tls_client_hello"
+      ],
+      "out_range": "-d10",
+      "desync": [
+        "multidisorder_legacy:pos=1,midsld"
+      ]
+    },
+    {
+      "id": "gaming_control_quic",
+      "category": "gaming",
+      "aggressiveness": 1,
+      "lua": "lua/zapret-antidpi.lua",
+      "transports": [
+        "udp",
+        "quic"
+      ],
+      "hostlist": "gaming-github.txt",
+      "filter_udp": "443",
+      "filter_l7": [
+        "quic"
+      ],
+      "payload": [
+        "quic_initial"
+      ],
+      "desync": [
+        "fake:blob=fake_default_quic:repeats=6"
+      ]
+    },
+    {
+      "id": "gaming_ipset_http",
+      "category": "gaming",
+      "aggressiveness": 1,
+      "lua": "lua/zapret-antidpi.lua",
+      "transports": [
+        "tcp",
+        "http"
+      ],
+      "ipset": "ipset-gaming.txt",
+      "filter_tcp": "80",
+      "filter_l7": [
+        "http"
+      ],
+      "payload": [
+        "http_req"
+      ],
+      "out_range": "-d10",
+      "desync": [
+        "fake:blob=fake_default_http:repeats=6",
+        "multisplit:pos=method,host"
+      ]
+    },
+    {
+      "id": "gaming_ipset_tls",
+      "category": "gaming",
+      "aggressiveness": 1,
+      "lua": "lua/zapret-antidpi.lua",
+      "transports": [
+        "tcp",
+        "tls"
+      ],
+      "ipset": "ipset-gaming.txt",
+      "filter_tcp": "443",
+      "filter_l7": [
+        "tls"
+      ],
+      "payload": [
+        "tls_client_hello"
+      ],
+      "out_range": "-d10",
+      "desync": [
+        "fake:blob=tls_google:tcp_ts=-30000:tcp_ts_up:repeats=6",
+        "multisplit:pos=1"
+      ]
+    },
+    {
+      "id": "gaming_ipset_udp",
+      "category": "gaming",
+      "aggressiveness": 1,
+      "lua": "lua/zapret-antidpi.lua",
+      "transports": [
+        "udp"
+      ],
+      "ipset": "ipset-gaming.txt",
+      "filter_udp": "443,1024-65535",
+      "out_range": "-d5",
+      "desync": [
+        "fake:blob=quic_google:repeats=8"
+      ]
+    }
+  ],
+  "probes": [
+    "discord.com",
+    "www.youtube.com",
+    "rr1---sn.googlevideo.com",
+    "github.com",
+    "api.github.com",
+    "www.roblox.com",
+    "www.epicgames.com"
+  ],
+  "fallback": "discord_tls_text",
+  "notes": {
+    "scope": "Discord, YouTube/Twitch, and Gaming + GitHub control/data profiles. Discord voice/media/STUN and adaptive game UDP verification remain out of scope.",
+    "profile_grammar": "Profiles are serialized completely and separated by bare --new only between profiles."
+  }
+}
