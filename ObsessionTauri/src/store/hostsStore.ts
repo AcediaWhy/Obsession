@@ -11,12 +11,14 @@ interface HostsState {
   remoteVersion: string;
   busy: boolean;
   error: string;
+  rollbackAvailable: boolean;
 
   bootstrap: () => Promise<void>;
   setProvider: (p: Provider) => Promise<void>;
   refresh: () => Promise<void>;
   install: () => Promise<void>;
   uninstall: () => Promise<void>;
+  restore: () => Promise<void>;
   clearError: () => void;
 }
 
@@ -27,6 +29,7 @@ export const useHostsStore = create<HostsState>((set, get) => ({
   remoteVersion: "",
   busy: false,
   error: "",
+  rollbackAvailable: false,
 
   bootstrap: async () => {
     const settings = await api.getSettings();
@@ -39,8 +42,7 @@ export const useHostsStore = create<HostsState>((set, get) => ({
 
   setProvider: async (p) => {
     set({ provider: p, status: "not_installed" });
-    const settings = await api.getSettings();
-    await api.saveSettings({ ...settings, ai_provider: p });
+    await api.updateSettings({ ai_provider: p });
     await get().refresh();
   },
 
@@ -52,6 +54,7 @@ export const useHostsStore = create<HostsState>((set, get) => ({
         status: s.status,
         localVersion: s.local_version,
         remoteVersion: s.remote_version,
+        rollbackAvailable: s.rollback_available,
         busy: false,
       });
     } catch (e) {
@@ -73,6 +76,17 @@ export const useHostsStore = create<HostsState>((set, get) => ({
     set({ busy: true, error: "" });
     try {
       await api.hostsUninstall();
+      await get().refresh();
+    } catch (e) {
+      set({ busy: false, error: String(e) });
+    }
+  },
+
+  restore: async () => {
+    set({ busy: true, error: "" });
+    try {
+      await api.hostsRestore(get().provider);
+      toast.success("Восстановлена последняя рабочая версия hosts");
       await get().refresh();
     } catch (e) {
       set({ busy: false, error: String(e) });

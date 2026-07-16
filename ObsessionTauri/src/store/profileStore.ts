@@ -100,8 +100,7 @@ export const useProfileStore = create<ProfileState>((set) => ({
 
     // 1. Персистим ИИ-провайдера в настройки (без авто-установки hosts).
     try {
-      const settings = await api.getSettings();
-      await api.saveSettings({ ...settings, ai_provider: profile.ai_provider });
+      await api.updateSettings({ ai_provider: profile.ai_provider });
     } catch {
       /* best-effort */
     }

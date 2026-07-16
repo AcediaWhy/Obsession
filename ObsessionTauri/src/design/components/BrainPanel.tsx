@@ -45,12 +45,20 @@ export function BrainPanel() {
   const [status, setStatus] = useState<BrainStatus | null>(null);
 
   useEffect(() => {
+    // mounted-гвард: listen() и getStatus() резолвятся асинхронно. Без него при
+    // размонтировании до резолва (StrictMode-двойной mount, быстрый уход с экрана)
+    // слушатель brain://status регистрировался бы ПОСЛЕ unmount и не снимался
+    // (утечка), а колбэки звали setState на мёртвом компоненте.
+    let mounted = true;
     // Начальное состояние: флаг из настроек + текущий статус, если Мозг жив.
-    api.getSettings().then((s) => setEnabled(s.auto_recovery)).catch(() => {});
-    api.brainGetStatus().then((s) => s && setStatus(s)).catch(() => {});
-    let unlisten: (() => void) | undefined;
-    on.brainStatus((s) => setStatus(s)).then((u) => (unlisten = u));
-    return () => unlisten?.();
+    api.getSettings().then((s) => mounted && setEnabled(s.auto_recovery)).catch(() => {});
+    api.brainGetStatus().then((s) => mounted && s && setStatus(s)).catch(() => {});
+    const p = on.brainStatus((s) => mounted && setStatus(s));
+    return () => {
+      mounted = false;
+      // Отписка через awaited-промис (паттерн App) — дождётся резолва listen().
+      p.then((u) => u());
+    };
   }, []);
 
   const toggle = async (next: boolean) => {

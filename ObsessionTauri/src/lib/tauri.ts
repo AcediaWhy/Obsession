@@ -30,6 +30,15 @@ export interface ProxyStatus {
   running: boolean;
   link: string;
   lan_link: string | null;
+  lan_published: boolean;
+  lan_expiry_unix: number | null;
+}
+
+export interface RuntimeSnapshot {
+  dpi: DpiStatus;
+  proxy: ProxyStatus;
+  brain: BrainStatus | null;
+  adaptive: AdaptiveStatus | null;
 }
 
 export interface HostsStatus {
@@ -37,6 +46,7 @@ export interface HostsStatus {
   status: "installed" | "outdated" | "not_installed" | "offline";
   local_version: string;
   remote_version: string;
+  rollback_available: boolean;
 }
 
 export interface LogEvent {
@@ -74,6 +84,7 @@ export interface Settings {
   minimize_to_tray: boolean;
   start_minimized: boolean;
   selected_categories: string[];
+  zapret2_selected_categories: string[];
   selected_configs: Record<string, string>;
   proxy_port: number;
   fake_tls_domain: string;
@@ -83,6 +94,44 @@ export interface Settings {
   reduce_motion: boolean;
   /** Глобальный хоткей вкл/выкл защиты (Tauri-акселератор, напр. "Ctrl+Shift+KeyO"). */
   hotkey_toggle: string;
+  /** Таймаут публикации прокси в LAN (сек); 0 = без авто-закрытия. */
+  lan_publish_secs: number;
+  /** Выбранный DPI-движок: "legacy" (Zapret1) или "zapret2" (Beta). */
+  dpi_engine: string;
+  zapret2_level: number;
+  /** Локальный bounded-поиск Safe Strategy DSL для Zapret2. */
+  adaptive_strategy_enabled: boolean;
+  adaptive_search_mode: "fast" | "balanced" | "deep";
+}
+
+export interface EngineOption {
+  kind: string;
+  version: string;
+  beta: boolean;
+  available: boolean;
+  selected: boolean;
+}
+
+export type AdaptiveStrategyTrust = "prepared" | "recommended" | "confirmed";
+
+export interface Zapret2ProfileDescriptor {
+  category: string;
+  profileId: string;
+  source: "builtin" | "adaptive";
+  transport: "http" | "tls" | "quic" | "tcp" | "udp";
+  ports: string;
+  hostlist: string | null;
+  ipset: string | null;
+  candidateId: string | null;
+  verification: "verified" | "recommended" | "baseline" | "not_actively_verified";
+  trust: AdaptiveStrategyTrust;
+  evidenceSource: string | null;
+  sourceCandidateId: string | null;
+  sourceCategory: AdaptiveCategory | null;
+  sourceTransport: AdaptiveTransport | null;
+  recommendationReason: string | null;
+  dataPlane: boolean;
+  broadIpset: boolean;
 }
 
 // ─── Глаза / Мозг (контур надёжности) ───────────────────────────────────────
@@ -119,6 +168,100 @@ export interface BrainStatus {
   gatewayMacMasked: string | null;
 }
 
+export type AdaptiveCategory = "discord" | "youtube_twitch" | "gaming";
+export type AdaptiveTransport = "tls" | "quic";
+export type AdaptivePhase =
+  | "idle"
+  | "suggested"
+  | "discovering_quic"
+  | "calibrating"
+  | "searching"
+  | "candidate_probe"
+  | "temporary_verification"
+  | "applying"
+  | "rolling_back"
+  | "applied"
+  | "exhausted"
+  | "probe_unreliable"
+  | "quic_targets_unavailable"
+  | "base_unhealthy"
+  | "internal_error"
+  | "cancelled";
+
+export interface AdaptiveStatus {
+  phase: AdaptivePhase;
+  category: AdaptiveCategory | null;
+  diagnosis:
+    | "repeated_reset"
+    | "tls_blackhole"
+    | "quic_blackhole"
+    | "probe_failure"
+    | null;
+  sessionId: number | null;
+  attemptId: number | null;
+  candidateId: string | null;
+  candidateIndex: number | null;
+  candidateTotal: number | null;
+  verificationDeadlineMs: number | null;
+  rollbackReason: string | null;
+  transport: "tls" | "quic" | null;
+  sessionMode: "comparison" | "recovery" | null;
+  currentRound: number | null;
+  totalRounds: number | null;
+  failureStage:
+    | "none"
+    | "dns"
+    | "tcp"
+    | "tls"
+    | "quic"
+    | "https"
+    | "eyes_reset"
+    | "eyes_blackhole"
+    | "spawn"
+    | "stability"
+    | null;
+}
+
+export interface AdaptiveSuggestion {
+  category: AdaptiveCategory;
+  reason: NonNullable<AdaptiveStatus["diagnosis"]>;
+}
+
+export interface AdaptiveRecommendationDescriptor {
+  category: AdaptiveCategory;
+  transport: AdaptiveTransport;
+  candidateId: string;
+  trust: "recommended";
+  evidenceSource: string;
+  sourceCandidateId: string;
+  sourceCategory: AdaptiveCategory;
+  sourceTransport: AdaptiveTransport;
+  recommendationReason: string;
+}
+
+export interface AdaptiveTargetProbe {
+  host: string;
+  core: boolean;
+  round: number;
+  transport: "tls" | "quic";
+  dnsOk: boolean;
+  tcpOk: boolean;
+  tlsOk: boolean;
+  quicOk: boolean;
+  httpsOk: boolean;
+  httpStatus: number | null;
+  latencyMs: number;
+  failureStage: NonNullable<AdaptiveStatus["failureStage"]>;
+  detail: string;
+}
+
+export interface AdaptiveProbeBatch {
+  category: AdaptiveCategory;
+  transport: "tls" | "quic";
+  round: number;
+  targets: AdaptiveTargetProbe[];
+}
+
 /** Идентичность текущей сети (для дашборда «Обзор»). */
 export interface NetworkInfo {
   online: boolean;
@@ -132,12 +275,15 @@ export interface ConfStat {
   conf: string;
   success_count: number;
   confirmed_at: number;
+  /** Движок, подтвердивший конфиг ("legacy" | "zapret2"). Старые кэши → "legacy". */
+  engine?: string;
 }
 
 // ─── Команды ──────────────────────────────────────────────────────────────
 
 export const api = {
   getConfig: () => invoke<AppConfig>("get_config"),
+  runtimeGetSnapshot: () => invoke<RuntimeSnapshot>("runtime_get_snapshot"),
   isElevated: () => invoke<boolean>("is_elevated"),
   diagnose: () => invoke<DiagResult[]>("diagnose"),
   getAutostart: () => invoke<boolean>("get_autostart"),
@@ -149,6 +295,10 @@ export const api = {
   dpiTest: (category: string, configFile: string) =>
     invoke<boolean>("dpi_test", { category, configFile }),
   dpiTestCancel: () => invoke<void>("dpi_test_cancel"),
+  dpiEngineList: () => invoke<EngineOption[]>("dpi_engine_list"),
+  dpiZapret2Profiles: (categories: string[]) =>
+    invoke<Zapret2ProfileDescriptor[]>("dpi_zapret2_profiles", { categories }),
+  dpiEngineSet: (engine: string) => invoke<void>("dpi_engine_set", { engine }),
   dpiDetectOrphaned: () => invoke<number[]>("dpi_detect_orphaned"),
   dpiEmergencyKill: () => invoke<void>("dpi_emergency_kill"),
   getNetworkIdentity: () => invoke<NetworkInfo>("get_network_identity"),
@@ -160,6 +310,7 @@ export const api = {
   proxyStart: (port: number, fakeTlsDomain: string) =>
     invoke<string>("proxy_start", { port, fakeTlsDomain }),
   proxyStop: () => invoke<void>("proxy_stop"),
+  proxyCloseLan: () => invoke<void>("proxy_close_lan"),
   proxyLink: () => invoke<string>("proxy_link"),
   openExternalUrl: (url: string) => invoke<void>("open_external_url", { url }),
 
@@ -168,8 +319,12 @@ export const api = {
   hostsInstall: (provider: string) =>
     invoke<void>("hosts_install", { provider }),
   hostsUninstall: () => invoke<void>("hosts_uninstall"),
+  hostsRestore: (provider: string) =>
+    invoke<void>("hosts_restore", { provider }),
 
   getSettings: () => invoke<Settings>("get_settings"),
+  updateSettings: (patch: Partial<Settings>) =>
+    invoke<Settings>("update_settings", { patch }),
   saveSettings: (settings: Settings) =>
     invoke<void>("save_settings", { settings }),
   // Меняет глобальный хоткей (пустая строка = выключить). Формат — Tauri-
@@ -192,25 +347,90 @@ export const api = {
   brainSetEnabled: (enabled: boolean) =>
     invoke<void>("brain_set_enabled", { enabled }),
   brainGetStatus: () => invoke<BrainStatus | null>("brain_get_status"),
+  adaptiveGetStatus: () =>
+    invoke<AdaptiveStatus | null>("adaptive_get_status"),
+  adaptiveStartSearch: (category: AdaptiveCategory, transport: AdaptiveTransport) =>
+    invoke<void>("adaptive_start_search", { category, transport }),
+  adaptiveGetRecommendation: (
+    category: AdaptiveCategory,
+    transport: AdaptiveTransport,
+  ) =>
+    invoke<AdaptiveRecommendationDescriptor | null>("adaptive_get_recommendation", {
+      category,
+      transport,
+    }),
+  adaptiveApplyRecommendation: (
+    category: AdaptiveCategory,
+    transport: AdaptiveTransport,
+  ) =>
+    invoke<AdaptiveRecommendationDescriptor>("adaptive_apply_recommendation", {
+      category,
+      transport,
+    }),
+  adaptiveCancelSearch: () => invoke<void>("adaptive_cancel_search"),
+  adaptiveConfirmCandidate: (sessionId: number, candidateId: string) =>
+    invoke<void>("adaptive_confirm_candidate", { sessionId, candidateId }),
+  adaptiveRejectCandidate: (sessionId: number, candidateId: string) =>
+    invoke<void>("adaptive_reject_candidate", { sessionId, candidateId }),
+  adaptiveResetSaved: (category: AdaptiveCategory) =>
+    invoke<void>("adaptive_reset_saved", { category }),
 };
 
 // ─── События ──────────────────────────────────────────────────────────────
+
+// Монотонный счётчик status-событий (dpi/proxy/brain). Возврат из трея делает
+// runtime-снапшот и применяет его ТОЛЬКО если epoch не изменился с момента
+// захвата — иначе за время запроса пришло более свежее событие статуса и снимок
+// устарел (гонка «снимок vs событие»). См. runtime.snapshot() ниже и резюм-ветку
+// on.windowVisibility в App.
+let statusEpoch = 0;
+function bumpStatusEpoch() {
+  statusEpoch++;
+}
 
 export const on = {
   log: (cb: (e: LogEvent) => void): Promise<UnlistenFn> =>
     listen<LogEvent>("log", (e) => cb(e.payload)),
   dpiStatus: (cb: (e: DpiStatus) => void): Promise<UnlistenFn> =>
-    listen<DpiStatus>("dpi-status", (e) => cb(e.payload)),
+    listen<DpiStatus>("dpi-status", (e) => {
+      bumpStatusEpoch();
+      cb(e.payload);
+    }),
   proxyStatus: (cb: (e: ProxyStatus) => void): Promise<UnlistenFn> =>
-    listen<ProxyStatus>("proxy-status", (e) => cb(e.payload)),
-  eyesObservation: (cb: (o: Observation) => void): Promise<UnlistenFn> =>
-    listen<Observation>("eyes://observation", (e) => cb(e.payload)),
+    listen<ProxyStatus>("proxy-status", (e) => {
+      bumpStatusEpoch();
+      cb(e.payload);
+    }),
   brainStatus: (cb: (s: BrainStatus) => void): Promise<UnlistenFn> =>
-    listen<BrainStatus>("brain://status", (e) => cb(e.payload)),
+    listen<BrainStatus>("brain://status", (e) => {
+      bumpStatusEpoch();
+      cb(e.payload);
+    }),
+  adaptiveStatus: (cb: (s: AdaptiveStatus) => void): Promise<UnlistenFn> =>
+    listen<AdaptiveStatus>("adaptive://status", (e) => {
+      bumpStatusEpoch();
+      cb(e.payload);
+    }),
+  adaptiveSuggestion: (
+    cb: (suggestion: AdaptiveSuggestion) => void,
+  ): Promise<UnlistenFn> =>
+    listen<AdaptiveSuggestion>("adaptive://suggestion", (e) => cb(e.payload)),
+  adaptiveProbe: (cb: (probe: AdaptiveProbeBatch) => void): Promise<UnlistenFn> =>
+    listen<AdaptiveProbeBatch>("adaptive://probe", (e) => cb(e.payload)),
   // Rust сообщает о скрытии/показе окна в трей — дополняет Visibility API для
   // паузы анимаций (WebView2 не всегда шлёт visibilitychange на hide()).
   windowVisibility: (cb: (visible: boolean) => void): Promise<UnlistenFn> =>
     listen<boolean>("window-visibility", (e) => cb(e.payload)),
+};
+
+// ─── Runtime-снапшот (возврат из трея) ──────────────────────────────────────
+// Пока UI в трее, трей/хоткей могли переключить DPI/прокси. Подписки остаются
+// живыми, но на всякий случай при возврате догоняем единый снимок состояния.
+// `epoch` captured вызывающим до snapshot(); применять снимок только если
+// statusEpoch() не изменился (иначе за время запроса пришло более свежее событие).
+export const runtime = {
+  statusEpoch: (): number => statusEpoch,
+  snapshot: (): Promise<RuntimeSnapshot> => api.runtimeGetSnapshot(),
 };
 
 // ─── Утилиты окна / системы ────────────────────────────────────────────────

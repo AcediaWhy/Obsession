@@ -1,6 +1,8 @@
+import { useEffect } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 
-import { useDpiStore } from "../store/dpiStore";
+import { TRANSITION_WATCHDOG_MS, useDpiStore } from "../store/dpiStore";
+import { useAdaptiveStrategyStore } from "../store/adaptiveStrategyStore";
 import { GlassPanel } from "../design/components/GlassPanel";
 import { HeroCore } from "../design/components/HeroCore";
 import { Parallax } from "../design/parallax";
@@ -8,6 +10,7 @@ import { Stagger, StaggerItem } from "../design/components/Stagger";
 import { LogStream } from "../design/components/LogStream";
 import { Diagnostics } from "../design/components/Diagnostics";
 import { BrainPanel } from "../design/components/BrainPanel";
+import { Zapret2StrategyPanel } from "../design/components/Zapret2StrategyPanel";
 import {
   Button,
   Chip,
@@ -19,7 +22,7 @@ import { Uptime } from "../design/components/Uptime";
 import { Icon } from "../design/components/icons";
 import { spring } from "../design/tokens";
 
-const CATEGORY_LABELS: Record<string, string> = {
+const LEGACY_CATEGORY_LABELS: Record<string, string> = {
   discord: "Discord",
   youtube_twitch: "YouTube / Twitch",
   gaming: "Gaming",
@@ -27,14 +30,43 @@ const CATEGORY_LABELS: Record<string, string> = {
   atrisk: "Под угрозой",
 };
 
+const ZAPRET2_CATEGORY_LABELS: Record<string, string> = {
+  discord: "Discord",
+  youtube_twitch: "YouTube",
+  gaming: "Gaming + GitHub",
+};
+
 const CATEGORY_ORDER = ["discord", "youtube_twitch", "gaming", "universal", "atrisk"];
 
 export function DpiScreen() {
   const s = useDpiStore();
-  const categories = (s.config?.categories ?? []).sort(
-    (a, b) => CATEGORY_ORDER.indexOf(a) - CATEGORY_ORDER.indexOf(b),
+  const adaptivePhase = useAdaptiveStrategyStore((state) => state.status?.phase ?? "idle");
+  const adaptiveBusy = ![
+    "idle",
+    "suggested",
+    "applied",
+    "exhausted",
+    "cancelled",
+  ].includes(adaptivePhase);
+  const busy = s.transitioning || s.testing || adaptiveBusy;
+  const zapret2Selected = s.engines.some(
+    (engine) => engine.kind === "zapret2" && engine.selected,
   );
-  const busy = s.transitioning || s.testing;
+  const categoryLabels = zapret2Selected
+    ? ZAPRET2_CATEGORY_LABELS
+    : LEGACY_CATEGORY_LABELS;
+  const categories = (s.config?.categories ?? [])
+    .filter((category) => !zapret2Selected || category in ZAPRET2_CATEGORY_LABELS)
+    .sort((a, b) => CATEGORY_ORDER.indexOf(a) - CATEGORY_ORDER.indexOf(b));
+
+  useEffect(() => {
+    if (!s.transitioning) return;
+    const timer = window.setTimeout(
+      () => void s.reconcileTransition(),
+      TRANSITION_WATCHDOG_MS,
+    );
+    return () => window.clearTimeout(timer);
+  }, [s.reconcileTransition, s.transitioning]);
 
   return (
     <div className="flex h-full flex-col gap-4">
@@ -81,6 +113,35 @@ export function DpiScreen() {
               </StaggerItem>
             )}
 
+            {/* Движок DPI: Zapret1 (Legacy) / Zapret2 (Beta). */}
+            {s.engines.length > 0 && (
+              <StaggerItem className="w-full">
+                <SectionLabel>Движок</SectionLabel>
+                <div className="flex flex-wrap gap-2">
+                  {s.engines.map((e) => (
+                    <Chip
+                      key={e.kind}
+                      label={
+                        (e.kind === "zapret2" ? "Zapret2" : "Zapret Legacy") +
+                        ` · v${e.version}` +
+                        (e.beta ? " · Beta" : "") +
+                        (e.available ? "" : " (нет бинарника)")
+                      }
+                      active={e.selected}
+                      disabled={s.active || !e.available}
+                      onClick={() => s.setEngine(e.kind)}
+                    />
+                  ))}
+                </div>
+                {s.engines.some((e) => e.kind === "zapret2" && e.selected) && (
+                  <p className="mt-2 text-xs text-warn">
+                    Zapret2 — экспериментальный режим (Beta). Мозг не выбирает его
+                    автоматически; при сбое выполняется возврат к Zapret Legacy.
+                  </p>
+                )}
+              </StaggerItem>
+            )}
+
             {/* Категории. */}
             <StaggerItem className="w-full">
               <SectionLabel>Категории</SectionLabel>
@@ -88,7 +149,7 @@ export function DpiScreen() {
                 {categories.map((cat) => (
                   <Chip
                     key={cat}
-                    label={CATEGORY_LABELS[cat] ?? cat}
+                    label={categoryLabels[cat] ?? cat}
                     active={s.selectedCategories.includes(cat)}
                     disabled={s.active}
                     onClick={() => s.toggleCategory(cat)}
@@ -97,55 +158,64 @@ export function DpiScreen() {
               </div>
             </StaggerItem>
 
-            {/* Конфиги выбранных категорий — плавно раздвигают соседей. */}
             <StaggerItem className="w-full">
-              <SectionLabel>Конфигурации</SectionLabel>
-              <motion.div layout className="flex w-full flex-col gap-3">
-                <AnimatePresence initial={false}>
-                  {s.selectedCategories.map((cat) => {
-                    const files = s.config?.configs[cat] ?? [];
-                    const current = s.selectedConfigs[cat] ?? "";
-                    const result = s.testResults[current];
-                    return (
-                      <motion.div
-                        key={cat}
-                        layout
-                        initial={{ opacity: 0, height: 0, y: -6 }}
-                        animate={{ opacity: 1, height: "auto", y: 0 }}
-                        exit={{ opacity: 0, height: 0, y: -6 }}
-                        transition={spring.expand}
-                        className="flex flex-col gap-1.5 overflow-hidden"
-                      >
-                        <div className="flex items-center justify-between">
-                          <span className="text-xs font-medium text-ink-soft">
-                            {CATEGORY_LABELS[cat] ?? cat}
-                          </span>
-                          {result !== undefined && (
-                            <span
-                              className={`text-2xs font-semibold ${result ? "text-ok" : "text-danger"}`}
-                            >
-                              {result ? "работает" : "не прошёл"}
+              {zapret2Selected ? (
+                <Zapret2StrategyPanel profiles={s.zapret2Profiles} />
+              ) : (
+                <>
+                <SectionLabel>Конфигурации Legacy</SectionLabel>
+                <motion.div layout className="flex w-full flex-col gap-3">
+                  <AnimatePresence initial={false}>
+                    {s.selectedCategories.map((cat) => {
+                      const files = s.config?.configs[cat] ?? [];
+                      const current = s.selectedConfigs[cat] ?? "";
+                      const result = s.testResults[current];
+                      return (
+                        <motion.div
+                          key={cat}
+                          layout
+                          initial={{ opacity: 0, height: 0, y: -6 }}
+                          animate={{ opacity: 1, height: "auto", y: 0 }}
+                          exit={{ opacity: 0, height: 0, y: -6 }}
+                          transition={spring.expand}
+                          className="flex flex-col gap-1.5 overflow-hidden"
+                        >
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-medium text-ink-soft">
+                              {LEGACY_CATEGORY_LABELS[cat] ?? cat}
                             </span>
-                          )}
-                        </div>
-                        <Select
-                          value={current}
-                          options={files}
-                          disabled={s.active}
-                          onChange={(v) => s.setConfig(cat, v)}
-                        />
-                        {s.netStats[cat]?.conf === current && current && (
-                          <span className="text-3xs text-ok">
-                            ✓ работал {s.netStats[cat].success_count} раз
-                          </span>
-                        )}
-                      </motion.div>
-                    );
-                  })}
-                </AnimatePresence>
-              </motion.div>
+                            {result !== undefined ? (
+                              <span
+                                className={`text-2xs font-semibold ${
+                                  result ? "text-ok" : "text-danger"
+                                }`}
+                              >
+                                {result ? "работает" : "не прошёл"}
+                              </span>
+                            ) : null}
+                          </div>
+                          <Select
+                            value={current}
+                            options={files}
+                            disabled={s.active}
+                            onChange={(value) => s.setConfig(cat, value)}
+                          />
+                          {s.netStats[cat]?.conf === current && current ? (
+                            <span className="text-3xs text-ok">
+                              работал {s.netStats[cat].success_count} раз
+                            </span>
+                          ) : null}
+                        </motion.div>
+                      );
+                    })}
+                  </AnimatePresence>
+                </motion.div>
+                </>
+              )}
             </StaggerItem>
 
+            {!zapret2Selected ? (
+              <>
             {/* Тестирование / авто-подбор. Во время теста кнопки превращаются в
                 «Отмена» — тест можно прервать и сразу пользоваться обходом. */}
             <StaggerItem className="flex w-full gap-2">
@@ -184,6 +254,8 @@ export function DpiScreen() {
                 </>
               )}
             </StaggerItem>
+              </>
+            ) : null}
 
             {/* Диагностика доступности (работает ли обход). */}
             <StaggerItem className="w-full">

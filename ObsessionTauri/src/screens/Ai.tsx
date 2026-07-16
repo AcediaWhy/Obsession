@@ -123,11 +123,22 @@ export function AiScreen() {
                 Проверить
               </Button>
             </div>
+            {s.rollbackAvailable && (
+              <Button
+                variant="ghost"
+                disabled={s.busy}
+                onClick={() => s.restore()}
+                className="w-full"
+              >
+                Вернуть рабочую версию
+              </Button>
+            )}
           </div>
 
           <p className="text-xs leading-relaxed text-ink-muted">
-            Обход изменяет системный файл hosts. Перед изменением создаётся
-            резервная копия — при удалении она восстанавливается.
+            Обход изменяет системный файл hosts транзакционно: снимок → запись →
+            проверка. При сбое или неудачных пробах откат автоматический; кнопка
+            «Вернуть рабочую версию» восстанавливает последнюю рабочую копию.
           </p>
         </GlassPanel>
 

@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 
 import eyeWebm from "../../assets/eye.webm";
 import eyePoster from "../../assets/eye-poster.png";
-import { onRenderActiveChange, renderActive } from "../render";
+import { onRenderActiveChange, renderActive, useRenderHidden } from "../render";
 import { useSettingsStore } from "../../store/settingsStore";
 
 // Живой глаз-логотип: реалистичный моргающий глаз (vp9-webm с альфой).
@@ -16,10 +16,16 @@ import { useSettingsStore } from "../../store/settingsStore";
 // статичный постер вместо видео.
 export function EyeLogo({ size = 40 }: { size?: number }) {
   const reduceMotion = useSettingsStore((s) => s.settings?.reduce_motion);
+  const hidden = useRenderHidden();
   const ref = useRef<HTMLVideoElement>(null);
+  // Постер вместо <video> при reduce_motion ИЛИ когда окно скрыто в трей. Второе
+  // важно для RAM: EyeLogo смонтирован на КАЖДОМ экране (NavRail), и без этого в
+  // трее постоянно жил бы alpha-видеодекодер. Размонтирование <video> дергает
+  // teardown ниже и отпускает декодер.
+  const off = reduceMotion || hidden;
 
   useEffect(() => {
-    if (reduceMotion) return;
+    if (off) return;
     const v = ref.current;
     if (!v) return;
     const apply = (on: boolean) => {
@@ -30,20 +36,20 @@ export function EyeLogo({ size = 40 }: { size?: number }) {
     const unsub = onRenderActiveChange(apply);
     return () => {
       unsub();
-      // Отпускаем видеодекодер при размонтировании/тогле reduce_motion
-      // (тот же teardown, что в VideoField) — иначе detached <video> течёт.
+      // Отпускаем видеодекодер при размонтировании/тогле off (тот же teardown,
+      // что в VideoField) — иначе detached <video> течёт.
       v.pause();
       v.removeAttribute("src");
       v.load();
     };
-  }, [reduceMotion]);
+  }, [off]);
 
   return (
     <div
       className="shrink-0 overflow-hidden rounded-xl border border-white/10 bg-[#050609]"
       style={{ width: size, height: size }}
     >
-      {reduceMotion ? (
+      {off ? (
         <img src={eyePoster} alt="Obsession" className="h-full w-full object-cover" />
       ) : (
         <video

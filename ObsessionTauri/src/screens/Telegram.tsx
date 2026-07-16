@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import QRCode from "qrcode";
 
 import { useProxyStore } from "../store/proxyStore";
+import { useSettingsStore } from "../store/settingsStore";
 import { GlassPanel } from "../design/components/GlassPanel";
 import { StaggerItem } from "../design/components/Stagger";
 import { LogStream } from "../design/components/LogStream";
@@ -19,9 +20,45 @@ import { Icon } from "../design/components/icons";
 
 const FAKE_TLS_PRESETS = ["", "www.google.com", "www.bing.com", "www.cloudflare.com"];
 
+// Пресеты таймаута LAN-публикации: подпись → секунды (0 = без авто-закрытия).
+const LAN_TIMEOUT_OPTIONS: { label: string; secs: number }[] = [
+  { label: "Без авто-закрытия", secs: 0 },
+  { label: "5 минут", secs: 300 },
+  { label: "15 минут", secs: 900 },
+  { label: "1 час", secs: 3600 },
+];
+
+/// Оставшиеся секунды до авто-закрытия LAN-публикации (тикает раз в секунду).
+/// null = публикация без таймаута или неактивна.
+function useLanCountdown(expiryUnix: number | null): number | null {
+  const [remaining, setRemaining] = useState<number | null>(null);
+  useEffect(() => {
+    if (expiryUnix == null) {
+      setRemaining(null);
+      return;
+    }
+    const tick = () =>
+      setRemaining(Math.max(0, expiryUnix - Math.floor(Date.now() / 1000)));
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [expiryUnix]);
+  return remaining;
+}
+
+function formatMMSS(secs: number): string {
+  const m = Math.floor(secs / 60);
+  const s = secs % 60;
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
 export function TelegramScreen() {
   const s = useProxyStore();
+  const settings = useSettingsStore((st) => st.settings);
+  const patchSettings = useSettingsStore((st) => st.patch);
   const [qr, setQr] = useState<string | null>(null);
+  const lanRemaining = useLanCountdown(s.lanExpiryUnix);
+  const lanTimeoutSecs = settings?.lan_publish_secs ?? 0;
 
   // QR-код для телефона: LAN-ссылка (с LAN IP), не 127.0.0.1. В QR кладём
   // УНИВЕРСАЛЬНУЮ ссылку https://t.me/proxy?... вместо кастомной схемы
@@ -32,13 +69,24 @@ export function TelegramScreen() {
   const rawLink = s.lanLink ?? s.link;
   const qrLink = rawLink ? rawLink.replace(/^tg:\/\/proxy\?/, "https://t.me/proxy?") : null;
   useEffect(() => {
-    if (qrLink) {
-      QRCode.toDataURL(qrLink, { width: 200 })
-        .then(setQr)
-        .catch(() => setQr(null));
-    } else {
+    if (!qrLink) {
       setQr(null);
+      return;
     }
+    // cancelled-гвард ловит и unmount, и гонку порядка ответов: при быстрой смене
+    // qrLink (рестарт прокси / приход lanLink) cleanup прошлого прогона отменит
+    // его stale-энкод — он не перетрёт свежий QR и не сработает после unmount.
+    let cancelled = false;
+    QRCode.toDataURL(qrLink, { width: 200 })
+      .then((url) => {
+        if (!cancelled) setQr(url);
+      })
+      .catch(() => {
+        if (!cancelled) setQr(null);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [qrLink]);
 
   return (
@@ -114,6 +162,25 @@ export function TelegramScreen() {
             </div>
           </div>
 
+          <div className="w-full">
+            <SectionLabel>Авто-закрытие доступа с телефона</SectionLabel>
+            <Select
+              value={
+                LAN_TIMEOUT_OPTIONS.find((o) => o.secs === lanTimeoutSecs)?.label ??
+                LAN_TIMEOUT_OPTIONS[0].label
+              }
+              options={LAN_TIMEOUT_OPTIONS.map((o) => o.label)}
+              onChange={(label) => {
+                const opt = LAN_TIMEOUT_OPTIONS.find((o) => o.label === label);
+                if (opt) patchSettings({ lan_publish_secs: opt.secs });
+              }}
+            />
+            <p className="mt-1 text-xs text-ink-muted">
+              По истечении доступ с телефона закрывается (форвардер и правило
+              брандмауэра снимаются). Прокси для Telegram Desktop продолжает работать.
+            </p>
+          </div>
+
           {/* Ссылка. */}
           {s.link && (
             <div className="w-full">
@@ -133,13 +200,29 @@ export function TelegramScreen() {
                 </Button>
               </div>
 
-              {qr && (
+              {qr && s.lanPublished && (
                 <GlassPanel className="mt-4 flex flex-col items-center gap-2">
                   <img src={qr} alt="QR-код" className="rounded-lg" />
                   <span className="text-xs text-ink-muted">
                     {s.lanLink ? "Отсканируйте телефоном (та же Wi-Fi сеть)" : "Отсканируйте телефоном"}
                   </span>
+                  <div className="mt-1 flex w-full items-center justify-between gap-2 border-t border-glass-border pt-2">
+                    <span className="text-xs text-ink-soft">
+                      Доступ с телефона открыт
+                      {lanRemaining != null && (
+                        <> · закроется через <span className="font-mono text-accent-cyan">{formatMMSS(lanRemaining)}</span></>
+                      )}
+                    </span>
+                    <Button variant="ghost" onClick={() => s.closeLan()}>
+                      Закрыть доступ
+                    </Button>
+                  </div>
                 </GlassPanel>
+              )}
+              {s.running && !s.lanPublished && s.lanLink === null && (
+                <p className="mt-3 text-xs text-ink-muted">
+                  Доступ с телефона закрыт — прокси работает локально для Telegram Desktop.
+                </p>
               )}
             </div>
           )}

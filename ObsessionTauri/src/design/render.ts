@@ -138,6 +138,17 @@ export function useRenderActive(): boolean {
   return useSyncExternalStore(onRenderActiveChange, renderActive, renderActive);
 }
 
+/**
+ * React-хук: `true`, когда окно РЕАЛЬНО скрыто (трей/свёрнуто/другой стол). В
+ * отличие от useRenderActive, НЕ реагирует на reduce-motion — под reduce-motion
+ * сцена рисует стоп-кадр (постер), а не размонтируется. По этому сигналу
+ * suspend-разгрузка снимает тяжёлую визуалку (сцены тем, ядра, video-декодеры,
+ * canvas backing stores), сохраняя контроллер/сторы/подписки/черновики форм.
+ */
+export function useRenderHidden(): boolean {
+  return useSyncExternalStore(onRenderActiveChange, renderHidden, renderHidden);
+}
+
 // ─── Политика частоты кадров тем ─────────────────────────────────────────────
 // Единственное место, где крутятся fps-капы. 0 = без капа (нативная герцовка).
 //
