@@ -19,9 +19,10 @@ import { useProxyStore } from "./store/proxyStore";
 import { useHostsStore } from "./store/hostsStore";
 import { useThemeStore } from "./store/themeStore";
 import { useSettingsStore } from "./store/settingsStore";
+import { useAdaptiveStrategyStore } from "./store/adaptiveStrategyStore";
 import { Onboarding } from "./design/components/Onboarding";
 import { Toaster } from "./design/components/Toaster";
-import { on, win } from "./lib/tauri";
+import { on, runtime, win } from "./lib/tauri";
 import { setWindowShown, useMotionOff } from "./design/render";
 import { dur, ease, spring } from "./design/tokens";
 import { toast } from "./store/toastStore";
@@ -40,6 +41,25 @@ const screenVariants: Variants = {
     transition: { duration: dur.fast, ease: ease.exit },
   }),
 };
+
+// Возврат из трея: догоняем backend-состояние (трей/хоткей могли переключить
+// DPI/прокси, пока UI был свёрнут и визуалка размонтирована). Применяем снимок
+// ТОЛЬКО если за время запроса не пришло более свежее статус-событие (epoch не
+// изменился) — иначе перетёрли бы актуальное. Ошибка снимка не сбрасывает UI.
+async function syncSnapshotOnResume() {
+  const epoch = runtime.statusEpoch();
+  try {
+    const snap = await runtime.snapshot();
+    if (runtime.statusEpoch() !== epoch) return;
+    useDpiStore.getState().applyStatus(snap.dpi);
+    useProxyStore.getState().applyStatus(snap.proxy);
+    if (snap.adaptive) {
+      useAdaptiveStrategyStore.setState({ status: snap.adaptive });
+    }
+  } catch {
+    /* снимок недоступен — остаёмся на последних событиях */
+  }
+}
 
 export default function App() {
   const [tab, setTab] = useState<Tab>("overview");
@@ -81,16 +101,41 @@ export default function App() {
     // при повторном mount (React.StrictMode в dev монтирует эффект дважды).
     const unlistenDpi = useDpiStore.getState().bootstrap();
     const unlistenProxy = useProxyStore.getState().bootstrap();
+    const unlistenAdaptive = useAdaptiveStrategyStore.getState().bootstrap();
     useHostsStore.getState().bootstrap();
     useSettingsStore.getState().bootstrap();
 
-    // Пауза анимаций при скрытии окна в трей (сигнал из Rust дополняет
-    // Visibility API, который в WebView2 не всегда срабатывает на hide()).
-    // Плюс гасим/возвращаем рендер веб-вью: свёрнутое (iconic) окно композитор
-    // WebView2 продолжает рисовать, а hide() веб-вью убирает эту нагрузку до ~0%.
+    // Прогрев тяжёлой ленивой сцены (Rain/WebGL) — ТОЛЬКО когда окно впервые
+    // становится видимым (вызывается из резюм-ветки ниже). При старте в трее
+    // (start_minimized) чанк не грузится, пока пользователь не откроет окно — не
+    // держим лишний код/декодер в трее.
+    let warmed = false;
+    const ric = (window as unknown as {
+      requestIdleCallback?: (cb: () => void) => number;
+    }).requestIdleCallback;
+    const scheduleWarm = () => {
+      if (warmed) return;
+      warmed = true;
+      const warm = () => void import("./design/components/RainScene3D");
+      if (ric) ric(warm);
+      else window.setTimeout(warm, 1500);
+    };
+
+    // Пауза анимаций + suspend-разгрузка при скрытии окна в трей (сигнал из Rust
+    // дополняет Visibility API, который в WebView2 не всегда срабатывает на
+    // hide()). Плюс гасим/возвращаем рендер веб-вью: свёрнутое (iconic) окно
+    // композитор WebView2 продолжает рисовать, а hide() веб-вью убирает эту
+    // нагрузку до ~0%. При ВОЗВРАТЕ догоняем backend-снимок (трей/хоткей могли
+    // переключить DPI/прокси, пока висели в трее) и прогреваем сцену.
     const unlistenVis = on.windowVisibility((visible) => {
       setWindowShown(visible);
-      void (visible ? win.showWebview() : win.hideWebview());
+      if (visible) {
+        void win.showWebview();
+        void syncSnapshotOnResume();
+        scheduleWarm();
+      } else {
+        void win.hideWebview();
+      }
     });
     // Мгновенный возврат рендера при развороте (фокус приходит раньше, чем
     // подтверждение 300мс-поллера) — чтобы не мелькнул пустой кадр.
@@ -104,24 +149,14 @@ export default function App() {
       if (e.level === "error") toast.error(e.message, 6000);
     });
 
-    // Прогреваем тяжёлую ленивую сцену (three/WebGL) на простое, чтобы первое
-    // переключение темы не ждало загрузку чанка.
-    const warm = () => {
-      import("./design/components/RainScene3D");
-    };
-    const ric = (window as unknown as {
-      requestIdleCallback?: (cb: () => void) => number;
-    }).requestIdleCallback;
-    const warmTimer = ric ? (ric(warm), 0) : window.setTimeout(warm, 1500);
-
     return () => {
       unlisten.then((fn) => fn());
       unlistenDpi.then((fn) => fn());
       unlistenProxy.then((fn) => fn());
+      unlistenAdaptive.then((fn) => fn());
       unlistenVis.then((fn) => fn());
       unlistenFocus.then((fn) => fn());
       unlistenErr.then((fn) => fn());
-      if (!ric) window.clearTimeout(warmTimer);
     };
   }, []);
 
@@ -163,7 +198,8 @@ export default function App() {
           <div className="absolute inset-0 top-10 flex">
           <NavRail active={tab} onSelect={selectTab} />
           <main className="flex-1 overflow-hidden px-6 pb-6 pt-2">
-            <AnimatePresence mode="wait" custom={tabDir.current}>
+            <div className="relative h-full">
+              <AnimatePresence mode="sync" custom={tabDir.current}>
               {/* Обёртка экрана — transform-only: opacity у предка стекла
                   образует backdrop root (Chromium), и панели теряли матовость
                   на время перехода. Фейд делают сами панели/элементы через
@@ -177,7 +213,7 @@ export default function App() {
                 animate="center"
                 exit="exit"
                 transition={spring.rise}
-                className="h-full"
+                className="absolute inset-0 h-full"
               >
                 {tab === "overview" && <OverviewScreen />}
                 {tab === "dpi" && <DpiScreen />}
@@ -187,7 +223,8 @@ export default function App() {
                 {tab === "profiles" && <ProfilesScreen />}
                 {tab === "settings" && <SettingsScreen />}
               </motion.div>
-            </AnimatePresence>
+              </AnimatePresence>
+            </div>
           </main>
           </div>
 

@@ -16,6 +16,10 @@ interface SettingsState {
   setAutostart: (enable: boolean) => Promise<void>;
 }
 
+// Последовательная очередь сохраняет пользовательский порядок быстрых patch-вызовов.
+let settingsWriteQueue: Promise<unknown> = Promise.resolve();
+let settingsPatchSequence = 0;
+
 // Раздел настроек поверх реального Settings-payload'а из Rust. Любое изменение
 // сразу персистится (best-effort) — без отдельной кнопки «Сохранить».
 export const useSettingsStore = create<SettingsState>((set, get) => ({
@@ -43,15 +47,29 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   patch: async (partial) => {
     const current = get().settings;
     if (!current) return;
-    const next = { ...current, ...partial };
-    // Оптимистично применяем в UI, затем персистим.
-    set({ settings: next, saving: true, error: "" });
+    const sequence = ++settingsPatchSequence;
+    // Оптимистично применяем только изменённые поля. Backend объединит patch с
+    // актуальным Settings под lock, поэтому другие stores не будут затёрты.
+    set({ settings: { ...current, ...partial }, saving: true, error: "" });
+    const request = settingsWriteQueue.then(() => api.updateSettings(partial));
+    settingsWriteQueue = request.then(
+      () => undefined,
+      () => undefined,
+    );
     try {
-      await api.saveSettings(next);
-      set({ saving: false, saved: true });
-      setTimeout(() => set({ saved: false }), 1600);
+      const savedSettings = await request;
+      // Старый response не должен перезаписать более свежий optimistic patch.
+      if (sequence === settingsPatchSequence) {
+        set({ settings: savedSettings, saving: false, saved: true });
+        setTimeout(() => {
+          if (sequence === settingsPatchSequence) set({ saved: false });
+        }, 1600);
+      }
     } catch (e) {
-      set({ saving: false, error: String(e) });
+      if (sequence === settingsPatchSequence) {
+        const authoritative = await api.getSettings().catch(() => get().settings);
+        set({ settings: authoritative, saving: false, error: String(e) });
+      }
       toast.error("Не удалось сохранить настройки");
     }
   },

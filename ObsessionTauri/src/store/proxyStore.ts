@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import type { UnlistenFn } from "@tauri-apps/api/event";
-import { api, clipboard, on } from "../lib/tauri";
+import { api, clipboard, on, type ProxyStatus } from "../lib/tauri";
 
 interface ProxyState {
   available: boolean;
@@ -8,16 +8,20 @@ interface ProxyState {
   transitioning: boolean;
   link: string;
   lanLink: string | null;
+  lanPublished: boolean;
+  lanExpiryUnix: number | null;
   port: number;
   fakeTlsDomain: string;
   error: string;
   copied: boolean;
 
   bootstrap: () => Promise<UnlistenFn>;
+  applyStatus: (s: ProxyStatus) => void;
   setPort: (p: number) => void;
   setFakeTlsDomain: (d: string) => void;
   start: () => Promise<void>;
   stop: () => Promise<void>;
+  closeLan: () => Promise<void>;
   copy: () => Promise<void>;
   open: () => Promise<void>;
   clearError: () => void;
@@ -29,6 +33,8 @@ export const useProxyStore = create<ProxyState>((set, get) => ({
   transitioning: false,
   link: "",
   lanLink: null,
+  lanPublished: false,
+  lanExpiryUnix: null,
   port: 1443,
   fakeTlsDomain: "",
   error: "",
@@ -44,11 +50,21 @@ export const useProxyStore = create<ProxyState>((set, get) => ({
     });
     // Возвращаем UnlistenFn наверх (App) для отписки — иначе слушатель
     // proxy-status жил бы вечно и дублировался при повторном bootstrap.
-    const unlisten = await on.proxyStatus((s) =>
-      set({ running: s.running, link: s.link, lanLink: s.lan_link, transitioning: false }),
-    );
+    const unlisten = await on.proxyStatus((s) => get().applyStatus(s));
     return unlisten;
   },
+
+  // Применяет статус прокси (из подписки proxy-status ИЛИ из runtime-снапшота при
+  // возврате из трея).
+  applyStatus: (s) =>
+    set({
+      running: s.running,
+      link: s.link,
+      lanLink: s.lan_link,
+      lanPublished: s.lan_published,
+      lanExpiryUnix: s.lan_expiry_unix,
+      transitioning: false,
+    }),
 
   setPort: (p) => set({ port: p }),
   setFakeTlsDomain: (d) => set({ fakeTlsDomain: d }),
@@ -72,7 +88,17 @@ export const useProxyStore = create<ProxyState>((set, get) => ({
     try {
       await api.proxyStop();
     } finally {
-      set({ transitioning: false, link: "", lanLink: null });
+      set({ transitioning: false, link: "", lanLink: null, lanPublished: false, lanExpiryUnix: null });
+    }
+  },
+
+  closeLan: async () => {
+    try {
+      await api.proxyCloseLan();
+      // Финальный статус придёт через подписку proxy-status.
+      set({ lanPublished: false, lanExpiryUnix: null, lanLink: null });
+    } catch (e) {
+      set({ error: String(e) });
     }
   },
 
@@ -100,9 +126,7 @@ export const useProxyStore = create<ProxyState>((set, get) => ({
 async function savePrefs() {
   const { port, fakeTlsDomain } = useProxyStore.getState();
   try {
-    const settings = await api.getSettings();
-    await api.saveSettings({
-      ...settings,
+    await api.updateSettings({
       proxy_port: port,
       fake_tls_domain: fakeTlsDomain,
     });

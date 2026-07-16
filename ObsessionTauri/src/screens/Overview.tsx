@@ -47,7 +47,15 @@ export function OverviewScreen() {
   const [net, setNet] = useState<NetworkInfo | null>(null);
 
   useEffect(() => {
-    api.getNetworkIdentity().then(setNet).catch(() => {});
+    // cancelled-гвард: getNetworkIdentity() может быть медленным/оффлайн; уход с
+    // экрана до резолва не должен звать setState на размонтированном компоненте.
+    let cancelled = false;
+    api.getNetworkIdentity().then((n) => {
+      if (!cancelled) setNet(n);
+    }).catch(() => {});
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const protectedNow = dpiActive;

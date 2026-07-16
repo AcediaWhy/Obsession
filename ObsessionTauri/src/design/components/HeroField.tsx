@@ -1,6 +1,6 @@
 import { Component, lazy, Suspense, type ReactNode } from "react";
 import type { Theme } from "../../store/themeStore";
-import { useRenderActive } from "../render";
+import { useRenderActive, useRenderHidden } from "../render";
 import { AuroraField } from "./AuroraField";
 import { OphanimField } from "./OphanimField";
 import { FallenField } from "./FallenField";
@@ -49,6 +49,21 @@ export function HeroField({ theme }: { theme: Theme }) {
   // (освобождает контекст/текстуры), а при возврате сцена собирается заново.
   // Лёгкие 2D-темы так не мучаем — они дёшевы и мгновенно паузятся.
   const renderOn = useRenderActive();
+  const hidden = useRenderHidden();
+  // В трее (suspended) снимаем ВСЮ тяжёлую сцену темы — canvas/WebGL/video.
+  // Размонтирование видео-полей (catnap/midnight) запускает teardown VideoField
+  // (pause + снятие src + load) и освобождает видеодекодеры; canvas-поля
+  // отпускают backing stores; Rain — WebGL-контекст и текстуры. Отдаём лёгкую
+  // статичную подложку: в трее webview всё равно скрыт, но она убирает тёмную
+  // вспышку на первом кадре возврата, пока сцена монтируется заново.
+  if (hidden) {
+    return (
+      <div
+        className="absolute inset-0"
+        style={{ background: "radial-gradient(130% 130% at 50% 0%, #0b0d12, #050609)" }}
+      />
+    );
+  }
   if (theme === "ophanim") return <OphanimField />;
   if (theme === "fallendown") return <FallenField />;
   // Видео-темы: <video> паузится по гейту видимости внутри VideoField,

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 
 import { api, type DiagResult } from "../../lib/tauri";
@@ -11,16 +11,21 @@ import { spring } from "../tokens";
 export function Diagnostics() {
   const [running, setRunning] = useState(false);
   const [results, setResults] = useState<DiagResult[] | null>(null);
+  // diagnose() — секундные HTTPS-пробы; уход с экрана DPI до их конца не должен
+  // звать setState на размонтированном компоненте (ref, т.к. это обработчик, а
+  // не эффект — привязать очистку к жизненному циклу иначе нельзя).
+  const mounted = useRef(true);
+  useEffect(() => () => { mounted.current = false; }, []);
 
   const run = async () => {
     setRunning(true);
     try {
       const r = await api.diagnose();
-      setResults(r);
+      if (mounted.current) setResults(r);
     } catch {
-      setResults([]);
+      if (mounted.current) setResults([]);
     } finally {
-      setRunning(false);
+      if (mounted.current) setRunning(false);
     }
   };
 

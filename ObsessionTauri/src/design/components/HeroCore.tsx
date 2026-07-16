@@ -1,6 +1,6 @@
 import { AnimatePresence, motion } from "framer-motion";
 import { useThemeStore, type Theme } from "../../store/themeStore";
-import { useMotionOff } from "../render";
+import { useMotionOff, useRenderHidden } from "../render";
 import { dur, ease } from "../tokens";
 import { AuroraCore } from "./AuroraCore";
 import { RainCore } from "./RainCore";
@@ -41,7 +41,13 @@ function ThemedCore({ theme, ...props }: Props & { theme: Theme }) {
 export function HeroCore(props: Props) {
   const theme = useThemeStore((s) => s.theme);
   const motionOff = useMotionOff();
+  const hidden = useRenderHidden();
   const size = props.size ?? 240; // зеркалит дефолт size всех ядер
+
+  // В трее (suspended) размонтируем canvas-ядро целиком: освобождаем backing
+  // store и rAF-цикл. Держим пустой контейнер того же размера — макет не
+  // дёргается при возврате, сцена собирается заново на показе.
+  if (hidden) return <div style={{ width: size, height: size }} />;
 
   return (
     <div className="relative" style={{ width: size, height: size }}>
