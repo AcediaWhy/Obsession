@@ -54,6 +54,14 @@ fn now_hms() -> String {
     chrono::Local::now().format("%H:%M:%S").to_string()
 }
 
+/// Текущее Unix-время в секундах (0 при сбое системных часов).
+pub fn unix_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 /// Отправляет строку лога во фронтенд (событие `log`) И дублирует её на диск
 /// в `%APPDATA%\Obsession\logs\app.log` — чтобы логи можно было прочитать
 /// после закрытия окна (боковая панель UI не копируется).
@@ -324,6 +332,9 @@ pub struct DpiProcPublic {
 pub struct DpiStatusPayload {
     pub active: bool,
     pub processes: Vec<DpiProcPublic>,
+    /// Unix-время (сек) старта текущей сессии обхода; null = обход выключен.
+    /// UI считает аптайм от него (переживает смену вкладок / resume из трея).
+    pub started_at: Option<u64>,
 }
 
 #[derive(Clone, Serialize)]

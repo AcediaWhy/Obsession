@@ -540,6 +540,19 @@ async fn cached_or_resolve_network_identity(
     {
         return identity;
     }
+    // Single-flight (см. commands::current_netid): под gate повторно проверяем
+    // кэш, чтобы конкурентные вызовы не резолвили ipinfo дважды.
+    let state = app.state::<AppState>();
+    let _gate = state.netid_gate.lock().await;
+    if let Some(identity) = app
+        .state::<AppState>()
+        .netid
+        .lock()
+        .ok()
+        .and_then(|slot| slot.clone())
+    {
+        return identity;
+    }
     let identity = crate::netid::resolve(paths).await;
     if let Ok(mut slot) = app.state::<AppState>().netid.lock() {
         *slot = Some(identity.clone());
@@ -1291,7 +1304,10 @@ async fn execute_actions(
                 None
             }
             RecoveryAction::BeginVerification { .. } => {
-                let _ = app.emit("adaptive://verification", model.status());
+                // Фаза TemporaryVerification доходит до UI через сопутствующий
+                // EmitStatus (model добавляет emit_status рядом с BeginVerification),
+                // поэтому отдельное adaptive://verification не эмитим — фронт его не
+                // слушает, дублирующий канал только рассинхронил бы контракт.
                 None
             }
             RecoveryAction::Rollback {
@@ -1425,7 +1441,6 @@ async fn execute_actions(
                 if status.phase == RecoveryPhase::Applied {
                     candidate_generation.store(0, Ordering::SeqCst);
                     evidence.begin(0);
-                    let _ = app.emit("adaptive://applied", &status);
                 }
                 if matches!(
                     status.phase,

@@ -145,14 +145,14 @@ pub fn run() {
             let adaptive = adaptive_strategy::runtime::start(handle.clone());
             *handle.state::<AppState>().adaptive.lock_recover() = Some(adaptive);
 
-            // Подчищаем зависшие winws от предыдущего жёсткого выхода (иначе новый
-            // инстанс падает «A copy of winws is already running»).
+            // Подчищаем зависшие winws ОТ ПРЕДЫДУЩЕГО жёсткого выхода (иначе новый
+            // инстанс падает «A copy of winws is already running»). Бьём точечно по
+            // обнаруженным PID, а не глобально по имени образа — иначе снесли бы
+            // ЧУЖОЙ winws.exe (параллельный Zapret/GoodbyeDPI пользователя).
             #[cfg(windows)]
             {
                 let orphans = dpi::detect_orphaned(&handle);
-                if !orphans.is_empty() {
-                    dpi::emergency_kill_all(&handle);
-                }
+                dpi::kill_orphans(&handle, &orphans);
             }
 
             // Если авто-восстановление включено в настройках — поднимаем Мозг сразу
@@ -284,11 +284,14 @@ pub fn run() {
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 let app = window.app_handle().clone();
+                // lock_recover, НЕ lock().unwrap(): этот обработчик крутится на
+                // главном потоке event-loop. Отравленный паникой другого держателя
+                // settings-мьютекс уронил бы .unwrap() прямо здесь и повесил выход
+                // (см. util::LockExt и заметку про exit-hang).
                 let minimize = app
                     .state::<AppState>()
                     .settings
-                    .lock()
-                    .unwrap()
+                    .lock_recover()
                     .minimize_to_tray;
                 if minimize {
                     // Сворачиваем в трей вместо выхода. Немедленно сообщаем фронту,
@@ -340,7 +343,6 @@ pub fn run() {
             commands::runtime_get_snapshot,
             commands::get_settings,
             commands::update_settings,
-            commands::save_settings,
             commands::set_hotkey,
             commands::lists_all,
             commands::read_list,

@@ -148,7 +148,7 @@ fn test_urls(category: &str) -> Vec<&'static str> {
 /// Эмитит актуальный статус DPI (активность + список процессов) в UI.
 pub fn emit_status(app: &AppHandle) {
     let state = app.state::<AppState>();
-    let d = state.dpi.lock_recover();
+    let mut d = state.dpi.lock_recover();
     let processes: Vec<DpiProcPublic> = d
         .procs
         .values()
@@ -158,11 +158,13 @@ pub fn emit_status(app: &AppHandle) {
             config_file: p.config_file.clone(),
         })
         .collect();
+    let started_at = d.sync_started_at(util::unix_secs());
     let _ = app.emit(
         "dpi-status",
         DpiStatusPayload {
             active: !processes.is_empty(),
             processes,
+            started_at,
         },
     );
 }
@@ -1429,6 +1431,35 @@ pub fn detect_orphaned(app: &AppHandle) -> Vec<u32> {
     orphans
 }
 
+/// Точечно убивает список orphan-PID winws (только указанные PID, не по имени
+/// образа). В отличие от [`emergency_kill_all`], не трогает ЧУЖИЕ winws.exe —
+/// например, параллельно запущенный другой инструмент обхода (Zapret/GoodbyeDPI).
+/// Используется на старте для зачистки собственных зависших процессов.
+pub fn kill_orphans(app: &AppHandle, pids: &[u32]) {
+    if pids.is_empty() {
+        return;
+    }
+    util::emit_log(
+        app,
+        "warn",
+        "dpi",
+        &format!(
+            "Зачистка зависших winws.exe от прошлого запуска: PID [{}].",
+            pids.iter()
+                .map(u32::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    );
+    for pid in pids {
+        // /T добивает дерево на случай, если winws успел породить детей.
+        let _ = util::std_command("taskkill")
+            .args(["/F", "/T", "/PID", &pid.to_string()])
+            .output();
+    }
+    emit_status(app);
+}
+
 /// Крайняя мера: убивает ВСЕ winws.exe в системе (включая чужие).
 pub fn emergency_kill_all(app: &AppHandle) {
     util::emit_log(
@@ -1496,10 +1527,26 @@ where
 {
     tokio::spawn(async move {
         let mut lines = BufReader::new(reader).lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            let msg = line.trim();
-            if !msg.is_empty() {
-                util::emit_log(&app, level, "dpi", &format!("[{category}] {msg}"));
+        loop {
+            match lines.next_line().await {
+                Ok(Some(line)) => {
+                    let msg = line.trim();
+                    if !msg.is_empty() {
+                        util::emit_log(&app, level, "dpi", &format!("[{category}] {msg}"));
+                    }
+                }
+                Ok(None) => break, // EOF — процесс закрыл поток
+                Err(e) => {
+                    // Напр. невалидный UTF-8 в выводе winws: раньше остаток stdout
+                    // молча проглатывался. Логируем и прекращаем чтение этого потока.
+                    util::emit_log(
+                        &app,
+                        "warn",
+                        "dpi",
+                        &format!("[{category}] чтение вывода прервано: {e}"),
+                    );
+                    break;
+                }
             }
         }
     });

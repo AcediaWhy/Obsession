@@ -407,6 +407,19 @@ async fn current_netid(app: &AppHandle) -> crate::netid::NetIdentity {
     if let Some(id) = cached {
         return id;
     }
+    // Single-flight: под gate повторно проверяем кэш (его мог заполнить
+    // конкурентный резолв, ждавший на этом же gate), иначе резолвим ipinfo раз.
+    let state = app.state::<AppState>();
+    let _gate = state.netid_gate.lock().await;
+    if let Some(id) = app
+        .state::<AppState>()
+        .netid
+        .lock()
+        .ok()
+        .and_then(|g| g.clone())
+    {
+        return id;
+    }
     let paths = app.state::<AppState>().paths.clone();
     let id = crate::netid::resolve(&paths).await;
     if let Ok(mut slot) = app.state::<AppState>().netid.lock() {
@@ -582,7 +595,7 @@ pub struct RuntimeSnapshot {
 pub fn runtime_get_snapshot(app: AppHandle) -> RuntimeSnapshot {
     let dpi = {
         let state = app.state::<AppState>();
-        let d = state.dpi.lock_recover();
+        let mut d = state.dpi.lock_recover();
         let processes = d
             .procs
             .values()
@@ -592,9 +605,11 @@ pub fn runtime_get_snapshot(app: AppHandle) -> RuntimeSnapshot {
                 config_file: p.config_file.clone(),
             })
             .collect::<Vec<_>>();
+        let started_at = d.sync_started_at(crate::util::unix_secs());
         crate::util::DpiStatusPayload {
             active: !processes.is_empty(),
             processes,
+            started_at,
         }
     };
     let proxy = {
@@ -661,13 +676,6 @@ where
 #[tauri::command]
 pub fn update_settings(app: AppHandle, patch: SettingsPatch) -> Result<Settings, String> {
     mutate_settings(&app, |settings| settings.apply_patch(patch))
-}
-
-/// Backward-compatible full replace. Новый frontend использует update_settings,
-/// чтобы независимые stores не теряли поля друг друга.
-#[tauri::command]
-pub fn save_settings(app: AppHandle, settings: Settings) -> Result<(), String> {
-    mutate_settings(&app, |current| *current = settings).map(|_| ())
 }
 
 /// Меняет глобальный хоткей вкл/выкл защиты: снимает прежнюю комбинацию, ставит

@@ -48,6 +48,10 @@ pub struct DpiState {
     /// Точный активный запуск текущего generation. `None` означает stopped или
     /// промежуточное окно respawn.
     pub active_launch: Option<DpiLaunchSpec>,
+    /// Unix-время (сек) появления ПЕРВОГО процесса текущей сессии обхода. Держится,
+    /// пока `procs` непуст; сбрасывается при опустошении. Источник аптайма для UI —
+    /// переживает смену вкладок и resume из трея (в отличие от клиентского Date.now).
+    pub started_at_unix: Option<u64>,
 }
 
 impl DpiState {
@@ -68,6 +72,20 @@ impl DpiState {
             generation: self.generation,
             launch: self.active_launch.clone(),
         }
+    }
+
+    /// Поддерживает инвариант `started_at_unix = Some ⟺ procs непуст`. Возвращает
+    /// текущее значение для payload. `now` — Unix-секунды (передаём снаружи, т.к.
+    /// state не тянет системное время). Первый процесс сессии фиксирует старт;
+    /// полное опустошение — сбрасывает. Промежуточный respawn (procs временно
+    /// пуст, затем снова полон) НЕ сохраняет старое время — это новый запуск.
+    pub fn sync_started_at(&mut self, now: u64) -> Option<u64> {
+        if self.procs.is_empty() {
+            self.started_at_unix = None;
+        } else if self.started_at_unix.is_none() {
+            self.started_at_unix = Some(now);
+        }
+        self.started_at_unix
     }
 
     /// Отделяет неожиданно завершившийся Zapret2 только если PID и generation
@@ -149,6 +167,10 @@ pub struct AppState {
     pub adaptive: Mutex<Option<crate::adaptive_strategy::runtime::AdaptiveHandle>>,
     /// Последний снимок сетевой идентичности (Менеджер сети, L2).
     pub netid: Mutex<Option<crate::netid::NetIdentity>>,
+    /// Сериализует резолв сетевой идентичности: без него два конкурентных
+    /// вызова оба видят пустой кэш и дважды дёргают ipinfo (лишний внешний
+    /// round-trip + дребезг значения). Держится через `.await` резолва.
+    pub netid_gate: tokio::sync::Mutex<()>,
 }
 
 impl AppState {
@@ -167,6 +189,7 @@ impl AppState {
             brain: Mutex::new(None),
             adaptive: Mutex::new(None),
             netid: Mutex::new(None),
+            netid_gate: tokio::sync::Mutex::new(()),
         }
     }
 }
@@ -246,5 +269,66 @@ mod tests {
         state.stopping.insert(11);
         assert_eq!(state.detach_unexpected_zapret2(11, next), None);
         assert!(!state.procs.contains_key(&11));
+    }
+
+    fn insert_proc(state: &mut DpiState, pid: u32) {
+        let generation = state.generation;
+        state.procs.insert(
+            pid,
+            DpiProc {
+                pid,
+                category: "discord".into(),
+                config_file: "discord_1.conf".into(),
+                generation,
+                engine: "legacy".into(),
+            },
+        );
+    }
+
+    #[test]
+    fn started_at_set_on_first_proc_and_cleared_when_empty() {
+        let mut state = DpiState::default();
+        // Нет процессов — старт не зафиксирован.
+        assert_eq!(state.sync_started_at(1000), None);
+        assert_eq!(state.started_at_unix, None);
+
+        // Первый процесс фиксирует время старта.
+        insert_proc(&mut state, 10);
+        assert_eq!(state.sync_started_at(1000), Some(1000));
+
+        // Опустошение сбрасывает.
+        state.procs.clear();
+        assert_eq!(state.sync_started_at(2000), None);
+        assert_eq!(state.started_at_unix, None);
+    }
+
+    #[test]
+    fn started_at_not_overwritten_while_session_stays_active() {
+        let mut state = DpiState::default();
+        insert_proc(&mut state, 10);
+        assert_eq!(state.sync_started_at(1000), Some(1000));
+
+        // Второй процесс той же сессии НЕ сдвигает время старта.
+        insert_proc(&mut state, 11);
+        assert_eq!(state.sync_started_at(1500), Some(1000));
+
+        // Уход одного из двух процессов — сессия жива, время старта прежнее.
+        state.procs.remove(&11);
+        assert_eq!(state.sync_started_at(1800), Some(1000));
+    }
+
+    #[test]
+    fn started_at_resets_for_new_session_after_full_stop() {
+        let mut state = DpiState::default();
+        insert_proc(&mut state, 10);
+        assert_eq!(state.sync_started_at(1000), Some(1000));
+
+        // Полная остановка (respawn): procs пуст → сброс.
+        state.procs.clear();
+        assert_eq!(state.sync_started_at(1200), None);
+
+        // Новый запуск фиксирует НОВОЕ время, а не старое.
+        insert_proc(&mut state, 20);
+        assert_eq!(state.sync_started_at(1500), Some(1500));
     }
 }
