@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useDpiStore } from "../../store/dpiStore";
 import { useProxyStore } from "../../store/proxyStore";
-import { createRenderLoop, FPS_FIELD, type RenderLoop } from "../render";
+import { createRenderLoop, frameQualityScale, type QualityTier, type RenderLoop } from "../render";
 import { createSpriteCache } from "./glowSprite";
 
 // Реактивная среда «Aurora»: звёздное небо, над ним — шторы полярного сияния с
@@ -58,7 +58,7 @@ export function AuroraField() {
 
     // Намеренно рендерим фон в пониженном разрешении: блюр/виньетка скрывают
     // мягкость, зато fill-rate падает в разы (главный источник лагов в WebView2).
-    const Q = 0.6;
+    let backingScale = 0.75 * frameQualityScale("high");
     let w = 0;
     let h = 0;
 
@@ -89,13 +89,13 @@ export function AuroraField() {
       });
     };
 
-    const resize = () => {
+    const resize = (reseed = true) => {
       w = canvas.clientWidth;
       h = canvas.clientHeight;
-      canvas.width = Math.max(1, Math.round(w * Q));
-      canvas.height = Math.max(1, Math.round(h * Q));
-      ctx.setTransform(Q, 0, 0, Q, 0, 0); // рисуем в координатах CSS-пикселей
-      seedStars();
+      canvas.width = Math.max(1, Math.round(w * backingScale));
+      canvas.height = Math.max(1, Math.round(h * backingScale));
+      ctx.setTransform(backingScale, 0, 0, backingScale, 0, 0); // рисуем в координатах CSS-пикселей
+      if (reseed) seedStars();
     };
     resize();
     // resize меняет размеры канваса и стирает кадр — под reduce-motion
@@ -275,9 +275,13 @@ export function AuroraField() {
 
       ctx.globalCompositeOperation = "source-over";
     };
-    // FPS_FIELD (без капа): полноэкранный фон под backdrop-filter-панелями; циклы
-    // полностью встают в трее по renderActive (см. render.ts).
-    const loop = createRenderLoop(draw, { fps: FPS_FIELD });
+    const onQualityChange = (qualityTier: QualityTier) => {
+      const nextScale = 0.75 * frameQualityScale(qualityTier);
+      if (Math.abs(nextScale - backingScale) < 0.001) return;
+      backingScale = nextScale;
+      resize(false);
+    };
+    const loop = createRenderLoop(draw, { role: "field", onQualityChange });
     loopRef.current = loop;
     loop.start();
 

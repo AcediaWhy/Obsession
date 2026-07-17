@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useDpiStore } from "../../store/dpiStore";
 import { useProxyStore } from "../../store/proxyStore";
-import { createRenderLoop, FPS_FIELD, type RenderLoop } from "../render";
+import { createRenderLoop, frameQualityScale, type QualityTier, type RenderLoop } from "../render";
 
 // Фон темы «Fallen Down» (вайб Undertale, абстрактно): чёрная пустота, в которой
 // редко и медленно мерцают серебристо-белые пиксельные звёзды-сверкания — как
@@ -26,6 +26,7 @@ export function FallenField() {
 
     let w = 0;
     let h = 0;
+    let backingScale = frameQualityScale("high");
 
     // Звезда-сверкание: позиция, размер блока, фазы мерцания и редкой вспышки.
     type Star = {
@@ -60,16 +61,14 @@ export function FallenField() {
       });
     };
 
-    const resize = () => {
+    const resize = (reseed = true) => {
       w = canvas.clientWidth;
       h = canvas.clientHeight;
-      // Рисуем 1:1 в CSS-пикселях (без множителя dpr): на HiDPI это в разы
-      // меньше fill-rate, а пиксель-арт звёзд дотягивает imageRendering:pixelated.
-      canvas.width = Math.max(1, w);
-      canvas.height = Math.max(1, h);
-      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      canvas.width = Math.max(1, Math.round(w * backingScale));
+      canvas.height = Math.max(1, Math.round(h * backingScale));
+      ctx.setTransform(backingScale, 0, 0, backingScale, 0, 0);
       ctx.imageSmoothingEnabled = false;
-      seed();
+      if (reseed) seed();
     };
     resize();
     // resize стирает кадр — под reduce-motion дорисуем стоп-кадр (живому — no-op).
@@ -129,8 +128,13 @@ export function FallenField() {
 
       ctx.globalCompositeOperation = "source-over";
     };
-    // Кап 60 fps: полноэкранный фон под backdrop-filter-панелями (см. AuroraField).
-    const loop = createRenderLoop(draw, { fps: FPS_FIELD });
+    const onQualityChange = (qualityTier: QualityTier) => {
+      const nextScale = frameQualityScale(qualityTier);
+      if (Math.abs(nextScale - backingScale) < 0.001) return;
+      backingScale = nextScale;
+      resize(false);
+    };
+    const loop = createRenderLoop(draw, { role: "field", onQualityChange });
     loopRef.current = loop;
     loop.start();
 

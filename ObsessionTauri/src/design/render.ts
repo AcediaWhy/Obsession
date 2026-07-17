@@ -14,7 +14,14 @@
 import { useSyncExternalStore } from "react";
 
 import { useSettingsStore } from "../store/settingsStore";
-import { frameScheduler, type FrameLoop as SchedulerFrameLoop } from "./frameScheduler";
+import {
+  frameScheduler,
+  type FrameLoop as SchedulerFrameLoop,
+  type FrameLoopOptions as SchedulerFrameLoopOptions,
+} from "./frameScheduler";
+
+export { frameQualityScale } from "./frameScheduler";
+export type { FrameRole, QualityTier } from "./frameScheduler";
 
 type Listener = (active: boolean) => void;
 
@@ -152,17 +159,9 @@ export function useRenderHidden(): boolean {
 }
 
 // ─── Политика частоты кадров тем ─────────────────────────────────────────────
-// 0 = динамический target FrameScheduler. High tier сохраняет нативные
-// 60–180 Гц, а при измеренной перегрузке переходит на устойчивый делитель
-// refresh rate. Явный cap тоже выравнивается к совместимой cadence, поэтому
-// Rain не чередует неровные интервалы на 144/165 Гц.
-export const FPS_FIELD = 0; // полноэкранные фоны — scheduler target
-export const FPS_CORE_HERO = 0; // ядро-«глаз» (size >= 160, экраны Dpi/Telegram)
-export const FPS_CORE_PREVIEW = 0; // мини-превью в Настройках (живых максимум два)
+// FrameScheduler выбирает cadence по роли и измеренной герцовке. Rain пока
+// сохраняет отдельный совместимый cap до объединения pipeline в Task 3.3.
 export const CORE_HERO_MIN_SIZE = 160;
-export const coreFps = (size: number) =>
-  size >= CORE_HERO_MIN_SIZE ? FPS_CORE_HERO : FPS_CORE_PREVIEW;
-// Дождь (WebGL): рендер и симуляция капель на одном капе.
 export const FPS_RAIN = 60;
 
 export type RenderLoop = SchedulerFrameLoop;
@@ -187,7 +186,7 @@ export type RenderLoop = SchedulerFrameLoop;
  */
 export function createRenderLoop(
   draw: (dt: number, now: number) => void,
-  opts: { fps?: number; maxDt?: number; paused?: boolean } = {},
+  opts: SchedulerFrameLoopOptions = {},
 ): RenderLoop {
   return frameScheduler.createLoop(draw, opts);
 }

@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useDpiStore } from "../../store/dpiStore";
 import { useProxyStore } from "../../store/proxyStore";
-import { createRenderLoop, FPS_FIELD, type RenderLoop } from "../render";
+import { createRenderLoop, frameQualityScale, type QualityTier, type RenderLoop } from "../render";
 
 // Запасной 2D-фон темы «Rain» (id japan) — показывается, только если WebGL
 // недоступен или 3D-сцена упала. Косые струи дождя на холодном сланце, редкая
@@ -22,7 +22,7 @@ export function RainField2D() {
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    const Q = 0.6;
+    let backingScale = 0.75 * frameQualityScale("high");
     let w = 0;
     let h = 0;
 
@@ -40,13 +40,13 @@ export function RainField2D() {
       }));
     };
 
-    const resize = () => {
+    const resize = (reseed = true) => {
       w = canvas.clientWidth;
       h = canvas.clientHeight;
-      canvas.width = Math.max(1, Math.round(w * Q));
-      canvas.height = Math.max(1, Math.round(h * Q));
-      ctx.setTransform(Q, 0, 0, Q, 0, 0);
-      seed();
+      canvas.width = Math.max(1, Math.round(w * backingScale));
+      canvas.height = Math.max(1, Math.round(h * backingScale));
+      ctx.setTransform(backingScale, 0, 0, backingScale, 0, 0);
+      if (reseed) seed();
     };
     resize();
     // resize стирает кадр — под reduce-motion дорисуем стоп-кадр (живому — no-op).
@@ -109,8 +109,13 @@ export function RainField2D() {
       }
       ctx.globalCompositeOperation = "source-over";
     };
-    // Кап 60 fps: полноэкранный фон под backdrop-filter-панелями (см. AuroraField).
-    const loop = createRenderLoop(draw, { fps: FPS_FIELD });
+    const onQualityChange = (qualityTier: QualityTier) => {
+      const nextScale = 0.75 * frameQualityScale(qualityTier);
+      if (Math.abs(nextScale - backingScale) < 0.001) return;
+      backingScale = nextScale;
+      resize(false);
+    };
+    const loop = createRenderLoop(draw, { role: "field", onQualityChange });
     loopRef.current = loop;
     loop.start();
 

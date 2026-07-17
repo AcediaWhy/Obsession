@@ -5,6 +5,7 @@ import {
   classifyRefreshRate,
   chooseCompatibleCadence,
   chooseTargetCadence,
+  frameQualityScale,
   type FrameHost,
 } from "./frameScheduler";
 
@@ -181,6 +182,51 @@ describe("FrameScheduler", () => {
     expect(snapshot.telemetry.droppedFrames).toBeGreaterThan(0);
     expect(snapshot.telemetry.p95FrameIntervalMs).toBeGreaterThanOrEqual(16.7);
     expect(snapshot.telemetry.intervalHistogram.reduce((sum, count) => sum + count, 0)).toBe(4);
+  });
+
+  it("schedules field and preview workloads at distinct compatible cadences", () => {
+    const host = new FakeFrameHost();
+    const scheduler = new FrameScheduler(host, { initialRefreshHz: 144 });
+    let fieldDraws = 0;
+    let previewDraws = 0;
+    scheduler.createLoop(() => {
+      fieldDraws += 1;
+    }, { role: "field" }).start();
+    scheduler.createLoop(() => {
+      previewDraws += 1;
+    }, { role: "preview" }).start();
+
+    stepFrames(host, 144, 10);
+
+    expect(fieldDraws).toBe(10);
+    expect(previewDraws).toBe(5);
+  });
+
+  it("delivers quality changes to backing-store callbacks only on tier changes", () => {
+    const host = new FakeFrameHost();
+    const scheduler = new FrameScheduler(host, {
+      initialRefreshHz: 120,
+      telemetryWindowSize: 4,
+      qualityCooldownMs: 1_000,
+    });
+    const quality: string[] = [];
+    scheduler.createLoop(() => {}, {
+      role: "field",
+      onQualityChange: (tier) => quality.push(tier),
+    }).start();
+
+    host.step(1000 / 120);
+    host.step(1000 / 120);
+    expect(quality).toEqual(["high"]);
+
+    recordWindow(scheduler, 100, 25, 12);
+    host.step(1000 / 120);
+    host.step(1000 / 120);
+
+    expect(quality).toEqual(["high", "balanced"]);
+    expect(frameQualityScale("high")).toBe(1);
+    expect(frameQualityScale("balanced")).toBe(0.8);
+    expect(frameQualityScale("low")).toBe(0.65);
   });
 
   it("keeps explicit loop fps compatible with the measured display", () => {

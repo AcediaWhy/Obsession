@@ -1,4 +1,5 @@
 export type QualityTier = "high" | "balanced" | "low";
+export type FrameRole = "field" | "hero" | "preview" | "secondary";
 
 export type FrameTelemetry = {
   samples: number;
@@ -38,6 +39,8 @@ export type FrameLoopOptions = {
   fps?: number;
   maxDt?: number;
   paused?: boolean;
+  role?: FrameRole;
+  onQualityChange?: (qualityTier: QualityTier) => void;
 };
 
 export type FrameSchedulerOptions = {
@@ -54,6 +57,9 @@ type FrameTask = {
   draw: (dt: number, now: number) => void;
   requestedFps: number;
   maxDt: number;
+  role: FrameRole;
+  onQualityChange?: (qualityTier: QualityTier) => void;
+  appliedQuality: QualityTier | null;
   paused: boolean;
   started: boolean;
   dirty: boolean;
@@ -149,6 +155,12 @@ export function chooseTargetCadence(refreshHz: number, qualityTier: QualityTier)
   return roundCadence(refreshHz / divisor);
 }
 
+export function frameQualityScale(qualityTier: QualityTier): number {
+  if (qualityTier === "high") return 1;
+  if (qualityTier === "balanced") return 0.8;
+  return 0.65;
+}
+
 export class FrameScheduler {
   private readonly host: FrameHost;
   private readonly options: Required<FrameSchedulerOptions>;
@@ -216,6 +228,9 @@ export class FrameScheduler {
       draw,
       requestedFps: options.fps && options.fps > 0 ? options.fps : 0,
       maxDt: options.maxDt ?? 0.25,
+      role: options.role ?? "field",
+      onQualityChange: options.onQualityChange,
+      appliedQuality: null,
       paused: !!options.paused,
       started: false,
       dirty: false,
@@ -296,12 +311,19 @@ export class FrameScheduler {
       intervalHistogram: histogram,
     };
     const qualityTier = this.evaluateQuality(telemetry, now);
+    const qualityChanged = qualityTier !== this.snapshot.qualityTier;
     this.snapshot = {
       ...this.snapshot,
       qualityTier,
       targetFps: chooseTargetCadence(this.snapshot.refreshHz, qualityTier),
       telemetry,
     };
+    if (qualityChanged) {
+      for (const task of this.tasks.values()) {
+        if (task.started) task.dirty = true;
+      }
+      this.ensureFrame();
+    }
     this.notify();
   }
 
@@ -399,10 +421,25 @@ export class FrameScheduler {
     if (task.requestedFps > 0) {
       return chooseCompatibleCadence(this.snapshot.refreshHz, task.requestedFps);
     }
+    if (task.role === "preview" || task.role === "secondary") {
+      return chooseCompatibleCadence(this.snapshot.refreshHz, Math.min(60, this.snapshot.targetFps));
+    }
     return this.snapshot.targetFps;
   }
 
   private drawTask(task: FrameTask, now: number): void {
+    if (task.appliedQuality !== this.snapshot.qualityTier) {
+      task.appliedQuality = this.snapshot.qualityTier;
+      task.lastDraw = 0;
+      task.nextDue = 0;
+      try {
+        task.onQualityChange?.(this.snapshot.qualityTier);
+      } catch (error) {
+        task.started = false;
+        console.error("FrameScheduler stopped a faulting quality callback", error);
+        return;
+      }
+    }
     const fps = this.cadenceFor(task);
     const frameMs = fps > 0 ? 1000 / fps : 0;
     const epsilon = frameMs ? Math.min(2, frameMs * 0.25) : 0;

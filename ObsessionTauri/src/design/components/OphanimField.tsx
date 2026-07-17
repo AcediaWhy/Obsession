@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useDpiStore } from "../../store/dpiStore";
 import { useProxyStore } from "../../store/proxyStore";
-import { createRenderLoop, FPS_FIELD, type RenderLoop } from "../render";
+import { createRenderLoop, frameQualityScale, type QualityTier, type RenderLoop } from "../render";
 import { createSpriteCache } from "./glowSprite";
 import { drawGreatEye } from "./ophanimEye";
 
@@ -96,15 +96,15 @@ export function OphanimField() {
     if (!ctx) return;
 
     // Пониженное разрешение — как в AuroraField: главный рычаг против лагов.
-    const Q = 0.6;
+    let backingScale = 0.75 * frameQualityScale("high");
     let w = 0;
     let h = 0;
     const resize = () => {
       w = canvas.clientWidth;
       h = canvas.clientHeight;
-      canvas.width = Math.max(1, Math.round(w * Q));
-      canvas.height = Math.max(1, Math.round(h * Q));
-      ctx.setTransform(Q, 0, 0, Q, 0, 0);
+      canvas.width = Math.max(1, Math.round(w * backingScale));
+      canvas.height = Math.max(1, Math.round(h * backingScale));
+      ctx.setTransform(backingScale, 0, 0, backingScale, 0, 0);
     };
     resize();
     // resize стирает кадр — под reduce-motion дорисуем стоп-кадр (живому — no-op).
@@ -426,8 +426,13 @@ export function OphanimField() {
       }
       ctx.globalCompositeOperation = "source-over";
     };
-    // Кап 60 fps: полноэкранный фон под backdrop-filter-панелями (см. AuroraField).
-    const loop = createRenderLoop(draw, { fps: FPS_FIELD });
+    const onQualityChange = (qualityTier: QualityTier) => {
+      const nextScale = 0.75 * frameQualityScale(qualityTier);
+      if (Math.abs(nextScale - backingScale) < 0.001) return;
+      backingScale = nextScale;
+      resize();
+    };
+    const loop = createRenderLoop(draw, { role: "field", onQualityChange });
     loopRef.current = loop;
     loop.start();
 

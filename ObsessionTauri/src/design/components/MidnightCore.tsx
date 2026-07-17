@@ -1,6 +1,13 @@
 import { useEffect, useRef } from "react";
 import { motion } from "framer-motion";
-import { CORE_HERO_MIN_SIZE, coreFps, createRenderLoop, useRenderActive, type RenderLoop } from "../render";
+import {
+  CORE_HERO_MIN_SIZE,
+  createRenderLoop,
+  frameQualityScale,
+  useRenderActive,
+  type QualityTier,
+  type RenderLoop,
+} from "../render";
 import { createSpriteCache } from "./glowSprite";
 
 type Props = {
@@ -117,12 +124,28 @@ function MidnightCanvas({ active, busy, size, paused }: { active: boolean; busy:
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    // Превью (size<160) рисуем в 1×: мягким свечениям хватает, а пикселей — и
-    // работы композитору — вчетверо меньше. Герой остаётся чётким (dpr до 2).
-    const dpr = size >= CORE_HERO_MIN_SIZE ? Math.min(window.devicePixelRatio || 1, 2) : 1;
-    canvas.width = size * dpr;
-    canvas.height = size * dpr;
-    ctx.scale(dpr, dpr);
+    // Превью стартует в 1× и может снизиться до 0.65×; hero использует DPR
+    // до 2×, но никогда не опускается ниже 1×.
+    const role = size >= CORE_HERO_MIN_SIZE ? "hero" : "preview";
+    const baseDpr = role === "hero" ? Math.min(window.devicePixelRatio || 1, 2) : 1;
+    let backingDpr = 0;
+    let mask: CanvasGradient;
+    const resizeBacking = (qualityTier: QualityTier) => {
+      const qualityScale = frameQualityScale(qualityTier);
+      const nextDpr = role === "hero"
+        ? Math.max(1, baseDpr * qualityScale)
+        : Math.max(0.65, qualityScale);
+      if (Math.abs(nextDpr - backingDpr) < 0.001) return;
+      backingDpr = nextDpr;
+      canvas.width = Math.max(1, Math.round(size * backingDpr));
+      canvas.height = Math.max(1, Math.round(size * backingDpr));
+      ctx.setTransform(backingDpr, 0, 0, backingDpr, 0, 0);
+      mask = ctx.createRadialGradient(size / 2, size / 2, size * 0.2, size / 2, size / 2, size * 0.5);
+      mask.addColorStop(0, "rgba(0,0,0,1)");
+      mask.addColorStop(0.72, "rgba(0,0,0,1)");
+      mask.addColorStop(1, "rgba(0,0,0,0)");
+    };
+    resizeBacking("high");
 
     const cx = size / 2;
     const cy = size / 2;
@@ -151,11 +174,6 @@ function MidnightCanvas({ active, busy, size, paused }: { active: boolean; busy:
     // Сеем от текущего состояния — маунт при включённом щите сразу тёплый.
     let warm = stateRef.current.active ? 1 : 0;
 
-    // Маска-феатеринг статична — строим один раз.
-    const mask = ctx.createRadialGradient(cx, cy, size * 0.2, cx, cy, size * 0.5);
-    mask.addColorStop(0, "rgba(0,0,0,1)");
-    mask.addColorStop(0.72, "rgba(0,0,0,1)");
-    mask.addColorStop(1, "rgba(0,0,0,0)");
 
     const draw = (dt: number) => {
       const { active: on, busy: loading } = stateRef.current;
@@ -224,9 +242,12 @@ function MidnightCanvas({ active, busy, size, paused }: { active: boolean; busy:
       ctx.fillRect(0, 0, size, size);
       ctx.globalCompositeOperation = "source-over";
     };
-    // paused из Настроек не передаётся — превью живут живыми (helper крутит цикл на
-    // coreFps). paused НЕ в deps: ховер не пересоздаёт эффект. В трее цикл гасит гейт.
-    const loop = createRenderLoop(draw, { fps: coreFps(size), paused: pausedRef.current });
+    // paused НЕ в deps: ховер не пересоздаёт эффект. В трее цикл гасит общий scheduler.
+    const loop = createRenderLoop(draw, {
+      role,
+      onQualityChange: resizeBacking,
+      paused: pausedRef.current,
+    });
     loopRef.current = loop;
     loop.start();
     return () => {
