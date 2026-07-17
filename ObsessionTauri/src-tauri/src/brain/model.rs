@@ -4,8 +4,8 @@
 //!
 //! Гранулярность: одна глобальная [`Phase`] (жизненный цикл winws + предохранитель)
 //! + per-category [`CatState`] (здоровье и позиция на лестнице). Один winws-набор
-//! на весь сеанс → переключение респавнит весь набор. Блэкхол морозит ВСЁ (дроп по
-//! IP-направлению ортогонален категориям); Reset скоупится на категорию.
+//!   на весь сеанс → переключение респавнит весь набор. Блэкхол морозит ВСЁ (дроп по
+//!   IP-направлению ортогонален категориям); Reset скоупится на категорию.
 //!
 //! Строгий приоритет в `evaluate`: (1) предохранитель по блэкхолу → (2) Confirming
 //! → (3) Healthy/Suspect-переключение → (4) выход из Frozen пробой. Это прямая
@@ -498,10 +498,10 @@ impl Brain {
         let mut worst: Option<(String, u32)> = None;
         for cat in &self.order {
             let n = self.window.resets_for(|d| self.domain_in_cat(d, cat));
-            if n >= self.cfg.switch_after_resets {
-                if worst.as_ref().map(|(_, m)| n > *m).unwrap_or(true) {
-                    worst = Some((cat.clone(), n));
-                }
+            if n >= self.cfg.switch_after_resets
+                && worst.as_ref().map(|(_, m)| n > *m).unwrap_or(true)
+            {
+                worst = Some((cat.clone(), n));
             }
         }
 

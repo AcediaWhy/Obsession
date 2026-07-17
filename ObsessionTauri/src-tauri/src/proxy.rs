@@ -75,8 +75,8 @@ fn firewall_rule_name(port: u16, generation: u64) -> String {
 /// тестируется без запуска netsh (F.3). Правило строго ограничено:
 /// - `profile=private` — только доверенные сети (не Public/Domain);
 /// - `remoteip=<subnet>` — только локальная подсеть, а не весь интернет.
-/// `subnet` = CIDR выбранного интерфейса; при `None` — безопасный keyword
-/// `LocalSubnet` (Windows сам ограничивает текущей локальной подсетью).
+///   `subnet` = CIDR выбранного интерфейса; при `None` — безопасный keyword
+///   `LocalSubnet` (Windows сам ограничивает текущей локальной подсетью).
 fn build_add_rule_args(port: u16, name: &str, subnet: Option<&str>) -> Vec<String> {
     let remoteip = subnet.unwrap_or("LocalSubnet");
     vec![

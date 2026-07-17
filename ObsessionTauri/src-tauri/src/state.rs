@@ -318,8 +318,10 @@ mod tests {
 
     #[test]
     fn legacy_selection_survives_generation_changes() {
-        let mut state = DpiState::default();
-        state.last_legacy_selection = vec![("discord".into(), "discord_1.conf".into())];
+        let mut state = DpiState {
+            last_legacy_selection: vec![("discord".into(), "discord_1.conf".into())],
+            ..Default::default()
+        };
         state.advance_generation();
         assert_eq!(state.last_legacy_selection[0].0, "discord");
     }

@@ -273,6 +273,9 @@ impl AdaptiveStrategyCache {
         )
     }
 
+    // Cache identity, scope and evidence stay explicit at this boundary. Grouping
+    // them would only hide the persisted fields without simplifying call sites.
+    #[allow(clippy::too_many_arguments)]
     pub fn put_confirmed_scoped(
         &mut self,
         network_key: &str,

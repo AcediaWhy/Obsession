@@ -408,15 +408,15 @@ mod tests {
 
     /// Собирает IPv4/TCP-пакет: 20б IP-заголовок + 20б TCP + payload.
     fn ipv4_tcp(
-        src: [u8; 4],
-        dst: [u8; 4],
-        sport: u16,
-        dport: u16,
+        endpoints: ([u8; 4], [u8; 4]),
+        ports: (u16, u16),
         ttl: u8,
         seq: u32,
         syn: bool,
         payload: &[u8],
     ) -> Vec<u8> {
+        let (src, dst) = endpoints;
+        let (sport, dport) = ports;
         let mut p = Vec::new();
         // IP header
         p.push(0x45); // version 4, IHL 5
@@ -445,10 +445,8 @@ mod tests {
     #[test]
     fn decode_outbound_normalizes_local_remote() {
         let pkt = ipv4_tcp(
-            [192, 168, 0, 5],
-            [203, 0, 113, 9],
-            51000,
-            443,
+            ([192, 168, 0, 5], [203, 0, 113, 9]),
+            (51000, 443),
             128,
             1000,
             false,
@@ -469,10 +467,8 @@ mod tests {
     fn decode_inbound_maps_to_same_flow_key() {
         // Ответный пакет того же соединения: src/dst перевёрнуты, direction=inbound.
         let pkt = ipv4_tcp(
-            [203, 0, 113, 9],
-            [192, 168, 0, 5],
-            443,
-            51000,
+            ([203, 0, 113, 9], [192, 168, 0, 5]),
+            (443, 51000),
             54,
             5000,
             false,
@@ -489,11 +485,11 @@ mod tests {
     #[test]
     fn decode_rejects_non_tcp_and_truncated() {
         // UDP (protocol 17) — не наш.
-        let mut udp = ipv4_tcp([1, 1, 1, 1], [2, 2, 2, 2], 1, 2, 64, 0, false, b"");
+        let mut udp = ipv4_tcp(([1, 1, 1, 1], [2, 2, 2, 2]), (1, 2), 64, 0, false, b"");
         udp[9] = 17;
         assert!(decode_ip_tcp(&udp, true).is_none());
         // Усечённые буферы не паникуют.
-        let full = ipv4_tcp([1, 1, 1, 1], [2, 2, 2, 2], 1, 2, 64, 0, true, b"x");
+        let full = ipv4_tcp(([1, 1, 1, 1], [2, 2, 2, 2]), (1, 2), 64, 0, true, b"x");
         for cut in 0..full.len() {
             let _ = decode_ip_tcp(&full[..cut], true);
         }

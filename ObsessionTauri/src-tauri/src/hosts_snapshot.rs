@@ -268,8 +268,7 @@ pub fn snapshot_and_apply(
     if sha256_hex(&readback) != sha256_hex(prepared) {
         // Немедленный откат к pre-op: то, что записали, не читается обратно.
         write_atomic(hosts_path, &current)?;
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
+        return Err(io::Error::other(
             "записанный hosts не совпал с подготовленным — выполнен откат к pre-op",
         ));
     }
@@ -331,8 +330,10 @@ mod tests {
     fn metadata_roundtrip() {
         let dir = temp_dir("roundtrip");
         let state_path = dir.join("hosts-state.json");
-        let mut state = HostsManagedState::default();
-        state.original = Some(sref("orig", "aa", None));
+        let mut state = HostsManagedState {
+            original: Some(sref("orig", "aa", None)),
+            ..Default::default()
+        };
         let ps = state.providers.entry("malw".into()).or_default();
         ps.last_known_good = Some(sref("op1", "bb", Some("malw")));
         ps.applied_sha256 = Some("bb".into());

@@ -51,10 +51,9 @@ pub fn is_winws_fake(pkt: &ParsedPacket, ctx: &FakeContext) -> bool {
     }
 
     // 2. Относительный провал TTL против baseline из SYN.
-    if ctx.base_ttl > 0 && pkt.ttl > 0 {
-        if ctx.base_ttl.saturating_sub(pkt.ttl) >= TTL_DROP_THRESHOLD {
-            return true;
-        }
+    if ctx.base_ttl > 0 && pkt.ttl > 0 && ctx.base_ttl.saturating_sub(pkt.ttl) >= TTL_DROP_THRESHOLD
+    {
+        return true;
     }
 
     // 3. Вторичный хинт: badseq — seq уехал далеко за пределы разумного окна

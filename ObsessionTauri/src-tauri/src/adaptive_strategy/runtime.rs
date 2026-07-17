@@ -521,12 +521,14 @@ pub fn start(app: AppHandle) -> AdaptiveHandle {
                 shutdown_requested = true;
             }
             let actions = handle_event(
-                &app,
+                EventRuntime {
+                    app: &app,
+                    evidence: &evidence,
+                    control_tx: &control_tx,
+                },
                 &mut model,
                 &mut context,
                 &mut detector,
-                &evidence,
-                &control_tx,
                 event,
                 elapsed_ms(started),
             )
@@ -841,16 +843,25 @@ fn probe_completion_matches_status(
         && status.candidate_id.as_deref() == Some(candidate_id)
 }
 
+struct EventRuntime<'a> {
+    app: &'a AppHandle,
+    evidence: &'a Arc<EvidenceWindow>,
+    control_tx: &'a mpsc::Sender<RuntimeEvent>,
+}
+
 async fn handle_event(
-    app: &AppHandle,
+    runtime: EventRuntime<'_>,
     model: &mut RecoveryModel,
     context: &mut SessionContext,
     detector: &mut PassiveDetector,
-    evidence: &Arc<EvidenceWindow>,
-    control_tx: &mpsc::Sender<RuntimeEvent>,
     event: RuntimeEvent,
     now: u64,
 ) -> Vec<RecoveryAction> {
+    let EventRuntime {
+        app,
+        evidence,
+        control_tx,
+    } = runtime;
     match event {
         RuntimeEvent::Observation {
             domain,
@@ -2124,10 +2135,12 @@ mod tests {
     }
     #[test]
     fn quic_failure_enters_recovery_but_dns_failure_does_not() {
-        let mut result = crate::adaptive_strategy::model::CandidateProbeResult::default();
-        result.transport = StrategyTransport::Quic;
-        result.dns_ok = true;
-        result.failure_stage = crate::adaptive_strategy::evidence::FailureStage::Quic;
+        let mut result = crate::adaptive_strategy::model::CandidateProbeResult {
+            transport: StrategyTransport::Quic,
+            dns_ok: true,
+            failure_stage: crate::adaptive_strategy::evidence::FailureStage::Quic,
+            ..Default::default()
+        };
         assert_eq!(
             classify_session_mode(StrategyTransport::Quic, &result),
             Ok(SearchSessionMode::Recovery)
