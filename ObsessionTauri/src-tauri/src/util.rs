@@ -321,6 +321,19 @@ fn append_log_file(app: &AppHandle, ts: &str, level: &str, source: &str, message
     }
 }
 
+/// Значение subsystem вместе с независимой monotonic revision.
+#[derive(Clone, Debug, Serialize)]
+pub struct VersionedSection<T> {
+    pub revision: u64,
+    pub value: T,
+}
+
+impl<T> VersionedSection<T> {
+    pub fn new(revision: u64, value: T) -> Self {
+        Self { revision, value }
+    }
+}
+
 #[derive(Clone, Serialize)]
 pub struct DpiProcPublic {
     pub pid: u32,

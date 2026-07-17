@@ -49,6 +49,27 @@ export interface HostsStatus {
   rollback_available: boolean;
 }
 
+export interface VersionedSection<T> {
+  revision: number;
+  value: T;
+}
+
+export interface BootstrapSettings {
+  settings: Settings;
+  elevated: boolean;
+  autostart: boolean;
+}
+
+export interface BootstrapSnapshot {
+  schemaVersion: number;
+  settings: VersionedSection<BootstrapSettings>;
+  dpi: VersionedSection<DpiStatus>;
+  proxy: VersionedSection<ProxyStatus>;
+  brain: VersionedSection<BrainStatus | null>;
+  adaptive: VersionedSection<AdaptiveStatus | null>;
+  hosts: VersionedSection<HostsStatus>;
+}
+
 export interface LogEvent {
   level: "info" | "success" | "warn" | "error";
   source: string;
@@ -284,6 +305,8 @@ export interface ConfStat {
 export const api = {
   getConfig: () => invoke<AppConfig>("get_config"),
   runtimeGetSnapshot: () => invoke<RuntimeSnapshot>("runtime_get_snapshot"),
+  bootstrapGetSnapshot: () =>
+    invoke<BootstrapSnapshot>("bootstrap_get_snapshot"),
   isElevated: () => invoke<boolean>("is_elevated"),
   diagnose: () => invoke<DiagResult[]>("diagnose"),
   getAutostart: () => invoke<boolean>("get_autostart"),
@@ -392,25 +415,43 @@ export const on = {
   log: (cb: (e: LogEvent) => void): Promise<UnlistenFn> =>
     listen<LogEvent>("log", (e) => cb(e.payload)),
   dpiStatus: (cb: (e: DpiStatus) => void): Promise<UnlistenFn> =>
-    listen<DpiStatus>("dpi-status", (e) => {
+    listen<VersionedSection<DpiStatus>>("dpi-status", (e) => {
       bumpStatusEpoch();
-      cb(e.payload);
+      cb(e.payload.value);
     }),
+  dpiStatusVersioned: (
+    cb: (section: VersionedSection<DpiStatus>) => void,
+  ): Promise<UnlistenFn> =>
+    listen<VersionedSection<DpiStatus>>("dpi-status", (e) => cb(e.payload)),
   proxyStatus: (cb: (e: ProxyStatus) => void): Promise<UnlistenFn> =>
-    listen<ProxyStatus>("proxy-status", (e) => {
+    listen<VersionedSection<ProxyStatus>>("proxy-status", (e) => {
       bumpStatusEpoch();
-      cb(e.payload);
+      cb(e.payload.value);
     }),
+  proxyStatusVersioned: (
+    cb: (section: VersionedSection<ProxyStatus>) => void,
+  ): Promise<UnlistenFn> =>
+    listen<VersionedSection<ProxyStatus>>("proxy-status", (e) => cb(e.payload)),
   brainStatus: (cb: (s: BrainStatus) => void): Promise<UnlistenFn> =>
-    listen<BrainStatus>("brain://status", (e) => {
+    listen<VersionedSection<BrainStatus>>("brain://status", (e) => {
       bumpStatusEpoch();
-      cb(e.payload);
+      cb(e.payload.value);
     }),
+  brainStatusVersioned: (
+    cb: (section: VersionedSection<BrainStatus>) => void,
+  ): Promise<UnlistenFn> =>
+    listen<VersionedSection<BrainStatus>>("brain://status", (e) => cb(e.payload)),
   adaptiveStatus: (cb: (s: AdaptiveStatus) => void): Promise<UnlistenFn> =>
-    listen<AdaptiveStatus>("adaptive://status", (e) => {
+    listen<VersionedSection<AdaptiveStatus>>("adaptive://status", (e) => {
       bumpStatusEpoch();
-      cb(e.payload);
+      cb(e.payload.value);
     }),
+  adaptiveStatusVersioned: (
+    cb: (section: VersionedSection<AdaptiveStatus>) => void,
+  ): Promise<UnlistenFn> =>
+    listen<VersionedSection<AdaptiveStatus>>("adaptive://status", (e) =>
+      cb(e.payload),
+    ),
   adaptiveSuggestion: (
     cb: (suggestion: AdaptiveSuggestion) => void,
   ): Promise<UnlistenFn> =>
@@ -431,6 +472,7 @@ export const on = {
 export const runtime = {
   statusEpoch: (): number => statusEpoch,
   snapshot: (): Promise<RuntimeSnapshot> => api.runtimeGetSnapshot(),
+  bootstrap: (): Promise<BootstrapSnapshot> => api.bootstrapGetSnapshot(),
 };
 
 // ─── Утилиты окна / системы ────────────────────────────────────────────────

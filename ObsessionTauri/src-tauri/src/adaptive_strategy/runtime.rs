@@ -29,6 +29,7 @@ use super::rollback;
 use super::tasks::SessionTasks;
 use crate::eyes::Verdict;
 use crate::state::{AppState, DpiLaunchSpec, DpiRuntimeSnapshot};
+use crate::util::VersionedSection;
 
 const OBSERVATION_QUEUE_CAP: usize = 512;
 const CONTROL_QUEUE_CAP: usize = 64;
@@ -1642,8 +1643,9 @@ async fn execute_actions(
                 ) {
                     context.dns_cache = SessionDnsCache::new();
                 }
-                let _ = app.emit("adaptive://status", &status);
-                status_tx.send_replace(status);
+                status_tx.send_replace(status.clone());
+                let revision = app.state::<AppState>().adaptive_revision.bump();
+                let _ = app.emit("adaptive://status", VersionedSection::new(revision, status));
                 None
             }
         };

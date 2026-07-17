@@ -189,7 +189,7 @@ pub fn run() {
                 app.listen("dpi-status", move |event| {
                     let active = serde_json::from_str::<serde_json::Value>(event.payload())
                         .ok()
-                        .and_then(|v| v.get("active").and_then(|b| b.as_bool()))
+                        .and_then(|v| v.get("value")?.get("active").and_then(|b| b.as_bool()))
                         .unwrap_or(false);
                     if let Some(tm) = h.try_state::<TrayMenu>() {
                         let _ = tm.dpi.set_checked(active);
@@ -200,7 +200,7 @@ pub fn run() {
                 app.listen("proxy-status", move |event| {
                     let running = serde_json::from_str::<serde_json::Value>(event.payload())
                         .ok()
-                        .and_then(|v| v.get("running").and_then(|b| b.as_bool()))
+                        .and_then(|v| v.get("value")?.get("running").and_then(|b| b.as_bool()))
                         .unwrap_or(false);
                     if let Some(tm) = h.try_state::<TrayMenu>() {
                         let _ = tm.proxy.set_checked(running);
@@ -342,6 +342,7 @@ pub fn run() {
             commands::hosts_uninstall,
             commands::hosts_restore,
             commands::runtime_get_snapshot,
+            commands::bootstrap_get_snapshot,
             commands::get_settings,
             commands::update_settings,
             commands::set_hotkey,

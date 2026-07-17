@@ -60,7 +60,7 @@ impl Provider {
 }
 
 /// Статус ИИ-обхода для UI.
-#[derive(Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct HostsStatus {
     pub provider: String,
     /// "installed" | "outdated" | "not_installed" | "offline"
@@ -326,6 +326,7 @@ pub async fn install(app: &AppHandle, p: Provider) -> Result<(), String> {
         "hosts",
         "hosts-файл обновлён (транзакционно), DNS кэш очищен.",
     );
+    app.state::<AppState>().hosts_revision.bump();
     Ok(())
 }
 
@@ -349,6 +350,7 @@ pub async fn uninstall(app: &AppHandle) -> Result<(), String> {
             "hosts",
             "hosts восстановлен к исходной версии.",
         );
+        app.state::<AppState>().hosts_revision.bump();
         return Ok(());
     }
 
@@ -373,6 +375,7 @@ pub async fn uninstall(app: &AppHandle) -> Result<(), String> {
     }
     let _ = snap::save_state(&state_path, &state);
     crate::dpi::flush_dns();
+    app.state::<AppState>().hosts_revision.bump();
     Ok(())
 }
 
@@ -400,7 +403,46 @@ pub async fn restore_last_known_good(app: &AppHandle, p: Provider) -> Result<(),
         "hosts",
         "Восстановлена последняя рабочая версия hosts.",
     );
+    app.state::<AppState>().hosts_revision.bump();
     Ok(())
+}
+
+/// Быстрый локальный hosts snapshot для startup: без сетевого refresh.
+pub fn snapshot_status(app: &AppHandle, p: Provider) -> HostsStatus {
+    let rollback_available = {
+        let (state_path, _) = state_paths(app);
+        snap::load_state(&state_path)
+            .providers
+            .get(p.name())
+            .map(|state| state.last_known_good.is_some())
+            .unwrap_or(false)
+    };
+    if !is_installed(p) {
+        return HostsStatus {
+            provider: p.name().to_string(),
+            status: "not_installed".to_string(),
+            local_version: String::new(),
+            remote_version: String::new(),
+            rollback_available,
+        };
+    }
+
+    static VERSION_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"#\s*(?:Последнее обновление|update):\s*(.+)").unwrap()
+    });
+    let content = read_hosts();
+    let local_version = VERSION_RE
+        .captures(&content)
+        .and_then(|captures| captures.get(1))
+        .map(|value| value.as_str().trim().to_string())
+        .unwrap_or_default();
+    HostsStatus {
+        provider: p.name().to_string(),
+        status: "installed".to_string(),
+        local_version,
+        remote_version: String::new(),
+        rollback_available,
+    }
 }
 
 pub async fn check_status(app: &AppHandle, p: Provider) -> HostsStatus {

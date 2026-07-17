@@ -13,7 +13,7 @@ use tokio::process::Command as TokioCommand;
 
 use crate::adaptive_strategy::dsl::{override_key, StrategyCandidate, StrategyTransport};
 use crate::state::{AppState, DpiLaunchSpec, DpiProc, DpiRuntimeSnapshot};
-use crate::util::{self, DpiProcPublic, DpiStatusPayload, LockExt};
+use crate::util::{self, DpiProcPublic, DpiStatusPayload, LockExt, VersionedSection};
 
 /// Регэкспы разбора конфигов/вывода команд — компилируются один раз на процесс,
 /// а не на каждый вызов (collect_hostlist* и detect_orphaned зовутся регулярно).
@@ -38,7 +38,9 @@ pub(crate) fn persist_engine_selection(app: &AppHandle, engine: &str) -> Result<
     };
     snapshot
         .save(&state.paths.base_dir)
-        .map_err(|e| format!("не удалось сохранить выбор DPI-движка: {e}"))
+        .map_err(|e| format!("не удалось сохранить выбор DPI-движка: {e}"))?;
+    state.settings_revision.bump();
+    Ok(())
 }
 
 fn resolve_list_binding(
@@ -162,13 +164,17 @@ pub fn emit_status(app: &AppHandle) {
         })
         .collect();
     let started_at = d.sync_started_at(util::unix_secs());
+    let revision = d.bump_revision();
     let _ = app.emit(
         "dpi-status",
-        DpiStatusPayload {
-            active: !processes.is_empty(),
-            processes,
-            started_at,
-        },
+        VersionedSection::new(
+            revision,
+            DpiStatusPayload {
+                active: !processes.is_empty(),
+                processes,
+                started_at,
+            },
+        ),
     );
 }
 

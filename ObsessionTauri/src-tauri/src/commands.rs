@@ -9,7 +9,7 @@ use crate::hosts::Provider;
 use crate::profiles::Profile;
 use crate::settings::{Settings, SettingsPatch};
 use crate::state::AppState;
-use crate::util::LockExt;
+use crate::util::{LockExt, VersionedSection};
 
 #[derive(Serialize)]
 pub struct AppConfig {
@@ -54,8 +54,10 @@ pub fn get_autostart() -> bool {
 }
 
 #[tauri::command]
-pub fn set_autostart(enable: bool) -> Result<(), String> {
-    crate::autostart::set(enable)
+pub fn set_autostart(app: AppHandle, enable: bool) -> Result<(), String> {
+    crate::autostart::set(enable)?;
+    app.state::<AppState>().settings_revision.bump();
+    Ok(())
 }
 
 // ─── DPI ────────────────────────────────────────────────────────────────
@@ -647,6 +649,126 @@ pub fn runtime_get_snapshot(app: AppHandle) -> RuntimeSnapshot {
     }
 }
 
+/// Версия wire-контракта единого startup/resume snapshot.
+pub const BOOTSTRAP_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Serialize)]
+pub struct BootstrapSettings {
+    pub settings: Settings,
+    pub elevated: bool,
+    pub autostart: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BootstrapSnapshot {
+    pub schema_version: u32,
+    pub settings: VersionedSection<BootstrapSettings>,
+    pub dpi: VersionedSection<crate::util::DpiStatusPayload>,
+    pub proxy: VersionedSection<crate::util::ProxyStatusPayload>,
+    pub brain: VersionedSection<Option<crate::brain::BrainStatus>>,
+    pub adaptive: VersionedSection<Option<crate::adaptive_strategy::model::RecoveryStatus>>,
+    pub hosts: VersionedSection<crate::hosts::HostsStatus>,
+}
+
+/// Единый быстрый snapshot для listener-first hydration.
+///
+/// Revision читается до значения каждой секции. Если параллельное событие
+/// обновит значение между этими чтениями, оно получит большую revision и
+/// frontend не позволит более старому snapshot перетереть событие.
+#[tauri::command]
+pub fn bootstrap_get_snapshot(app: AppHandle) -> BootstrapSnapshot {
+    let state = app.state::<AppState>();
+
+    let (settings_revision, settings_value) = {
+        let guard = state.settings.lock_recover();
+        (state.settings_revision.current(), guard.clone())
+    };
+    let provider = Provider::parse(&settings_value.ai_provider);
+    let settings = VersionedSection::new(
+        settings_revision,
+        BootstrapSettings {
+            settings: settings_value,
+            elevated: crate::admin::is_elevated(),
+            autostart: get_autostart(),
+        },
+    );
+
+    let dpi = {
+        let mut guard = state.dpi.lock_recover();
+        let revision = guard.revision;
+        let processes = guard
+            .procs
+            .values()
+            .map(|process| crate::util::DpiProcPublic {
+                pid: process.pid,
+                category: process.category.clone(),
+                config_file: process.config_file.clone(),
+            })
+            .collect::<Vec<_>>();
+        let started_at = guard.sync_started_at(crate::util::unix_secs());
+        VersionedSection::new(
+            revision,
+            crate::util::DpiStatusPayload {
+                active: !processes.is_empty(),
+                processes,
+                started_at,
+            },
+        )
+    };
+
+    let proxy = {
+        let guard = state.proxy.lock_recover();
+        let revision = guard.revision;
+        VersionedSection::new(
+            revision,
+            crate::util::ProxyStatusPayload {
+                running: guard.pid.is_some(),
+                link: guard.link.clone(),
+                lan_link: guard.lan_link.clone(),
+                lan_published: guard.lan_published,
+                lan_expiry_unix: guard.lan_expiry_unix,
+            },
+        )
+    };
+
+    let brain = {
+        let revision = state.brain_revision.current();
+        let value = state
+            .brain
+            .lock()
+            .ok()
+            .and_then(|guard| guard.as_ref().map(|handle| handle.status.borrow().clone()));
+        VersionedSection::new(revision, value)
+    };
+
+    let adaptive = {
+        let revision = state.adaptive_revision.current();
+        let value = state
+            .adaptive
+            .lock()
+            .ok()
+            .and_then(|guard| guard.as_ref().map(|handle| handle.status.borrow().clone()));
+        VersionedSection::new(revision, value)
+    };
+
+    let hosts_revision = state.hosts_revision.current();
+    let hosts = VersionedSection::new(
+        hosts_revision,
+        crate::hosts::snapshot_status(&app, provider),
+    );
+
+    BootstrapSnapshot {
+        schema_version: BOOTSTRAP_SCHEMA_VERSION,
+        settings,
+        dpi,
+        proxy,
+        brain,
+        adaptive,
+        hosts,
+    }
+}
+
 // ─── Settings ───────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -670,6 +792,7 @@ where
     mutate(&mut next);
     next.save(&base).map_err(|e| e.to_string())?;
     *guard = next.clone();
+    state.settings_revision.bump();
     Ok(next)
 }
 
@@ -764,9 +887,11 @@ pub fn brain_set_enabled(app: AppHandle, enabled: bool) -> Result<(), String> {
         let running = guard.is_some();
         if enabled && !running {
             *guard = Some(crate::brain::runtime::start(app.clone()));
+            st.brain_revision.bump();
         } else if !enabled && running {
             if let Some(bh) = guard.take() {
                 bh.shutdown();
+                st.brain_revision.bump();
             }
         }
         Ok::<(), String>(())
@@ -1009,4 +1134,65 @@ pub fn delete_profile(app: AppHandle, id: String) -> Result<Vec<Profile>, String
     let state = app.state::<AppState>();
     let base = state.paths.base_dir.clone();
     crate::profiles::delete(&base, &id).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod bootstrap_tests {
+    use super::*;
+
+    #[test]
+    fn bootstrap_snapshot_serializes_schema_and_independent_revisions() {
+        let snapshot = BootstrapSnapshot {
+            schema_version: BOOTSTRAP_SCHEMA_VERSION,
+            settings: VersionedSection::new(
+                2,
+                BootstrapSettings {
+                    settings: Settings::default(),
+                    elevated: true,
+                    autostart: false,
+                },
+            ),
+            dpi: VersionedSection::new(
+                3,
+                crate::util::DpiStatusPayload {
+                    active: false,
+                    processes: Vec::new(),
+                    started_at: None,
+                },
+            ),
+            proxy: VersionedSection::new(
+                4,
+                crate::util::ProxyStatusPayload {
+                    running: false,
+                    link: String::new(),
+                    lan_link: None,
+                    lan_published: false,
+                    lan_expiry_unix: None,
+                },
+            ),
+            brain: VersionedSection::new(5, None),
+            adaptive: VersionedSection::new(6, None),
+            hosts: VersionedSection::new(
+                7,
+                crate::hosts::HostsStatus {
+                    provider: "malw".to_string(),
+                    status: "not_installed".to_string(),
+                    local_version: String::new(),
+                    remote_version: String::new(),
+                    rollback_available: false,
+                },
+            ),
+        };
+
+        let value = serde_json::to_value(snapshot).expect("bootstrap snapshot serializes");
+        assert_eq!(value["schemaVersion"], BOOTSTRAP_SCHEMA_VERSION);
+        assert_eq!(value["settings"]["revision"], 2);
+        assert_eq!(value["settings"]["value"]["elevated"], true);
+        assert_eq!(value["dpi"]["revision"], 3);
+        assert_eq!(value["proxy"]["revision"], 4);
+        assert_eq!(value["brain"]["revision"], 5);
+        assert_eq!(value["adaptive"]["revision"], 6);
+        assert_eq!(value["hosts"]["revision"], 7);
+        assert_eq!(value["hosts"]["value"]["provider"], "malw");
+    }
 }

@@ -26,20 +26,24 @@ use tokio::sync::oneshot;
 use tokio::task::JoinSet;
 
 use crate::state::{AppState, ProxyFirewall, ProxyForwarder, ProxyState};
-use crate::util::{self, LockExt, ProxyStatusPayload};
+use crate::util::{self, LockExt, ProxyStatusPayload, VersionedSection};
 
 fn emit_status(app: &AppHandle) {
     let state = app.state::<AppState>();
-    let p = state.proxy.lock_recover();
+    let mut p = state.proxy.lock_recover();
+    let revision = p.bump_revision();
     let _ = app.emit(
         "proxy-status",
-        ProxyStatusPayload {
-            running: p.pid.is_some(),
-            link: p.link.clone(),
-            lan_link: p.lan_link.clone(),
-            lan_published: p.lan_published,
-            lan_expiry_unix: p.lan_expiry_unix,
-        },
+        VersionedSection::new(
+            revision,
+            ProxyStatusPayload {
+                running: p.pid.is_some(),
+                link: p.link.clone(),
+                lan_link: p.lan_link.clone(),
+                lan_published: p.lan_published,
+                lan_expiry_unix: p.lan_expiry_unix,
+            },
+        ),
     );
 }
 

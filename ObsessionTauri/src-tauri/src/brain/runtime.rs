@@ -25,6 +25,7 @@ use crate::netcache::NetCache;
 use crate::netid;
 use crate::ranking::Ranking;
 use crate::state::AppState;
+use crate::util::VersionedSection;
 
 const OBSERVATION_QUEUE_CAP: usize = 1024;
 const CONTROL_QUEUE_CAP: usize = 64;
@@ -293,8 +294,9 @@ async fn exec(
             write_cache(app, net, &category, &conf);
         }
         Action::EmitStatus(s) => {
-            let _ = app.emit("brain://status", &s);
-            let _ = status_tx.send_replace(s);
+            let _ = status_tx.send_replace(s.clone());
+            let revision = app.state::<AppState>().brain_revision.bump();
+            let _ = app.emit("brain://status", VersionedSection::new(revision, s));
         }
     }
     None
