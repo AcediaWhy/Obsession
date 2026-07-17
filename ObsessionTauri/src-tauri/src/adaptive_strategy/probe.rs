@@ -2,11 +2,13 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::error::Error as _;
+use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde::Serialize;
+use tokio::time::Instant;
 
 use super::dsl::{AdaptiveCategory, StrategyTransport};
 use super::evidence::FailureStage;
@@ -21,6 +23,32 @@ pub struct ProbeTarget {
 }
 
 type DnsCache = Arc<tokio::sync::Mutex<HashMap<&'static str, Vec<SocketAddr>>>>;
+
+#[derive(Clone, Copy, Debug)]
+struct ProbeBudget {
+    deadline: Instant,
+}
+
+impl ProbeBudget {
+    fn new(timeout: Duration) -> Self {
+        Self {
+            deadline: Instant::now() + timeout,
+        }
+    }
+
+    fn remaining(self) -> Option<Duration> {
+        self.deadline
+            .checked_duration_since(Instant::now())
+            .filter(|remaining| !remaining.is_zero())
+    }
+
+    async fn timeout<F>(self, future: F) -> Result<F::Output, tokio::time::error::Elapsed>
+    where
+        F: Future,
+    {
+        tokio::time::timeout_at(self.deadline, future).await
+    }
+}
 
 #[derive(Clone, Debug, Default)]
 pub struct SessionDnsCache {
@@ -395,14 +423,11 @@ pub async fn discover_quic_targets_with_cache(
     for target in targets_for(category, StrategyTransport::Tls) {
         let dns_cache = dns_cache.clone();
         set.spawn(async move {
-            let addresses = resolve_cached_addresses(
-                &target,
-                StrategyTransport::Tls,
-                timeout,
-                dns_cache.inner.clone(),
-            )
-            .await
-            .ok()?;
+            let budget = ProbeBudget::new(timeout);
+            let addresses = resolve_cached_addresses(&target, budget, dns_cache.inner.clone())
+                .await
+                .ok()?;
+            let remaining = budget.remaining()?;
             let authority = if target.port == 443 {
                 target.host.to_string()
             } else {
@@ -410,12 +435,13 @@ pub async fn discover_quic_targets_with_cache(
             };
             let url = format!("https://{authority}{}", target.path);
             let client = reqwest::Client::builder()
-                .timeout(timeout)
+                .connect_timeout(remaining)
+                .timeout(remaining)
                 .redirect(reqwest::redirect::Policy::none())
                 .resolve_to_addrs(target.host, &addresses)
                 .build()
                 .ok()?;
-            let response = client.get(url).send().await.ok()?;
+            let response = budget.timeout(client.get(url).send()).await.ok()?.ok()?;
             if !(200..=499).contains(&response.status().as_u16()) {
                 return None;
             }
@@ -660,18 +686,22 @@ async fn probe_target(
 
 async fn resolve_cached_addresses(
     target: &ProbeTarget,
-    transport: StrategyTransport,
-    timeout: Duration,
+    budget: ProbeBudget,
     dns_cache: DnsCache,
 ) -> Result<Vec<SocketAddr>, String> {
-    if let Some(addresses) = dns_cache.lock().await.get(target.host).cloned() {
+    let cached = budget
+        .timeout(dns_cache.lock())
+        .await
+        .map_err(|_| "dns: target timeout".to_string())?
+        .get(target.host)
+        .cloned();
+    if let Some(addresses) = cached {
         return Ok(addresses);
     }
-    let addresses = resolve_addresses_for_target(target, transport, timeout).await?;
-    dns_cache
-        .lock()
-        .await
-        .insert(target.host, addresses.clone());
+    let addresses = resolve_addresses(target, budget).await?;
+    if let Ok(mut cache) = budget.timeout(dns_cache.lock()).await {
+        cache.insert(target.host, addresses.clone());
+    }
     Ok(addresses)
 }
 
@@ -683,6 +713,7 @@ async fn probe_target_cached(
     dns_cache: DnsCache,
 ) -> TargetProbeResult {
     let started = Instant::now();
+    let budget = ProbeBudget::new(timeout);
     let mut result = TargetProbeResult {
         host: target.host.to_string(),
         core: target.core,
@@ -699,7 +730,7 @@ async fn probe_target_cached(
         detail: String::new(),
     };
 
-    let addresses = match resolve_cached_addresses(&target, transport, timeout, dns_cache).await {
+    let addresses = match resolve_cached_addresses(&target, budget, dns_cache).await {
         Ok(addresses) => addresses,
         Err(error) => {
             result.detail = error;
@@ -708,25 +739,8 @@ async fn probe_target_cached(
     };
     result.dns_ok = true;
 
-    if transport == StrategyTransport::Tls {
-        result.failure_stage = FailureStage::Tcp;
-        for address in &addresses {
-            if matches!(
-                tokio::time::timeout(timeout, tokio::net::TcpStream::connect(*address)).await,
-                Ok(Ok(_))
-            ) {
-                result.tcp_ok = true;
-                break;
-            }
-        }
-        if !result.tcp_ok {
-            result.detail = "tcp: connect failed or timed out".into();
-            return finish(result, started);
-        }
-    }
-
     if transport == StrategyTransport::Quic {
-        let Some(remaining) = remaining_target_budget(timeout, started.elapsed()) else {
+        let Some(remaining) = budget.remaining() else {
             result.failure_stage = FailureStage::Quic;
             result.detail = "quic: target timeout exhausted during DNS".into();
             return finish(result, started);
@@ -746,8 +760,15 @@ async fn probe_target_cached(
         return finish(result, started);
     }
 
+    let Some(remaining) = budget.remaining() else {
+        result.failure_stage = FailureStage::Tcp;
+        result.detail = "tcp: target timeout exhausted during DNS".into();
+        return finish(result, started);
+    };
+    result.failure_stage = FailureStage::Tcp;
     let builder = reqwest::Client::builder()
-        .timeout(timeout)
+        .connect_timeout(remaining)
+        .timeout(remaining)
         .redirect(reqwest::redirect::Policy::none())
         .resolve_to_addrs(target.host, &addresses);
     let client = match builder.build() {
@@ -767,10 +788,13 @@ async fn probe_target_cached(
         format!("{}:{}", target.host, target.port)
     };
     let url = format!("https://{authority}{}", target.path);
-    match client.get(url).send().await {
-        Ok(response) => {
+    match budget.timeout(client.get(url).send()).await {
+        Ok(Ok(response)) => {
             match transport {
-                StrategyTransport::Tls => result.tls_ok = true,
+                StrategyTransport::Tls => {
+                    result.tcp_ok = true;
+                    result.tls_ok = true;
+                }
                 StrategyTransport::Quic => result.quic_ok = true,
             }
             let status = response.status().as_u16();
@@ -791,35 +815,23 @@ async fn probe_target_cached(
                 status
             );
         }
-        Err(error) => {
+        Ok(Err(error)) => {
             result.failure_stage = classify_reqwest_error(&error);
+            result.tcp_ok = transport == StrategyTransport::Tls
+                && (result.failure_stage == FailureStage::Tls
+                    || reqwest_error_establishes_tcp(&error));
             result.detail = format!(
                 "{}: {}",
                 result.failure_stage.as_str(),
                 reqwest_error_chain(&error)
             );
         }
+        Err(_) => {
+            result.failure_stage = FailureStage::Tcp;
+            result.detail = "tcp: target timeout".into();
+        }
     }
     finish(result, started)
-}
-
-fn remaining_target_budget(timeout: Duration, elapsed: Duration) -> Option<Duration> {
-    let remaining = timeout.saturating_sub(elapsed);
-    (!remaining.is_zero()).then_some(remaining)
-}
-
-async fn resolve_addresses_for_target(
-    target: &ProbeTarget,
-    transport: StrategyTransport,
-    timeout: Duration,
-) -> Result<Vec<SocketAddr>, String> {
-    if transport != StrategyTransport::Quic {
-        return resolve_addresses(target, timeout).await;
-    }
-    match tokio::time::timeout(timeout, resolve_addresses(target, timeout)).await {
-        Ok(result) => result,
-        Err(_) => Err("dns: target timeout".into()),
-    }
 }
 
 fn bounded_addresses(addresses: impl IntoIterator<Item = SocketAddr>) -> Vec<SocketAddr> {
@@ -835,11 +847,12 @@ fn bounded_addresses(addresses: impl IntoIterator<Item = SocketAddr>) -> Vec<Soc
 
 async fn resolve_addresses(
     target: &ProbeTarget,
-    timeout: Duration,
+    budget: ProbeBudget,
 ) -> Result<Vec<SocketAddr>, String> {
     let mut last_error = "dns: no addresses".to_string();
     for attempt in 0..2 {
-        match tokio::time::timeout(timeout, tokio::net::lookup_host((target.host, target.port)))
+        match budget
+            .timeout(tokio::net::lookup_host((target.host, target.port)))
             .await
         {
             Ok(Ok(addresses)) => {
@@ -852,8 +865,13 @@ async fn resolve_addresses(
             Ok(Err(error)) => last_error = format!("dns: {error}"),
             Err(_) => last_error = "dns: timeout".into(),
         }
-        if attempt == 0 {
-            tokio::time::sleep(Duration::from_millis(150)).await;
+        if attempt == 0
+            && budget
+                .timeout(tokio::time::sleep(Duration::from_millis(150)))
+                .await
+                .is_err()
+        {
+            return Err("dns: target timeout".into());
         }
     }
     Err(last_error)
@@ -874,6 +892,30 @@ fn classify_reqwest_error(error: &reqwest::Error) -> FailureStage {
         return FailureStage::Tcp;
     }
     FailureStage::Https
+}
+
+fn reqwest_error_establishes_tcp(error: &reqwest::Error) -> bool {
+    let mut source = error.source();
+    while let Some(error) = source {
+        if let Some(error) = error.downcast_ref::<std::io::Error>() {
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::ConnectionAborted
+                    | std::io::ErrorKind::BrokenPipe
+                    | std::io::ErrorKind::UnexpectedEof
+            ) {
+                return true;
+            }
+        }
+        source = error.source();
+    }
+    // hyper иногда стирает concrete io::Error при boxing, но std::io::Error
+    // сохраняет стабильный WSA-код в display даже при локализованном сообщении.
+    // 10054/10053 = reset/abort уже установленного TCP; 10061 (refused) сюда
+    // намеренно не входит.
+    let chain = reqwest_error_chain(error).to_ascii_lowercase();
+    chain.contains("os error 10054") || chain.contains("os error 10053")
 }
 
 fn reqwest_error_chain(error: &reqwest::Error) -> String {
@@ -1268,13 +1310,9 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let peer = tokio::spawn(async move {
-            for _ in 0..2 {
-                if let Ok((socket, _)) = listener.accept().await {
-                    tokio::spawn(async move {
-                        let _socket = socket;
-                        tokio::time::sleep(Duration::from_millis(200)).await;
-                    });
-                }
+            if let Ok((socket, _)) = listener.accept().await {
+                let _socket = socket;
+                tokio::time::sleep(Duration::from_millis(200)).await;
             }
         });
         let result = probe_target(
@@ -1290,7 +1328,7 @@ mod tests {
         )
         .await;
         assert!(result.dns_ok);
-        assert!(result.tcp_ok);
+        assert!(result.tcp_ok, "{result:?}");
         assert!(!result.tls_ok);
         assert!(!result.https_ok);
         let _ = peer.await;
@@ -1306,14 +1344,22 @@ mod tests {
         assert!(!alt_svc_supports_h3("clear"));
     }
 
-    #[test]
-    fn quic_target_budget_includes_dns_time() {
-        let timeout = Duration::from_secs(5);
-        assert_eq!(
-            remaining_target_budget(timeout, Duration::from_millis(4_500)),
-            Some(Duration::from_millis(500))
-        );
-        assert_eq!(remaining_target_budget(timeout, timeout), None);
+    #[tokio::test]
+    async fn target_budget_caps_sequential_operations() {
+        let timeout = Duration::from_millis(80);
+        let started = Instant::now();
+        let budget = ProbeBudget::new(timeout);
+
+        budget
+            .timeout(tokio::time::sleep(Duration::from_millis(50)))
+            .await
+            .unwrap();
+        assert!(budget
+            .timeout(tokio::time::sleep(Duration::from_millis(50)))
+            .await
+            .is_err());
+        assert!(started.elapsed() < Duration::from_millis(140));
+        assert!(budget.remaining().is_none());
     }
 
     #[test]
@@ -1346,16 +1392,14 @@ mod tests {
         };
         let first = resolve_cached_addresses(
             &target,
-            StrategyTransport::Tls,
-            Duration::from_secs(1),
+            ProbeBudget::new(Duration::from_secs(1)),
             cache.inner.clone(),
         )
         .await
         .unwrap();
         let second = resolve_cached_addresses(
             &target,
-            StrategyTransport::Quic,
-            Duration::from_millis(1),
+            ProbeBudget::new(Duration::from_millis(1)),
             cache.inner.clone(),
         )
         .await
