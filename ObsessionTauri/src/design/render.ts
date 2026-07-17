@@ -159,10 +159,8 @@ export function useRenderHidden(): boolean {
 }
 
 // ─── Политика частоты кадров тем ─────────────────────────────────────────────
-// FrameScheduler выбирает cadence по роли и измеренной герцовке. Rain пока
-// сохраняет отдельный совместимый cap до объединения pipeline в Task 3.3.
+// FrameScheduler выбирает cadence по роли и измеренной герцовке.
 export const CORE_HERO_MIN_SIZE = 160;
-export const FPS_RAIN = 60;
 
 export type RenderLoop = SchedulerFrameLoop;
 

@@ -2,13 +2,6 @@
 import { GL } from "./gl";
 import { simpleVert, waterFrag } from "./shaders";
 import { createCanvas } from "./random";
-import { createRenderLoop, FPS_RAIN, type RenderLoop } from "../../render";
-
-// Дождь — тяжёлая полноэкранная WebGL-сцена и это ГЛОБАЛЬНЫЙ фон на всех экранах
-// (App → HeroField). Кап FPS_RAIN через createRenderLoop: раньше порог 1000/60
-// сравнивался «ножом» с интервалом кадра (на 60/120 Гц два vsync = ровно
-// 16.67 мс), и джиттер rAF-таймстампов ронял кадры — статтер 60↔30 fps.
-
 export interface RainRendererOptions {
   renderShadow: boolean;
   minRefraction: number;
@@ -49,7 +42,6 @@ export class RainRenderer {
   parallaxX = 0;
   parallaxY = 0;
 
-  private loop: RenderLoop | null = null;
   private destroyed = false;
 
   // Управляется извне: intensity>1 при активном обходе (не часть оригинала).
@@ -108,19 +100,12 @@ export class RainRenderer {
       this.glTextures.push(gl.createTexture(texture.img, i + 1));
       gl.createUniform("1i", texture.name, i + 1);
     });
-
-    // Первый кадр — синхронно (как раньше), дальше цикл ведёт хелпер:
-    // гейт видимости, кап fps и каденция — в одном месте.
-    this.renderFrame();
-    this.loop = createRenderLoop(() => this.renderFrame(), { fps: FPS_RAIN });
-    this.loop.start();
   }
 
-  private renderFrame() {
+  draw() {
     if (this.destroyed) return;
     this.gl.useProgram(this.gl.program);
     this.gl.createUniform("2f", "parallax", this.parallaxX, this.parallaxY);
-    this.updateTexture();
     this.gl.draw();
   }
 
@@ -131,15 +116,27 @@ export class RainRenderer {
     });
   }
 
+  /** Подгоняет WebGL-вьюпорт и uniform resolution под новый размер холста.
+   *  Без этого при ресайзе окна (напр. разворот на весь экран) вьюпорт остаётся
+   *  на размере создания контекста, и сцена рисуется в старом прямоугольнике. */
+  resize(width: number, height: number) {
+    if (this.destroyed || (width === this.width && height === this.height)) return;
+    this.width = width;
+    this.height = height;
+    this.gl.useProgram(this.gl.program);
+    this.gl.gl.viewport(0, 0, width, height);
+    this.gl.createUniform("2f", "resolution", width, height);
+  }
+
   updateTexture() {
+    if (this.destroyed) return;
     this.gl.activeTexture(0);
     this.gl.updateTexture(this.canvasLiquid);
   }
 
   destroy() {
+    if (this.destroyed) return;
     this.destroyed = true;
-    this.loop?.dispose();
-    this.loop = null;
     // Освобождаем GPU-ресурсы: текстуры + буферы/программу/контекст.
     const gl = this.gl?.gl;
     if (gl) {

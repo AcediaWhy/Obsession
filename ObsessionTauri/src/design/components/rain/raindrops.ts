@@ -1,8 +1,7 @@
 // Порт raindrops.js из codrops/RainEffect — симуляция капель, пишущая «water map».
 // Максимально дословно (структура, формулы, константы сохранены), добавлены типы
-// и метод destroy() для остановки rAF при размонтировании React-компонента.
+// и явные lifecycle-методы для внешнего frame pipeline.
 import { random, chance, times, createCanvas } from "./random";
-import { createRenderLoop, FPS_RAIN, type RenderLoop } from "../../render";
 
 const dropSize = 64;
 
@@ -104,7 +103,6 @@ export class Raindrops {
   clearDropletsGfx!: HTMLCanvasElement;
   textureCleaningIterations = 0;
 
-  private loop: RenderLoop | null = null;
   private destroyed = false;
 
   constructor(
@@ -145,16 +143,26 @@ export class Raindrops {
     this.drops = [];
     this.dropsGfx = [];
     this.renderDropsGfx();
-    // Кап FPS_RAIN (в пару к рендеру): физика дождя тяжёлая, на высоком герце
-    // не считаем её на 120/180/240 fps впустую. Гейт видимости — тоже в хелпере.
-    this.loop = createRenderLoop((dt) => this.step(dt), { fps: FPS_RAIN });
-    this.loop.start();
+  }
+
+  /** Подгоняет размер water-map под новый размер окна. Ресайзим канвасы
+   *  in-place (this.canvas держит RainRenderer как canvasLiquid — пересоздание
+   *  порвало бы ссылку). Капли живут в нормализованных к scale координатах,
+   *  поэтому переживают ресайз; меняются только границы спавна/буферы. */
+  resize(width: number, height: number) {
+    if (this.destroyed || (width === this.width && height === this.height)) return;
+    this.width = width;
+    this.height = height;
+    this.canvas.width = width;
+    this.canvas.height = height;
+    this.droplets.width = width * this.dropletsPixelDensity;
+    this.droplets.height = height * this.dropletsPixelDensity;
+    // Установка .width/.height уже очищает оба буфера — доп. clear не нужен.
   }
 
   destroy() {
+    if (this.destroyed) return;
     this.destroyed = true;
-    this.loop?.dispose();
-    this.loop = null;
     // Освобождаем оффскрин-канвасы: ~255 спрайтов капель (dropSize²), маску
     // очистки и два полноэкранных буфера. Обнуляем размеры — так WebView2
     // отпускает backing store сразу, не дожидаясь GC.
@@ -452,7 +460,7 @@ export class Raindrops {
     this.drops = newDrops;
   }
 
-  private step(dt: number) {
+  step(dt: number) {
     if (this.destroyed) return;
     this.clearCanvas();
     // timeScale — от реального dt (хелпер уже клампит его maxDt), а не от
