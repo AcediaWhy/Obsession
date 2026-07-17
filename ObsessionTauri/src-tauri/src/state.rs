@@ -33,6 +33,7 @@ pub struct DpiProc {
     pub config_file: String,
     pub generation: u64,
     pub engine: String,
+    pub process_identity: Option<crate::dpi_supervisor::ProcessIdentity>,
 }
 
 #[derive(Default)]
@@ -242,6 +243,7 @@ mod tests {
                 config_file: "beta".into(),
                 generation,
                 engine: "zapret2".into(),
+                process_identity: None,
             },
         );
         assert_eq!(
@@ -258,6 +260,7 @@ mod tests {
                 config_file: "beta".into(),
                 generation: next,
                 engine: "zapret2".into(),
+                process_identity: None,
             },
         );
         assert_eq!(state.detach_unexpected_zapret2(11, generation), None);
@@ -281,6 +284,7 @@ mod tests {
                 config_file: "discord_1.conf".into(),
                 generation,
                 engine: "legacy".into(),
+                process_identity: None,
             },
         );
     }

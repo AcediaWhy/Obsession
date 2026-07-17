@@ -27,6 +27,7 @@ use std::time::{Duration, Instant};
 
 use libloading::{Library, Symbol};
 
+use crate::dpi_supervisor::{join_workers_bounded, WorkerStopOutcome};
 use crate::eyes::flow::{Config, FlowTable};
 use crate::eyes::parse::{decode_ip_tcp, ParsedPacket};
 use crate::eyes::signal::Observation;
@@ -212,6 +213,21 @@ pub struct EyesHandle {
 }
 
 impl EyesHandle {
+    pub fn stop_bounded(mut self, timeout: Duration) -> Vec<WorkerStopOutcome> {
+        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        unsafe {
+            (self.divert.shutdown)(self.divert.handle, SHUTDOWN_BOTH);
+        }
+        let mut workers = Vec::with_capacity(2);
+        if let Some(capture) = self.capture.take() {
+            workers.push(("eyes-capture", capture));
+        }
+        if let Some(tracker) = self.tracker.take() {
+            workers.push(("eyes-tracker", tracker));
+        }
+        join_workers_bounded(workers, timeout)
+    }
+
     /// Останавливает наблюдение: будит recv через shutdown, ждёт завершения потоков.
     pub fn stop(mut self) {
         self.stop.store(true, std::sync::atomic::Ordering::SeqCst);

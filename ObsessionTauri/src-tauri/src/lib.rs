@@ -9,6 +9,7 @@ mod commands;
 mod diag;
 mod dpi;
 mod dpi_engine;
+mod dpi_supervisor;
 mod eyes;
 mod hosts;
 mod hosts_snapshot;

@@ -22,6 +22,9 @@ static HOSTLIST_RE: std::sync::LazyLock<regex::Regex> =
 static ORPHAN_PID_RE: std::sync::LazyLock<regex::Regex> =
     std::sync::LazyLock::new(|| regex::Regex::new(r#""(\d+)""#).unwrap());
 
+#[cfg(windows)]
+const EYES_STOP_TIMEOUT: Duration = Duration::from_secs(2);
+
 fn runtime_shutting_down(app: &AppHandle) -> bool {
     app.state::<AppState>().shutting_down.load(Ordering::SeqCst)
 }
@@ -219,6 +222,7 @@ pub async fn start(app: &AppHandle, category: &str, config_file: &str) -> Result
             return Err("Процесс не вернул PID".to_string());
         }
     };
+    let process_identity = crate::dpi_supervisor::capture_process_identity(pid);
 
     // Регистрируем СРАЗУ после spawn. Раньше PID появлялся в AppState только
     // после 500мс ожидания, и shutdown в этом окне оставлял orphan winws.
@@ -234,24 +238,53 @@ pub async fn start(app: &AppHandle, category: &str, config_file: &str) -> Result
                 config_file: config_file.to_string(),
                 generation,
                 engine: "legacy".to_string(),
+                process_identity,
             },
         );
         generation
     };
     emit_status(app);
 
-    // Стримим stdout/stderr в лог UI.
+    // Стримим stdout/stderr в лог UI и одновременно ловим startup marker.
+    let (readiness_tx, readiness_rx) = tokio::sync::mpsc::unbounded_channel();
     if let Some(out) = child.stdout.take() {
-        spawn_reader(app.clone(), out, category.to_string(), "info");
+        spawn_reader(
+            app.clone(),
+            out,
+            category.to_string(),
+            "info",
+            Some(readiness_tx.clone()),
+        );
     }
     if let Some(err) = child.stderr.take() {
-        spawn_reader(app.clone(), err, category.to_string(), "error");
+        spawn_reader(
+            app.clone(),
+            err,
+            category.to_string(),
+            "error",
+            Some(readiness_tx.clone()),
+        );
     }
+    drop(readiness_tx);
 
     let started = Instant::now();
-    // Ранний выход (<500мс) — процесс упал сразу, запуск неуспешен.
-    match tokio::time::timeout(Duration::from_millis(500), child.wait()).await {
-        Ok(Ok(status)) => {
+    let readiness = crate::dpi_supervisor::wait_for_readiness(
+        async { child.wait().await.map(|status| status.code()) },
+        readiness_rx,
+        Duration::from_millis(500),
+    )
+    .await;
+    match readiness {
+        Ok(crate::dpi_supervisor::ReadinessState::Marker) => {}
+        Ok(crate::dpi_supervisor::ReadinessState::BoundedFallback) => {
+            util::emit_log(
+                app,
+                "debug",
+                "dpi",
+                &format!("[{category}] startup marker не получен; применён bounded fallback"),
+            );
+        }
+        Err(crate::dpi_supervisor::ReadinessFailure::Exited(code)) => {
             {
                 let state = app.state::<AppState>();
                 let mut d = state.dpi.lock_recover();
@@ -264,16 +297,13 @@ pub async fn start(app: &AppHandle, category: &str, config_file: &str) -> Result
                 app,
                 "error",
                 "dpi",
-                &format!(
-                    "[{category}] winws завершился сразу после запуска (код {:?})",
-                    status.code()
-                ),
+                &format!("[{category}] winws завершился сразу после запуска (код {code:?})"),
             );
             return Err(format!(
                 "winws ({category}) завершился сразу. Причина: антивирус, конфликт или конфиг."
             ));
         }
-        Ok(Err(e)) => {
+        Err(crate::dpi_supervisor::ReadinessFailure::WaitFailed(error)) => {
             kill_pid_async(pid).await;
             {
                 let state = app.state::<AppState>();
@@ -283,9 +313,8 @@ pub async fn start(app: &AppHandle, category: &str, config_file: &str) -> Result
                 d.active_launch = None;
             }
             emit_status(app);
-            return Err(format!("Ошибка ожидания процесса: {e}"));
+            return Err(format!("Ошибка ожидания процесса: {error}"));
         }
-        Err(_) => { /* всё ещё работает — ок */ }
     }
 
     // begin_exit выставляет флаг до ожидания gate. Не продолжаем startup, если
@@ -536,45 +565,97 @@ fn start_eyes(app: &AppHandle, hostlist: Vec<String>) {
 
 /// Останавливает наблюдателя, если запущен.
 #[cfg(windows)]
-fn stop_eyes(app: &AppHandle) {
+fn stop_eyes(app: &AppHandle) -> Vec<crate::dpi_supervisor::WorkerStopOutcome> {
     let handle = app.state::<AppState>().eyes.lock_recover().take();
     if let Some(h) = handle {
-        h.stop();
-        util::emit_log(app, "info", "eyes", "Наблюдатель остановлен");
+        let outcomes = h.stop_bounded(EYES_STOP_TIMEOUT);
+        let clean = outcomes
+            .iter()
+            .all(|outcome| outcome.state == crate::dpi_supervisor::WorkerStopState::Joined);
+        util::emit_log(
+            app,
+            if clean { "info" } else { "warn" },
+            "eyes",
+            if clean {
+                "Наблюдатель остановлен"
+            } else {
+                "Наблюдатель превысил bounded stop deadline; teardown продолжен"
+            },
+        );
+        if !clean {
+            util::emit_log(app, "warn", "eyes", &format!("eyes_stop={outcomes:?}"));
+        }
+        outcomes
+    } else {
+        Vec::new()
     }
 }
 
-/// Останавливает все свои DPI-процессы, ждёт выгрузку WinDivert, чистит DNS.
+/// Останавливает все свои DPI-процессы и ждёт подтверждения teardown.
+/// DNS не сбрасывается здесь: host-mapping paths вызывают `flush_dns` условно.
 pub async fn stop_all(app: &AppHandle) {
     #[cfg(windows)]
-    {
-        // EyesHandle::stop() делает блокирующий join потоков capture/tracker —
-        // уводим его с tokio-воркера, чтобы застрявший join (если WinDivertRecv
-        // не проснулся) не занимал воркер до 15с-watchdog в teardown.
+    let eyes_clean = {
         let app2 = app.clone();
-        let _ = tauri::async_runtime::spawn_blocking(move || stop_eyes(&app2)).await;
-    }
+        match tauri::async_runtime::spawn_blocking(move || stop_eyes(&app2)).await {
+            Ok(outcomes) => outcomes.iter().all(|outcome| outcome.is_clean()),
+            Err(error) => {
+                util::emit_log(
+                    app,
+                    "warn",
+                    "eyes",
+                    &format!("bounded eyes stop worker failed: {error}"),
+                );
+                false
+            }
+        }
+    };
+    #[cfg(not(windows))]
+    let eyes_clean = true;
 
-    let pids: Vec<u32> = {
+    let processes = {
         let state = app.state::<AppState>();
         let mut d = state.dpi.lock_recover();
         d.advance_generation();
-        let pids: Vec<u32> = d.procs.keys().copied().collect();
-        for p in &pids {
-            d.stopping.insert(*p);
+        let processes = d
+            .procs
+            .values()
+            .map(|process| crate::dpi_supervisor::OwnedProcess {
+                pid: process.pid,
+                identity: process.process_identity,
+            })
+            .collect::<Vec<_>>();
+        for process in &processes {
+            d.stopping.insert(process.pid);
         }
         d.procs.clear();
         d.active_launch = None;
-        pids
+        processes
     };
 
-    // Блокирующие taskkill — вне воркера (иначе сериализуют рантайм под gate).
-    kill_pids_async(pids).await;
+    let process_outcomes = stop_owned_processes_async(processes).await;
+    let processes_clean = process_outcomes
+        .iter()
+        .all(|outcome| outcome.original_exited());
+    for outcome in &process_outcomes {
+        if !outcome.original_exited() {
+            util::emit_log(
+                app,
+                "warn",
+                "dpi",
+                &format!(
+                    "process teardown pid={} state={:?}",
+                    outcome.pid, outcome.state
+                ),
+            );
+        }
+    }
     emit_status(app);
 
-    // Даём драйверу WinDivert время выгрузиться (иначе конфликт фильтров).
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    flush_dns_async().await;
+    // Sleep остаётся только fallback, когда exit/handle evidence неполно.
+    if !(eyes_clean && processes_clean) {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
 }
 
 /// Запускает Zapret2 (winws2) для набора категорий одним процессом с N профилями.
@@ -974,6 +1055,7 @@ pub(crate) async fn start_zapret2_with_overrides(
             return Err("winws2 не вернул PID".to_string());
         }
     };
+    let process_identity = crate::dpi_supervisor::capture_process_identity(pid);
 
     let generation = {
         let state = app.state::<AppState>();
@@ -987,6 +1069,7 @@ pub(crate) async fn start_zapret2_with_overrides(
                 config_file: "beta".to_string(),
                 generation,
                 engine: "zapret2".to_string(),
+                process_identity,
             },
         );
         d.active_launch = Some(DpiLaunchSpec::Zapret2 {
@@ -997,18 +1080,45 @@ pub(crate) async fn start_zapret2_with_overrides(
     };
     emit_status(app);
 
+    let (readiness_tx, readiness_rx) = tokio::sync::mpsc::unbounded_channel();
     if let Some(out) = child.stdout.take() {
-        spawn_reader(app.clone(), out, "zapret2".to_string(), "info");
+        spawn_reader(
+            app.clone(),
+            out,
+            "zapret2".to_string(),
+            "info",
+            Some(readiness_tx.clone()),
+        );
     }
     if let Some(err) = child.stderr.take() {
-        spawn_reader(app.clone(), err, "zapret2".to_string(), "error");
+        spawn_reader(
+            app.clone(),
+            err,
+            "zapret2".to_string(),
+            "error",
+            Some(readiness_tx.clone()),
+        );
     }
+    drop(readiness_tx);
 
     let started = Instant::now();
-    // Ранний выход (<500мс) = winws2 упал сразу (runtime DLL, битый
-    // Lua/argv или конфликт WinDivert).
-    match tokio::time::timeout(Duration::from_millis(500), child.wait()).await {
-        Ok(Ok(status)) => {
+    let readiness = crate::dpi_supervisor::wait_for_readiness(
+        async { child.wait().await.map(|status| status.code()) },
+        readiness_rx,
+        Duration::from_millis(500),
+    )
+    .await;
+    match readiness {
+        Ok(crate::dpi_supervisor::ReadinessState::Marker) => {}
+        Ok(crate::dpi_supervisor::ReadinessState::BoundedFallback) => {
+            util::emit_log(
+                app,
+                "debug",
+                "dpi",
+                "[zapret2] startup marker не получен; применён bounded fallback",
+            );
+        }
+        Err(crate::dpi_supervisor::ReadinessFailure::Exited(code)) => {
             {
                 let state = app.state::<AppState>();
                 let mut d = state.dpi.lock_recover();
@@ -1017,7 +1127,6 @@ pub(crate) async fn start_zapret2_with_overrides(
                 d.active_launch = None;
             }
             emit_status(app);
-            let code = status.code();
             let hint = match code.map(|value| value as u32) {
                 Some(0xC000_0135) => {
                     "Не найдена обязательная DLL: проверьте cygwin1.dll и WinDivert.dll рядом с winws2.exe."
@@ -1031,7 +1140,7 @@ pub(crate) async fn start_zapret2_with_overrides(
                 "winws2 завершился сразу после запуска (код {code:?}). {hint}"
             ));
         }
-        Ok(Err(e)) => {
+        Err(crate::dpi_supervisor::ReadinessFailure::WaitFailed(error)) => {
             kill_pid_async(pid).await;
             {
                 let state = app.state::<AppState>();
@@ -1041,9 +1150,8 @@ pub(crate) async fn start_zapret2_with_overrides(
                 d.active_launch = None;
             }
             emit_status(app);
-            return Err(format!("Ошибка ожидания winws2: {e}"));
+            return Err(format!("Ошибка ожидания winws2: {error}"));
         }
-        Err(_) => { /* всё ещё работает — ок */ }
     }
 
     if runtime_shutting_down(app) {
@@ -1502,27 +1610,60 @@ async fn kill_pid_async(pid: u32) {
     let _ = tauri::async_runtime::spawn_blocking(move || kill_pid(pid)).await;
 }
 
-/// Убивает набор PID одним blocking-джобом (а не N отдельными спавнами).
-async fn kill_pids_async(pids: Vec<u32>) {
-    if pids.is_empty() {
-        return;
+#[cfg(windows)]
+async fn stop_owned_processes_async(
+    processes: Vec<crate::dpi_supervisor::OwnedProcess>,
+) -> Vec<crate::dpi_supervisor::ProcessStopOutcome> {
+    if processes.is_empty() {
+        return Vec::new();
     }
-    let _ = tauri::async_runtime::spawn_blocking(move || {
-        for pid in pids {
-            kill_pid(pid);
-        }
+    let pids = processes
+        .iter()
+        .map(|process| process.pid)
+        .collect::<Vec<_>>();
+    match tauri::async_runtime::spawn_blocking(move || {
+        crate::dpi_supervisor::stop_processes_bounded(
+            processes,
+            Duration::from_secs(5),
+            std::sync::Arc::new(crate::dpi_supervisor::WindowsProcessControl),
+        )
     })
-    .await;
+    .await
+    {
+        Ok(outcomes) => outcomes,
+        Err(_) => pids
+            .into_iter()
+            .map(|pid| crate::dpi_supervisor::ProcessStopOutcome {
+                pid,
+                state: crate::dpi_supervisor::ProcessStopState::ReaperFailed,
+            })
+            .collect(),
+    }
 }
 
-/// Сбрасывает DNS вне tokio-воркера (ipconfig блокирующий).
-async fn flush_dns_async() {
-    let _ = tauri::async_runtime::spawn_blocking(flush_dns).await;
+#[cfg(not(windows))]
+async fn stop_owned_processes_async(
+    processes: Vec<crate::dpi_supervisor::OwnedProcess>,
+) -> Vec<crate::dpi_supervisor::ProcessStopOutcome> {
+    let mut outcomes = Vec::with_capacity(processes.len());
+    for process in processes {
+        kill_pid_async(process.pid).await;
+        outcomes.push(crate::dpi_supervisor::ProcessStopOutcome {
+            pid: process.pid,
+            state: crate::dpi_supervisor::ProcessStopState::Exited,
+        });
+    }
+    outcomes
 }
 
 /// Читает поток построчно и эмитит строки в лог UI.
-fn spawn_reader<R>(app: AppHandle, reader: R, category: String, level: &'static str)
-where
+fn spawn_reader<R>(
+    app: AppHandle,
+    reader: R,
+    category: String,
+    level: &'static str,
+    readiness: Option<tokio::sync::mpsc::UnboundedSender<()>>,
+) where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
 {
     tokio::spawn(async move {
@@ -1532,6 +1673,11 @@ where
                 Ok(Some(line)) => {
                     let msg = line.trim();
                     if !msg.is_empty() {
+                        if crate::dpi_supervisor::is_startup_marker(msg) {
+                            if let Some(readiness) = readiness.as_ref() {
+                                let _ = readiness.send(());
+                            }
+                        }
                         util::emit_log(&app, level, "dpi", &format!("[{category}] {msg}"));
                     }
                 }
