@@ -644,6 +644,18 @@ impl RecoveryModel {
             {
                 self.on_rollback_finished(restored, base_healthy, base_probe_reliable)
             }
+            RecoveryEvent::UserCancel if self.phase == RecoveryPhase::RollingBack => {
+                if let Some(session) = self.session.as_mut() {
+                    session.rollback_reason = Some(RollbackReason::UserCancelled);
+                }
+                vec![self.emit_status()]
+            }
+            RecoveryEvent::Shutdown if self.phase == RecoveryPhase::RollingBack => {
+                if let Some(session) = self.session.as_mut() {
+                    session.rollback_reason = Some(RollbackReason::Shutdown);
+                }
+                vec![self.emit_status()]
+            }
             RecoveryEvent::UserCancel
                 if matches!(
                     self.phase,
@@ -1154,6 +1166,49 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn cancel_and_shutdown_during_rollback_do_not_schedule_second_restore() {
+        let (mut model, session, attempt, id) = started_model(vec![candidate("1,midsld")]);
+        model.step(RecoveryEvent::CandidateStarted {
+            session_id: session,
+            attempt_id: attempt,
+            candidate_id: id.clone(),
+            ok: true,
+        });
+        let actions = model.step(RecoveryEvent::ProbeFinished {
+            session_id: session,
+            attempt_id: attempt,
+            candidate_id: id,
+            result: CandidateProbeResult::default(),
+            now: 0,
+        });
+        assert!(matches!(
+            actions[0],
+            RecoveryAction::Rollback {
+                reason: RollbackReason::CandidateProbeFailed,
+                ..
+            }
+        ));
+
+        let cancel_actions = model.step(RecoveryEvent::UserCancel);
+        assert!(cancel_actions
+            .iter()
+            .all(|action| !matches!(action, RecoveryAction::Rollback { .. })));
+        assert_eq!(
+            model.status().rollback_reason,
+            Some(RollbackReason::UserCancelled)
+        );
+
+        let shutdown_actions = model.step(RecoveryEvent::Shutdown);
+        assert!(shutdown_actions
+            .iter()
+            .all(|action| !matches!(action, RecoveryAction::Rollback { .. })));
+        assert_eq!(
+            model.status().rollback_reason,
+            Some(RollbackReason::Shutdown)
+        );
     }
 
     #[test]

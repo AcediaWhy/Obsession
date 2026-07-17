@@ -15,15 +15,17 @@ use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::{mpsc, watch, Notify};
 
 use super::cache::{AdaptiveCacheEntry, AdaptiveStrategyCache, ProbeSummary, StrategyTrust};
+use super::candidate_runtime;
 use super::compiler;
 use super::dsl::{override_key, AdaptiveCategory, StrategyCandidate, StrategyTransport};
 use super::generator::{self, AdaptiveDiagnosis, GeneratorInput};
 use super::model::{
     DiagnosisReason, PreparationFailure, RecoveryAction, RecoveryCfg, RecoveryEvent, RecoveryModel,
-    RecoveryPhase, RecoveryStatus, SearchSessionMode,
+    RecoveryPhase, RecoveryStatus, RollbackReason, SearchSessionMode,
 };
 use super::probe::{self, ProbeSeries, ProbeTarget, SessionDnsCache};
 use super::recommendation::{self, StrategyRecommendation};
+use super::rollback;
 use super::tasks::SessionTasks;
 use crate::eyes::Verdict;
 use crate::state::{AppState, DpiLaunchSpec, DpiRuntimeSnapshot};
@@ -113,6 +115,12 @@ enum RuntimeEvent {
         session_id: u64,
         result: Result<PreparedSearch, PreparationFailure>,
     },
+    CandidateStartFinished {
+        session_id: u64,
+        attempt_id: u64,
+        candidate_id: String,
+        outcome: candidate_runtime::CandidateStartOutcome,
+    },
     Cancel,
     Confirm {
         session_id: u64,
@@ -130,6 +138,11 @@ enum RuntimeEvent {
         candidate_id: String,
         series: ProbeSeries,
     },
+    RollbackFinished {
+        session_id: u64,
+        attempt_id: u64,
+        outcome: rollback::RollbackOutcome,
+    },
     CandidateCrashed {
         generation: u64,
     },
@@ -146,13 +159,13 @@ struct EvidenceState {
 }
 
 #[derive(Default)]
-struct EvidenceWindow {
+pub(super) struct EvidenceWindow {
     state: Mutex<EvidenceState>,
     changed: Notify,
 }
 
 impl EvidenceWindow {
-    fn begin(&self, generation: u64) {
+    pub(super) fn begin(&self, generation: u64) {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         *state = EvidenceState {
             generation,
@@ -181,7 +194,7 @@ impl EvidenceWindow {
         self.changed.notify_one();
     }
 
-    fn snapshot(&self) -> probe::EyesProbeEvidence {
+    pub(super) fn snapshot(&self) -> probe::EyesProbeEvidence {
         let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         probe::EyesProbeEvidence {
             reset_count: state.reset_count,
@@ -195,7 +208,12 @@ impl EvidenceWindow {
         (generation != 0 && state.generation == generation).then_some(state.revision)
     }
 
-    async fn wait_for_quiet(&self, generation: u64, quiet_for: Duration, max_wait: Duration) {
+    pub(super) async fn wait_for_quiet(
+        &self,
+        generation: u64,
+        quiet_for: Duration,
+        max_wait: Duration,
+    ) {
         if quiet_for.is_zero() || max_wait.is_zero() {
             return;
         }
@@ -346,6 +364,30 @@ struct SuggestionPayload {
     reason: DiagnosisReason,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PendingRollback {
+    session_id: u64,
+    attempt_id: u64,
+    reason: RollbackReason,
+}
+fn take_pending_rollback(
+    pending: &mut Option<PendingRollback>,
+    session_id: u64,
+    attempt_id: u64,
+) -> Option<RecoveryAction> {
+    if !pending
+        .is_some_and(|pending| pending.session_id == session_id && pending.attempt_id == attempt_id)
+    {
+        return None;
+    }
+    let pending = pending.take().unwrap();
+    Some(RecoveryAction::Rollback {
+        session_id: pending.session_id,
+        attempt_id: pending.attempt_id,
+        reason: pending.reason,
+    })
+}
+
 #[derive(Default)]
 struct SessionContext {
     original: Option<DpiRuntimeSnapshot>,
@@ -358,7 +400,9 @@ struct SessionContext {
     probe_targets: Vec<ProbeTarget>,
     dns_cache: SessionDnsCache,
     session_mode: Option<SearchSessionMode>,
+    candidate_generation: Arc<AtomicU64>,
     tasks: SessionTasks,
+    pending_rollback: Option<PendingRollback>,
     last_probe: Option<ProbeSeries>,
 }
 
@@ -447,8 +491,12 @@ pub fn start(app: AppHandle) -> AdaptiveHandle {
     let join = async_runtime::spawn(async move {
         let started = Instant::now();
         let mut model = RecoveryModel::new(RecoveryCfg::default());
-        let mut context = SessionContext::default();
+        let mut context = SessionContext {
+            candidate_generation: candidate_generation.clone(),
+            ..Default::default()
+        };
         let mut detector = PassiveDetector::default();
+        let mut shutdown_requested = false;
         let mut tick = tokio::time::interval(Duration::from_millis(500));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
@@ -468,7 +516,9 @@ pub fn start(app: AppHandle) -> AdaptiveHandle {
                     observation.unwrap_or(RuntimeEvent::Shutdown)
                 }
             };
-            let shutdown = matches!(event, RuntimeEvent::Shutdown);
+            if matches!(event, RuntimeEvent::Shutdown) {
+                shutdown_requested = true;
+            }
             let actions = handle_event(
                 &app,
                 &mut model,
@@ -492,7 +542,12 @@ pub fn start(app: AppHandle) -> AdaptiveHandle {
                 started,
             )
             .await;
-            if shutdown {
+            if runtime_shutdown_complete(
+                shutdown_requested,
+                model.status().phase,
+                context.tasks.candidate_running(),
+                context.tasks.rollback_running(),
+            ) {
                 candidate_generation.store(0, Ordering::SeqCst);
                 evidence.begin(0);
                 break;
@@ -935,8 +990,63 @@ async fn handle_event(
                 Err(reason) => model.step(RecoveryEvent::PreparationFailed { session_id, reason }),
             }
         }
+        RuntimeEvent::CandidateStartFinished {
+            session_id,
+            attempt_id,
+            candidate_id,
+            outcome,
+        } => {
+            context.tasks.finish_candidate();
+            let status = model.status();
+            if status.session_id != Some(session_id)
+                || status.attempt_id != Some(attempt_id)
+                || status.candidate_id.as_deref() != Some(candidate_id.as_str())
+                || !matches!(
+                    status.phase,
+                    RecoveryPhase::Searching | RecoveryPhase::RollingBack
+                )
+            {
+                return Vec::new();
+            }
+
+            context.expected_generation = outcome.generation_after;
+            if let Some(rollback) =
+                take_pending_rollback(&mut context.pending_rollback, session_id, attempt_id)
+            {
+                context.candidate_generation.store(0, Ordering::SeqCst);
+                evidence.begin(0);
+                return vec![rollback];
+            }
+
+            let ok = outcome.result.is_ok();
+            if let Err(error) = outcome.result {
+                crate::util::emit_log(
+                    app,
+                    "error",
+                    "adaptive",
+                    &format!(
+                        "candidate_start_failed session={session_id} attempt={attempt_id}: {error}"
+                    ),
+                );
+            }
+            if ok {
+                context
+                    .candidate_generation
+                    .store(outcome.generation_after, Ordering::SeqCst);
+                evidence.begin(outcome.generation_after);
+            } else {
+                context.candidate_generation.store(0, Ordering::SeqCst);
+                evidence.begin(0);
+            }
+            model.step(RecoveryEvent::CandidateStarted {
+                session_id,
+                attempt_id,
+                candidate_id,
+                ok,
+            })
+        }
         RuntimeEvent::Cancel => {
-            context.tasks.abort_all();
+            context.tasks.abort_interruptible();
             model.step(RecoveryEvent::UserCancel)
         }
         RuntimeEvent::Confirm {
@@ -1023,8 +1133,30 @@ async fn handle_event(
                 _ => Vec::new(),
             }
         }
+        RuntimeEvent::RollbackFinished {
+            session_id,
+            attempt_id,
+            outcome,
+        } => {
+            context.tasks.finish_rollback();
+            let status = model.status();
+            if status.phase != RecoveryPhase::RollingBack
+                || status.session_id != Some(session_id)
+                || status.attempt_id != Some(attempt_id)
+            {
+                return Vec::new();
+            }
+            context.expected_generation = outcome.generation_after;
+            model.step(RecoveryEvent::RollbackFinished {
+                session_id,
+                attempt_id,
+                restored: outcome.restored,
+                base_healthy: outcome.base_healthy,
+                base_probe_reliable: outcome.base_probe_reliable,
+            })
+        }
         RuntimeEvent::Shutdown => {
-            context.tasks.abort_all();
+            context.tasks.abort_interruptible();
             model.step(RecoveryEvent::Shutdown)
         }
     }
@@ -1313,37 +1445,36 @@ async fn execute_actions(
                 context.tried.insert(fingerprint);
                 context.probe_transport = Some(candidate.transport);
                 context.last_probe = None;
-                let result = if let (Some(original), Some(category)) =
-                    (context.original.as_ref(), context.category)
-                {
-                    let state = app.state::<AppState>();
-                    let _gate = state.dpi_gate.lock().await;
-                    crate::dpi::start_adaptive_candidate_locked(
-                        app,
-                        original,
-                        context.expected_generation,
-                        category.as_key(),
-                        candidate,
-                    )
-                    .await
-                } else {
-                    Err("Adaptive session snapshot отсутствует".to_string())
-                };
-                context.expected_generation = crate::dpi::runtime_snapshot(app).generation;
-                if let Ok(generation) = result.as_ref() {
-                    context.expected_generation = *generation;
-                    candidate_generation.store(*generation, Ordering::SeqCst);
-                    evidence.begin(*generation);
-                } else {
-                    candidate_generation.store(0, Ordering::SeqCst);
-                    evidence.begin(0);
-                }
-                Some(RecoveryEvent::CandidateStarted {
-                    session_id,
-                    attempt_id,
-                    candidate_id,
-                    ok: result.is_ok(),
-                })
+                context.pending_rollback = None;
+                let app = app.clone();
+                let tx = control_tx.clone();
+                let original = context.original.clone();
+                let category = context.category;
+                let expected_generation = context.expected_generation;
+                let task = async_runtime::spawn(async move {
+                    let outcome = if let (Some(original), Some(category)) = (original, category) {
+                        candidate_runtime::start(
+                            &app,
+                            &original,
+                            expected_generation,
+                            category.as_key(),
+                            candidate,
+                        )
+                        .await
+                    } else {
+                        candidate_runtime::failed(&app, "Adaptive session snapshot отсутствует")
+                    };
+                    let _ = tx
+                        .send(RuntimeEvent::CandidateStartFinished {
+                            session_id,
+                            attempt_id,
+                            candidate_id,
+                            outcome,
+                        })
+                        .await;
+                });
+                context.tasks.replace_candidate(task);
+                None
             }
             RecoveryAction::RunProbes {
                 session_id,
@@ -1407,7 +1538,34 @@ async fn execute_actions(
                 attempt_id,
                 reason,
             } => {
+                evidence.begin(0);
                 candidate_generation.store(0, Ordering::SeqCst);
+                if context.tasks.rollback_running() || context.pending_rollback.is_some() {
+                    continue;
+                }
+                if context.tasks.candidate_running() {
+                    context.pending_rollback = Some(PendingRollback {
+                        session_id,
+                        attempt_id,
+                        reason,
+                    });
+                    crate::util::emit_log(
+                        app,
+                        "info",
+                        "adaptive",
+                        &format!(
+                            "rollback_deferred session={session_id} attempt={attempt_id}: candidate spawn still running"
+                        ),
+                    );
+                    continue;
+                }
+                if matches!(
+                    reason,
+                    super::model::RollbackReason::CandidateProbeFailed
+                        | super::model::RollbackReason::CandidateCrashed
+                ) {
+                    record_failure(app, context);
+                }
                 crate::util::emit_log(
                     app,
                     "info",
@@ -1416,127 +1574,42 @@ async fn execute_actions(
                         "rollback_start session={session_id} attempt={attempt_id} reason={reason:?}"
                     ),
                 );
-                let restored = if let Some(original) = context.original.as_ref() {
-                    let state = app.state::<AppState>();
-                    let _gate = state.dpi_gate.lock().await;
-                    crate::dpi::restore_runtime_snapshot_locked(
-                        app,
-                        original,
-                        context.expected_generation,
-                    )
-                    .await
-                } else {
-                    Err("Adaptive rollback snapshot отсутствует".to_string())
-                };
-                if matches!(
-                    reason,
-                    super::model::RollbackReason::CandidateProbeFailed
-                        | super::model::RollbackReason::CandidateCrashed
-                ) {
-                    record_failure(app, context);
-                }
-                let recovery_mode = context.session_mode == Some(SearchSessionMode::Recovery);
-                let mut base_healthy = recovery_mode && restored.is_ok();
-                let mut base_probe_reliable = recovery_mode;
-                if let Ok(generation) = restored.as_ref() {
-                    context.expected_generation = *generation;
-                    if !recovery_mode {
-                        if let (Some(category), Some(transport)) =
-                            (context.category, context.probe_transport)
-                        {
-                            let tuning = search_tuning(app);
-                            let targets = context.probe_targets.clone();
-                            evidence.begin(*generation);
-                            tokio::time::sleep(tuning.stabilization_delay).await;
-                            let mut series = probe::run_probe_series_for_targets_with_cache(
-                                category,
-                                transport,
-                                &targets,
-                                tuning.probe_timeout,
-                                tuning.base_recheck_rounds,
-                                1,
-                                tuning.probe_interval,
-                                &context.dns_cache,
-                            )
-                            .await;
-                            let mut eyes = evidence.snapshot();
-                            let mut result = series.evaluate_base(&eyes);
-                            if result.is_success() {
-                                evidence
-                                    .wait_for_quiet(
-                                        *generation,
-                                        tuning.eyes_quiet_window,
-                                        tuning.eyes_quiet_deadline,
-                                    )
-                                    .await;
-                                eyes = evidence.snapshot();
-                                result = series.evaluate_base(&eyes);
-                            }
-                            log_probe_series(app, "base_recheck", &series, &result);
-                            if result.failure_stage == super::evidence::FailureStage::Dns
-                                && !result.dns_ok
-                            {
-                                crate::util::emit_log(
-                                    app,
-                                    "warn",
-                                    "adaptive",
-                                    "base_recheck DNS failure: retrying once with session cache",
-                                );
-                                series = probe::run_probe_series_for_targets_with_cache(
-                                    category,
-                                    transport,
-                                    &targets,
-                                    tuning.probe_timeout,
-                                    tuning.base_recheck_rounds,
-                                    1,
-                                    tuning.probe_interval,
-                                    &context.dns_cache,
-                                )
-                                .await;
-                                eyes = evidence.snapshot();
-                                result = series.evaluate_base(&eyes);
-                                if result.is_success() {
-                                    evidence
-                                        .wait_for_quiet(
-                                            *generation,
-                                            tuning.eyes_quiet_window,
-                                            tuning.eyes_quiet_deadline,
-                                        )
-                                        .await;
-                                    eyes = evidence.snapshot();
-                                    result = series.evaluate_base(&eyes);
-                                }
-                                log_probe_series(app, "base_recheck_dns_retry", &series, &result);
-                            }
-                            base_probe_reliable = !(result.failure_stage
-                                == super::evidence::FailureStage::Dns
-                                && !result.dns_ok);
-                            base_healthy = result.is_success();
-                        }
-                    }
-                }
-                crate::util::emit_log(
-                    app,
-                    if restored.is_ok() && base_healthy {
-                        "info"
-                    } else if restored.is_ok() && !base_probe_reliable {
-                        "warn"
-                    } else {
-                        "error"
-                    },
-                    "adaptive",
-                    &format!(
-                        "rollback_finished session={session_id} attempt={attempt_id} restored={} base_healthy={base_healthy} base_probe_reliable={base_probe_reliable}",
-                        restored.is_ok()
-                    ),
-                );
-                Some(RecoveryEvent::RollbackFinished {
+                let tuning = search_tuning(app);
+                let request = rollback::RollbackRequest {
                     session_id,
                     attempt_id,
-                    restored: restored.is_ok(),
-                    base_healthy,
-                    base_probe_reliable,
-                })
+                    original: context.original.clone(),
+                    expected_generation: context.expected_generation,
+                    category: context.category,
+                    transport: context.probe_transport,
+                    targets: context.probe_targets.clone(),
+                    dns_cache: context.dns_cache.clone(),
+                    recovery_mode: context.session_mode == Some(SearchSessionMode::Recovery),
+                    config: rollback::RollbackConfig {
+                        probe_timeout: tuning.probe_timeout,
+                        probe_interval: tuning.probe_interval,
+                        stabilization_delay: tuning.stabilization_delay,
+                        base_recheck_rounds: tuning.base_recheck_rounds,
+                        eyes_quiet_window: tuning.eyes_quiet_window,
+                        eyes_quiet_deadline: tuning.eyes_quiet_deadline,
+                    },
+                    evidence: evidence.clone(),
+                };
+                let tx = control_tx.clone();
+                let app = app.clone();
+                let task = async_runtime::spawn(async move {
+                    let outcome = rollback::run(app, request).await;
+                    let _ = tx
+                        .send(RuntimeEvent::RollbackFinished {
+                            session_id,
+                            attempt_id,
+                            outcome,
+                        })
+                        .await;
+                });
+                context.pending_rollback = None;
+                context.tasks.replace_rollback(task);
+                None
             }
             RecoveryAction::PersistConfirmed {
                 session_id,
@@ -1713,7 +1786,7 @@ async fn reset_saved(app: &AppHandle, category: AdaptiveCategory) {
     }
 }
 
-fn log_probe_series(
+pub(super) fn log_probe_series(
     app: &AppHandle,
     label: &str,
     series: &ProbeSeries,
@@ -1794,6 +1867,15 @@ fn engine_version() -> String {
 
 fn elapsed_ms(started: Instant) -> u64 {
     started.elapsed().as_millis().min(u64::MAX as u128) as u64
+}
+
+fn runtime_shutdown_complete(
+    requested: bool,
+    phase: RecoveryPhase,
+    candidate_running: bool,
+    rollback_running: bool,
+) -> bool {
+    requested && phase != RecoveryPhase::RollingBack && !candidate_running && !rollback_running
 }
 
 fn unix_secs() -> u64 {
@@ -1962,6 +2044,34 @@ mod tests {
         );
     }
 
+    #[test]
+    fn shutdown_waits_for_owned_side_effect_completion() {
+        assert!(!runtime_shutdown_complete(
+            true,
+            RecoveryPhase::RollingBack,
+            false,
+            true,
+        ));
+        assert!(!runtime_shutdown_complete(
+            true,
+            RecoveryPhase::RollingBack,
+            true,
+            false,
+        ));
+        assert!(runtime_shutdown_complete(
+            true,
+            RecoveryPhase::Cancelled,
+            false,
+            false,
+        ));
+        assert!(!runtime_shutdown_complete(
+            false,
+            RecoveryPhase::Idle,
+            false,
+            false,
+        ));
+    }
+
     #[tokio::test]
     async fn evidence_quiet_window_stops_at_hard_deadline() {
         let evidence = Arc::new(EvidenceWindow::default());
@@ -1990,6 +2100,26 @@ mod tests {
         );
     }
 
+    #[test]
+    fn deferred_rollback_is_released_once_for_matching_completion() {
+        let mut pending = Some(PendingRollback {
+            session_id: 4,
+            attempt_id: 7,
+            reason: RollbackReason::UserCancelled,
+        });
+
+        assert!(take_pending_rollback(&mut pending, 4, 6).is_none());
+        assert!(pending.is_some());
+        assert!(matches!(
+            take_pending_rollback(&mut pending, 4, 7),
+            Some(RecoveryAction::Rollback {
+                session_id: 4,
+                attempt_id: 7,
+                reason: RollbackReason::UserCancelled,
+            })
+        ));
+        assert!(take_pending_rollback(&mut pending, 4, 7).is_none());
+    }
     #[test]
     fn quic_failure_enters_recovery_but_dns_failure_does_not() {
         let mut result = crate::adaptive_strategy::model::CandidateProbeResult::default();

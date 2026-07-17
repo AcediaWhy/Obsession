@@ -5,6 +5,7 @@
 //! unit-tested ядро без side effects и доступа к DPI runtime.
 
 pub mod cache;
+mod candidate_runtime;
 pub mod compiler;
 pub mod dsl;
 pub mod evidence;
@@ -12,6 +13,7 @@ pub mod generator;
 pub mod model;
 pub mod probe;
 pub mod recommendation;
+mod rollback;
 pub mod runtime;
 mod tasks;
 pub mod validator;
