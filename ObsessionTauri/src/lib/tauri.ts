@@ -24,6 +24,8 @@ export interface DpiProc {
 export interface DpiStatus {
   active: boolean;
   processes: DpiProc[];
+  /** Unix-время (сек) старта текущей сессии обхода; null = выключен. */
+  started_at: number | null;
 }
 
 export interface ProxyStatus {
@@ -348,8 +350,6 @@ export const api = {
   getSettings: () => invoke<Settings>("get_settings"),
   updateSettings: (patch: Partial<Settings>) =>
     invoke<Settings>("update_settings", { patch }),
-  saveSettings: (settings: Settings) =>
-    invoke<void>("save_settings", { settings }),
   // Меняет глобальный хоткей (пустая строка = выключить). Формат — Tauri-
   // акселератор с Code-именем клавиши ("Ctrl+Shift+KeyO").
   setHotkey: (hotkey: string) => invoke<void>("set_hotkey", { hotkey }),
@@ -401,22 +401,12 @@ export const api = {
 
 // ─── События ──────────────────────────────────────────────────────────────
 
-// Монотонный счётчик status-событий (dpi/proxy/brain). Возврат из трея делает
-// runtime-снапшот и применяет его ТОЛЬКО если epoch не изменился с момента
-// захвата — иначе за время запроса пришло более свежее событие статуса и снимок
-// устарел (гонка «снимок vs событие»). См. runtime.snapshot() ниже и резюм-ветку
-// on.windowVisibility в App.
-let statusEpoch = 0;
-function bumpStatusEpoch() {
-  statusEpoch++;
-}
 
 export const on = {
   log: (cb: (e: LogEvent) => void): Promise<UnlistenFn> =>
     listen<LogEvent>("log", (e) => cb(e.payload)),
   dpiStatus: (cb: (e: DpiStatus) => void): Promise<UnlistenFn> =>
     listen<VersionedSection<DpiStatus>>("dpi-status", (e) => {
-      bumpStatusEpoch();
       cb(e.payload.value);
     }),
   dpiStatusVersioned: (
@@ -425,7 +415,6 @@ export const on = {
     listen<VersionedSection<DpiStatus>>("dpi-status", (e) => cb(e.payload)),
   proxyStatus: (cb: (e: ProxyStatus) => void): Promise<UnlistenFn> =>
     listen<VersionedSection<ProxyStatus>>("proxy-status", (e) => {
-      bumpStatusEpoch();
       cb(e.payload.value);
     }),
   proxyStatusVersioned: (
@@ -434,7 +423,6 @@ export const on = {
     listen<VersionedSection<ProxyStatus>>("proxy-status", (e) => cb(e.payload)),
   brainStatus: (cb: (s: BrainStatus) => void): Promise<UnlistenFn> =>
     listen<VersionedSection<BrainStatus>>("brain://status", (e) => {
-      bumpStatusEpoch();
       cb(e.payload.value);
     }),
   brainStatusVersioned: (
@@ -443,7 +431,6 @@ export const on = {
     listen<VersionedSection<BrainStatus>>("brain://status", (e) => cb(e.payload)),
   adaptiveStatus: (cb: (s: AdaptiveStatus) => void): Promise<UnlistenFn> =>
     listen<VersionedSection<AdaptiveStatus>>("adaptive://status", (e) => {
-      bumpStatusEpoch();
       cb(e.payload.value);
     }),
   adaptiveStatusVersioned: (
@@ -464,13 +451,10 @@ export const on = {
     listen<boolean>("window-visibility", (e) => cb(e.payload)),
 };
 
-// ─── Runtime-снапшот (возврат из трея) ──────────────────────────────────────
-// Пока UI в трее, трей/хоткей могли переключить DPI/прокси. Подписки остаются
-// живыми, но на всякий случай при возврате догоняем единый снимок состояния.
-// `epoch` captured вызывающим до snapshot(); применять снимок только если
-// statusEpoch() не изменился (иначе за время запроса пришло более свежее событие).
+// ─── Runtime snapshots ────────────────────────────────────────────────────
+// Legacy snapshot stays available for compatibility; launcher hydration and
+// resume use independently versioned bootstrap sections.
 export const runtime = {
-  statusEpoch: (): number => statusEpoch,
   snapshot: (): Promise<RuntimeSnapshot> => api.runtimeGetSnapshot(),
   bootstrap: (): Promise<BootstrapSnapshot> => api.bootstrapGetSnapshot(),
 };

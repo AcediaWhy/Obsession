@@ -1,19 +1,19 @@
 import { create } from "zustand";
-import type { UnlistenFn } from "@tauri-apps/api/event";
 
 import {
   api,
-  on,
   type AdaptiveCategory,
   type AdaptiveProbeBatch,
   type AdaptiveRecommendationDescriptor,
   type AdaptiveStatus,
   type AdaptiveSuggestion,
   type AdaptiveTransport,
+  type VersionedSection,
 } from "../lib/tauri";
 import { toast } from "./toastStore";
 
 interface AdaptiveStrategyState {
+  revision: number;
   status: AdaptiveStatus | null;
   suggestion: AdaptiveSuggestion | null;
   probe: AdaptiveProbeBatch | null;
@@ -24,7 +24,10 @@ interface AdaptiveStrategyState {
   busy: boolean;
   error: string;
 
-  bootstrap: () => Promise<UnlistenFn>;
+  applyVersionedStatus: (
+    section: VersionedSection<AdaptiveStatus | null>,
+  ) => boolean;
+  applyStatus: (status: AdaptiveStatus) => void;
   startSearch: (category: AdaptiveCategory, transport: AdaptiveTransport) => Promise<void>;
   findRecommendation: (
     category: AdaptiveCategory,
@@ -48,7 +51,28 @@ function verificationEnd(status: AdaptiveStatus): number | null {
     : null;
 }
 
+function statusPatch(
+  status: AdaptiveStatus,
+  previous: AdaptiveStatus | null,
+  suggestion: AdaptiveSuggestion | null,
+  verificationEndsAt: number | null,
+  savedCandidateId: string | null,
+) {
+  return {
+    status,
+    suggestion: status.phase === "suggested" ? suggestion : null,
+    verificationEndsAt:
+      status.phase === "temporary_verification" &&
+      previous?.phase === "temporary_verification"
+        ? verificationEndsAt
+        : verificationEnd(status),
+    savedCandidateId:
+      status.phase === "applied" ? status.candidateId : savedCandidateId,
+  };
+}
+
 export const useAdaptiveStrategyStore = create<AdaptiveStrategyState>((set, get) => ({
+  revision: -1,
   status: null,
   suggestion: null,
   probe: null,
@@ -59,37 +83,46 @@ export const useAdaptiveStrategyStore = create<AdaptiveStrategyState>((set, get)
   busy: false,
   error: "",
 
-  bootstrap: async () => {
-    const [initial, unlistenStatus, unlistenSuggestion, unlistenProbe] =
-      await Promise.all([
-        api.adaptiveGetStatus().catch(() => null),
-        on.adaptiveStatus((status) => {
-          const previous = get().status;
-          set({
-            status,
-            suggestion: status.phase === "suggested" ? get().suggestion : null,
-            verificationEndsAt:
-              status.phase === "temporary_verification" &&
-              previous?.phase === "temporary_verification"
-                ? get().verificationEndsAt
-                : verificationEnd(status),
-            savedCandidateId:
-              status.phase === "applied"
-                ? status.candidateId
-                : get().savedCandidateId,
-          });
-        }),
-        on.adaptiveSuggestion((suggestion) => set({ suggestion })),
-        on.adaptiveProbe((probe) => set({ probe })),
-      ]);
-    if (initial) {
-      set({ status: initial, verificationEndsAt: verificationEnd(initial) });
+  // Применяет adaptive://status (из подписки И из runtime-снапшота при возврате
+  // из трея). Единый путь: обе точки входа сохраняют verificationEndsAt /
+  // savedCandidateId / suggestion, иначе resume-снапшот замораживал бы countdown
+  // верификации и терял сохранённый candidateId.
+  applyVersionedStatus: (section) => {
+    if (section.revision <= get().revision) return false;
+    if (!section.value) {
+      set({
+        revision: section.revision,
+        status: null,
+        suggestion: null,
+        verificationEndsAt: null,
+      });
+      return true;
     }
-    return () => {
-      unlistenStatus();
-      unlistenSuggestion();
-      unlistenProbe();
-    };
+    const state = get();
+    set({
+      revision: section.revision,
+      ...statusPatch(
+        section.value,
+        state.status,
+        state.suggestion,
+        state.verificationEndsAt,
+        state.savedCandidateId,
+      ),
+    });
+    return true;
+  },
+
+  applyStatus: (status) => {
+    const state = get();
+    set(
+      statusPatch(
+        status,
+        state.status,
+        state.suggestion,
+        state.verificationEndsAt,
+        state.savedCandidateId,
+      ),
+    );
   },
 
   startSearch: async (category, transport) => {

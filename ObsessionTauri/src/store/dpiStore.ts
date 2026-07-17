@@ -1,14 +1,14 @@
 import { create } from "zustand";
-import type { UnlistenFn } from "@tauri-apps/api/event";
 import {
   api,
-  on,
   runtime,
   type AppConfig,
   type ConfStat,
   type DpiProc,
   type DpiStatus,
   type EngineOption,
+  type Settings,
+  type VersionedSection,
   type Zapret2ProfileDescriptor,
 } from "../lib/tauri";
 
@@ -22,12 +22,14 @@ type CategorySelections = {
 };
 
 interface DpiState {
+  revision: number;
   config: AppConfig | null;
   selectedCategories: string[];
   categorySelections: CategorySelections;
   selectedConfigs: Record<string, string>;
   active: boolean;
   processes: DpiProc[];
+  startedAt: number | null;
   transitioning: boolean;
   testing: boolean;
   testCancel: boolean;
@@ -38,7 +40,8 @@ interface DpiState {
   engines: EngineOption[];
   zapret2Profiles: Zapret2ProfileDescriptor[];
 
-  bootstrap: () => Promise<UnlistenFn>;
+  initialize: (config: AppConfig, settings: Settings) => void;
+  applyVersionedStatus: (section: VersionedSection<DpiStatus>) => boolean;
   applyStatus: (s: DpiStatus) => void;
   reconcileTransition: () => Promise<void>;
   loadStats: () => Promise<void>;
@@ -60,13 +63,23 @@ function defaultConfig(files: string[]): string {
   return files.find((f) => f.includes("_1.conf")) ?? files[0] ?? "";
 }
 
+function statusPatch(status: DpiStatus) {
+  return {
+    active: status.active,
+    processes: status.processes,
+    startedAt: status.started_at != null ? status.started_at * 1000 : null,
+  };
+}
+
 export const useDpiStore = create<DpiState>((set, get) => ({
+  revision: -1,
   config: null,
   selectedCategories: ["discord"],
   categorySelections: { legacy: ["discord"], zapret2: ["discord"] },
   selectedConfigs: {},
   active: false,
   processes: [],
+  startedAt: null,
   transitioning: false,
   testing: false,
   testCancel: false,
@@ -77,12 +90,7 @@ export const useDpiStore = create<DpiState>((set, get) => ({
   engines: [],
   zapret2Profiles: [],
 
-  bootstrap: async () => {
-    const [config, settings, snapshot] = await Promise.all([
-      api.getConfig(),
-      api.getSettings(),
-      runtime.snapshot().catch(() => null),
-    ]);
+  initialize: (config, settings) => {
     const selectedConfigs: Record<string, string> = {};
     for (const cat of CATEGORY_ORDER) {
       const files = config.configs[cat] ?? [];
@@ -93,67 +101,60 @@ export const useDpiStore = create<DpiState>((set, get) => ({
     }
     const legacy =
       settings.selected_categories.length > 0
-        ? settings.selected_categories.filter((c) => config.categories.includes(c))
+        ? settings.selected_categories.filter((category) =>
+            config.categories.includes(category),
+          )
         : ["discord"];
     const zapret2 =
       settings.zapret2_selected_categories.length > 0
-        ? settings.zapret2_selected_categories.filter((c) => ZAPRET2_CATEGORIES.has(c))
+        ? settings.zapret2_selected_categories.filter((category) =>
+            ZAPRET2_CATEGORIES.has(category),
+          )
         : ["discord"];
     const categorySelections: CategorySelections = {
       legacy: legacy.length ? legacy : ["discord"],
       zapret2: zapret2.length ? zapret2 : ["discord"],
     };
-    const selectedCategories =
-      settings.dpi_engine === "zapret2"
-        ? categorySelections.zapret2
-        : categorySelections.legacy;
     set({
       config,
       selectedConfigs,
-      selectedCategories,
       categorySelections,
-      active: snapshot?.dpi.active ?? get().active,
-      processes: snapshot?.dpi.processes ?? get().processes,
-      // Bootstrap означает новый frontend lifecycle: незавершённого локального
-      // start/stop promise здесь уже нет, поэтому backend snapshot авторитетен.
+      selectedCategories:
+        settings.dpi_engine === "zapret2"
+          ? categorySelections.zapret2
+          : categorySelections.legacy,
       transitioning: false,
+      error: "",
     });
-
-    // Подписка на статус DPI от бэкенда. НЕ трогает transitioning — им владеют
-    // start()/stop() (сбрасывают в finally). Иначе первый же dpi-status снимал
-    // блокировку кнопки до конца операции → повторный клик ловил гонку.
-    // Возвращаем UnlistenFn наверх (App) — иначе слушатель жил бы вечно и
-    // дублировался при повторном bootstrap (StrictMode).
-    const unlisten = await on.dpiStatus((s) => {
-      get().applyStatus(s);
-      // Crash fallback меняет выбранный engine на backend. Обновляем chips после
-      // status event, чтобы UI не продолжал показывать Zapret2 при активном Legacy.
-      void Promise.all([get().loadEngines(), get().loadZapret2Profiles()]);
-    });
-    await Promise.all([
-      get().loadStats(),
-      get().loadEngines(),
-      get().loadZapret2Profiles(),
-    ]);
-    return unlisten;
   },
 
   // Применяет живой dpi-status. НЕ трогает transitioning: ранний status во время
-  // штатного start/stop не должен снимать защиту от повторного клика.
-  applyStatus: (s) => set({ active: s.active, processes: s.processes }),
+  // штатного start/stop не должен снимать защиту от повторного клика. startedAt —
+  // из backend (Unix-сек → мс), источник аптайма, переживающий смену вкладок/resume.
+  applyVersionedStatus: (section) => {
+    if (section.revision <= get().revision) return false;
+    set({ ...statusPatch(section.value), revision: section.revision });
+    return true;
+  },
+
+  applyStatus: (status) => set(statusPatch(status)),
 
   // Аварийная сверка frontend latch с точным backend runtime. Вызывается только
   // watchdog-ом после нормального окна start/stop, поэтому не конкурирует с
   // обычными быстрыми переходами.
   reconcileTransition: async () => {
     if (!get().transitioning) return;
-    const epoch = runtime.statusEpoch();
     try {
-      const snapshot = await runtime.snapshot();
-      if (!get().transitioning || runtime.statusEpoch() !== epoch) return;
+      const snapshot = await runtime.bootstrap();
+      if (
+        !get().transitioning ||
+        snapshot.dpi.revision < get().revision
+      ) {
+        return;
+      }
       set({
-        active: snapshot.dpi.active,
-        processes: snapshot.dpi.processes,
+        ...statusPatch(snapshot.dpi.value),
+        revision: Math.max(get().revision, snapshot.dpi.revision),
         transitioning: false,
       });
     } catch {
@@ -276,18 +277,25 @@ export const useDpiStore = create<DpiState>((set, get) => ({
     const { selectedCategories, selectedConfigs, config } = get();
     set({ testing: true, testCancel: false, testResults: {} });
     const results: Record<string, boolean> = {};
-    for (const cat of selectedCategories) {
-      if (get().testCancel) break;
-      const files = config?.configs[cat] ?? [];
-      const file = selectedConfigs[cat] || defaultConfig(files);
-      if (!file) continue;
-      set({ testingLabel: `${cat}: ${file}` });
-      const ok = await api.dpiTest(cat, file);
-      results[file] = ok;
-      if (ok) await api.recordWorkingConfig(cat, file);
-      set({ testResults: { ...results } });
+    try {
+      for (const cat of selectedCategories) {
+        if (get().testCancel) break;
+        const files = config?.configs[cat] ?? [];
+        const file = selectedConfigs[cat] || defaultConfig(files);
+        if (!file) continue;
+        set({ testingLabel: `${cat}: ${file}` });
+        const ok = await api.dpiTest(cat, file);
+        results[file] = ok;
+        if (ok) await api.recordWorkingConfig(cat, file);
+        set({ testResults: { ...results } });
+      }
+    } catch (e) {
+      // Реджект dpi_test/record_working_config НЕ должен оставить testing=true
+      // навсегда (кнопки Тест/Авто-подбор залипли бы на «Отменить» до рестарта).
+      set({ error: String(e) });
+    } finally {
+      set({ testing: false, testingLabel: "", testCancel: false });
     }
-    set({ testing: false, testingLabel: "", testCancel: false });
     await get().loadStats(); // Обновить статистику надёжности
   },
 
@@ -303,21 +311,27 @@ export const useDpiStore = create<DpiState>((set, get) => ({
     const { selectedCategories, config } = get();
     set({ testing: true, testCancel: false, testResults: {} });
     const selected = { ...get().selectedConfigs };
-    outer: for (const cat of selectedCategories) {
-      const files = config?.configs[cat] ?? [];
-      set({ testingLabel: cat });
-      for (const file of files) {
-        if (get().testCancel) break outer;
-        set({ testingLabel: `${cat}: ${file}` });
-        const ok = await api.dpiTest(cat, file);
-        if (ok) {
-          await api.recordWorkingConfig(cat, file);
-          selected[cat] = file;
-          break;
+    try {
+      outer: for (const cat of selectedCategories) {
+        const files = config?.configs[cat] ?? [];
+        set({ testingLabel: cat });
+        for (const file of files) {
+          if (get().testCancel) break outer;
+          set({ testingLabel: `${cat}: ${file}` });
+          const ok = await api.dpiTest(cat, file);
+          if (ok) {
+            await api.recordWorkingConfig(cat, file);
+            selected[cat] = file;
+            break;
+          }
         }
       }
+    } catch (e) {
+      // Как в testAll: любой реджект внутри цикла обязан снять testing-латч.
+      set({ error: String(e) });
+    } finally {
+      set({ testing: false, testingLabel: "", testCancel: false, selectedConfigs: selected });
     }
-    set({ testing: false, testingLabel: "", testCancel: false, selectedConfigs: selected });
     persist();
     await get().loadStats(); // Обновить статистику надёжности
   },
@@ -332,21 +346,37 @@ function currentEngine(engines: EngineOption[]): keyof CategorySelections {
 }
 
 /// Сохраняет выбор категорий/конфигов в настройки бэкенда.
+///
+/// Вызовы сериализуются через `dpiWriteQueue`: `toggleCategory`/`setConfig`
+/// дёргают persist() как fire-and-forget, а Tauri-команды выполняются на Rust
+/// конкурентно — без очереди старый (полный) payload мог завершиться ПОСЛЕ
+/// нового и восстановить устаревший выбор при следующем запуске. Каждое звено
+/// заново читает актуальный state, поэтому последний вызов персистит свежий снимок.
+let dpiWriteQueue: Promise<unknown> = Promise.resolve();
+
 async function persist() {
-  const state = useDpiStore.getState();
-  const engine = currentEngine(state.engines);
-  const categorySelections = {
-    ...state.categorySelections,
-    [engine]: state.selectedCategories,
-  };
-  useDpiStore.setState({ categorySelections });
-  try {
-    await api.updateSettings({
-      selected_categories: categorySelections.legacy,
-      zapret2_selected_categories: categorySelections.zapret2,
-      selected_configs: state.selectedConfigs,
-    });
-  } catch {
-    /* best-effort */
-  }
+  const run = dpiWriteQueue.then(async () => {
+    const state = useDpiStore.getState();
+    const engine = currentEngine(state.engines);
+    const categorySelections = {
+      ...state.categorySelections,
+      [engine]: state.selectedCategories,
+    };
+    useDpiStore.setState({ categorySelections });
+    try {
+      await api.updateSettings({
+        selected_categories: categorySelections.legacy,
+        zapret2_selected_categories: categorySelections.zapret2,
+        selected_configs: state.selectedConfigs,
+      });
+    } catch {
+      /* best-effort */
+    }
+  });
+  // Хвост очереди не должен «застрять» на реджекте (свести к резолву).
+  dpiWriteQueue = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
 }

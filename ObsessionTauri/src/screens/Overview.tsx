@@ -33,6 +33,7 @@ export function OverviewScreen() {
   // ре-рендериться на изменения testingLabel/testResults/netStats и пр., которые
   // он не показывает (актуально во время DPI-теста — там частые set в цикле).
   const dpiActive = useDpiStore((s) => s.active);
+  const dpiStartedAt = useDpiStore((s) => s.startedAt);
   const dpiSelectedCategories = useDpiStore((s) => s.selectedCategories);
   const dpiTransitioning = useDpiStore((s) => s.transitioning);
   const dpiStart = useDpiStore((s) => s.start);
@@ -129,7 +130,7 @@ export function OverviewScreen() {
                   </motion.span>
                 </AnimatePresence>
               </div>
-              <Uptime active={protectedNow} />
+              <Uptime active={protectedNow} startedAt={dpiStartedAt} />
             </div>
             <div className="mt-1 grid">
               <AnimatePresence mode="wait" initial={false}>

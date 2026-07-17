@@ -43,6 +43,7 @@ export function DpiScreen() {
   const s = useDpiStore(useShallow((state) => ({
     active: state.active,
     transitioning: state.transitioning,
+    startedAt: state.startedAt,
     processes: state.processes,
     engines: state.engines,
     config: state.config,
@@ -104,7 +105,7 @@ export function DpiScreen() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <Uptime active={s.active} />
+          <Uptime active={s.active} startedAt={s.startedAt} />
           <StatusBadge active={s.active} />
         </div>
       </StaggerItem>

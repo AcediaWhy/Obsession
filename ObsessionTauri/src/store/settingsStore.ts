@@ -1,8 +1,14 @@
 import { create } from "zustand";
-import { api, type Settings } from "../lib/tauri";
+import {
+  api,
+  type BootstrapSettings,
+  type Settings,
+  type VersionedSection,
+} from "../lib/tauri";
 import { toast } from "./toastStore";
 
 interface SettingsState {
+  revision: number;
   loaded: boolean;
   saving: boolean;
   saved: boolean; // короткий флаг «сохранено» для галочки
@@ -11,7 +17,11 @@ interface SettingsState {
   autostart: boolean; // источник истины — реестр Windows, не settings.json
   error: string;
 
-  bootstrap: () => Promise<void>;
+  applyBootstrap: (
+    section: VersionedSection<BootstrapSettings>,
+  ) => boolean;
+  failBootstrap: (error: string) => void;
+  applyLocalPatch: (partial: Partial<Settings>) => void;
   patch: (partial: Partial<Settings>) => Promise<void>;
   setAutostart: (enable: boolean) => Promise<void>;
 }
@@ -23,6 +33,7 @@ let settingsPatchSequence = 0;
 // Раздел настроек поверх реального Settings-payload'а из Rust. Любое изменение
 // сразу персистится (best-effort) — без отдельной кнопки «Сохранить».
 export const useSettingsStore = create<SettingsState>((set, get) => ({
+  revision: -1,
   loaded: false,
   saving: false,
   saved: false,
@@ -31,17 +42,26 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   autostart: false,
   error: "",
 
-  bootstrap: async () => {
-    try {
-      const [settings, elevated, autostart] = await Promise.all([
-        api.getSettings(),
-        api.isElevated().catch(() => false),
-        api.getAutostart().catch(() => false),
-      ]);
-      set({ settings, elevated, autostart, loaded: true });
-    } catch (e) {
-      set({ error: String(e), loaded: true });
-    }
+  applyBootstrap: (section) => {
+    if (section.revision <= get().revision) return false;
+    set({
+      revision: section.revision,
+      settings: section.value.settings,
+      elevated: section.value.elevated,
+      autostart: section.value.autostart,
+      loaded: true,
+      error: "",
+    });
+    return true;
+  },
+
+  failBootstrap: (error) => {
+    if (!get().loaded) set({ loaded: true, error });
+  },
+
+  applyLocalPatch: (partial) => {
+    const current = get().settings;
+    if (current) set({ settings: { ...current, ...partial } });
   },
 
   patch: async (partial) => {

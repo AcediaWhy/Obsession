@@ -1,8 +1,14 @@
 import { create } from "zustand";
-import type { UnlistenFn } from "@tauri-apps/api/event";
-import { api, clipboard, on, type ProxyStatus } from "../lib/tauri";
+import {
+  api,
+  clipboard,
+  type ProxyStatus,
+  type Settings,
+  type VersionedSection,
+} from "../lib/tauri";
 
 interface ProxyState {
+  revision: number;
   available: boolean;
   running: boolean;
   transitioning: boolean;
@@ -15,7 +21,8 @@ interface ProxyState {
   error: string;
   copied: boolean;
 
-  bootstrap: () => Promise<UnlistenFn>;
+  initialize: (settings: Settings, available: boolean) => void;
+  applyVersionedStatus: (section: VersionedSection<ProxyStatus>) => boolean;
   applyStatus: (s: ProxyStatus) => void;
   setPort: (p: number) => void;
   setFakeTlsDomain: (d: string) => void;
@@ -27,7 +34,18 @@ interface ProxyState {
   clearError: () => void;
 }
 
+function statusPatch(status: ProxyStatus) {
+  return {
+    running: status.running,
+    link: status.link,
+    lanLink: status.lan_link,
+    lanPublished: status.lan_published,
+    lanExpiryUnix: status.lan_expiry_unix,
+  };
+}
+
 export const useProxyStore = create<ProxyState>((set, get) => ({
+  revision: -1,
   available: false,
   running: false,
   transitioning: false,
@@ -40,31 +58,27 @@ export const useProxyStore = create<ProxyState>((set, get) => ({
   error: "",
   copied: false,
 
-  bootstrap: async () => {
-    const settings = await api.getSettings();
-    const available = await api.proxyAvailable();
+  initialize: (settings, available) => {
     set({
       available,
       port: settings.proxy_port,
       fakeTlsDomain: settings.fake_tls_domain,
+      error: "",
     });
-    // Возвращаем UnlistenFn наверх (App) для отписки — иначе слушатель
-    // proxy-status жил бы вечно и дублировался при повторном bootstrap.
-    const unlisten = await on.proxyStatus((s) => get().applyStatus(s));
-    return unlisten;
   },
 
   // Применяет статус прокси (из подписки proxy-status ИЛИ из runtime-снапшота при
-  // возврате из трея).
-  applyStatus: (s) =>
-    set({
-      running: s.running,
-      link: s.link,
-      lanLink: s.lan_link,
-      lanPublished: s.lan_published,
-      lanExpiryUnix: s.lan_expiry_unix,
-      transitioning: false,
-    }),
+  // возврате из трея). НЕ трогает transitioning: им владеют start()/stop() (как в
+  // dpiStore). Иначе ранний proxy-status во время штатного start/stop снимал бы
+  // блокировку кнопки до resolve invoke → повторный клик ловил гонку и «running:
+  // false + error» при живом прокси.
+  applyVersionedStatus: (section) => {
+    if (section.revision <= get().revision) return false;
+    set({ ...statusPatch(section.value), revision: section.revision });
+    return true;
+  },
+
+  applyStatus: (status) => set(statusPatch(status)),
 
   setPort: (p) => set({ port: p }),
   setFakeTlsDomain: (d) => set({ fakeTlsDomain: d }),

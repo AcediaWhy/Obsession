@@ -20,15 +20,12 @@ import { SettingsScreen } from "./screens/Settings";
 import { ProfilesScreen } from "./screens/Profiles";
 
 import { initLogStream } from "./store/logStore";
-import { useDpiStore } from "./store/dpiStore";
-import { useProxyStore } from "./store/proxyStore";
-import { useHostsStore } from "./store/hostsStore";
+import { launcherBootstrap } from "./store/launcherBootstrap";
 import { useThemeStore, type Theme } from "./store/themeStore";
 import { useSettingsStore } from "./store/settingsStore";
-import { useAdaptiveStrategyStore } from "./store/adaptiveStrategyStore";
 import { Onboarding } from "./design/components/Onboarding";
 import { Toaster } from "./design/components/Toaster";
-import { on, runtime, win } from "./lib/tauri";
+import { on, win } from "./lib/tauri";
 import { setWindowShown, useMotionOff } from "./design/render";
 import { dur, ease, spring } from "./design/tokens";
 import { toast } from "./store/toastStore";
@@ -61,25 +58,6 @@ function ThemeScene({ theme, motionOff }: { theme: Theme; motionOff: boolean }) 
       <HeroField theme={theme} frozen={!isPresent} />
     </motion.div>
   );
-}
-
-// Возврат из трея: догоняем backend-состояние (трей/хоткей могли переключить
-// DPI/прокси, пока UI был свёрнут и визуалка размонтирована). Применяем снимок
-// ТОЛЬКО если за время запроса не пришло более свежее статус-событие (epoch не
-// изменился) — иначе перетёрли бы актуальное. Ошибка снимка не сбрасывает UI.
-async function syncSnapshotOnResume() {
-  const epoch = runtime.statusEpoch();
-  try {
-    const snap = await runtime.snapshot();
-    if (runtime.statusEpoch() !== epoch) return;
-    useDpiStore.getState().applyStatus(snap.dpi);
-    useProxyStore.getState().applyStatus(snap.proxy);
-    if (snap.adaptive) {
-      useAdaptiveStrategyStore.setState({ status: snap.adaptive });
-    }
-  } catch {
-    /* снимок недоступен — остаёмся на последних событиях */
-  }
 }
 
 export default function App() {
@@ -130,14 +108,7 @@ export default function App() {
   // Инициализация сторов и подписок — один раз при старте.
   useEffect(() => {
     const unlisten = initLogStream();
-    // bootstrap() каждого стора со статус-подпиской возвращает свой UnlistenFn —
-    // снимаем его в cleanup, чтобы слушатели не жили вечно и не дублировались
-    // при повторном mount (React.StrictMode в dev монтирует эффект дважды).
-    const unlistenDpi = useDpiStore.getState().bootstrap();
-    const unlistenProxy = useProxyStore.getState().bootstrap();
-    const unlistenAdaptive = useAdaptiveStrategyStore.getState().bootstrap();
-    useHostsStore.getState().bootstrap();
-    useSettingsStore.getState().bootstrap();
+    const releaseBootstrap = launcherBootstrap.acquire();
 
     // Прогрев тяжёлой ленивой сцены (Rain/WebGL) — ТОЛЬКО когда окно впервые
     // становится видимым (вызывается из резюм-ветки ниже). При старте в трее
@@ -165,7 +136,7 @@ export default function App() {
       setWindowShown(visible);
       if (visible) {
         void win.showWebview();
-        void syncSnapshotOnResume();
+        void launcherBootstrap.refresh();
         scheduleWarm();
       } else {
         void win.hideWebview();
@@ -184,13 +155,11 @@ export default function App() {
     });
 
     return () => {
-      unlisten.then((fn) => fn());
-      unlistenDpi.then((fn) => fn());
-      unlistenProxy.then((fn) => fn());
-      unlistenAdaptive.then((fn) => fn());
-      unlistenVis.then((fn) => fn());
-      unlistenFocus.then((fn) => fn());
-      unlistenErr.then((fn) => fn());
+      releaseBootstrap();
+      unlisten.then((fn) => fn()).catch(() => {});
+      unlistenVis.then((fn) => fn()).catch(() => {});
+      unlistenFocus.then((fn) => fn()).catch(() => {});
+      unlistenErr.then((fn) => fn()).catch(() => {});
     };
   }, []);
 

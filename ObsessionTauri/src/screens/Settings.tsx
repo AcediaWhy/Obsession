@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
 import { useSettingsStore } from "../store/settingsStore";
 import { useThemeStore, THEMES, type Theme } from "../store/themeStore";
@@ -28,18 +28,12 @@ export function SettingsScreen() {
   // Точечные селекторы (как в Overview): подписка на весь стор перерисовывала бы
   // весь экран — с ThemePicker и его канвасами — на каждый флип saving/saved
   // автосохранения. saving/saved читает сам SaveIndicator.
-  const loaded = useSettingsStore((s) => s.loaded);
-  const bootstrap = useSettingsStore((s) => s.bootstrap);
   const cfg = useSettingsStore((s) => s.settings);
   const error = useSettingsStore((s) => s.error);
   const elevated = useSettingsStore((s) => s.elevated);
   const autostart = useSettingsStore((s) => s.autostart);
   const setAutostart = useSettingsStore((s) => s.setAutostart);
   const patch = useSettingsStore((s) => s.patch);
-
-  useEffect(() => {
-    if (!loaded) bootstrap();
-  }, []);
 
   return (
     <div className="flex h-full flex-col gap-4">

@@ -7,7 +7,18 @@ import { dur, ease, spring } from "../tokens";
 // Живой таймер аптайма — тикает, пока обход/прокси активны. В трее/свёрнутом окне
 // интервал паузится (как и все анимации): elapsed считается от абсолютного времени
 // старта, поэтому при возврате значение мгновенно пересчитывается без потери точности.
-export function Uptime({ active }: { active: boolean }) {
+//
+// `startedAt` (мс, epoch) — авторитетное время старта из backend. Если передан,
+// таймер переживает смену вкладок и resume из трея (каждый экран монтирует свой
+// <Uptime>, но все считают от одного backend-времени). Если не передан (напр.
+// прокси, у которого нет backend-timestamp) — fallback на момент mount при active.
+export function Uptime({
+  active,
+  startedAt,
+}: {
+  active: boolean;
+  startedAt?: number | null;
+}) {
   const [elapsed, setElapsed] = useState(0);
   const startRef = useRef<number | null>(null);
 
@@ -17,12 +28,13 @@ export function Uptime({ active }: { active: boolean }) {
       setElapsed(0);
       return;
     }
-    startRef.current = Date.now();
+    // Приоритет — backend-время старта; иначе фиксируем момент mount.
+    startRef.current = startedAt ?? Date.now();
 
     let id: ReturnType<typeof setInterval> | null = null;
     const tick = () => {
       if (startRef.current) {
-        setElapsed(Math.floor((Date.now() - startRef.current) / 1000));
+        setElapsed(Math.max(0, Math.floor((Date.now() - startRef.current) / 1000)));
       }
     };
     const startTicking = () => {
@@ -44,7 +56,7 @@ export function Uptime({ active }: { active: boolean }) {
       unsub();
       stopTicking();
     };
-  }, [active]);
+  }, [active, startedAt]);
 
   const mm = String(Math.floor(elapsed / 60)).padStart(2, "0");
   const ss = String(elapsed % 60).padStart(2, "0");

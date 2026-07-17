@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { api, type Profile } from "../lib/tauri";
 import { useDpiStore } from "./dpiStore";
 import { useProxyStore } from "./proxyStore";
+import { useSettingsStore } from "./settingsStore";
 
 interface ProfileState {
   profiles: Profile[];
@@ -98,11 +99,16 @@ export const useProfileStore = create<ProfileState>((set) => ({
   apply: async (profile) => {
     set({ applyingId: profile.id, error: "" });
 
-    // 1. Персистим ИИ-провайдера в настройки (без авто-установки hosts).
-    try {
-      await api.updateSettings({ ai_provider: profile.ai_provider });
-    } catch {
-      /* best-effort */
+    // 1. Персистим ИИ-провайдера через settingsStore (единый писатель) — так
+    // hostsStore подхватит смену через подписку. Без авто-установки hosts.
+    if (useSettingsStore.getState().settings) {
+      await useSettingsStore.getState().patch({ ai_provider: profile.ai_provider });
+    } else {
+      try {
+        await api.updateSettings({ ai_provider: profile.ai_provider });
+      } catch {
+        /* best-effort (settingsStore ещё не загружен) */
+      }
     }
 
     // 2. DPI: задаём выбор и запускаем (бэкенд сам гасит предыдущие процессы).

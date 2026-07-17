@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 
-import { api, on, type BrainStatus } from "../../lib/tauri";
+import { api, type BrainStatus } from "../../lib/tauri";
+import { useBrainStore } from "../../store/brainStore";
+import { useSettingsStore } from "../../store/settingsStore";
 import { SectionLabel, Switch } from "./atoms";
 import { spring } from "../tokens";
 
@@ -40,33 +42,26 @@ function frozenRemaining(status: BrainStatus): string | null {
 }
 
 export function BrainPanel() {
-  const [enabled, setEnabled] = useState(false);
+  const configuredEnabled = useSettingsStore(
+    (state) => state.settings?.auto_recovery ?? false,
+  );
+  const [enabled, setEnabled] = useState(configuredEnabled);
   const [busy, setBusy] = useState(false);
-  const [status, setStatus] = useState<BrainStatus | null>(null);
+  const status = useBrainStore((state) => state.status);
 
   useEffect(() => {
-    // mounted-гвард: listen() и getStatus() резолвятся асинхронно. Без него при
-    // размонтировании до резолва (StrictMode-двойной mount, быстрый уход с экрана)
-    // слушатель brain://status регистрировался бы ПОСЛЕ unmount и не снимался
-    // (утечка), а колбэки звали setState на мёртвом компоненте.
-    let mounted = true;
-    // Начальное состояние: флаг из настроек + текущий статус, если Мозг жив.
-    api.getSettings().then((s) => mounted && setEnabled(s.auto_recovery)).catch(() => {});
-    api.brainGetStatus().then((s) => mounted && s && setStatus(s)).catch(() => {});
-    const p = on.brainStatus((s) => mounted && setStatus(s));
-    return () => {
-      mounted = false;
-      // Отписка через awaited-промис (паттерн App) — дождётся резолва listen().
-      p.then((u) => u());
-    };
-  }, []);
+    setEnabled(configuredEnabled);
+  }, [configuredEnabled]);
 
   const toggle = async (next: boolean) => {
     setBusy(true);
     try {
       await api.brainSetEnabled(next);
       setEnabled(next);
-      if (!next) setStatus(null);
+      useSettingsStore
+        .getState()
+        .applyLocalPatch({ auto_recovery: next });
+      if (!next) useBrainStore.getState().clearLocalStatus();
     } catch {
       // откат визуального состояния при ошибке
     } finally {
