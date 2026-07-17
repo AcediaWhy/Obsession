@@ -5,6 +5,7 @@ import { api, type DiagResult } from "../../lib/tauri";
 import { Button, SectionLabel } from "./atoms";
 import { Icon } from "./icons";
 import { spring } from "../tokens";
+import { beginMountedCycle } from "./diagnosticsLifecycle";
 
 // Виджет диагностики: полноценный HTTPS-GET к заблокированным ресурсам через
 // бэкенд. Отвечает на главный вопрос пользователя — «обход реально работает?».
@@ -14,8 +15,8 @@ export function Diagnostics() {
   // diagnose() — секундные HTTPS-пробы; уход с экрана DPI до их конца не должен
   // звать setState на размонтированном компоненте (ref, т.к. это обработчик, а
   // не эффект — привязать очистку к жизненному циклу иначе нельзя).
-  const mounted = useRef(true);
-  useEffect(() => () => { mounted.current = false; }, []);
+  const mounted = useRef(false);
+  useEffect(() => beginMountedCycle(mounted), []);
 
   const run = async () => {
     setRunning(true);
