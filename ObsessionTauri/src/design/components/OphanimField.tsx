@@ -73,7 +73,7 @@ type DarkEye = {
   gaze: boolean; // редкий «пристальный взор» — дольше, шире зрачок, медленно гаснет
 };
 
-export function OphanimField() {
+export function OphanimField({ paused = false }: { paused?: boolean }) {
   const dpiActive = useDpiStore((s) => s.active);
   const proxyRunning = useProxyStore((s) => s.running);
   const transitioning = useDpiStore((s) => s.transitioning);
@@ -432,7 +432,7 @@ export function OphanimField() {
       backingScale = nextScale;
       resize();
     };
-    const loop = createRenderLoop(draw, { role: "field", onQualityChange });
+    const loop = createRenderLoop(draw, { role: "field", onQualityChange, paused });
     loopRef.current = loop;
     loop.start();
 
@@ -447,6 +447,10 @@ export function OphanimField() {
   useEffect(() => {
     loopRef.current?.invalidate();
   }, [hot, transitioning, testing, alarm]);
+
+  useEffect(() => {
+    loopRef.current?.setPaused(paused);
+  }, [paused]);
 
   return (
     <div className="pointer-events-none absolute inset-0 overflow-hidden">

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
+import { useShallow } from "zustand/react/shallow";
 
 import { useProfileStore } from "../store/profileStore";
 import { type Profile } from "../lib/tauri";
@@ -17,7 +18,17 @@ const CATEGORY_LABELS: Record<string, string> = {
 };
 
 export function ProfilesScreen() {
-  const s = useProfileStore();
+  const s = useProfileStore(useShallow((state) => ({
+    profiles: state.profiles,
+    loaded: state.loaded,
+    busy: state.busy,
+    applyingId: state.applyingId,
+    error: state.error,
+    bootstrap: state.bootstrap,
+    saveCurrent: state.saveCurrent,
+    remove: state.remove,
+    apply: state.apply,
+  })));
   const [name, setName] = useState("");
 
   useEffect(() => {

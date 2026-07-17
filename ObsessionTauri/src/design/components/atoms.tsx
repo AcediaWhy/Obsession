@@ -40,7 +40,7 @@ export function Button({
       className={[
         // btn-anim: цвета быстрые, glow расцветает 0.35s; transform не трогаем —
         // его ведёт framer (whileHover/Tap), CSS-транзишен поверх дал бы «резину».
-        "no-drag btn-anim rounded-xl px-4 py-2.5 text-sm font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:cursor-not-allowed disabled:opacity-50",
+        "no-drag theme-morph btn-anim rounded-xl px-4 py-2.5 text-sm font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:cursor-not-allowed disabled:opacity-50",
         styles[variant],
         className,
       ].join(" ")}
@@ -68,7 +68,7 @@ export function StatusBadge({
     <motion.div
       layout
       transition={spring.expand}
-      className="flex items-center gap-2 rounded-full bg-white/5 px-3 py-1.5 text-xs font-medium"
+      className="theme-morph flex items-center gap-2 rounded-full bg-white/5 px-3 py-1.5 text-xs font-medium"
     >
       <span
         className={[
@@ -101,7 +101,7 @@ export function Chip({
       onClick={onClick}
       disabled={disabled}
       className={[
-        "no-drag btn-anim rounded-xl px-3.5 py-2 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:opacity-40",
+        "no-drag theme-morph btn-anim rounded-xl px-3.5 py-2 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:opacity-40",
         active
           ? "bg-accent/20 text-ink border border-accent/50 shadow-glow"
           : "bg-white/5 text-ink-soft border border-glass-border hover:bg-white/10",
@@ -132,7 +132,7 @@ export function Select({
       value={value}
       disabled={disabled}
       onChange={(e) => onChange(e.target.value)}
-      className="no-drag w-full rounded-xl border border-glass-border bg-base-800/80 px-3 py-2.5 text-sm text-ink outline-none transition-colors focus:border-accent/60 disabled:opacity-50"
+      className="no-drag theme-morph w-full rounded-xl border border-glass-border bg-base-800/80 px-3 py-2.5 text-sm text-ink outline-none transition-colors focus:border-accent/60 disabled:opacity-50"
     >
       {options.map((o) => (
         <option key={o} value={o} className="bg-base-800">
@@ -162,7 +162,7 @@ export function TextField({
       value={value}
       placeholder={placeholder}
       onChange={(e) => onChange(e.target.value)}
-      className="no-drag w-full rounded-xl border border-glass-border bg-base-800/80 px-3 py-2.5 text-sm text-ink outline-none transition-colors placeholder:text-ink-muted focus:border-accent/60"
+      className="no-drag theme-morph w-full rounded-xl border border-glass-border bg-base-800/80 px-3 py-2.5 text-sm text-ink outline-none transition-colors placeholder:text-ink-muted focus:border-accent/60"
     />
   );
 }
@@ -195,7 +195,7 @@ export function Switch({
       disabled={disabled}
       onClick={() => onChange(!checked)}
       className={[
-        "no-drag relative h-6 w-11 shrink-0 rounded-full border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:opacity-40",
+        "no-drag theme-morph relative h-6 w-11 shrink-0 rounded-full border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:opacity-40",
         checked
           ? "border-accent/50 bg-accent/30 shadow-glow"
           : "border-glass-border bg-white/5",

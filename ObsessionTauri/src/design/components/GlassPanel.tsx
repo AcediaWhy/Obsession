@@ -1,7 +1,8 @@
 import { motion, type HTMLMotionProps } from "framer-motion";
-import type { ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { dur, ease, spring } from "../tokens";
 import { useParallaxOffset } from "../parallax";
+import { subscribePointerFrame } from "../pointerBus";
 
 type Props = Omit<HTMLMotionProps<"div">, "children"> & {
   padded?: boolean;
@@ -34,17 +35,53 @@ export function GlassPanel({
   className = "",
   style,
   children,
+  onPointerEnter: onPointerEnterProp,
+  onPointerLeave: onPointerLeaveProp,
   ...rest
 }: Props) {
   const { x, y } = useParallaxOffset(depth);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const rectRef = useRef<DOMRect | null>(null);
+  const pointerInsideRef = useRef(false);
 
-  const onMove = spotlight
-    ? (e: React.MouseEvent<HTMLDivElement>) => {
-        const r = e.currentTarget.getBoundingClientRect();
-        e.currentTarget.style.setProperty("--mx", `${e.clientX - r.left}px`);
-        e.currentTarget.style.setProperty("--my", `${e.clientY - r.top}px`);
-      }
-    : undefined;
+  useEffect(() => {
+    if (!spotlight) return;
+    const panel = panelRef.current;
+    if (!panel) return;
+
+    const updateRect = () => {
+      rectRef.current = panel.getBoundingClientRect();
+    };
+    updateRect();
+
+    const resizeObserver =
+      typeof ResizeObserver === "undefined" ? null : new ResizeObserver(updateRect);
+    resizeObserver?.observe(panel);
+
+    const unsubscribePointer = subscribePointerFrame((pointer) => {
+      if (!pointerInsideRef.current) return;
+      if (pointer.layoutChanged) updateRect();
+      const rect = rectRef.current;
+      if (!rect) return;
+      panel.style.setProperty("--mx", `${pointer.clientX - rect.left}px`);
+      panel.style.setProperty("--my", `${pointer.clientY - rect.top}px`);
+    });
+
+    return () => {
+      unsubscribePointer();
+      resizeObserver?.disconnect();
+    };
+  }, [spotlight]);
+
+  const handlePointerEnter: NonNullable<Props["onPointerEnter"]> = (event) => {
+    pointerInsideRef.current = true;
+    rectRef.current = event.currentTarget.getBoundingClientRect();
+    onPointerEnterProp?.(event);
+  };
+  const handlePointerLeave: NonNullable<Props["onPointerLeave"]> = (event) => {
+    pointerInsideRef.current = false;
+    onPointerLeaveProp?.(event);
+  };
 
   // При scroll: паддинг и layout-классы контента переносим на внутреннюю
   // обёртку; оболочка получает overflow-hidden (клип по скруглению, без своей
@@ -62,6 +99,7 @@ export function GlassPanel({
 
   return (
     <motion.div
+      ref={panelRef}
       // Вход/выход — ЧИСТЫЙ fade, без scale: масштаб элемента с backdrop-filter
       // заставляет композитор пересэмплировать блюр каждый кадр (регион выборки
       // меняет геометрию) и даёт «плывущее» дрожание заблюренного фона. Движение
@@ -74,13 +112,14 @@ export function GlassPanel({
       // Обёртки экрана/StaggerItem при этом остаются transform-only.
       exit={{ opacity: 0, transition: { duration: dur.fast, ease: ease.exit } }}
       transition={spring.soft}
-      onMouseMove={onMove}
+      onPointerEnter={handlePointerEnter}
+      onPointerLeave={handlePointerLeave}
       style={{ x, y, ...style }}
       className={[
         // transition-shadow: тумблер glow (командный центр Обзора при включении
         // защиты) расцветает за 0.5с, а не щёлкает. Framer box-shadow здесь не
         // анимирует — конфликта нет.
-        "glass rounded-xl2 shadow-glass transition-shadow duration-500",
+        "theme-morph glass rounded-xl2 shadow-glass transition-shadow duration-500",
         spotlight ? "spotlight" : "",
         glow ? "shadow-glow" : "",
         scroll ? "overflow-hidden" : padded ? "p-5" : "",

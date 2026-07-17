@@ -41,21 +41,16 @@ class Fallback3D extends Component<{ children: ReactNode; fallback: ReactNode },
 // стора): при кроссфейде смены темы AnimatePresence держит уходящую ветку с
 // последним значением пропа — если бы диспетчер читал стор сам, старая ветка
 // мгновенно переключилась бы на новую тему и кроссфейд выродился в кат.
-export function HeroField({ theme }: { theme: Theme }) {
-  // Пока окно скрыто (трей/сворачивание) — размонтируем тяжёлую WebGL-сцену Rain
-  // целиком. Её rAF-циклы и так паузятся по renderActive, НО живой WebGL-контекст
-  // + полноэкранные текстуры остаются на GPU и держат compositor WebView2 занятым
-  // (~2-4% в трее). Размонтирование запускает RainRenderer/Raindrops.destroy()
-  // (освобождает контекст/текстуры), а при возврате сцена собирается заново.
-  // Лёгкие 2D-темы так не мучаем — они дёшевы и мгновенно паузятся.
+export function HeroField({
+  theme,
+  frozen = false,
+}: {
+  theme: Theme;
+  frozen?: boolean;
+}) {
+  // Пока окно скрыто (трей/сворачивание) — размонтируем тяжёлую сцену целиком.
   const renderOn = useRenderActive();
   const hidden = useRenderHidden();
-  // В трее (suspended) снимаем ВСЮ тяжёлую сцену темы — canvas/WebGL/video.
-  // Размонтирование видео-полей (catnap/midnight) запускает teardown VideoField
-  // (pause + снятие src + load) и освобождает видеодекодеры; canvas-поля
-  // отпускают backing stores; Rain — WebGL-контекст и текстуры. Отдаём лёгкую
-  // статичную подложку: в трее webview всё равно скрыт, но она убирает тёмную
-  // вспышку на первом кадре возврата, пока сцена монтируется заново.
   if (hidden) {
     return (
       <div
@@ -64,24 +59,38 @@ export function HeroField({ theme }: { theme: Theme }) {
       />
     );
   }
-  if (theme === "ophanim") return <OphanimField />;
-  if (theme === "fallendown") return <FallenField />;
-  // Видео-темы: <video> паузится по гейту видимости внутри VideoField,
-  // декодер в трее не работает — размонтировать, как Rain, не нужно.
-  if (theme === "catnap") return <CatnapField />;
-  if (theme === "midnight") return <MidnightField />;
-  if (theme === "japan") {
-    // В трее показываем лёгкий 2D-дождь-заглушку (почти бесплатен и сразу
-    // паузится) вместо WebGL-сцены — визуально та же тема, без утечки контекста.
-    if (!WEBGL || !renderOn) return <RainField2D />;
-    return (
-      <Fallback3D fallback={<RainField2D />}>
-        <Suspense fallback={<RainField2D />}>
-          <RainScene3D />
-        </Suspense>
-      </Fallback3D>
-    );
-  }
-  return <AuroraField />;
-}
 
+  let scene: ReactNode;
+  if (theme === "ophanim") {
+    scene = <OphanimField paused={frozen} />;
+  } else if (theme === "fallendown") {
+    scene = <FallenField paused={frozen} />;
+  } else if (theme === "catnap") {
+    scene = <CatnapField paused={frozen} />;
+  } else if (theme === "midnight") {
+    scene = <MidnightField paused={frozen} />;
+  } else if (theme === "japan") {
+    if (!WEBGL || !renderOn) {
+      scene = <RainField2D paused={frozen} />;
+    } else {
+      scene = (
+        <Fallback3D fallback={<RainField2D paused={frozen} />}>
+          <Suspense fallback={<RainField2D paused={frozen} />}>
+            <RainScene3D paused={frozen} />
+          </Suspense>
+        </Fallback3D>
+      );
+    }
+  } else {
+    scene = <AuroraField paused={frozen} />;
+  }
+
+  return (
+    <div
+      data-scene-frozen={frozen ? "true" : undefined}
+      className="pointer-events-none absolute inset-0 overflow-hidden"
+    >
+      {scene}
+    </div>
+  );
+}

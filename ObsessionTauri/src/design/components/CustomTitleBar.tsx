@@ -38,7 +38,7 @@ export function CustomTitleBar() {
   };
 
   return (
-    <div className="drag-region flex h-10 items-center justify-between px-4">
+    <div className="theme-morph drag-region flex h-10 items-center justify-between px-4">
       <div className="flex items-center gap-2">
         <div className="h-2.5 w-2.5 rounded-full bg-accent shadow-glow" />
         <span className="text-xs font-semibold tracking-wide text-ink-soft">

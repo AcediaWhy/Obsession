@@ -1,3 +1,5 @@
+import { useShallow } from "zustand/react/shallow";
+
 import { useHostsStore } from "../store/hostsStore";
 import { GlassPanel } from "../design/components/GlassPanel";
 import { StaggerItem } from "../design/components/Stagger";
@@ -29,7 +31,20 @@ const STATUS_COLOR: Record<string, string> = {
 };
 
 export function AiScreen() {
-  const s = useHostsStore();
+  const s = useHostsStore(useShallow((state) => ({
+    provider: state.provider,
+    status: state.status,
+    localVersion: state.localVersion,
+    remoteVersion: state.remoteVersion,
+    busy: state.busy,
+    error: state.error,
+    rollbackAvailable: state.rollbackAvailable,
+    setProvider: state.setProvider,
+    refresh: state.refresh,
+    install: state.install,
+    uninstall: state.uninstall,
+    restore: state.restore,
+  })));
   const installed = s.status !== "not_installed";
 
   return (

@@ -1,4 +1,5 @@
 import { createContext, useContext, useEffect, type CSSProperties, type ReactNode } from "react";
+import { subscribePointerFrame } from "./pointerBus";
 import {
   motion,
   useMotionValue,
@@ -20,14 +21,14 @@ export function ParallaxProvider({ children }: { children: ReactNode }) {
   const px = useSpring(rawX, cfg);
   const py = useSpring(rawY, cfg);
 
-  useEffect(() => {
-    const onMove = (e: PointerEvent) => {
-      rawX.set((e.clientX / window.innerWidth - 0.5) * 2);
-      rawY.set((e.clientY / window.innerHeight - 0.5) * 2);
-    };
-    window.addEventListener("pointermove", onMove, { passive: true });
-    return () => window.removeEventListener("pointermove", onMove);
-  }, [rawX, rawY]);
+  useEffect(
+    () =>
+      subscribePointerFrame((frame) => {
+        rawX.set(frame.viewportX);
+        rawY.set(frame.viewportY);
+      }),
+    [rawX, rawY],
+  );
 
   return <ParallaxContext.Provider value={{ px, py }}>{children}</ParallaxContext.Provider>;
 }

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import QRCode from "qrcode";
+import { useShallow } from "zustand/react/shallow";
 
 import { useProxyStore } from "../store/proxyStore";
 import { useSettingsStore } from "../store/settingsStore";
@@ -53,7 +54,26 @@ function formatMMSS(secs: number): string {
 }
 
 export function TelegramScreen() {
-  const s = useProxyStore();
+  const s = useProxyStore(useShallow((state) => ({
+    available: state.available,
+    running: state.running,
+    transitioning: state.transitioning,
+    link: state.link,
+    lanLink: state.lanLink,
+    lanPublished: state.lanPublished,
+    lanExpiryUnix: state.lanExpiryUnix,
+    port: state.port,
+    fakeTlsDomain: state.fakeTlsDomain,
+    error: state.error,
+    copied: state.copied,
+    setPort: state.setPort,
+    setFakeTlsDomain: state.setFakeTlsDomain,
+    start: state.start,
+    stop: state.stop,
+    closeLan: state.closeLan,
+    copy: state.copy,
+    open: state.open,
+  })));
   const settings = useSettingsStore((st) => st.settings);
   const patchSettings = useSettingsStore((st) => st.patch);
   const [qr, setQr] = useState<string | null>(null);

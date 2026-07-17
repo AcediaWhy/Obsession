@@ -1,5 +1,11 @@
-import { useEffect, useRef, useState } from "react";
-import { AnimatePresence, motion, MotionConfig, type Variants } from "framer-motion";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  AnimatePresence,
+  motion,
+  MotionConfig,
+  useIsPresent,
+  type Variants,
+} from "framer-motion";
 
 import { HeroField } from "./design/components/HeroField";
 import { ParallaxProvider, Parallax } from "./design/parallax";
@@ -17,7 +23,7 @@ import { initLogStream } from "./store/logStore";
 import { useDpiStore } from "./store/dpiStore";
 import { useProxyStore } from "./store/proxyStore";
 import { useHostsStore } from "./store/hostsStore";
-import { useThemeStore } from "./store/themeStore";
+import { useThemeStore, type Theme } from "./store/themeStore";
 import { useSettingsStore } from "./store/settingsStore";
 import { useAdaptiveStrategyStore } from "./store/adaptiveStrategyStore";
 import { Onboarding } from "./design/components/Onboarding";
@@ -41,6 +47,21 @@ const screenVariants: Variants = {
     transition: { duration: dur.fast, ease: ease.exit },
   }),
 };
+
+function ThemeScene({ theme, motionOff }: { theme: Theme; motionOff: boolean }) {
+  const isPresent = useIsPresent();
+  return (
+    <motion.div
+      className="absolute inset-0"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: motionOff ? 0 : dur.slow, ease: ease.xfade }}
+    >
+      <HeroField theme={theme} frozen={!isPresent} />
+    </motion.div>
+  );
+}
 
 // Возврат из трея: догоняем backend-состояние (трей/хоткей могли переключить
 // DPI/прокси, пока UI был свёрнут и визуалка размонтирована). Применяем снимок
@@ -78,19 +99,32 @@ export default function App() {
     (s) => s.loaded && !!s.settings && !s.settings.has_completed_onboarding,
   );
 
-  // Плавная перекраска UI при смене темы: на ~0.65 с ставим data-theme-morph, и
-  // CSS-правило (globals.css, 0.6s) доводит цвета/бордеры/тени до новых значений
-  // переменных транзишеном вместо ката. Сравнение с prev — защита от
-  // StrictMode-двойного эффекта; таймер сбрасывается при быстрых переключениях.
-  const [themeMorph, setThemeMorph] = useState(false);
+  // Морф темы активируется DOM-атрибутом до paint и не создаёт два лишних
+  // React-render на каждое переключение. CSS ограничивает переходы семантическими
+  // поверхностями/контролами вместо universal selector по всему дереву.
+  const shellRef = useRef<HTMLDivElement>(null);
   const prevTheme = useRef(theme);
-  useEffect(() => {
-    if (prevTheme.current === theme) return;
+  useLayoutEffect(() => {
+    const shell = shellRef.current;
+    if (!shell) return;
+    if (prevTheme.current === theme) {
+      if (motionOff) delete shell.dataset.themeMorph;
+      return;
+    }
     prevTheme.current = theme;
-    if (motionOff) return; // reduce-motion: мгновенный свап без морфа
-    setThemeMorph(true);
-    const timer = window.setTimeout(() => setThemeMorph(false), 650);
-    return () => window.clearTimeout(timer);
+    if (motionOff) {
+      delete shell.dataset.themeMorph;
+      return;
+    }
+
+    shell.dataset.themeMorph = "true";
+    const timer = window.setTimeout(() => {
+      delete shell.dataset.themeMorph;
+    }, 650);
+    return () => {
+      window.clearTimeout(timer);
+      delete shell.dataset.themeMorph;
+    };
   }, [theme, motionOff]);
 
   // Инициализация сторов и подписок — один раз при старте.
@@ -163,8 +197,8 @@ export default function App() {
   return (
     <MotionConfig reducedMotion={reduceMotion ? "always" : "user"}>
       <div
+        ref={shellRef}
         data-theme={theme}
-        data-theme-morph={themeMorph ? "true" : undefined}
         data-reduce-motion={reduceMotion}
         className="relative h-screen w-screen overflow-hidden"
       >
@@ -176,16 +210,7 @@ export default function App() {
               initial-фейд даёт мягкое появление фона. */}
           <Parallax depth={-12} className="absolute" style={{ inset: -32 }}>
             <AnimatePresence mode="sync">
-              <motion.div
-                key={theme}
-                className="absolute inset-0"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                transition={{ duration: motionOff ? 0 : dur.slow, ease: ease.xfade }}
-              >
-                <HeroField theme={theme} />
-              </motion.div>
+              <ThemeScene key={theme} theme={theme} motionOff={motionOff} />
             </AnimatePresence>
           </Parallax>
 

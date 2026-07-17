@@ -10,12 +10,16 @@ export function VideoField({
   src,
   poster,
   children,
+  paused = false,
 }: {
   src: string;
   poster?: string;
   children?: ReactNode;
+  paused?: boolean;
 }) {
   const ref = useRef<HTMLVideoElement>(null);
+  const pausedRef = useRef(paused);
+  pausedRef.current = paused;
 
   useEffect(() => {
     const video = ref.current;
@@ -23,7 +27,7 @@ export function VideoField({
     const sync = (active: boolean) => {
       // play() возвращает промис и может быть отклонён (гонка с pause,
       // автоплей-политика) — глотаем, следующий sync всё поправит.
-      if (active) video.play().catch(() => {});
+      if (active && !pausedRef.current) video.play().catch(() => {});
       else video.pause();
     };
     sync(renderActive());
@@ -39,6 +43,13 @@ export function VideoField({
       video.load();
     };
   }, []);
+
+  useEffect(() => {
+    const video = ref.current;
+    if (!video) return;
+    if (paused || !renderActive()) video.pause();
+    else video.play().catch(() => {});
+  }, [paused]);
 
   return (
     <div className="pointer-events-none absolute inset-0 overflow-hidden">

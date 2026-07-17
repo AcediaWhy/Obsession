@@ -40,7 +40,7 @@ const starGlint = createSpriteCache(6, 48, (sctx, px, k) => {
   spike(false);
 });
 
-export function AuroraField() {
+export function AuroraField({ paused = false }: { paused?: boolean }) {
   const dpiActive = useDpiStore((s) => s.active);
   const proxyRunning = useProxyStore((s) => s.running);
   const hot = dpiActive || proxyRunning;
@@ -281,7 +281,7 @@ export function AuroraField() {
       backingScale = nextScale;
       resize(false);
     };
-    const loop = createRenderLoop(draw, { role: "field", onQualityChange });
+    const loop = createRenderLoop(draw, { role: "field", onQualityChange, paused });
     loopRef.current = loop;
     loop.start();
 
@@ -297,6 +297,10 @@ export function AuroraField() {
   useEffect(() => {
     loopRef.current?.invalidate();
   }, [hot]);
+
+  useEffect(() => {
+    loopRef.current?.setPaused(paused);
+  }, [paused]);
 
   return (
     <div className="pointer-events-none absolute inset-0 overflow-hidden">

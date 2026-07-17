@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
+import { useShallow } from "zustand/react/shallow";
 
 import { useListsStore, isDirty } from "../store/listsStore";
 import { type ListInfo } from "../lib/tauri";
@@ -24,8 +25,23 @@ function label(name: string): string {
 }
 
 export function ListsScreen() {
-  const s = useListsStore();
-  const dirty = isDirty(s);
+  const s = useListsStore(useShallow((state) => ({
+    lists: state.lists,
+    loaded: state.loaded,
+    selected: state.selected,
+    draft: state.draft,
+    loading: state.loading,
+    saving: state.saving,
+    error: state.error,
+    bootstrap: state.bootstrap,
+    select: state.select,
+    setDraft: state.setDraft,
+    save: state.save,
+    revert: state.revert,
+    create: state.create,
+    remove: state.remove,
+  })));
+  const dirty = useListsStore(isDirty);
   const current = s.lists.find((l) => l.name === s.selected);
 
   useEffect(() => {

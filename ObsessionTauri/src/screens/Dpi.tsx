@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { AnimatePresence, motion } from "framer-motion";
+import { useShallow } from "zustand/react/shallow";
 
 import { TRANSITION_WATCHDOG_MS, useDpiStore } from "../store/dpiStore";
 import { useAdaptiveStrategyStore } from "../store/adaptiveStrategyStore";
@@ -39,7 +40,31 @@ const ZAPRET2_CATEGORY_LABELS: Record<string, string> = {
 const CATEGORY_ORDER = ["discord", "youtube_twitch", "gaming", "universal", "atrisk"];
 
 export function DpiScreen() {
-  const s = useDpiStore();
+  const s = useDpiStore(useShallow((state) => ({
+    active: state.active,
+    transitioning: state.transitioning,
+    processes: state.processes,
+    engines: state.engines,
+    config: state.config,
+    selectedCategories: state.selectedCategories,
+    selectedConfigs: state.selectedConfigs,
+    zapret2Profiles: state.zapret2Profiles,
+    testing: state.testing,
+    testingLabel: state.testingLabel,
+    testCancel: state.testCancel,
+    testResults: state.testResults,
+    netStats: state.netStats,
+    error: state.error,
+    reconcileTransition: state.reconcileTransition,
+    start: state.start,
+    stop: state.stop,
+    setEngine: state.setEngine,
+    toggleCategory: state.toggleCategory,
+    setConfig: state.setConfig,
+    autoConfigure: state.autoConfigure,
+    testAll: state.testAll,
+    cancelTest: state.cancelTest,
+  })));
   const adaptivePhase = useAdaptiveStrategyStore((state) => state.status?.phase ?? "idle");
   const adaptiveBusy = ![
     "idle",

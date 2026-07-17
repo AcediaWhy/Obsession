@@ -11,13 +11,13 @@ const GRAIN = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'
 // сдвиги тайла шума, как у киноплёнки) и обесцвечивающее стекло панелей
 // (см. [data-theme="midnight"] в globals.css). При активном обходе/прокси туман
 // у фонарей едва заметно разгорается холодным.
-export function MidnightField() {
+export function MidnightField({ paused = false }: { paused?: boolean }) {
   const dpiActive = useDpiStore((s) => s.active);
   const proxyRunning = useProxyStore((s) => s.running);
   const hot = dpiActive || proxyRunning;
 
   return (
-    <VideoField src="/midnight/loop.mp4" poster="/midnight/poster.jpg">
+    <VideoField paused={paused} src="/midnight/loop.mp4" poster="/midnight/poster.jpg">
       {/* Холодное свечение при активности — вокруг фонарей в правой трети кадра. */}
       <div
         className="absolute inset-0 transition-opacity duration-[1600ms]"

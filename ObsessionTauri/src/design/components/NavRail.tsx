@@ -49,7 +49,7 @@ export function NavRail({
               key={it.id}
               onClick={() => onSelect(it.id)}
               // group — для hover-сдвига связки иконка+текст ниже.
-              className="no-drag group relative flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
+              className="no-drag theme-morph group relative flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
             >
               {isActive && (
                 <motion.div

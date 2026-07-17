@@ -7,13 +7,13 @@ import { VideoField } from "./VideoField";
 // панелей — вторая половина читаемости, см. [data-theme="catnap"] в globals.css).
 // Поверх — медленно дышащая диагональная полоса закатного света; при активном
 // обходе/прокси свет теплеет сильнее.
-export function CatnapField() {
+export function CatnapField({ paused = false }: { paused?: boolean }) {
   const dpiActive = useDpiStore((s) => s.active);
   const proxyRunning = useProxyStore((s) => s.running);
   const hot = dpiActive || proxyRunning;
 
   return (
-    <VideoField src="/catnap/loop.mp4" poster="/catnap/poster.jpg">
+    <VideoField paused={paused} src="/catnap/loop.mp4" poster="/catnap/poster.jpg">
       {/* Тёплое приглушение: сильнее сверху (титлбар) и снизу (контент). */}
       <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(20,10,6,0.50)_0%,rgba(20,10,6,0.18)_38%,rgba(20,10,6,0.46)_100%)]" />
       {/* Дыхание закатного света — тёплая диагональная полоса, медленный пульс. */}

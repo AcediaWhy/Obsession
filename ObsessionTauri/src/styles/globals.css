@@ -278,6 +278,11 @@ body {
   );
 }
 
+.log-row {
+  content-visibility: auto;
+  contain-intrinsic-size: 0 18px;
+}
+
 /* Транзишен интерактивных поверхностей (кнопки, чипы, плитки). Цвета — быстрые
    (отклик), box-shadow — медленный: свечение «расцветает» за 0.35 с, а не
    щёлкает. transform в списке НЕТ намеренно — его ведёт framer (whileTap/Hover).
@@ -427,22 +432,21 @@ textarea {
 }
 
 /* ─── Морф темы ───────────────────────────────────────────────────────────────
-   При смене темы App вешает data-theme-morph на корень на ~0.5 с (App.tsx):
-   все цветовые свойства, производные от переменных темы (--accent, --glass-*),
-   доводятся до новых значений транзишеном вместо ката. Градиенты (--glass-bg,
-   .text-gradient) браузер интерполировать не умеет — их кат маскируется
-   кроссфейдом фона (AnimatePresence в App) и общим переливом остальных цветов.
-   Нюансы:
-   • 0.6s < таймер 0.65s (App) — транзишены успевают закончиться до снятия
-     атрибута, откат к обычным transition-правилам происходит уже на целевых
-     значениях;
-   • opacity/transform в списке НЕТ намеренно: их покадрово ведёт framer-motion,
-     CSS-транзишен поверх инлайн-стилей дал бы «хвост» на каждом кадре;
-   • правило стоит ДО блока reduce-motion, чтобы тот всегда побеждал (сам морф
-     под reduce-motion и так не включается — двойная страховка). */
-[data-theme-morph="true"] *,
-[data-theme-morph="true"] *::before,
-[data-theme-morph="true"] *::after {
+   Переходы применяются только к семантическим surface/control слоям. Universal
+   selector здесь создавал transition bookkeeping для всего React-дерева,
+   включая невидимые строки логов и canvas wrappers. Opacity/transform по-прежнему
+   ведёт framer-motion, а градиентный кат маскирует crossfade фона. */
+[data-theme-morph="true"] :where(
+  .theme-morph,
+  .theme-morph *,
+  .glass,
+  .spotlight-ring,
+  .text-gradient
+),
+[data-theme-morph="true"] .theme-morph *::before,
+[data-theme-morph="true"] .theme-morph *::after,
+[data-theme-morph="true"] .glass::before,
+[data-theme-morph="true"] .glass::after {
   transition:
     color 0.6s ease,
     background-color 0.6s ease,
@@ -451,6 +455,14 @@ textarea {
     text-shadow 0.6s ease,
     fill 0.6s ease,
     stroke 0.6s ease !important;
+}
+
+/* Уходящая theme scene сохраняет последний кадр crossfade, не продолжая
+   CSS-анимации параллельно с входящей сценой. Canvas/video паузятся отдельно. */
+[data-scene-frozen="true"] *,
+[data-scene-frozen="true"] *::before,
+[data-scene-frozen="true"] *::after {
+  animation-play-state: paused !important;
 }
 
 /* Reduce-motion: глушим CSS-анимации и переходы, когда включён флаг

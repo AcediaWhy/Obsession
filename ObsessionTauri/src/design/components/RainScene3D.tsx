@@ -10,6 +10,7 @@ import {
 } from "./rain/rainFramePipeline";
 import { createCanvas } from "./rain/random";
 import { createRenderLoop, frameQualityScale } from "../render";
+import { subscribePointerFrame } from "../pointerBus";
 
 // Тема «Rain»: дождь на стекле — порт codrops/RainEffect (vanilla WebGL, без R3F).
 // CPU-симуляция капель (raindrops) пишет water map, шейдер water.frag преломляет
@@ -53,8 +54,9 @@ function blurredCanvas(
   return c;
 }
 
-export default function RainScene3D() {
+export default function RainScene3D({ paused = false }: { paused?: boolean }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const frameLoopRef = useRef<ReturnType<typeof createRenderLoop> | null>(null);
   const dpiActive = useDpiStore((s) => s.active);
   const proxyRunning = useProxyStore((s) => s.running);
   const hotRef = useRef(false);
@@ -114,11 +116,13 @@ export default function RainScene3D() {
     };
     frameLoop = createRenderLoop((dt) => runRainFrame(phases, dt), {
       role: "field",
+      paused,
       onQualityChange: (qualityTier) => {
         qualityScale = frameQualityScale(qualityTier);
         resizeScene();
       },
     });
+    frameLoopRef.current = frameLoop;
     frameLoop.start();
 
     Promise.all([
@@ -187,13 +191,14 @@ export default function RainScene3D() {
         if (!disposed) console.warn("Rain: не удалось загрузить ассеты", error);
       });
 
-    // Pointer events только обновляют последнюю цель; чтение происходит один раз за frame.
-    const onMove = (event: PointerEvent) => {
-      const next = normalizeRainPointer(event.clientX, event.clientY, canvasRect);
+    // Pointer bus отдаёт только последний sample за frame. При layout change
+    // обновляем cached rect до нормализации координат сцены.
+    const unsubscribePointer = subscribePointerFrame((pointer) => {
+      if (pointer.layoutChanged) canvasRect = canvas.getBoundingClientRect();
+      const next = normalizeRainPointer(pointer.clientX, pointer.clientY, canvasRect);
       pendingPointer.x = next.x;
       pendingPointer.y = next.y;
-    };
-    window.addEventListener("pointermove", onMove, { passive: true });
+    });
 
     // Resize WebGL и water-map только после короткой осадки window resize.
     const onResize = () => {
@@ -205,13 +210,18 @@ export default function RainScene3D() {
     return () => {
       disposed = true;
       frameLoop?.dispose();
+      frameLoopRef.current = null;
       if (resizeTimer != null) clearTimeout(resizeTimer);
-      window.removeEventListener("pointermove", onMove);
+      unsubscribePointer();
       window.removeEventListener("resize", onResize);
       renderer?.destroy();
       raindrops?.destroy();
     };
   }, []);
+
+  useEffect(() => {
+    frameLoopRef.current?.setPaused(paused);
+  }, [paused]);
 
   return (
     <div className="absolute inset-0" style={{ pointerEvents: "none" }}>
