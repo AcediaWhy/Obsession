@@ -1,5 +1,12 @@
 # Zapret2 Gate D Recovery Implementation Plan
 
+> **Статус (2026-07-18): superseded.**
+>
+> Это исторический план исходного Gate D recovery. Реализованные части,
+> последующая adaptive/runtime стабилизация и оставшийся Windows live acceptance
+> отслеживаются в
+> `docs/superpowers/reports/2026-07-17-modernization-traceability.md`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Исправить пустой первый профиль Zapret2, одновременно обеспечить Discord text + стабильный YouTube TLS/QUIC, затем закрыть resource-integrity и crash-fallback части Gate D.
