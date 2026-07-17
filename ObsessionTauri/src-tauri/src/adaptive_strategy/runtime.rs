@@ -12,7 +12,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use tauri::async_runtime::{self, JoinHandle};
 use tauri::{AppHandle, Emitter, Manager};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, watch, Notify};
 
 use super::cache::{AdaptiveCacheEntry, AdaptiveStrategyCache, ProbeSummary, StrategyTrust};
 use super::compiler;
@@ -41,6 +41,8 @@ struct SearchTuning {
     required_successes: u8,
     base_recheck_rounds: u8,
     candidate_budget: usize,
+    eyes_quiet_window: Duration,
+    eyes_quiet_deadline: Duration,
 }
 
 fn search_tuning_for(mode: &str) -> SearchTuning {
@@ -53,6 +55,8 @@ fn search_tuning_for(mode: &str) -> SearchTuning {
             required_successes: 2,
             base_recheck_rounds: 1,
             candidate_budget: 4,
+            eyes_quiet_window: Duration::from_millis(150),
+            eyes_quiet_deadline: Duration::from_millis(300),
         },
         "deep" => SearchTuning {
             probe_timeout: Duration::from_secs(7),
@@ -62,6 +66,8 @@ fn search_tuning_for(mode: &str) -> SearchTuning {
             required_successes: 3,
             base_recheck_rounds: 2,
             candidate_budget: 12,
+            eyes_quiet_window: Duration::from_millis(350),
+            eyes_quiet_deadline: Duration::from_millis(700),
         },
         _ => SearchTuning {
             probe_timeout: Duration::from_secs(5),
@@ -71,6 +77,8 @@ fn search_tuning_for(mode: &str) -> SearchTuning {
             required_successes: 2,
             base_recheck_rounds: 1,
             candidate_budget: 8,
+            eyes_quiet_window: Duration::from_millis(250),
+            eyes_quiet_deadline: Duration::from_millis(500),
         },
     }
 }
@@ -131,6 +139,7 @@ enum RuntimeEvent {
 #[derive(Default)]
 struct EvidenceState {
     generation: u64,
+    revision: u64,
     reset_count: u32,
     blackhole_count: u32,
     working_by_host: BTreeMap<String, u32>,
@@ -139,6 +148,7 @@ struct EvidenceState {
 #[derive(Default)]
 struct EvidenceWindow {
     state: Mutex<EvidenceState>,
+    changed: Notify,
 }
 
 impl EvidenceWindow {
@@ -166,6 +176,9 @@ impl EvidenceWindow {
                 *count = count.saturating_add(1);
             }
         }
+        state.revision = state.revision.saturating_add(1);
+        drop(state);
+        self.changed.notify_one();
     }
 
     fn snapshot(&self) -> probe::EyesProbeEvidence {
@@ -174,6 +187,51 @@ impl EvidenceWindow {
             reset_count: state.reset_count,
             blackhole_count: state.blackhole_count,
             working_by_host: state.working_by_host.clone(),
+        }
+    }
+
+    fn revision_for_generation(&self, generation: u64) -> Option<u64> {
+        let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        (generation != 0 && state.generation == generation).then_some(state.revision)
+    }
+
+    async fn wait_for_quiet(&self, generation: u64, quiet_for: Duration, max_wait: Duration) {
+        if quiet_for.is_zero() || max_wait.is_zero() {
+            return;
+        }
+        let Some(mut revision) = self.revision_for_generation(generation) else {
+            return;
+        };
+        let started = tokio::time::Instant::now();
+        let hard_deadline = started + max_wait;
+        let mut quiet_deadline = (started + quiet_for).min(hard_deadline);
+
+        loop {
+            let notified = self.changed.notified();
+            tokio::select! {
+                _ = tokio::time::sleep_until(hard_deadline) => return,
+                _ = tokio::time::sleep_until(quiet_deadline) => {
+                    let Some(current) = self.revision_for_generation(generation) else {
+                        return;
+                    };
+                    if current == revision {
+                        return;
+                    }
+                    revision = current;
+                    quiet_deadline =
+                        (tokio::time::Instant::now() + quiet_for).min(hard_deadline);
+                }
+                _ = notified => {
+                    let Some(current) = self.revision_for_generation(generation) else {
+                        return;
+                    };
+                    if current != revision {
+                        revision = current;
+                        quiet_deadline =
+                            (tokio::time::Instant::now() + quiet_for).min(hard_deadline);
+                    }
+                }
+            }
         }
     }
 }
@@ -1073,6 +1131,16 @@ async fn prepare_search_data(
             },
         )
         .await;
+        let initial_eyes = evidence.snapshot();
+        if calibration.evaluate(&initial_eyes).is_success() {
+            evidence
+                .wait_for_quiet(
+                    snapshot.generation,
+                    tuning.eyes_quiet_window,
+                    tuning.eyes_quiet_deadline,
+                )
+                .await;
+        }
         let eyes = evidence.snapshot();
         let mut probe_targets = targets;
         let mut calibration_result = calibration.evaluate(&eyes);
@@ -1290,6 +1358,7 @@ async fn execute_actions(
                 let tuning = search_tuning(app);
                 let targets = context.probe_targets.clone();
                 let dns_cache = context.dns_cache.clone();
+                let evidence = evidence.clone();
                 let task = async_runtime::spawn(async move {
                     tokio::time::sleep(tuning.stabilization_delay).await;
                     let series = probe::run_probe_series_for_targets_with_cache(
@@ -1303,6 +1372,16 @@ async fn execute_actions(
                         &dns_cache,
                     )
                     .await;
+                    let initial_eyes = evidence.snapshot();
+                    if series.evaluate(&initial_eyes).is_success() {
+                        evidence
+                            .wait_for_quiet(
+                                generation,
+                                tuning.eyes_quiet_window,
+                                tuning.eyes_quiet_deadline,
+                            )
+                            .await;
+                    }
                     let _ = tx
                         .send(RuntimeEvent::ProbeFinished {
                             session_id,
@@ -1380,8 +1459,19 @@ async fn execute_actions(
                                 &context.dns_cache,
                             )
                             .await;
-                            let eyes = evidence.snapshot();
+                            let mut eyes = evidence.snapshot();
                             let mut result = series.evaluate_base(&eyes);
+                            if result.is_success() {
+                                evidence
+                                    .wait_for_quiet(
+                                        *generation,
+                                        tuning.eyes_quiet_window,
+                                        tuning.eyes_quiet_deadline,
+                                    )
+                                    .await;
+                                eyes = evidence.snapshot();
+                                result = series.evaluate_base(&eyes);
+                            }
                             log_probe_series(app, "base_recheck", &series, &result);
                             if result.failure_stage == super::evidence::FailureStage::Dns
                                 && !result.dns_ok
@@ -1403,7 +1493,19 @@ async fn execute_actions(
                                     &context.dns_cache,
                                 )
                                 .await;
+                                eyes = evidence.snapshot();
                                 result = series.evaluate_base(&eyes);
+                                if result.is_success() {
+                                    evidence
+                                        .wait_for_quiet(
+                                            *generation,
+                                            tuning.eyes_quiet_window,
+                                            tuning.eyes_quiet_deadline,
+                                        )
+                                        .await;
+                                    eyes = evidence.snapshot();
+                                    result = series.evaluate_base(&eyes);
+                                }
                                 log_probe_series(app, "base_recheck_dns_retry", &series, &result);
                             }
                             base_probe_reliable = !(result.failure_stage
@@ -1761,6 +1863,10 @@ mod tests {
         assert_eq!(search_tuning_for("unknown"), balanced);
         assert!(fast.required_successes <= fast.candidate_rounds);
         assert!(deep.required_successes <= deep.candidate_rounds);
+        for tuning in [fast, balanced, deep] {
+            assert!(tuning.eyes_quiet_window <= tuning.eyes_quiet_deadline);
+            assert!(tuning.eyes_quiet_deadline <= tuning.probe_interval);
+        }
     }
     #[test]
     fn domain_mapping_is_suffix_safe() {
@@ -1829,6 +1935,59 @@ mod tests {
             Some(RuntimeEvent::Cancel)
         ));
         assert!(observation_rx.recv().await.is_some());
+    }
+
+    #[tokio::test]
+    async fn evidence_quiet_window_restarts_for_current_generation() {
+        let evidence = Arc::new(EvidenceWindow::default());
+        evidence.begin(7);
+        let waiter_evidence = evidence.clone();
+        let started = Instant::now();
+        let waiter = tokio::spawn(async move {
+            waiter_evidence
+                .wait_for_quiet(7, Duration::from_millis(30), Duration::from_millis(150))
+                .await;
+        });
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        evidence.observe(7, "discord.com", Verdict::Reset);
+        tokio::time::timeout(Duration::from_millis(200), waiter)
+            .await
+            .expect("quiet window exceeded its hard deadline")
+            .unwrap();
+
+        assert!(
+            started.elapsed() >= Duration::from_millis(45),
+            "current-generation evidence must restart the quiet interval"
+        );
+    }
+
+    #[tokio::test]
+    async fn evidence_quiet_window_stops_at_hard_deadline() {
+        let evidence = Arc::new(EvidenceWindow::default());
+        evidence.begin(9);
+        let noisy_evidence = evidence.clone();
+        let noise = tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                noisy_evidence.observe(9, "discord.com", Verdict::Working);
+            }
+        });
+        let started = Instant::now();
+
+        evidence
+            .wait_for_quiet(9, Duration::from_millis(30), Duration::from_millis(70))
+            .await;
+        noise.abort();
+
+        assert!(
+            started.elapsed() >= Duration::from_millis(60),
+            "continuous evidence must keep the quiet window open until its bound"
+        );
+        assert!(
+            started.elapsed() < Duration::from_millis(180),
+            "quiet window must remain bounded under continuous evidence"
+        );
     }
 
     #[test]

@@ -2,6 +2,13 @@
 
 use serde::{Deserialize, Serialize};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum SeriesVerdict {
+    FinalSuccess,
+    FinalFailure,
+    Undecided,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FailureStage {

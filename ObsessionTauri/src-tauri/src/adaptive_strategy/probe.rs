@@ -11,7 +11,7 @@ use serde::Serialize;
 use tokio::time::Instant;
 
 use super::dsl::{AdaptiveCategory, StrategyTransport};
-use super::evidence::FailureStage;
+use super::evidence::{FailureStage, SeriesVerdict};
 use super::model::CandidateProbeResult;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -596,8 +596,8 @@ where
         );
         on_round(rounds.last().expect("probe round was just appended"));
         let remaining = round_count.saturating_sub(round);
-        if transport == StrategyTransport::Quic
-            && quic_series_cannot_recover(&rounds, required_successes, remaining)
+        if series_verdict_state(&rounds, transport, required_successes, remaining)
+            != SeriesVerdict::Undecided
         {
             break;
         }
@@ -642,29 +642,48 @@ async fn run_probe_round(
     }
 }
 
-fn quic_series_cannot_recover(
+fn series_verdict_state(
     rounds: &[ProbeBatch],
+    transport: StrategyTransport,
     required_successes: u8,
     remaining_rounds: u8,
-) -> bool {
+) -> SeriesVerdict {
     let required = required_successes.max(1);
-    let core_hosts = rounds
+    let has_core_targets = rounds
         .iter()
         .flat_map(|batch| batch.targets.iter())
-        .filter(|target| target.core)
-        .map(|target| target.host.as_str())
-        .collect::<BTreeSet<_>>();
+        .any(|target| target.core);
+    if !has_core_targets {
+        return SeriesVerdict::Undecided;
+    }
+    let requirement = if transport == StrategyTransport::Quic {
+        CoreRequirement::Any
+    } else {
+        CoreRequirement::All
+    };
     let successful_rounds = rounds
         .iter()
         .filter(|batch| {
-            batch
-                .targets
-                .iter()
-                .any(|target| target.core && target.final_ok())
+            let mut core = batch.targets.iter().filter(|target| target.core);
+            let has_core = core.clone().next().is_some();
+            has_core
+                && match requirement {
+                    CoreRequirement::All => core.all(TargetProbeResult::final_ok),
+                    CoreRequirement::Any => core.any(TargetProbeResult::final_ok),
+                }
         })
         .count()
         .min(u8::MAX as usize) as u8;
-    !core_hosts.is_empty() && successful_rounds.saturating_add(remaining_rounds) < required
+
+    if successful_rounds >= required {
+        SeriesVerdict::FinalSuccess
+    } else if transport == StrategyTransport::Quic
+        && successful_rounds.saturating_add(remaining_rounds) < required
+    {
+        SeriesVerdict::FinalFailure
+    } else {
+        SeriesVerdict::Undecided
+    }
 }
 
 #[cfg(test)]
@@ -1410,23 +1429,107 @@ mod tests {
         assert!(first.len() <= 2);
     }
 
-    #[test]
-    fn quic_series_stops_when_required_successes_are_impossible() {
-        let failed_batch = |round| {
-            let mut target = result(round, "quic.example", true, false);
-            target.transport = StrategyTransport::Quic;
-            target.failure_stage = FailureStage::Quic;
-            ProbeBatch {
-                category: AdaptiveCategory::Gaming,
-                transport: StrategyTransport::Quic,
-                round,
-                targets: vec![target],
-            }
-        };
-        let first = vec![failed_batch(1)];
-        assert!(!quic_series_cannot_recover(&first, 2, 2));
+    fn verdict_batch(transport: StrategyTransport, round: u8, core_results: &[bool]) -> ProbeBatch {
+        let targets = core_results
+            .iter()
+            .enumerate()
+            .map(|(index, ok)| {
+                let mut target = result(round, &format!("core-{index}.example"), true, *ok);
+                target.transport = transport;
+                if transport == StrategyTransport::Quic {
+                    target.tcp_ok = false;
+                    target.tls_ok = false;
+                    target.quic_ok = *ok;
+                    target.failure_stage = if *ok {
+                        FailureStage::None
+                    } else {
+                        FailureStage::Quic
+                    };
+                }
+                target
+            })
+            .collect();
+        ProbeBatch {
+            category: AdaptiveCategory::Gaming,
+            transport,
+            round,
+            targets,
+        }
+    }
 
-        let second = vec![failed_batch(1), failed_batch(2)];
-        assert!(quic_series_cannot_recover(&second, 2, 1));
+    #[test]
+    fn series_verdict_is_quorum_and_transport_aware() {
+        struct Case {
+            name: &'static str,
+            transport: StrategyTransport,
+            rounds: Vec<ProbeBatch>,
+            required: u8,
+            remaining: u8,
+            expected: SeriesVerdict,
+        }
+
+        let cases = vec![
+            Case {
+                name: "tls all core final success",
+                transport: StrategyTransport::Tls,
+                rounds: vec![
+                    verdict_batch(StrategyTransport::Tls, 1, &[true, true]),
+                    verdict_batch(StrategyTransport::Tls, 2, &[true, true]),
+                ],
+                required: 2,
+                remaining: 1,
+                expected: SeriesVerdict::FinalSuccess,
+            },
+            Case {
+                name: "tls partial core stays undecided",
+                transport: StrategyTransport::Tls,
+                rounds: vec![
+                    verdict_batch(StrategyTransport::Tls, 1, &[true, false]),
+                    verdict_batch(StrategyTransport::Tls, 2, &[true, false]),
+                ],
+                required: 2,
+                remaining: 0,
+                expected: SeriesVerdict::Undecided,
+            },
+            Case {
+                name: "quic any core final success",
+                transport: StrategyTransport::Quic,
+                rounds: vec![
+                    verdict_batch(StrategyTransport::Quic, 1, &[false, true]),
+                    verdict_batch(StrategyTransport::Quic, 2, &[false, true]),
+                ],
+                required: 2,
+                remaining: 1,
+                expected: SeriesVerdict::FinalSuccess,
+            },
+            Case {
+                name: "quic impossible success",
+                transport: StrategyTransport::Quic,
+                rounds: vec![
+                    verdict_batch(StrategyTransport::Quic, 1, &[false, false]),
+                    verdict_batch(StrategyTransport::Quic, 2, &[false, false]),
+                ],
+                required: 2,
+                remaining: 1,
+                expected: SeriesVerdict::FinalFailure,
+            },
+            Case {
+                name: "quic recoverable stays undecided",
+                transport: StrategyTransport::Quic,
+                rounds: vec![verdict_batch(StrategyTransport::Quic, 1, &[false, false])],
+                required: 1,
+                remaining: 1,
+                expected: SeriesVerdict::Undecided,
+            },
+        ];
+
+        for case in cases {
+            assert_eq!(
+                series_verdict_state(&case.rounds, case.transport, case.required, case.remaining,),
+                case.expected,
+                "{}",
+                case.name
+            );
+        }
     }
 }
