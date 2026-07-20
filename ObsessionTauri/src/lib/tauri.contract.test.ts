@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { BootstrapSnapshot, DpiStatus } from "./tauri";
 
 const fixture = {
-  schemaVersion: 2,
+  schemaVersion: 3,
   settings: {
     revision: 2,
     value: {
@@ -58,6 +58,31 @@ const fixture = {
       activeCategories: ["discord"],
       sessionId: 42,
       sensorGeneration: 9,
+      lanes: [
+        {
+          category: "discord",
+          activeConfig: "discord_1.conf",
+          laneGeneration: 9,
+          phase: "suspect",
+          classification: "dpi_suspected",
+          confidence: "high",
+          evidence: {
+            workingFlows: 0,
+            workingTargets: 0,
+            resetFlows: 3,
+            resetTargets: 2,
+            blackholeFlows: 0,
+            blackholeTargets: 0,
+          },
+          cooldownUntilMs: null,
+        },
+      ],
+      presumedIntent: {
+        kind: "switch_lane",
+        category: "discord",
+        candidateConfig: "discord_2.conf",
+        reason: "dpi_suspected",
+      },
     },
   },
   hosts: {
@@ -74,7 +99,7 @@ const fixture = {
 
 describe("BootstrapSnapshot contract", () => {
   it("keeps every subsystem revision independent", () => {
-    expect(fixture.schemaVersion).toBe(2);
+    expect(fixture.schemaVersion).toBe(3);
     expect([
       fixture.settings.revision,
       fixture.dpi.revision,
@@ -96,6 +121,31 @@ describe("BootstrapSnapshot contract", () => {
       activeCategories: ["discord"],
       sessionId: 42,
       sensorGeneration: 9,
+      lanes: [
+        {
+          category: "discord",
+          activeConfig: "discord_1.conf",
+          laneGeneration: 9,
+          phase: "suspect",
+          classification: "dpi_suspected",
+          confidence: "high",
+          evidence: {
+            workingFlows: 0,
+            workingTargets: 0,
+            resetFlows: 3,
+            resetTargets: 2,
+            blackholeFlows: 0,
+            blackholeTargets: 0,
+          },
+          cooldownUntilMs: null,
+        },
+      ],
+      presumedIntent: {
+        kind: "switch_lane",
+        category: "discord",
+        candidateConfig: "discord_2.conf",
+        reason: "dpi_suspected",
+      },
     });
     expect(fixture.hosts.value.status).toBe("not_installed");
   });

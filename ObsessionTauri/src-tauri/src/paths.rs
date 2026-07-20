@@ -59,6 +59,9 @@ impl Paths {
     pub fn logs_dir(&self) -> PathBuf {
         self.base_dir.join("logs")
     }
+    pub fn legacy_reliability_logs_dir(&self) -> PathBuf {
+        self.logs_dir().join("legacy-reliability")
+    }
     pub fn profiles_dir(&self) -> PathBuf {
         self.base_dir.join("profiles")
     }
@@ -204,6 +207,7 @@ impl Paths {
             self.autohosts_dir(),
             self.backups_dir(),
             self.logs_dir(),
+            self.legacy_reliability_logs_dir(),
             self.profiles_dir(),
             self.icons_dir(),
             self.strategy_packs_dir(),

@@ -201,13 +201,79 @@ export type LegacyReliabilityPhase =
   | "degraded"
   | "blind";
 
-/** Read-only lifecycle projection of the active Legacy Reliability Manager. */
+export type LegacyReliabilityLanePhase =
+  | "observing"
+  | "healthy"
+  | "suspect"
+  | "gate_pending"
+  | "blocked_cooldown"
+  | "sensor_unreliable";
+
+export type LegacyReliabilityClassification =
+  | "awaiting_evidence"
+  | "working"
+  | "dpi_suspected"
+  | "dpi_blocked"
+  | "offline"
+  | "dns_failure"
+  | "upstream_degraded"
+  | "target_unavailable"
+  | "service_slow"
+  | "sensor_unreliable";
+
+export type LegacyReliabilityConfidence = "none" | "low" | "medium" | "high";
+
+export interface LegacyReliabilityEvidence {
+  workingFlows: number;
+  workingTargets: number;
+  resetFlows: number;
+  resetTargets: number;
+  blackholeFlows: number;
+  blackholeTargets: number;
+}
+
+export interface LegacyReliabilityLaneAssessment {
+  category: string;
+  activeConfig: string | null;
+  laneGeneration: number;
+  phase: LegacyReliabilityLanePhase;
+  classification: LegacyReliabilityClassification;
+  confidence: LegacyReliabilityConfidence;
+  evidence: LegacyReliabilityEvidence;
+  cooldownUntilMs: number | null;
+}
+
+export type LegacyReliabilityPresumedIntent =
+  | {
+      kind: "wait";
+      reason: LegacyReliabilityClassification;
+    }
+  | {
+      kind: "switch_lane";
+      category: string;
+      candidateConfig: string;
+      reason: LegacyReliabilityClassification;
+    }
+  | {
+      kind: "freeze_lane";
+      category: string;
+      untilMs: number;
+      reason: LegacyReliabilityClassification;
+    };
+
+/**
+ * Read-only lifecycle and per-category assessment projection of the active
+ * Legacy Reliability Manager. `presumedIntent` is diagnostic in observe-only
+ * mode and never means that a configuration change was executed.
+ */
 export interface LegacyReliabilityStatus {
   mode: "observe_only";
   phase: LegacyReliabilityPhase;
   activeCategories: string[];
   sessionId: number | null;
   sensorGeneration: number | null;
+  lanes: LegacyReliabilityLaneAssessment[];
+  presumedIntent: LegacyReliabilityPresumedIntent;
 }
 
 export type AdaptiveCategory = "discord" | "youtube_twitch" | "gaming";

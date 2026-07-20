@@ -655,7 +655,7 @@ pub fn runtime_get_snapshot(app: AppHandle) -> RuntimeSnapshot {
 }
 
 /// Версия wire-контракта единого startup/resume snapshot.
-pub const BOOTSTRAP_SCHEMA_VERSION: u32 = 2;
+pub const BOOTSTRAP_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Serialize)]
 pub struct BootstrapSettings {

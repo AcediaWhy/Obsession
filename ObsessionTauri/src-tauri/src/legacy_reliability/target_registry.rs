@@ -751,6 +751,40 @@ impl TargetRegistry {
         })
     }
 
+    /// Deterministic targets that are unambiguously owned by the active
+    /// configuration of `category`.
+    ///
+    /// Environment Gate must not probe the full candidate union: doing so
+    /// would let an inactive config (or a target shared by active lanes)
+    /// influence the assessment of the currently running lane.
+    pub fn active_targets_for_category(&self, category: &str) -> Vec<&str> {
+        let category = category.trim().to_ascii_lowercase();
+        self.targets
+            .keys()
+            .filter_map(|target| match self.attribute_active(target) {
+                Attribution::Matched { owner, .. } if owner.category == category => {
+                    Some(target.as_str())
+                }
+                Attribution::Matched { .. }
+                | Attribution::Ambiguous { .. }
+                | Attribution::Excluded { .. }
+                | Attribution::Unmatched => None,
+            })
+            .collect()
+    }
+
+    /// Bundled configs available to a category in stable lexical order.
+    /// Phase 2 uses this only to display the Brain's presumed intent; it does
+    /// not alter selection or start a process.
+    pub fn candidate_configs_for_category(&self, category: &str) -> Vec<&str> {
+        let category = category.trim().to_ascii_lowercase();
+        self.config_port_plans
+            .keys()
+            .filter(|owner| owner.category == category)
+            .map(|owner| owner.config_name.as_str())
+            .collect()
+    }
+
     pub fn attribute(&self, domain: &str) -> Attribution {
         self.attribute_scoped(domain, false)
     }
@@ -1303,6 +1337,42 @@ mod tests {
         assert_eq!(
             registry.attribute("youtube.com.evil.example"),
             Attribution::Unmatched
+        );
+    }
+
+    #[test]
+    fn gate_targets_are_active_unambiguous_and_candidates_are_sorted() {
+        let active_video = record(
+            "video",
+            "video_1.conf",
+            "--wf-tcp=443 --hostlist=lists/video-active.txt",
+            &[("lists/video-active.txt", "video.example\nshared.example\n")],
+        );
+        let candidate_video = record(
+            "video",
+            "video_2.conf",
+            "--wf-tcp=443 --hostlist=lists/video-candidate.txt",
+            &[("lists/video-candidate.txt", "candidate.example\n")],
+        );
+        let active_other = record(
+            "other",
+            "other_1.conf",
+            "--wf-tcp=443 --hostlist=lists/other.txt",
+            &[("lists/other.txt", "shared.example\nother.example\n")],
+        );
+        let registry = TargetRegistry::from_records_with_active_selections(
+            [candidate_video, active_other, active_video],
+            [("video", "video_1.conf"), ("other", "other_1.conf")],
+        )
+        .unwrap();
+
+        assert_eq!(
+            registry.active_targets_for_category("VIDEO"),
+            ["video.example"]
+        );
+        assert_eq!(
+            registry.candidate_configs_for_category("video"),
+            ["video_1.conf", "video_2.conf"]
         );
     }
 

@@ -14,9 +14,29 @@
 
 use std::collections::HashMap;
 
-use serde::{Deserialize, Serialize};
+#[cfg(windows)]
+use std::io::Read;
+#[cfg(windows)]
+use std::process::Stdio;
+#[cfg(windows)]
+use std::time::{Duration, Instant};
 
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+
+use crate::legacy_reliability::contracts::NetworkFingerprint;
 use crate::paths::Paths;
+
+/// Total synchronous-command budget for one read-only local identity probe.
+/// Runtime waits for this bounded operation instead of detaching it behind an
+/// async timeout.
+#[cfg(windows)]
+pub const LOCAL_READ_ONLY_BUDGET: Duration = Duration::from_millis(900);
+
+#[cfg(windows)]
+const SYSTEM_COMMAND_POLL_INTERVAL: Duration = Duration::from_millis(10);
+#[cfg(windows)]
+const MAX_SYSTEM_COMMAND_OUTPUT_BYTES: u64 = 1024 * 1024;
 
 /// Снимок сетевой идентичности для Мозга.
 #[derive(Clone, Debug, Default)]
@@ -27,6 +47,37 @@ pub struct NetIdentity {
     pub asn_region: Option<String>,
     /// Человекочитаемое имя оператора (для UI/лога).
     pub org: Option<String>,
+}
+
+/// Read-only local network plane used by Legacy Environment Gate.
+///
+/// Unlike [`resolve`], collecting this snapshot never performs GeoIP I/O and
+/// never reads or writes a cache.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LocalNetworkIdentity {
+    pub online: bool,
+    pub interface_up: bool,
+    pub default_route_available: bool,
+    pub gateway_reachable: bool,
+    pub fingerprint: NetworkFingerprint,
+}
+
+impl Default for LocalNetworkIdentity {
+    fn default() -> Self {
+        Self {
+            online: false,
+            interface_up: false,
+            default_route_available: false,
+            gateway_reachable: false,
+            fingerprint: NetworkFingerprint::Unknown,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DefaultRoute {
+    pub gateway_ip: String,
+    pub interface_ip: String,
 }
 
 /// Одна запись кэша идентичности сети.
@@ -57,17 +108,36 @@ impl Default for NetIdCache {
 /// IP шлюза по умолчанию из вывода `route print` (IPv4). Строка маршрута
 /// `0.0.0.0  0.0.0.0  <gateway>  <iface>  <metric>` — берём 3-й столбец.
 pub fn parse_gateway_ip(route_print: &str) -> Option<String> {
+    parse_default_route(route_print).map(|route| route.gateway_ip)
+}
+
+/// Exact IPv4 default route and interface address from `route print`.
+pub fn parse_default_route(route_print: &str) -> Option<DefaultRoute> {
+    let mut best: Option<(u32, DefaultRoute)> = None;
     for line in route_print.lines() {
         let cols: Vec<&str> = line.split_whitespace().collect();
         // Ровно IPv4-маршрут по умолчанию: dest и mask оба 0.0.0.0.
-        if cols.len() >= 3 && cols[0] == "0.0.0.0" && cols[1] == "0.0.0.0" {
+        if cols.len() >= 5 && cols[0] == "0.0.0.0" && cols[1] == "0.0.0.0" {
             let gw = cols[2];
-            if is_ipv4(gw) && gw != "0.0.0.0" {
-                return Some(gw.to_string());
+            let interface = cols[3];
+            let Some(metric) = cols[4].parse::<u32>().ok() else {
+                continue;
+            };
+            if is_ipv4(gw) && gw != "0.0.0.0" && is_ipv4(interface) && interface != "0.0.0.0" {
+                let candidate = DefaultRoute {
+                    gateway_ip: gw.to_string(),
+                    interface_ip: interface.to_string(),
+                };
+                if best
+                    .as_ref()
+                    .is_none_or(|(best_metric, _)| metric < *best_metric)
+                {
+                    best = Some((metric, candidate));
+                }
             }
         }
     }
-    None
+    best.map(|(_, route)| route)
 }
 
 /// IP шлюза из `ipconfig` (фолбэк): строка `Default Gateway . . . : <ip>`.
@@ -186,6 +256,33 @@ fn normalize_mac(raw: &str) -> Option<String> {
     Some(joined)
 }
 
+/// Builds a privacy-safe stable key without exposing local interface, gateway,
+/// or MAC values to status/log payloads.
+fn local_fingerprint(route: &DefaultRoute, gateway_mac: Option<&str>) -> NetworkFingerprint {
+    let Some(gateway_mac) = gateway_mac else {
+        return NetworkFingerprint::Unstable {
+            reason: "gateway_identity_unavailable".to_owned(),
+        };
+    };
+    let mut hasher = Sha256::new();
+    hasher.update(b"obsession:legacy-local-network:v1\0");
+    for value in [
+        route.interface_ip.as_bytes(),
+        route.gateway_ip.as_bytes(),
+        gateway_mac.as_bytes(),
+    ] {
+        hasher.update((value.len() as u64).to_be_bytes());
+        hasher.update(value);
+    }
+    let digest = hasher.finalize();
+    let mut key = String::with_capacity(64);
+    for byte in digest {
+        use std::fmt::Write as _;
+        let _ = write!(key, "{byte:02x}");
+    }
+    NetworkFingerprint::Stable { key }
+}
+
 // ─── Исполнение ─────────────────────────────────────────────────────────────
 
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -219,38 +316,158 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
+/// Runs one hidden read-only system command within a caller-owned absolute
+/// deadline. Timed-out children are killed and synchronously reaped before
+/// returning, so cancellation of the surrounding async task cannot leave an
+/// unbounded route/ARP/ping process behind.
+#[cfg(windows)]
+fn run_local_command_until(program: &str, args: &[&str], deadline: Instant) -> Option<Vec<u8>> {
+    use crate::util::std_command;
+
+    if Instant::now() >= deadline {
+        return None;
+    }
+
+    let mut command = std_command(program);
+    command
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let mut child = command.spawn().ok()?;
+    let Some(stdout) = child.stdout.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return None;
+    };
+
+    // Drain concurrently so an unexpectedly large route table cannot fill a
+    // pipe and stall the child. The extra byte distinguishes exact-fit output
+    // from an oversized stream without an unbounded allocation.
+    let reader = match std::thread::Builder::new()
+        .name("netid-command-output".to_owned())
+        .spawn(move || -> std::io::Result<Vec<u8>> {
+            let mut output = Vec::new();
+            stdout
+                .take(MAX_SYSTEM_COMMAND_OUTPUT_BYTES.saturating_add(1))
+                .read_to_end(&mut output)?;
+            if u64::try_from(output.len()).unwrap_or(u64::MAX) > MAX_SYSTEM_COMMAND_OUTPUT_BYTES {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "local network command output exceeded its limit",
+                ));
+            }
+            Ok(output)
+        }) {
+        Ok(reader) => reader,
+        Err(_) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
+    };
+
+    let completed = loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break true,
+            Ok(None) => {}
+            Err(_) => break false,
+        }
+
+        let now = Instant::now();
+        if now >= deadline {
+            break false;
+        }
+        std::thread::sleep(SYSTEM_COMMAND_POLL_INTERVAL.min(deadline.duration_since(now)));
+    };
+
+    if !completed {
+        let _ = child.kill();
+    }
+    // Always reap, including the race where the child exits between try_wait
+    // and kill. Dropping a timed-out Child would leak the process handle and
+    // could leave the command running.
+    let _ = child.wait();
+    let output = reader.join().ok()?.ok()?;
+    completed.then_some(output)
+}
+
 /// Собирает локальные (оффлайн) идентификаторы сети синхронными командами.
 /// Возвращает `(gateway_ip, gateway_mac)`.
 #[cfg(windows)]
 fn gather_local() -> (Option<String>, Option<String>) {
-    use crate::util::std_command;
-
-    let route = std_command("route")
-        .arg("print")
-        .output()
-        .ok()
-        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+    let deadline = Instant::now() + LOCAL_READ_ONLY_BUDGET;
+    let route = run_local_command_until("route", &["print"], deadline)
+        .map(|output| String::from_utf8_lossy(&output).into_owned())
         .unwrap_or_default();
     let gw = parse_gateway_ip(&route).or_else(|| {
-        let ipcfg = std_command("ipconfig")
-            .output()
-            .ok()
-            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        let ipcfg = run_local_command_until("ipconfig", &[], deadline)
+            .map(|output| String::from_utf8_lossy(&output).into_owned())
             .unwrap_or_default();
         parse_gateway_ip_ipconfig(&ipcfg)
     });
 
     let mac = gw.as_ref().and_then(|ip| {
-        let arp = std_command("arp")
-            .arg("-a")
-            .output()
-            .ok()
-            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        let arp = run_local_command_until("arp", &["-a"], deadline)
+            .map(|output| String::from_utf8_lossy(&output).into_owned())
             .unwrap_or_default();
         parse_mac_for_ip(&arp, ip)
     });
 
     (gw, mac)
+}
+
+/// Collects only the local route/interface/gateway identity. No external
+/// request and no cache access is permitted on this path.
+#[cfg(windows)]
+pub async fn resolve_local_read_only() -> LocalNetworkIdentity {
+    tokio::task::spawn_blocking(|| {
+        let deadline = Instant::now() + LOCAL_READ_ONLY_BUDGET;
+        let route_text = run_local_command_until("route", &["print"], deadline)
+            .map(|output| String::from_utf8_lossy(&output).into_owned())
+            .unwrap_or_default();
+        let route = parse_default_route(&route_text);
+
+        let gateway_mac = route.as_ref().and_then(|route| {
+            let read_arp = || {
+                let arp = run_local_command_until("arp", &["-a"], deadline)
+                    .map(|output| String::from_utf8_lossy(&output).into_owned())
+                    .unwrap_or_default();
+                parse_mac_for_ip(&arp, &route.gateway_ip)
+            };
+            read_arp().or_else(|| {
+                // Sending one bounded ping forces Windows to resolve the
+                // gateway at L2 even when ICMP echo itself is disabled. This
+                // avoids treating an expired ARP entry as a network change.
+                let _ = run_local_command_until(
+                    "ping",
+                    &["-n", "1", "-w", "250", route.gateway_ip.as_str()],
+                    deadline,
+                );
+                read_arp()
+            })
+        });
+
+        let Some(route) = route else {
+            return LocalNetworkIdentity::default();
+        };
+        LocalNetworkIdentity {
+            online: true,
+            interface_up: true,
+            default_route_available: true,
+            // The presence of a selected gateway proves routing configuration;
+            // missing ARP identity makes the fingerprint unstable, not offline.
+            gateway_reachable: true,
+            fingerprint: local_fingerprint(&route, gateway_mac.as_deref()),
+        }
+    })
+    .await
+    .unwrap_or_default()
+}
+
+#[cfg(not(windows))]
+pub async fn resolve_local_read_only() -> LocalNetworkIdentity {
+    LocalNetworkIdentity::default()
 }
 
 /// Определяет идентичность сети: MAC шлюза (ключ L1) + ASN_region (ключ L2).
@@ -392,6 +609,49 @@ Network Destination        Netmask          Gateway       Interface  Metric
         127.0.0.0        255.0.0.0         On-link       127.0.0.1    331
 ";
         assert_eq!(parse_gateway_ip(out), Some("192.168.1.1".to_string()));
+        assert_eq!(
+            parse_default_route(out),
+            Some(DefaultRoute {
+                gateway_ip: "192.168.1.1".to_string(),
+                interface_ip: "192.168.1.100".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn local_fingerprint_is_hashed_and_requires_gateway_identity() {
+        let route = DefaultRoute {
+            gateway_ip: "192.168.1.1".to_owned(),
+            interface_ip: "192.168.1.100".to_owned(),
+        };
+        let stable = local_fingerprint(&route, Some("aa:bb:cc:dd:ee:ff"));
+        let NetworkFingerprint::Stable { key } = stable else {
+            panic!("complete local identity must be stable");
+        };
+        assert_eq!(key.len(), 64);
+        assert!(!key.contains("192.168"));
+        assert!(!key.contains("aa:bb"));
+        assert_eq!(
+            local_fingerprint(&route, None),
+            NetworkFingerprint::Unstable {
+                reason: "gateway_identity_unavailable".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn default_route_uses_lowest_metric() {
+        let routes = "\
+0.0.0.0  0.0.0.0  10.8.0.1  10.8.0.2  90
+0.0.0.0  0.0.0.0  192.168.1.1  192.168.1.100  25
+";
+        assert_eq!(
+            parse_default_route(routes),
+            Some(DefaultRoute {
+                gateway_ip: "192.168.1.1".into(),
+                interface_ip: "192.168.1.100".into(),
+            })
+        );
     }
 
     #[test]
@@ -485,5 +745,46 @@ Interface: 192.168.1.100 --- 0x2
         );
         assert_eq!(normalize_mac("garbage"), None);
         assert_eq!(normalize_mac("00-00-00-00-00-00"), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn local_system_command_is_killed_and_reaped_at_shared_deadline() {
+        let started = Instant::now();
+        let deadline = started + Duration::from_millis(100);
+        let output = run_local_command_until(
+            "powershell",
+            &[
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Start-Sleep -Seconds 30",
+            ],
+            deadline,
+        );
+
+        assert!(output.is_none());
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "timed-out child must be killed and synchronously reaped"
+        );
+
+        let expired_started = Instant::now();
+        assert!(run_local_command_until("route", &["print"], deadline).is_none());
+        assert!(expired_started.elapsed() < Duration::from_millis(100));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn local_system_command_preserves_hidden_stdout_capture() {
+        let output = run_local_command_until(
+            "cmd",
+            &["/D", "/C", "echo bounded"],
+            Instant::now() + Duration::from_secs(2),
+        )
+        .expect("short hidden command must complete inside its budget");
+
+        assert_eq!(String::from_utf8_lossy(&output).trim(), "bounded");
     }
 }

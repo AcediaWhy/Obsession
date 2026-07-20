@@ -1,20 +1,38 @@
-//! Async shell for the side-effect-free observe-only Manager.
+//! Async shell for observe-only assessment, bounded Gate probes, and local log.
+//!
+//! Network probes and privacy-safe diagnostics are allowed in Phase 2; process,
+//! selection, config, and cache mutations remain intentionally absent.
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use chrono::Utc;
 use tauri::AppHandle;
-use tokio::sync::{watch, Notify};
+use tokio::sync::{watch, Mutex, Notify};
 use tokio::task::JoinHandle;
 
+use super::assessment::AssessmentClassification;
 use super::contracts::{LaneGeneration, LegacySessionContext, SensorGeneration};
+use super::environment_gate::{
+    EnvironmentGate, GateReport, GateRequest, GateRequestError, LocalNetworkSnapshot,
+};
 use super::health::AtomicHealthCounters;
 use super::ingress::{channel, LegacyIngress};
-use super::manager::{ObserveOnlyManager, ObserveOnlySnapshot, ReceiveOutcome};
+use super::manager::{
+    ObserveOnlyManager, ObserveOnlySnapshot, PreparedEnvironmentGate, ReceiveOutcome,
+};
+use super::reliability_log::{
+    AssessmentKind as LogAssessmentKind, ClassificationKind as LogClassificationKind,
+    GateSummary as LogGateSummary, IntentKind as LogIntentKind, ReliabilityCounters,
+    ReliabilityEventKind, ReliabilityLane, ReliabilityLog, ReliabilityRecord,
+};
 use super::target_registry::TargetRegistry;
 
 const HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(500);
+const BASELINE_RETRY_INTERVAL: Duration = Duration::from_secs(60);
+const BASELINE_REFRESH_INTERVAL: Duration = Duration::from_secs(12 * 60 * 60);
 
 /// Handle kept by AppState for one Legacy observe-only session.
 pub struct LegacyReliabilityHandle {
@@ -86,15 +104,16 @@ impl LegacyReliabilityHandle {
 pub fn spawn(
     context: LegacySessionContext,
     sensor_generation: SensorGeneration,
-    registry: &TargetRegistry,
+    registry: Arc<TargetRegistry>,
     lane_generations: BTreeMap<String, LaneGeneration>,
+    log_root: PathBuf,
 ) -> Result<LegacyReliabilityHandle, super::ingress::FenceBuildError> {
     let (ingress, receiver) = channel();
     let counters: Arc<AtomicHealthCounters> = ingress.counters();
-    let manager = ObserveOnlyManager::new(
+    let manager = ObserveOnlyManager::new_with_registry(
         context,
         sensor_generation,
-        registry.version(),
+        registry,
         lane_generations,
         counters,
         receiver,
@@ -105,7 +124,7 @@ pub fn spawn(
     let wake = Arc::new(Notify::new());
     let wake_task = Arc::clone(&wake);
     let join = tokio::spawn(async move {
-        run_manager(manager, status_tx, &mut stop_rx, wake_task).await;
+        run_manager(manager, status_tx, &mut stop_rx, wake_task, log_root).await;
     });
 
     Ok(LegacyReliabilityHandle {
@@ -122,38 +141,499 @@ async fn run_manager(
     status_tx: watch::Sender<ObserveOnlySnapshot>,
     stop_rx: &mut watch::Receiver<bool>,
     wake: Arc<Notify>,
+    log_root: PathBuf,
 ) {
     let started = Instant::now();
+    let mut reliability_log = ReliabilityLog::open(log_root, Utc::now()).ok();
+    let mut previous_snapshot = manager.snapshot();
+    append_session_log(
+        reliability_log.as_mut(),
+        &previous_snapshot,
+        ReliabilityEventKind::SessionStarted,
+    );
+
+    let gate = EnvironmentGate::production()
+        .ok()
+        .map(|gate| Arc::new(Mutex::new(gate)));
+    let baseline_request = gate
+        .as_ref()
+        .and_then(|_| manager.baseline_gate_request(placeholder_local_network(&manager)));
+    let mut gate_task = match (gate.as_ref(), baseline_request) {
+        (Some(gate), Some(request)) => Some(spawn_gate_task(
+            Arc::clone(gate),
+            GatePurpose::Baseline(request),
+        )),
+        _ => None,
+    };
+    let mut next_baseline_at = Instant::now()
+        + if gate_task.is_some() {
+            BASELINE_REFRESH_INTERVAL
+        } else {
+            BASELINE_RETRY_INTERVAL
+        };
+
     loop {
         let now_ms = started.elapsed().as_millis() as u64;
         tokio::select! {
             biased;
             changed = stop_rx.changed() => {
                 if changed.is_err() || *stop_rx.borrow() {
-                    manager.shutdown(started.elapsed().as_millis() as u64);
-                    let _ = status_tx.send(manager.snapshot());
+                    if let Some(task) = gate_task.take() {
+                        task.join.abort();
+                    }
+                    let snapshot = manager.shutdown(started.elapsed().as_millis() as u64);
+                    append_snapshot_logs(
+                        reliability_log.as_mut(),
+                        &previous_snapshot,
+                        &snapshot,
+                    );
+                    append_session_log(
+                        reliability_log.as_mut(),
+                        &snapshot,
+                        ReliabilityEventKind::SessionClosed,
+                    );
+                    let _ = status_tx.send(snapshot);
                     break;
+                }
+            }
+            completion = wait_gate_task(&mut gate_task), if gate_task.is_some() => {
+                if let Some(active) = gate_task.take() {
+                    match active.purpose {
+                        GatePurpose::Baseline(_) => {
+                            let controls_healthy = completion
+                                .as_ref()
+                                .and_then(|joined| joined.as_ref().ok())
+                                .and_then(|result| result.as_ref().ok())
+                                .is_some_and(|report| {
+                                    report
+                                        .controls
+                                        .iter()
+                                        .filter(|outcome| outcome.has_http_response())
+                                        .count()
+                                        >= super::environment_gate::CONTROL_QUORUM
+                                });
+                            next_baseline_at = Instant::now()
+                                + if controls_healthy {
+                                    BASELINE_REFRESH_INTERVAL
+                                } else {
+                                    BASELINE_RETRY_INTERVAL
+                                };
+                        }
+                        GatePurpose::Assessment(prepared) => {
+                            match completion {
+                                Some(Ok(Ok(report))) => {
+                                    let _ = manager.apply_environment_gate_report(
+                                        &prepared,
+                                        &report,
+                                        started.elapsed().as_millis() as u64,
+                                    );
+                                    append_gate_log(
+                                        reliability_log.as_mut(),
+                                        &manager.snapshot(),
+                                        &prepared,
+                                        &report,
+                                    );
+                                }
+                                Some(Ok(Err(GateRequestError::NetworkFingerprintMismatch))) => {
+                                    let _ = manager.apply_environment_gate_failure(
+                                        &prepared,
+                                        AssessmentClassification::SensorUnreliable,
+                                        started.elapsed().as_millis() as u64,
+                                    );
+                                }
+                                Some(Ok(Err(_))) | Some(Err(_)) | None => {
+                                    let _ = manager.apply_environment_gate_failure(
+                                        &prepared,
+                                        AssessmentClassification::UpstreamDegraded,
+                                        started.elapsed().as_millis() as u64,
+                                    );
+                                }
+                            }
+                            let snapshot = manager.snapshot();
+                            append_snapshot_logs(
+                                reliability_log.as_mut(),
+                                &previous_snapshot,
+                                &snapshot,
+                            );
+                            previous_snapshot = snapshot.clone();
+                            let _ = status_tx.send(snapshot);
+                        }
+                    }
                 }
             }
             outcome = tokio::time::timeout(HEALTH_POLL_INTERVAL, manager.recv_next(now_ms)) => {
                 match outcome {
                     Ok(ReceiveOutcome::Event { .. }) => {
-                        let _ = status_tx.send(manager.snapshot());
+                        let snapshot = manager.snapshot();
+                        append_snapshot_logs(
+                            reliability_log.as_mut(),
+                            &previous_snapshot,
+                            &snapshot,
+                        );
+                        previous_snapshot = snapshot.clone();
+                        let _ = status_tx.send(snapshot);
                     }
                     Ok(ReceiveOutcome::ReceiverClosed | ReceiveOutcome::ManagerClosed) => {
-                        let _ = status_tx.send(manager.snapshot());
+                        if let Some(task) = gate_task.take() {
+                            task.join.abort();
+                        }
+                        let snapshot = manager.snapshot();
+                        append_snapshot_logs(
+                            reliability_log.as_mut(),
+                            &previous_snapshot,
+                            &snapshot,
+                        );
+                        append_session_log(
+                            reliability_log.as_mut(),
+                            &snapshot,
+                            ReliabilityEventKind::SessionClosed,
+                        );
+                        let _ = status_tx.send(snapshot);
                         break;
                     }
                     Err(_) => {
                         let now_ms = started.elapsed().as_millis() as u64;
-                        let _ = status_tx.send(manager.poll(now_ms));
+                        let snapshot = manager.poll(now_ms);
+                        append_snapshot_logs(
+                            reliability_log.as_mut(),
+                            &previous_snapshot,
+                            &snapshot,
+                        );
+                        previous_snapshot = snapshot.clone();
+                        let _ = status_tx.send(snapshot);
                     }
                 }
             }
             _ = wake.notified() => {
                 let now_ms = started.elapsed().as_millis() as u64;
-                let _ = status_tx.send(manager.poll(now_ms));
+                let snapshot = manager.poll(now_ms);
+                append_snapshot_logs(
+                    reliability_log.as_mut(),
+                    &previous_snapshot,
+                    &snapshot,
+                );
+                previous_snapshot = snapshot.clone();
+                let _ = status_tx.send(snapshot);
             }
         }
+
+        if gate_task.is_none() {
+            if let Some(gate) = gate.as_ref() {
+                let local = placeholder_local_network(&manager);
+                if let Some(prepared) = manager.take_environment_gate_request(local) {
+                    gate_task = Some(spawn_gate_task(
+                        Arc::clone(gate),
+                        GatePurpose::Assessment(prepared),
+                    ));
+                    let snapshot = manager.snapshot();
+                    append_snapshot_logs(reliability_log.as_mut(), &previous_snapshot, &snapshot);
+                    previous_snapshot = snapshot.clone();
+                    let _ = status_tx.send(snapshot);
+                } else if Instant::now() >= next_baseline_at {
+                    let local = placeholder_local_network(&manager);
+                    if let Some(request) = manager.baseline_gate_request(local) {
+                        gate_task = Some(spawn_gate_task(
+                            Arc::clone(gate),
+                            GatePurpose::Baseline(request),
+                        ));
+                        next_baseline_at = Instant::now() + BASELINE_REFRESH_INTERVAL;
+                    } else {
+                        next_baseline_at = Instant::now() + BASELINE_RETRY_INTERVAL;
+                    }
+                }
+            } else {
+                let local = placeholder_local_network(&manager);
+                if let Some(prepared) = manager.take_environment_gate_request(local) {
+                    let applied = manager.apply_environment_gate_failure(
+                        &prepared,
+                        AssessmentClassification::UpstreamDegraded,
+                        started.elapsed().as_millis() as u64,
+                    );
+                    if applied {
+                        let snapshot = manager.snapshot();
+                        append_snapshot_logs(
+                            reliability_log.as_mut(),
+                            &previous_snapshot,
+                            &snapshot,
+                        );
+                        previous_snapshot = snapshot.clone();
+                        let _ = status_tx.send(snapshot);
+                    }
+                }
+            }
+        }
+    }
+}
+
+enum GatePurpose {
+    Baseline(GateRequest),
+    Assessment(PreparedEnvironmentGate),
+}
+
+struct ActiveGateTask {
+    purpose: GatePurpose,
+    join: JoinHandle<Result<GateReport, GateRequestError>>,
+}
+
+fn spawn_gate_task(gate: Arc<Mutex<EnvironmentGate>>, purpose: GatePurpose) -> ActiveGateTask {
+    let mut request = match &purpose {
+        GatePurpose::Baseline(request) => request.clone(),
+        GatePurpose::Assessment(prepared) => prepared.request.clone(),
+    };
+    let join = tokio::spawn(async move {
+        // The resolver owns a shorter shared deadline and kills/reaps each
+        // route/ARP/ping child. Await it directly so a generic async timeout
+        // cannot detach an unbounded spawn_blocking task.
+        let local = crate::netid::resolve_local_read_only().await;
+        request.local_network = LocalNetworkSnapshot {
+            online: local.online,
+            interface_up: local.interface_up,
+            default_route_available: local.default_route_available,
+            gateway_reachable: local.gateway_reachable,
+            // Preserve the expected identity while offline so Gate can report
+            // Offline. An online identity change remains a stale fence.
+            network_fingerprint: if local.online {
+                local.fingerprint
+            } else {
+                request.fence.network_fingerprint.clone()
+            },
+        };
+        gate.lock().await.evaluate(request).await
+    });
+    ActiveGateTask { purpose, join }
+}
+
+async fn wait_gate_task(
+    task: &mut Option<ActiveGateTask>,
+) -> Option<Result<Result<GateReport, GateRequestError>, tokio::task::JoinError>> {
+    Some((&mut task.as_mut()?.join).await)
+}
+
+fn placeholder_local_network(manager: &ObserveOnlyManager) -> LocalNetworkSnapshot {
+    let snapshot = manager.snapshot();
+    LocalNetworkSnapshot {
+        online: true,
+        interface_up: true,
+        default_route_available: true,
+        gateway_reachable: true,
+        network_fingerprint: snapshot.session.network_fingerprint_at_start,
+    }
+}
+
+fn append_session_log(
+    log: Option<&mut ReliabilityLog>,
+    snapshot: &ObserveOnlySnapshot,
+    event: ReliabilityEventKind,
+) {
+    let Some(log) = log else {
+        return;
+    };
+    let record = ReliabilityRecord::new(event, snapshot_envelope(snapshot));
+    let _ = log.append(Utc::now(), &record);
+}
+
+fn append_snapshot_logs(
+    mut log: Option<&mut ReliabilityLog>,
+    previous: &ObserveOnlySnapshot,
+    current: &ObserveOnlySnapshot,
+) {
+    let Some(log) = log.as_mut() else {
+        return;
+    };
+    if previous.health.state != current.health.state
+        || previous.gaps.total_gaps != current.gaps.total_gaps
+    {
+        let mut record = ReliabilityRecord::new(
+            ReliabilityEventKind::SensorHealthChanged,
+            snapshot_envelope(current),
+        );
+        record.counters = Some(log_counters(current, None));
+        let _ = log.append(Utc::now(), &record);
+    }
+
+    for lane in &current.lanes {
+        let previous_lane = previous
+            .lanes
+            .iter()
+            .find(|candidate| candidate.category == lane.category);
+        if previous_lane.is_some_and(|previous| log_lane_equal(previous, lane)) {
+            continue;
+        }
+        let mut record = ReliabilityRecord::new(
+            ReliabilityEventKind::AssessmentUpdated,
+            snapshot_envelope(current),
+        );
+        record.lane = Some(ReliabilityLane::new(
+            lane.category.clone(),
+            lane.lane_generation,
+        ));
+        record.assessment = Some(log_assessment(lane));
+        record.classification = log_classification(lane.classification);
+        record.counters = Some(log_counters(current, Some(lane)));
+        let _ = log.append(Utc::now(), &record);
+    }
+
+    if previous.presumed_intent != current.presumed_intent {
+        let mut record = ReliabilityRecord::new(
+            ReliabilityEventKind::IntentProposed,
+            snapshot_envelope(current),
+        );
+        record.intent = Some(match &current.presumed_intent {
+            super::policy::PresumedIntent::Wait { .. } => LogIntentKind::Wait,
+            super::policy::PresumedIntent::SwitchLane { .. } => LogIntentKind::SwitchLane,
+            super::policy::PresumedIntent::FreezeLane { .. } => LogIntentKind::FreezeLane,
+        });
+        let _ = log.append(Utc::now(), &record);
+    }
+}
+
+fn append_gate_log(
+    log: Option<&mut ReliabilityLog>,
+    snapshot: &ObserveOnlySnapshot,
+    prepared: &PreparedEnvironmentGate,
+    report: &GateReport,
+) {
+    let Some(log) = log else {
+        return;
+    };
+    let mut record = ReliabilityRecord::new(
+        ReliabilityEventKind::EnvironmentGateCompleted,
+        snapshot_envelope(snapshot),
+    );
+    record.lane = Some(ReliabilityLane::new(
+        prepared.pending.category.clone(),
+        prepared.pending.lane_generation,
+    ));
+    record.classification = match report.classification {
+        super::environment_gate::GateClassification::Stable => None,
+        super::environment_gate::GateClassification::Offline => {
+            Some(LogClassificationKind::Offline)
+        }
+        super::environment_gate::GateClassification::DnsFailure => {
+            Some(LogClassificationKind::DnsFailure)
+        }
+        super::environment_gate::GateClassification::UpstreamDegraded => {
+            Some(LogClassificationKind::UpstreamDegraded)
+        }
+        super::environment_gate::GateClassification::TargetUnavailable => {
+            Some(LogClassificationKind::TargetUnavailable)
+        }
+        super::environment_gate::GateClassification::ServiceSlow => {
+            Some(LogClassificationKind::ServiceSlow)
+        }
+        super::environment_gate::GateClassification::DpiSuspected => {
+            Some(LogClassificationKind::DpiSuspected)
+        }
+        super::environment_gate::GateClassification::DpiBlocked => {
+            Some(LogClassificationKind::DpiBlocked)
+        }
+        super::environment_gate::GateClassification::SensorUnreliable => {
+            Some(LogClassificationKind::SensorUnreliable)
+        }
+    };
+    record.gate = Some(LogGateSummary {
+        attempted_controls: report.controls.len().min(usize::from(u8::MAX)) as u8,
+        successful_controls: report
+            .controls
+            .iter()
+            .filter(|outcome| outcome.has_http_response())
+            .count()
+            .min(usize::from(u8::MAX)) as u8,
+        attempted_targets: report.category_targets.len().min(usize::from(u16::MAX)) as u16,
+        successful_targets: report
+            .category_targets
+            .iter()
+            .filter(|outcome| outcome.category_target_reachable())
+            .count()
+            .min(usize::from(u16::MAX)) as u16,
+        duration_ms: report
+            .generated_at_monotonic_ms
+            .saturating_sub(prepared.request.requested_at_monotonic_ms),
+    });
+    let _ = log.append(Utc::now(), &record);
+}
+
+fn snapshot_envelope(snapshot: &ObserveOnlySnapshot) -> super::contracts::EventEnvelope {
+    super::contracts::EventEnvelope::new(
+        snapshot.session.session_id,
+        snapshot.session.sensor_generation,
+        snapshot.session.target_registry_version,
+    )
+}
+
+fn log_lane_equal(
+    left: &super::assessment::LaneAssessment,
+    right: &super::assessment::LaneAssessment,
+) -> bool {
+    left.category == right.category
+        && left.lane_generation == right.lane_generation
+        && left.phase == right.phase
+        && left.classification == right.classification
+        && left.confidence == right.confidence
+        && left.cooldown_until_ms == right.cooldown_until_ms
+        && clamped_log_evidence(left.evidence) == clamped_log_evidence(right.evidence)
+}
+
+fn clamped_log_evidence(
+    evidence: super::assessment::EvidenceSummary,
+) -> super::assessment::EvidenceSummary {
+    super::assessment::EvidenceSummary {
+        working_flows: evidence.working_flows.min(2),
+        working_targets: evidence.working_targets.min(2),
+        reset_flows: evidence.reset_flows.min(3),
+        reset_targets: evidence.reset_targets.min(2),
+        blackhole_flows: evidence.blackhole_flows.min(2),
+        blackhole_targets: evidence.blackhole_targets.min(2),
+    }
+}
+
+fn log_assessment(lane: &super::assessment::LaneAssessment) -> LogAssessmentKind {
+    use super::assessment::LanePhase;
+    match lane.phase {
+        LanePhase::Healthy => LogAssessmentKind::Healthy,
+        LanePhase::SensorUnreliable => LogAssessmentKind::SensorUnreliable,
+        LanePhase::BlockedCooldown => LogAssessmentKind::BlackholeQuorum,
+        LanePhase::GatePending if lane.evidence.blackhole_quorum() => {
+            LogAssessmentKind::BlackholeQuorum
+        }
+        LanePhase::GatePending if lane.evidence.reset_quorum() => LogAssessmentKind::ResetQuorum,
+        LanePhase::Suspect if lane.evidence.blackhole_flows > 0 => {
+            LogAssessmentKind::InsufficientEvidence
+        }
+        LanePhase::Suspect => LogAssessmentKind::ResetSuspected,
+        LanePhase::Observing | LanePhase::GatePending => LogAssessmentKind::InsufficientEvidence,
+    }
+}
+
+fn log_classification(classification: AssessmentClassification) -> Option<LogClassificationKind> {
+    match classification {
+        AssessmentClassification::AwaitingEvidence | AssessmentClassification::Working => None,
+        AssessmentClassification::Offline => Some(LogClassificationKind::Offline),
+        AssessmentClassification::DnsFailure => Some(LogClassificationKind::DnsFailure),
+        AssessmentClassification::UpstreamDegraded => Some(LogClassificationKind::UpstreamDegraded),
+        AssessmentClassification::TargetUnavailable => {
+            Some(LogClassificationKind::TargetUnavailable)
+        }
+        AssessmentClassification::ServiceSlow => Some(LogClassificationKind::ServiceSlow),
+        AssessmentClassification::DpiSuspected => Some(LogClassificationKind::DpiSuspected),
+        AssessmentClassification::DpiBlocked => Some(LogClassificationKind::DpiBlocked),
+        AssessmentClassification::SensorUnreliable => Some(LogClassificationKind::SensorUnreliable),
+    }
+}
+
+fn log_counters(
+    snapshot: &ObserveOnlySnapshot,
+    lane: Option<&super::assessment::LaneAssessment>,
+) -> ReliabilityCounters {
+    let evidence = lane.map_or_else(Default::default, |lane| clamped_log_evidence(lane.evidence));
+    ReliabilityCounters {
+        accepted_flows: snapshot.accepted.attributed_flows,
+        rejected_flows: snapshot.rejected.total_events,
+        reset_events: u32::from(evidence.reset_flows),
+        distinct_reset_targets: evidence.reset_targets,
+        blackhole_flows: u32::from(evidence.blackhole_flows),
+        distinct_blackhole_targets: evidence.blackhole_targets,
+        gaps: snapshot.gaps.total_gaps,
+        queue_drops: snapshot.health.counters.queue_drops,
     }
 }

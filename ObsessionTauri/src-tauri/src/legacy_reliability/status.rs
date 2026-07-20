@@ -8,8 +8,12 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::state::{AppState, RevisionClock};
 use crate::util::VersionedSection;
 
+use super::assessment::{
+    AssessmentClassification, AssessmentConfidence, EvidenceSummary, LanePhase,
+};
 use super::contracts::{EyeHealthState, SensorGeneration, SessionId};
 use super::manager::ObserveOnlySnapshot;
+use super::policy::PresumedIntent;
 
 pub const STATUS_EVENT: &str = "legacy-reliability://status";
 
@@ -38,6 +42,21 @@ pub struct LegacyReliabilityStatus {
     pub active_categories: Vec<String>,
     pub session_id: Option<u64>,
     pub sensor_generation: Option<u64>,
+    pub lanes: Vec<LegacyLaneStatus>,
+    pub presumed_intent: PresumedIntent,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegacyLaneStatus {
+    pub category: String,
+    pub active_config: Option<String>,
+    pub lane_generation: u64,
+    pub phase: LanePhase,
+    pub classification: AssessmentClassification,
+    pub confidence: AssessmentConfidence,
+    pub evidence: EvidenceSummary,
+    pub cooldown_until_ms: Option<u64>,
 }
 
 impl Default for LegacyReliabilityStatus {
@@ -54,6 +73,10 @@ impl LegacyReliabilityStatus {
             active_categories: Vec::new(),
             session_id: None,
             sensor_generation: None,
+            lanes: Vec::new(),
+            presumed_intent: PresumedIntent::Wait {
+                reason: AssessmentClassification::AwaitingEvidence,
+            },
         }
     }
 
@@ -75,21 +98,45 @@ impl LegacyReliabilityStatus {
         session_id: SessionId,
         sensor_generation: SensorGeneration,
     ) -> Self {
-        Self::for_session(
+        let mut status = Self::for_session(
             LegacyReliabilityPhase::Blind,
             active_categories,
             session_id,
             sensor_generation,
-        )
+        );
+        status.normalize_blind();
+        status
     }
 
     pub fn from_snapshot(snapshot: &ObserveOnlySnapshot) -> Self {
-        Self::for_session(
+        let mut status = Self::for_session(
             phase_from_health(snapshot.health.state),
             snapshot.session.active_categories.clone(),
             snapshot.session.session_id,
             snapshot.session.sensor_generation,
-        )
+        );
+        status.lanes = snapshot
+            .lanes
+            .iter()
+            .map(|lane| LegacyLaneStatus {
+                category: lane.category.clone(),
+                active_config: snapshot.active_configs.get(&lane.category).cloned(),
+                lane_generation: lane.lane_generation.get(),
+                phase: lane.phase,
+                classification: lane.classification,
+                confidence: lane.confidence,
+                evidence: public_evidence(lane.evidence),
+                cooldown_until_ms: lane.cooldown_until_ms,
+            })
+            .collect();
+        status
+            .lanes
+            .sort_by(|left, right| left.category.cmp(&right.category));
+        status.presumed_intent = snapshot.presumed_intent.clone();
+        if status.phase == LegacyReliabilityPhase::Blind {
+            status.normalize_blind();
+        }
+        status
     }
 
     fn for_session(
@@ -106,6 +153,10 @@ impl LegacyReliabilityStatus {
             active_categories,
             session_id: Some(session_id.get()),
             sensor_generation: Some(sensor_generation.get()),
+            lanes: Vec::new(),
+            presumed_intent: PresumedIntent::Wait {
+                reason: AssessmentClassification::AwaitingEvidence,
+            },
         }
     }
 
@@ -114,6 +165,55 @@ impl LegacyReliabilityStatus {
             session_id: self.session_id?,
             sensor_generation: self.sensor_generation?,
         })
+    }
+
+    fn normalize_blind(&mut self) {
+        self.phase = LegacyReliabilityPhase::Blind;
+        for lane in &mut self.lanes {
+            lane.phase = LanePhase::SensorUnreliable;
+            lane.classification = AssessmentClassification::SensorUnreliable;
+            lane.confidence = AssessmentConfidence::None;
+            lane.evidence = EvidenceSummary::default();
+            lane.cooldown_until_ms = None;
+        }
+        self.presumed_intent = PresumedIntent::Wait {
+            reason: AssessmentClassification::SensorUnreliable,
+        };
+    }
+}
+
+const fn public_evidence(evidence: EvidenceSummary) -> EvidenceSummary {
+    EvidenceSummary {
+        working_flows: if evidence.working_flows > 2 {
+            2
+        } else {
+            evidence.working_flows
+        },
+        working_targets: if evidence.working_targets > 2 {
+            2
+        } else {
+            evidence.working_targets
+        },
+        reset_flows: if evidence.reset_flows > 3 {
+            3
+        } else {
+            evidence.reset_flows
+        },
+        reset_targets: if evidence.reset_targets > 2 {
+            2
+        } else {
+            evidence.reset_targets
+        },
+        blackhole_flows: if evidence.blackhole_flows > 2 {
+            2
+        } else {
+            evidence.blackhole_flows
+        },
+        blackhole_targets: if evidence.blackhole_targets > 2 {
+            2
+        } else {
+            evidence.blackhole_targets
+        },
     }
 }
 
@@ -189,7 +289,7 @@ pub(crate) fn publish_blind_if_owner(app: &AppHandle, owner: StatusOwner) -> boo
             return false;
         }
         let mut next = guard.clone();
-        next.phase = LegacyReliabilityPhase::Blind;
+        next.normalize_blind();
         next
     };
     publish_inner(app, Some(owner), next)
@@ -250,6 +350,9 @@ mod tests {
 
     use super::*;
     use crate::dpi_engine::EngineKind;
+    use crate::legacy_reliability::assessment::{
+        AssessmentConfidence, EvidenceSummary, LaneAssessment, LanePhase,
+    };
     use crate::legacy_reliability::contracts::{
         EyeHealthCounters, LaneGeneration, NetworkFingerprint, RegistryVersion,
     };
@@ -257,6 +360,7 @@ mod tests {
         AcceptedEventCounters, GapStatus, ObserveOnlyHealthStatus, ObserveOnlySessionStatus,
         RejectedEventCounters,
     };
+    use crate::legacy_reliability::policy::PresumedIntent;
 
     fn snapshot(state: EyeHealthState) -> ObserveOnlySnapshot {
         ObserveOnlySnapshot {
@@ -283,6 +387,9 @@ mod tests {
             logical_now_ms: 0,
             last_gap_sequence: None,
             last_accepted_flow_sequence: None,
+            lanes: Vec::new(),
+            presumed_intent: PresumedIntent::default(),
+            active_configs: BTreeMap::new(),
         }
     }
 
@@ -301,7 +408,12 @@ mod tests {
                 "phase": "starting",
                 "activeCategories": ["discord"],
                 "sessionId": 11,
-                "sensorGeneration": 17
+                "sensorGeneration": 17,
+                "lanes": [],
+                "presumedIntent": {
+                    "kind": "wait",
+                    "reason": "awaiting_evidence"
+                }
             })
         );
 
@@ -323,6 +435,97 @@ mod tests {
             assert_eq!(status.phase, expected);
             assert_eq!(status.active_categories, ["discord", "youtube_twitch"]);
         }
+    }
+
+    #[test]
+    fn lane_and_presumed_intent_use_stable_camel_case_wire_shape() {
+        let mut source = snapshot(EyeHealthState::Ready);
+        source
+            .active_configs
+            .insert("discord".into(), "discord_1.conf".into());
+        source.lanes = vec![LaneAssessment {
+            category: "discord".into(),
+            lane_generation: LaneGeneration::new(23),
+            phase: LanePhase::Suspect,
+            classification: AssessmentClassification::DpiSuspected,
+            confidence: AssessmentConfidence::Medium,
+            evidence: EvidenceSummary {
+                reset_flows: 9,
+                reset_targets: 4,
+                ..EvidenceSummary::default()
+            },
+            evidence_epoch: 2,
+            assessed_at_ms: 100,
+            cooldown_until_ms: None,
+        }];
+        source.presumed_intent = PresumedIntent::SwitchLane {
+            category: "discord".into(),
+            candidate_config: "discord_2.conf".into(),
+            reason: AssessmentClassification::DpiSuspected,
+        };
+
+        let value = serde_json::to_value(LegacyReliabilityStatus::from_snapshot(&source)).unwrap();
+        assert_eq!(value["lanes"][0]["activeConfig"], "discord_1.conf");
+        assert_eq!(value["lanes"][0]["laneGeneration"], 23);
+        assert_eq!(value["lanes"][0]["classification"], "dpi_suspected");
+        // Public counts stop at policy thresholds, preventing status storms.
+        assert_eq!(value["lanes"][0]["evidence"]["resetFlows"], 3);
+        assert_eq!(value["lanes"][0]["evidence"]["resetTargets"], 2);
+        assert_eq!(value["presumedIntent"]["kind"], "switch_lane");
+        assert_eq!(value["presumedIntent"]["candidateConfig"], "discord_2.conf");
+    }
+
+    #[test]
+    fn blind_status_clears_stale_actions_and_marks_lanes_unreliable() {
+        let mut source = snapshot(EyeHealthState::Ready);
+        source.lanes = vec![LaneAssessment {
+            category: "discord".into(),
+            lane_generation: LaneGeneration::new(23),
+            phase: LanePhase::Suspect,
+            classification: AssessmentClassification::DpiSuspected,
+            confidence: AssessmentConfidence::High,
+            evidence: EvidenceSummary {
+                reset_flows: 3,
+                reset_targets: 2,
+                ..EvidenceSummary::default()
+            },
+            evidence_epoch: 2,
+            assessed_at_ms: 100,
+            cooldown_until_ms: None,
+        }];
+        source.presumed_intent = PresumedIntent::SwitchLane {
+            category: "discord".into(),
+            candidate_config: "discord_2.conf".into(),
+            reason: AssessmentClassification::DpiSuspected,
+        };
+        let mut status = LegacyReliabilityStatus::from_snapshot(&source);
+        status.normalize_blind();
+
+        assert_eq!(status.phase, LegacyReliabilityPhase::Blind);
+        assert_eq!(status.lanes[0].phase, LanePhase::SensorUnreliable);
+        assert_eq!(
+            status.lanes[0].classification,
+            AssessmentClassification::SensorUnreliable
+        );
+        assert_eq!(status.lanes[0].evidence, EvidenceSummary::default());
+        assert_eq!(
+            status.presumed_intent,
+            PresumedIntent::Wait {
+                reason: AssessmentClassification::SensorUnreliable,
+            }
+        );
+
+        assert_eq!(
+            LegacyReliabilityStatus::blind(
+                vec!["discord".into()],
+                SessionId::new(11),
+                SensorGeneration::new(17),
+            )
+            .presumed_intent,
+            PresumedIntent::Wait {
+                reason: AssessmentClassification::SensorUnreliable,
+            }
+        );
     }
 
     #[test]

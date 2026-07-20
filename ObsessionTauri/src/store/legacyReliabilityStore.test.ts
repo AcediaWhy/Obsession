@@ -1,17 +1,46 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
 import type { LegacyReliabilityStatus } from "../lib/tauri";
-import { useLegacyReliabilityStore } from "./legacyReliabilityStore";
+import {
+  INITIAL_LEGACY_RELIABILITY_STATUS,
+  useLegacyReliabilityStore,
+} from "./legacyReliabilityStore";
 
 function status(
   phase: LegacyReliabilityStatus["phase"],
 ): LegacyReliabilityStatus {
+  const active = phase !== "inactive";
   return {
     mode: "observe_only",
     phase,
-    activeCategories: phase === "inactive" ? [] : ["discord"],
-    sessionId: phase === "inactive" ? null : 17,
-    sensorGeneration: phase === "observing" ? 4 : null,
+    activeCategories: active ? ["discord"] : [],
+    sessionId: active ? 17 : null,
+    sensorGeneration: active ? 4 : null,
+    lanes: active
+      ? [
+          {
+            category: "discord",
+            activeConfig: "discord_1.conf",
+            laneGeneration: 4,
+            phase: "observing",
+            classification: "awaiting_evidence",
+            confidence: "none",
+            evidence: {
+              workingFlows: 0,
+              workingTargets: 0,
+              resetFlows: 0,
+              resetTargets: 0,
+              blackholeFlows: 0,
+              blackholeTargets: 0,
+            },
+            cooldownUntilMs: null,
+          },
+        ]
+      : [],
+    presumedIntent: {
+      kind: "wait",
+      reason: "awaiting_evidence",
+    },
   };
 }
 
@@ -19,7 +48,22 @@ describe("legacyReliabilityStore", () => {
   beforeEach(() => {
     useLegacyReliabilityStore.setState({
       revision: -1,
-      status: status("inactive"),
+      status: INITIAL_LEGACY_RELIABILITY_STATUS,
+    });
+  });
+
+  it("starts with an empty journal and a safe wait intent", () => {
+    expect(useLegacyReliabilityStore.getState().status).toEqual({
+      mode: "observe_only",
+      phase: "inactive",
+      activeCategories: [],
+      sessionId: null,
+      sensorGeneration: null,
+      lanes: [],
+      presumedIntent: {
+        kind: "wait",
+        reason: "awaiting_evidence",
+      },
     });
   });
 
@@ -43,6 +87,7 @@ describe("legacyReliabilityStore", () => {
       revision: 2,
       status: observing,
     });
+    expect(useLegacyReliabilityStore.getState().status.lanes).toHaveLength(1);
   });
 
   it("accepts only strictly newer revisions", () => {

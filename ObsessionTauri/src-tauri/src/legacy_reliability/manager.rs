@@ -1,9 +1,8 @@
-//! Side-effect-free observe-only runtime for Legacy reliability events.
+//! Observe-only assessment state for generation-fenced Legacy reliability.
 //!
-//! This module is deliberately limited to generation fencing and diagnostics.
-//! It cannot invoke the Legacy Brain, mutate cache state, manage processes, or
-//! emit UI events. Later phases may consume its snapshots, but Phase 1 only
-//! records what the current Legacy session observed.
+//! Manager correlates typed evidence and accepts fenced Environment Gate
+//! reports. It cannot mutate cache state, manage processes, or execute the
+//! presumed intents returned by the pure Phase 2 policy.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -12,9 +11,18 @@ use serde::Serialize;
 
 use crate::dpi_engine::EngineKind;
 
+use super::assessment::{
+    AssessmentClassification, LaneAssessment, LaneAssessor, PendingGateRequest,
+    SensorInvalidationReason,
+};
 use super::contracts::{
-    EyeEvent, EyeHealthCounters, EyeHealthState, GapEvent, LaneGeneration, LegacySessionContext,
-    NetworkFingerprint, RegistryVersion, SensorGeneration, SessionId,
+    EventEnvelope, EyeEvent, EyeHealthCounters, EyeHealthState, FlowEvent, GapEvent,
+    LaneGeneration, LegacySessionContext, NetworkFingerprint, RegistryVersion, SensorGeneration,
+    SessionId,
+};
+use super::environment_gate::{
+    GateClassification, GateFence, GateReport, LocalNetworkSnapshot, PassiveEvidenceSummary,
+    SensorSnapshot, GATE_REPORT_TTL,
 };
 use super::health::{
     AtomicHealthCounters, HealthPoll, HealthTracker, PendingGap, HEALTH_CLEAN_WINDOW_MS,
@@ -22,6 +30,8 @@ use super::health::{
 use super::ingress::{
     AcceptedScope, FenceBuildError, FenceRejection, LegacyIngressReceiver, SessionFence,
 };
+use super::policy::{LaneConfigOptions, ObserveOnlyBrain, PresumedIntent, BLACKHOLE_COOLDOWN_MS};
+use super::target_registry::{Attribution, TargetRegistry};
 
 /// Immutable session identity plus the mutable epochs fenced by this manager.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -149,6 +159,17 @@ pub struct ObserveOnlySnapshot {
     pub logical_now_ms: u64,
     pub last_gap_sequence: Option<u64>,
     pub last_accepted_flow_sequence: Option<u64>,
+    pub lanes: Vec<LaneAssessment>,
+    pub presumed_intent: PresumedIntent,
+    pub active_configs: BTreeMap<String, String>,
+}
+
+/// Immutable, fully fenced request paired with the assessor token that must be
+/// returned when its asynchronous Gate report completes.
+#[derive(Clone, Debug)]
+pub struct PreparedEnvironmentGate {
+    pub pending: PendingGateRequest,
+    pub request: super::environment_gate::GateRequest,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -208,6 +229,10 @@ pub struct ObserveOnlyManager {
     last_gap_sequence: Option<u64>,
     last_accepted_flow_sequence: Option<u64>,
     receiver_failed: bool,
+    registry: Option<Arc<TargetRegistry>>,
+    assessor: LaneAssessor,
+    lane_config_options: BTreeMap<String, LaneConfigOptions>,
+    last_assessment_unreliable_at_ms: Option<u64>,
 }
 
 impl ObserveOnlyManager {
@@ -241,12 +266,82 @@ impl ObserveOnlyManager {
         receiver: LegacyIngressReceiver,
         started_at_ms: u64,
     ) -> Result<Self, FenceBuildError> {
+        Self::build_at(
+            context,
+            sensor_generation,
+            registry_version,
+            lane_generations,
+            counters,
+            receiver,
+            started_at_ms,
+            None,
+        )
+    }
+
+    /// Production constructor. Manager keeps the exact immutable registry used
+    /// by Eyes so different SNI names cannot masquerade as independent targets.
+    pub fn new_with_registry(
+        context: LegacySessionContext,
+        sensor_generation: SensorGeneration,
+        registry: Arc<TargetRegistry>,
+        lane_generations: BTreeMap<String, LaneGeneration>,
+        counters: Arc<AtomicHealthCounters>,
+        receiver: LegacyIngressReceiver,
+    ) -> Result<Self, FenceBuildError> {
+        Self::build_at(
+            context,
+            sensor_generation,
+            registry.version(),
+            lane_generations,
+            counters,
+            receiver,
+            0,
+            Some(registry),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn build_at(
+        context: LegacySessionContext,
+        sensor_generation: SensorGeneration,
+        registry_version: RegistryVersion,
+        lane_generations: BTreeMap<String, LaneGeneration>,
+        counters: Arc<AtomicHealthCounters>,
+        receiver: LegacyIngressReceiver,
+        started_at_ms: u64,
+        registry: Option<Arc<TargetRegistry>>,
+    ) -> Result<Self, FenceBuildError> {
         let fence = SessionFence::new(
             context.clone(),
             sensor_generation,
             registry_version,
             lane_generations.clone(),
         )?;
+
+        let assessor = LaneAssessor::new(lane_generations.iter().map(|(category, generation)| {
+            let target_count = registry.as_ref().map_or(0, |registry| {
+                registry.active_targets_for_category(category).len()
+            });
+            (category.clone(), *generation, target_count)
+        }));
+        let lane_config_options = registry.as_ref().map_or_else(BTreeMap::new, |registry| {
+            lane_generations
+                .keys()
+                .map(|category| {
+                    (
+                        category.clone(),
+                        LaneConfigOptions {
+                            active: registry.active_config(category).map(str::to_owned),
+                            candidates: registry
+                                .candidate_configs_for_category(category)
+                                .into_iter()
+                                .map(str::to_owned)
+                                .collect(),
+                        },
+                    )
+                })
+                .collect()
+        });
 
         Ok(Self {
             context,
@@ -270,6 +365,10 @@ impl ObserveOnlyManager {
             last_gap_sequence: None,
             last_accepted_flow_sequence: None,
             receiver_failed: false,
+            registry,
+            assessor,
+            lane_config_options,
+            last_assessment_unreliable_at_ms: None,
         })
     }
 
@@ -340,10 +439,24 @@ impl ObserveOnlyManager {
         self.absorb_health_poll(poll);
         self.reported_terminal_state = Some(EyeHealthState::Stopped);
         self.last_reported_health_state = Some(EyeHealthState::Stopped);
+        self.mark_assessment_unreliable(SensorInvalidationReason::Health);
         self.snapshot()
     }
 
     pub fn snapshot(&self) -> ObserveOnlySnapshot {
+        let lanes = self.assessor.snapshots(self.logical_now_ms);
+        let presumed_intent =
+            ObserveOnlyBrain::decide_all(&lanes, &self.lane_config_options, self.logical_now_ms);
+        let active_configs = self
+            .lane_config_options
+            .iter()
+            .filter_map(|(category, options)| {
+                options
+                    .active
+                    .as_ref()
+                    .map(|active| (category.clone(), active.clone()))
+            })
+            .collect();
         ObserveOnlySnapshot {
             session: ObserveOnlySessionStatus {
                 session_id: self.context.session_id(),
@@ -368,7 +481,151 @@ impl ObserveOnlyManager {
             logical_now_ms: self.logical_now_ms,
             last_gap_sequence: self.last_gap_sequence,
             last_accepted_flow_sequence: self.last_accepted_flow_sequence,
+            lanes,
+            presumed_intent,
+            active_configs,
         }
+    }
+
+    /// Builds one asynchronous Environment Gate request after passive quorum.
+    /// The local snapshot is collected by runtime without borrowing Manager.
+    pub fn take_environment_gate_request(
+        &mut self,
+        local_network: LocalNetworkSnapshot,
+    ) -> Option<PreparedEnvironmentGate> {
+        self.sync_assessment_health();
+        let pending = self.assessor.take_gate_request()?;
+        let registry = self.registry.as_ref()?;
+        let observed_hosts = self.assessor.adverse_probe_hosts(
+            &pending.category,
+            self.logical_now_ms,
+            super::environment_gate::MAX_CATEGORY_TARGETS,
+        );
+        let category_targets = if observed_hosts.len() >= 2 {
+            observed_hosts
+        } else {
+            registry
+                .active_targets_for_category(&pending.category)
+                .into_iter()
+                .take(super::environment_gate::MAX_CATEGORY_TARGETS)
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        };
+        if category_targets.is_empty() {
+            let _ = self.assessor.apply_gate_result(
+                &pending,
+                AssessmentClassification::TargetUnavailable,
+                self.logical_now_ms,
+                gate_report_valid_until(self.logical_now_ms),
+                None,
+            );
+            return None;
+        }
+
+        let fence = self.gate_fence(pending.lane_generation);
+        let request = super::environment_gate::GateRequest {
+            fence,
+            category: pending.category.clone(),
+            category_targets,
+            local_network,
+            sensor: SensorSnapshot {
+                state: self.effective_health_state(),
+                has_intersecting_gap: !self.assessor.sensor_reliable(),
+            },
+            passive_evidence: passive_evidence(pending.evidence),
+            // PendingGateRequest keeps the incident time. Gate report TTL is
+            // anchored to actual dispatch so a lane queued behind another
+            // bounded Gate does not start out stale.
+            requested_at_monotonic_ms: self.logical_now_ms,
+        };
+        Some(PreparedEnvironmentGate { pending, request })
+    }
+
+    /// A clean startup sample teaches only the in-memory control latency
+    /// baseline. Its report is never applied as a lane assessment.
+    pub fn baseline_gate_request(
+        &self,
+        local_network: LocalNetworkSnapshot,
+    ) -> Option<super::environment_gate::GateRequest> {
+        let registry = self.registry.as_ref()?;
+        let (category, generation) = self.lane_generations.iter().next()?;
+        let category_targets = registry
+            .active_targets_for_category(category)
+            .into_iter()
+            .take(super::environment_gate::MAX_CATEGORY_TARGETS)
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        if category_targets.is_empty() {
+            return None;
+        }
+        Some(super::environment_gate::GateRequest {
+            fence: self.gate_fence(*generation),
+            category: category.clone(),
+            category_targets,
+            local_network,
+            sensor: SensorSnapshot {
+                state: self.effective_health_state(),
+                has_intersecting_gap: !self.assessor.sensor_reliable(),
+            },
+            passive_evidence: PassiveEvidenceSummary::default(),
+            requested_at_monotonic_ms: self.logical_now_ms,
+        })
+    }
+
+    pub fn apply_environment_gate_report(
+        &mut self,
+        prepared: &PreparedEnvironmentGate,
+        report: &GateReport,
+        now_ms: u64,
+    ) -> bool {
+        self.poll_health(now_ms);
+        if report.category != prepared.pending.category
+            || !report.is_fresh(now_ms, &prepared.request.fence)
+            || report.fence != self.gate_fence(prepared.pending.lane_generation)
+        {
+            let _ = self
+                .assessor
+                .release_gate_request(&prepared.pending, now_ms);
+            return false;
+        }
+        let classification = assessment_classification(report.classification);
+        let cooldown_until_ms = matches!(report.classification, GateClassification::DpiBlocked)
+            .then(|| now_ms.saturating_add(BLACKHOLE_COOLDOWN_MS));
+        self.assessor.apply_gate_result(
+            &prepared.pending,
+            classification,
+            now_ms,
+            report.valid_until_monotonic_ms,
+            cooldown_until_ms,
+        )
+    }
+
+    pub fn apply_environment_gate_failure(
+        &mut self,
+        prepared: &PreparedEnvironmentGate,
+        classification: AssessmentClassification,
+        now_ms: u64,
+    ) -> bool {
+        self.poll_health(now_ms);
+        self.assessor.apply_gate_result(
+            &prepared.pending,
+            classification,
+            now_ms,
+            gate_report_valid_until(now_ms),
+            None,
+        )
+    }
+
+    fn gate_fence(&self, lane_generation: LaneGeneration) -> GateFence {
+        GateFence::from_envelope(
+            EventEnvelope::new(
+                self.context.session_id(),
+                self.sensor_generation,
+                self.registry_version,
+            ),
+            lane_generation,
+            self.context.network_fingerprint_at_start().clone(),
+        )
     }
 
     fn process_event_after_health(&mut self, event: EyeEvent) -> EventDisposition {
@@ -390,6 +647,7 @@ impl ObserveOnlyManager {
                 EyeEvent::Flow(flow),
             ) => {
                 self.logical_now_ms = self.logical_now_ms.max(flow.monotonic_ts);
+                self.observe_attributed_flow(&category, lane_generation, &flow);
                 let sequence = self.next_sequence();
                 self.accepted.total_events = self.accepted.total_events.saturating_add(1);
                 self.accepted.attributed_flows = self.accepted.attributed_flows.saturating_add(1);
@@ -420,6 +678,7 @@ impl ObserveOnlyManager {
                 self.accepted.total_events = self.accepted.total_events.saturating_add(1);
                 self.accepted.health_events = self.accepted.health_events.saturating_add(1);
                 self.accept_reported_health(health.state, health.counters);
+                self.sync_assessment_health();
                 EventDisposition::Accepted {
                     event: AcceptedEvent::Health { sequence },
                 }
@@ -451,6 +710,8 @@ impl ObserveOnlyManager {
             .health_tracker
             .poll(self.logical_now_ms, self.counters.snapshot());
         self.absorb_health_poll(poll);
+        self.sync_assessment_health();
+        self.assessor.poll(self.logical_now_ms);
     }
 
     fn absorb_health_poll(&mut self, poll: HealthPoll) {
@@ -528,6 +789,7 @@ impl ObserveOnlyManager {
         });
         self.last_gap_sequence = Some(sequence);
         self.last_external_gap_at_ms = Some(self.logical_now_ms.max(to_ts));
+        self.mark_assessment_unreliable(SensorInvalidationReason::Gap);
     }
 
     fn accept_reported_health(&mut self, state: EyeHealthState, counters: EyeHealthCounters) {
@@ -580,6 +842,65 @@ impl ObserveOnlyManager {
             self.reported_terminal_state = Some(EyeHealthState::Blind);
             self.last_reported_health_state = Some(EyeHealthState::Blind);
         }
+        self.mark_assessment_unreliable(SensorInvalidationReason::ReceiverFailure);
+    }
+
+    fn observe_attributed_flow(
+        &mut self,
+        category: &str,
+        lane_generation: LaneGeneration,
+        flow: &FlowEvent,
+    ) {
+        if !self.assessor.sensor_reliable() || flow.lane_generation != Some(lane_generation) {
+            return;
+        }
+        let Some(registry) = self.registry.as_ref() else {
+            return;
+        };
+        let Attribution::Matched { target, owner } = registry.attribute_active(&flow.domain) else {
+            return;
+        };
+        if owner.category != category {
+            return;
+        }
+        let _ = self
+            .assessor
+            .observe_flow(category, &target, flow, self.logical_now_ms);
+        if !self.assessor.sensor_reliable() {
+            self.last_assessment_unreliable_at_ms = Some(self.logical_now_ms);
+        }
+    }
+
+    fn sync_assessment_health(&mut self) {
+        if self.effective_health_state() == EyeHealthState::Ready {
+            if !self.assessor.sensor_reliable()
+                && self
+                    .last_assessment_unreliable_at_ms
+                    .is_some_and(|unreliable_at| {
+                        self.logical_now_ms.saturating_sub(unreliable_at) >= HEALTH_CLEAN_WINDOW_MS
+                    })
+            {
+                self.assessor.mark_sensor_ready();
+                self.last_assessment_unreliable_at_ms = None;
+            }
+        } else {
+            self.mark_assessment_unreliable(SensorInvalidationReason::Health);
+        }
+    }
+
+    fn mark_assessment_unreliable(&mut self, reason: SensorInvalidationReason) {
+        if self.assessor.sensor_reliable() {
+            self.last_assessment_unreliable_at_ms = Some(self.logical_now_ms);
+            self.assessor.invalidate(reason);
+        } else if matches!(
+            reason,
+            SensorInvalidationReason::Gap
+                | SensorInvalidationReason::CounterRegression
+                | SensorInvalidationReason::ReceiverFailure
+                | SensorInvalidationReason::EvidenceOverflow
+        ) {
+            self.last_assessment_unreliable_at_ms = Some(self.logical_now_ms);
+        }
     }
 
     fn next_sequence(&mut self) -> u64 {
@@ -614,6 +935,37 @@ const fn health_rank(state: EyeHealthState) -> u8 {
     }
 }
 
+const fn passive_evidence(evidence: super::assessment::EvidenceSummary) -> PassiveEvidenceSummary {
+    PassiveEvidenceSummary {
+        reset_after_client_hello_flows: evidence.reset_flows as u32,
+        reset_targets: evidence.reset_targets as u32,
+        confirmed_tls_blackhole_flows: evidence.blackhole_flows as u32,
+        blackhole_targets: evidence.blackhole_targets as u32,
+    }
+}
+
+fn gate_report_valid_until(now_ms: u64) -> u64 {
+    let ttl_ms = GATE_REPORT_TTL
+        .as_secs()
+        .saturating_mul(1_000)
+        .saturating_add(u64::from(GATE_REPORT_TTL.subsec_millis()));
+    now_ms.saturating_add(ttl_ms)
+}
+
+const fn assessment_classification(classification: GateClassification) -> AssessmentClassification {
+    match classification {
+        GateClassification::Stable => AssessmentClassification::AwaitingEvidence,
+        GateClassification::Offline => AssessmentClassification::Offline,
+        GateClassification::DnsFailure => AssessmentClassification::DnsFailure,
+        GateClassification::UpstreamDegraded => AssessmentClassification::UpstreamDegraded,
+        GateClassification::TargetUnavailable => AssessmentClassification::TargetUnavailable,
+        GateClassification::ServiceSlow => AssessmentClassification::ServiceSlow,
+        GateClassification::DpiSuspected => AssessmentClassification::DpiSuspected,
+        GateClassification::DpiBlocked => AssessmentClassification::DpiBlocked,
+        GateClassification::SensorUnreliable => AssessmentClassification::SensorUnreliable,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::net::{IpAddr, Ipv4Addr};
@@ -622,7 +974,10 @@ mod tests {
 
     use super::*;
     use crate::legacy_reliability::contracts::{EventEnvelope, FlowEvent, HealthEvent, Transport};
+    use crate::legacy_reliability::environment_gate::{GateClassification, GateReport};
     use crate::legacy_reliability::ingress::{self, ControlIngressResult, FlowIngressResult};
+    use crate::legacy_reliability::policy::PresumedIntent;
+    use crate::legacy_reliability::target_registry::{LegacyConfigRecord, TargetRegistry};
 
     const SESSION: u64 = 10;
     const SENSOR: u64 = 20;
@@ -656,6 +1011,68 @@ mod tests {
             ts,
         )
         .unwrap()
+    }
+
+    fn flow_for(
+        registry_version: RegistryVersion,
+        domain: &str,
+        flow_id: u64,
+        diagnosis: Diagnosis,
+        ts: u64,
+    ) -> FlowEvent {
+        FlowEvent::new(
+            EventEnvelope::new(SESSION.into(), SENSOR.into(), registry_version),
+            Some("discord".to_owned()),
+            Some(LANE.into()),
+            flow_id,
+            domain,
+            IpAddr::V4(Ipv4Addr::new(203, 0, 113, 10)),
+            Transport::Tls,
+            diagnosis,
+            "typed",
+            ts,
+        )
+        .unwrap()
+    }
+
+    fn production_fixture() -> (ObserveOnlyManager, Arc<TargetRegistry>) {
+        let active = LegacyConfigRecord::new(
+            "discord",
+            "discord_1.conf",
+            "--wf-tcp=443 --hostlist=lists/active.txt",
+        )
+        .with_hostlist("lists/active.txt", "one.example\ntwo.example\n");
+        let candidate = LegacyConfigRecord::new(
+            "discord",
+            "discord_2.conf",
+            "--wf-tcp=443 --hostlist=lists/candidate.txt",
+        )
+        .with_hostlist("lists/candidate.txt", "one.example\ntwo.example\n");
+        let registry = Arc::new(
+            TargetRegistry::from_records_with_active_selections(
+                [active, candidate],
+                [("discord", "discord_1.conf")],
+            )
+            .unwrap(),
+        );
+        let (_ingress, receiver) = ingress::channel();
+        let counters = Arc::new(AtomicHealthCounters::default());
+        let manager = ObserveOnlyManager::new_with_registry(
+            LegacySessionContext::new(
+                SESSION.into(),
+                vec!["discord".to_owned()],
+                NetworkFingerprint::Stable {
+                    key: "test-network".to_owned(),
+                },
+            ),
+            SENSOR.into(),
+            Arc::clone(&registry),
+            BTreeMap::from([("discord".to_owned(), LANE.into())]),
+            counters,
+            receiver,
+        )
+        .unwrap();
+        (manager, registry)
     }
 
     fn fixture() -> (ObserveOnlyManager, super::super::ingress::LegacyIngress) {
@@ -795,6 +1212,256 @@ mod tests {
             snapshot.last_gap_sequence.unwrap() < snapshot.last_accepted_flow_sequence.unwrap()
         );
         assert_eq!(snapshot.health.state, EyeHealthState::Degraded);
+    }
+
+    #[test]
+    fn registry_correlated_reset_quorum_produces_unexecuted_switch_intent() {
+        let (mut manager, registry) = production_fixture();
+        for (flow_id, domain) in [
+            (1, "api.one.example"),
+            (2, "cdn.one.example"),
+            (3, "two.example"),
+        ] {
+            let event = EyeEvent::Flow(flow_for(
+                registry.version(),
+                domain,
+                flow_id,
+                Diagnosis::TcpReset,
+                flow_id,
+            ));
+            assert!(matches!(
+                manager.process_event(flow_id, event),
+                EventDisposition::Accepted { .. }
+            ));
+        }
+
+        let pending = manager.snapshot();
+        assert_eq!(
+            pending.lanes[0].phase,
+            super::super::assessment::LanePhase::GatePending
+        );
+        assert_eq!(pending.lanes[0].evidence.reset_flows, 3);
+        assert_eq!(pending.lanes[0].evidence.reset_targets, 2);
+
+        let local = LocalNetworkSnapshot {
+            online: true,
+            interface_up: true,
+            default_route_available: true,
+            gateway_reachable: true,
+            network_fingerprint: NetworkFingerprint::Stable {
+                key: "test-network".to_owned(),
+            },
+        };
+        let prepared = manager.take_environment_gate_request(local).unwrap();
+        assert_eq!(
+            prepared.request.category_targets,
+            ["cdn.one.example", "two.example"]
+        );
+        let report = GateReport {
+            fence: prepared.request.fence.clone(),
+            category: "discord".to_owned(),
+            classification: GateClassification::DpiSuspected,
+            controls: Vec::new(),
+            category_targets: Vec::new(),
+            baseline_latency_ms: Some(100),
+            slow_threshold_ms: Some(1_600),
+            generated_at_monotonic_ms: 4,
+            valid_until_monotonic_ms: 10_004,
+        };
+        assert!(manager.apply_environment_gate_report(&prepared, &report, 4));
+
+        let assessed = manager.snapshot();
+        assert_eq!(
+            assessed.lanes[0].classification,
+            AssessmentClassification::DpiSuspected
+        );
+        assert_eq!(
+            assessed.presumed_intent,
+            PresumedIntent::SwitchLane {
+                category: "discord".to_owned(),
+                candidate_config: "discord_2.conf".to_owned(),
+                reason: AssessmentClassification::DpiSuspected,
+            }
+        );
+        // Phase 2 observes only: neither registry selection nor generation is
+        // changed by assessment or Brain output.
+        assert_eq!(registry.active_config("discord"), Some("discord_1.conf"));
+        assert_eq!(
+            assessed.session.lane_generations["discord"],
+            LaneGeneration::new(LANE)
+        );
+    }
+
+    #[test]
+    fn gap_invalidates_inflight_gate_and_all_correlated_evidence() {
+        let (mut manager, registry) = production_fixture();
+        for (flow_id, domain) in [(1, "one.example"), (2, "two.example"), (3, "two.example")] {
+            manager.process_event(
+                flow_id,
+                EyeEvent::Flow(flow_for(
+                    registry.version(),
+                    domain,
+                    flow_id,
+                    Diagnosis::TcpReset,
+                    flow_id,
+                )),
+            );
+        }
+        let prepared = manager
+            .take_environment_gate_request(LocalNetworkSnapshot {
+                online: true,
+                interface_up: true,
+                default_route_available: true,
+                gateway_reachable: true,
+                network_fingerprint: NetworkFingerprint::Stable {
+                    key: "test-network".to_owned(),
+                },
+            })
+            .unwrap();
+        manager.process_event(
+            5,
+            EyeEvent::Gap(GapEvent {
+                envelope: EventEnvelope::new(SESSION.into(), SENSOR.into(), registry.version()),
+                from_ts: 2,
+                to_ts: 5,
+                dropped_events: 1,
+            }),
+        );
+        let report = GateReport {
+            fence: prepared.request.fence.clone(),
+            category: "discord".into(),
+            classification: GateClassification::DpiSuspected,
+            controls: Vec::new(),
+            category_targets: Vec::new(),
+            baseline_latency_ms: Some(100),
+            slow_threshold_ms: Some(1_600),
+            generated_at_monotonic_ms: 6,
+            valid_until_monotonic_ms: 10_006,
+        };
+        assert!(!manager.apply_environment_gate_report(&prepared, &report, 6));
+        let snapshot = manager.snapshot();
+        assert_eq!(
+            snapshot.lanes[0].classification,
+            AssessmentClassification::SensorUnreliable
+        );
+        assert_eq!(
+            snapshot.lanes[0].evidence,
+            super::super::assessment::EvidenceSummary::default()
+        );
+    }
+
+    #[test]
+    fn queued_gate_dispatch_uses_current_clock_not_incident_time() {
+        let (mut manager, registry) = production_fixture();
+        for (flow_id, domain) in [
+            (1, "api.one.example"),
+            (2, "cdn.one.example"),
+            (3, "two.example"),
+        ] {
+            manager.process_event(
+                flow_id,
+                EyeEvent::Flow(flow_for(
+                    registry.version(),
+                    domain,
+                    flow_id,
+                    Diagnosis::TcpReset,
+                    flow_id,
+                )),
+            );
+        }
+        manager.poll(6_000);
+
+        let prepared = manager
+            .take_environment_gate_request(LocalNetworkSnapshot {
+                online: true,
+                interface_up: true,
+                default_route_available: true,
+                gateway_reachable: true,
+                network_fingerprint: NetworkFingerprint::Stable {
+                    key: "test-network".to_owned(),
+                },
+            })
+            .unwrap();
+        assert_eq!(prepared.pending.requested_at_ms, 3);
+        assert_eq!(prepared.request.requested_at_monotonic_ms, 6_000);
+    }
+
+    #[test]
+    fn expired_gate_report_retries_with_fresh_identity_and_can_be_applied() {
+        let (mut manager, registry) = production_fixture();
+        for (flow_id, domain) in [
+            (1, "api.one.example"),
+            (2, "cdn.one.example"),
+            (3, "two.example"),
+        ] {
+            manager.process_event(
+                flow_id,
+                EyeEvent::Flow(flow_for(
+                    registry.version(),
+                    domain,
+                    flow_id,
+                    Diagnosis::TcpReset,
+                    flow_id,
+                )),
+            );
+        }
+        let local = LocalNetworkSnapshot {
+            online: true,
+            interface_up: true,
+            default_route_available: true,
+            gateway_reachable: true,
+            network_fingerprint: NetworkFingerprint::Stable {
+                key: "test-network".to_owned(),
+            },
+        };
+        let prepared = manager
+            .take_environment_gate_request(local.clone())
+            .unwrap();
+        let stale = GateReport {
+            fence: prepared.request.fence.clone(),
+            category: prepared.pending.category.clone(),
+            classification: GateClassification::DpiSuspected,
+            controls: Vec::new(),
+            category_targets: Vec::new(),
+            baseline_latency_ms: Some(100),
+            slow_threshold_ms: Some(1_600),
+            generated_at_monotonic_ms: 4,
+            valid_until_monotonic_ms: 5,
+        };
+        assert!(!manager.apply_environment_gate_report(&prepared, &stale, 20));
+
+        let retry = manager.take_environment_gate_request(local).unwrap();
+        assert_ne!(retry.pending.gate_id, prepared.pending.gate_id);
+        assert_eq!(
+            retry.pending.requested_at_ms,
+            prepared.pending.requested_at_ms
+        );
+        assert_eq!(retry.request.requested_at_monotonic_ms, 20);
+        assert_eq!(
+            retry.pending.evidence_epoch,
+            prepared.pending.evidence_epoch
+        );
+        assert_eq!(
+            retry.pending.lane_generation,
+            prepared.pending.lane_generation
+        );
+
+        let fresh = GateReport {
+            fence: retry.request.fence.clone(),
+            category: retry.pending.category.clone(),
+            classification: GateClassification::DpiSuspected,
+            controls: Vec::new(),
+            category_targets: Vec::new(),
+            baseline_latency_ms: Some(100),
+            slow_threshold_ms: Some(1_600),
+            generated_at_monotonic_ms: 20,
+            valid_until_monotonic_ms: 30,
+        };
+        assert!(manager.apply_environment_gate_report(&retry, &fresh, 21));
+        assert_eq!(
+            manager.snapshot().lanes[0].classification,
+            AssessmentClassification::DpiSuspected
+        );
     }
 
     #[test]

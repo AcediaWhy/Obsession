@@ -61,18 +61,46 @@ const config: AppConfig = {
 function legacyStatus(
   phase: LegacyReliabilityStatus["phase"],
 ): LegacyReliabilityStatus {
+  const active = phase !== "inactive";
   return {
     mode: "observe_only",
     phase,
-    activeCategories: phase === "inactive" ? [] : ["discord"],
-    sessionId: phase === "inactive" ? null : 11,
-    sensorGeneration: phase === "observing" ? 3 : null,
+    activeCategories: active ? ["discord"] : [],
+    sessionId: active ? 11 : null,
+    sensorGeneration: active ? 3 : null,
+    lanes: active
+      ? [
+          {
+            category: "discord",
+            activeConfig: "discord_1.conf",
+            laneGeneration: 3,
+            phase: phase === "blind" ? "sensor_unreliable" : "observing",
+            classification:
+              phase === "blind" ? "sensor_unreliable" : "awaiting_evidence",
+            confidence: "none",
+            evidence: {
+              workingFlows: 0,
+              workingTargets: 0,
+              resetFlows: 0,
+              resetTargets: 0,
+              blackholeFlows: 0,
+              blackholeTargets: 0,
+            },
+            cooldownUntilMs: null,
+          },
+        ]
+      : [],
+    presumedIntent: {
+      kind: "wait",
+      reason:
+        phase === "blind" ? "sensor_unreliable" : "awaiting_evidence",
+    },
   };
 }
 
 function makeSnapshot(revisions: Partial<Record<string, number>> = {}) {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     settings: {
       revision: revisions.settings ?? 1,
       value: { settings, elevated: true, autostart: false },

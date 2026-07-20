@@ -13,18 +13,23 @@ interface LegacyReliabilityState {
   ) => boolean;
 }
 
-const INITIAL_STATUS: LegacyReliabilityStatus = {
+export const INITIAL_LEGACY_RELIABILITY_STATUS: LegacyReliabilityStatus = {
   mode: "observe_only",
   phase: "inactive",
   activeCategories: [],
   sessionId: null,
   sensorGeneration: null,
+  lanes: [],
+  presumedIntent: {
+    kind: "wait",
+    reason: "awaiting_evidence",
+  },
 };
 
 export const useLegacyReliabilityStore = create<LegacyReliabilityState>(
   (set, get) => ({
     revision: -1,
-    status: INITIAL_STATUS,
+    status: INITIAL_LEGACY_RELIABILITY_STATUS,
 
     applyVersionedStatus: (section) => {
       if (section.revision <= get().revision) return false;

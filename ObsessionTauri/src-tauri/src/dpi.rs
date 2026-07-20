@@ -1522,7 +1522,7 @@ pub async fn start_many(app: &AppHandle, configs: &[(String, String)]) -> Result
     #[cfg(windows)]
     {
         use crate::legacy_reliability::contracts::{
-            EventEnvelope, LaneGeneration, LegacySessionContext, NetworkFingerprint,
+            EventEnvelope, LaneGeneration, LegacySessionContext,
         };
         use crate::legacy_reliability::status::{self, LegacyReliabilityStatus};
 
@@ -1562,6 +1562,7 @@ pub async fn start_many(app: &AppHandle, configs: &[(String, String)]) -> Result
         }
 
         let paths = app.state::<AppState>().paths.clone();
+        let reliability_log_root = paths.legacy_reliability_logs_dir();
         let selections = started_pairs.clone();
         let registry = tauri::async_runtime::spawn_blocking(move || {
             crate::legacy_reliability::registry_loader::load_target_registry(&paths, &selections)
@@ -1593,17 +1594,24 @@ pub async fn start_many(app: &AppHandle, configs: &[(String, String)]) -> Result
         }
         match registry {
             Ok(Ok(registry)) => {
+                let local_network = tokio::time::timeout(
+                    Duration::from_secs(2),
+                    crate::netid::resolve_local_read_only(),
+                )
+                .await
+                .unwrap_or_default();
                 let context = LegacySessionContext::new(
                     session_id,
                     active_categories.clone(),
-                    NetworkFingerprint::Unknown,
+                    local_network.fingerprint,
                 );
                 let registry = std::sync::Arc::new(registry);
                 match crate::legacy_reliability::runtime::spawn(
                     context,
                     sensor_generation,
-                    &registry,
+                    std::sync::Arc::clone(&registry),
                     lane_generations.clone(),
+                    reliability_log_root,
                 ) {
                     Ok(manager) => {
                         if !app
