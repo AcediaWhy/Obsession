@@ -80,7 +80,10 @@ export function getLegacyReliabilityDisplayModel(
 }
 
 export function getLegacyLaneDisplayModel(
-  lane: Pick<LegacyReliabilityLaneAssessment, "phase" | "classification">,
+  lane: Pick<
+    LegacyReliabilityLaneAssessment,
+    "phase" | "classification" | "workingConfirmedRecently"
+  >,
 ): LegacyReliabilityDisplayModel {
   if (
     lane.classification === "awaiting_evidence" &&
@@ -88,14 +91,27 @@ export function getLegacyLaneDisplayModel(
   ) {
     return { label: "Проверка среды", tone: "warn" };
   }
+  if (
+    lane.classification === "awaiting_evidence" &&
+    lane.workingConfirmedRecently
+  ) {
+    return { label: "Работало недавно", tone: "ok" };
+  }
   return CLASSIFICATION_DISPLAY[lane.classification];
 }
 
 export function getLegacyEvidenceLabel(
-  lane: Pick<LegacyReliabilityLaneAssessment, "confidence" | "evidence">,
+  lane: Pick<
+    LegacyReliabilityLaneAssessment,
+    "confidence" | "evidence" | "workingConfirmedRecently"
+  >,
 ): string {
   const evidence = lane.evidence;
-  const parts = [CONFIDENCE_LABEL[lane.confidence]];
+  const parts = [
+    lane.workingConfirmedRecently && evidence.workingFlows === 0
+      ? "недавнее подтверждение"
+      : CONFIDENCE_LABEL[lane.confidence],
+  ];
   if (evidence.workingFlows > 0) {
     parts.push(
       `успехи ${boundedCount(evidence.workingFlows, 2)}/${boundedCount(evidence.workingTargets, 2)}`,

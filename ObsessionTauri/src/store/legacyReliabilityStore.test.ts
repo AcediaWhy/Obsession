@@ -33,6 +33,7 @@ function status(
               blackholeFlows: 0,
               blackholeTargets: 0,
             },
+            workingConfirmedRecently: false,
             cooldownUntilMs: null,
           },
         ]
@@ -109,5 +110,21 @@ describe("legacyReliabilityStore", () => {
       }),
     ).toBe(true);
     expect(useLegacyReliabilityStore.getState().status.phase).toBe("blind");
+  });
+
+  it("preserves the privacy-safe recent Working confirmation projection", () => {
+    const recent = status("observing");
+    recent.lanes[0].workingConfirmedRecently = true;
+    recent.lanes[0].classification = "awaiting_evidence";
+
+    useLegacyReliabilityStore.getState().applyVersionedStatus({
+      revision: 1,
+      value: recent,
+    });
+
+    expect(
+      useLegacyReliabilityStore.getState().status.lanes[0]
+        .workingConfirmedRecently,
+    ).toBe(true);
   });
 });

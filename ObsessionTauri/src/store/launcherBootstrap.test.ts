@@ -86,6 +86,7 @@ function legacyStatus(
               blackholeFlows: 0,
               blackholeTargets: 0,
             },
+            workingConfirmedRecently: false,
             cooldownUntilMs: null,
           },
         ]

@@ -240,6 +240,8 @@ export interface LegacyReliabilityLaneAssessment {
   classification: LegacyReliabilityClassification;
   confidence: LegacyReliabilityConfidence;
   evidence: LegacyReliabilityEvidence;
+  /** UX-only confirmation memory; never authorizes a configuration change. */
+  workingConfirmedRecently: boolean;
   cooldownUntilMs: number | null;
 }
 

@@ -155,6 +155,7 @@ mod tests {
             classification,
             confidence: AssessmentConfidence::High,
             evidence: EvidenceSummary::default(),
+            working_confirmed_recently: false,
             evidence_epoch: 1,
             assessed_at_ms: 10,
             cooldown_until_ms: None,
@@ -263,5 +264,22 @@ mod tests {
                 }
             );
         }
+    }
+
+    #[test]
+    fn recent_working_confirmation_is_ux_only_and_never_proposes_action() {
+        let mut recent = assessment(AssessmentClassification::AwaitingEvidence);
+        recent.working_confirmed_recently = true;
+        assert_eq!(
+            ObserveOnlyBrain::decide(
+                &recent,
+                Some("video_1.conf"),
+                &["video_1.conf".into(), "video_2.conf".into()],
+                100,
+            ),
+            PresumedIntent::Wait {
+                reason: AssessmentClassification::AwaitingEvidence,
+            }
+        );
     }
 }

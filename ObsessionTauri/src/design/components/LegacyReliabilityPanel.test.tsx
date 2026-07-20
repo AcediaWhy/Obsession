@@ -34,6 +34,7 @@ function lane(
     classification: "awaiting_evidence",
     confidence: "none",
     evidence: EMPTY_EVIDENCE,
+    workingConfirmedRecently: false,
     cooldownUntilMs: null,
     ...overrides,
   };
@@ -99,6 +100,21 @@ describe("LegacyReliabilityPanel", () => {
         lane({ phase: "gate_pending", classification: "awaiting_evidence" }),
       ),
     ).toEqual({ label: "Проверка среды", tone: "warn" });
+  });
+
+  it("shows a recent Working confirmation instead of returning to data collection", () => {
+    const recent = lane({ workingConfirmedRecently: true });
+    expect(getLegacyLaneDisplayModel(recent)).toEqual({
+      label: "Работало недавно",
+      tone: "ok",
+    });
+    expect(getLegacyEvidenceLabel(recent)).toBe("недавнее подтверждение");
+
+    const markup = renderToStaticMarkup(
+      <LegacyReliabilityPanelView status={status({ lanes: [recent] })} />,
+    );
+    expect(markup).toContain("Работало недавно");
+    expect(markup).not.toContain("Сбор данных");
   });
 
   it("summarizes confidence and bounded evidence without target details", () => {

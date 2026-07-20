@@ -56,6 +56,7 @@ pub struct LegacyLaneStatus {
     pub classification: AssessmentClassification,
     pub confidence: AssessmentConfidence,
     pub evidence: EvidenceSummary,
+    pub working_confirmed_recently: bool,
     pub cooldown_until_ms: Option<u64>,
 }
 
@@ -126,6 +127,7 @@ impl LegacyReliabilityStatus {
                 classification: lane.classification,
                 confidence: lane.confidence,
                 evidence: public_evidence(lane.evidence),
+                working_confirmed_recently: lane.working_confirmed_recently,
                 cooldown_until_ms: lane.cooldown_until_ms,
             })
             .collect();
@@ -174,6 +176,7 @@ impl LegacyReliabilityStatus {
             lane.classification = AssessmentClassification::SensorUnreliable;
             lane.confidence = AssessmentConfidence::None;
             lane.evidence = EvidenceSummary::default();
+            lane.working_confirmed_recently = false;
             lane.cooldown_until_ms = None;
         }
         self.presumed_intent = PresumedIntent::Wait {
@@ -454,6 +457,7 @@ mod tests {
                 reset_targets: 4,
                 ..EvidenceSummary::default()
             },
+            working_confirmed_recently: true,
             evidence_epoch: 2,
             assessed_at_ms: 100,
             cooldown_until_ms: None,
@@ -468,6 +472,7 @@ mod tests {
         assert_eq!(value["lanes"][0]["activeConfig"], "discord_1.conf");
         assert_eq!(value["lanes"][0]["laneGeneration"], 23);
         assert_eq!(value["lanes"][0]["classification"], "dpi_suspected");
+        assert_eq!(value["lanes"][0]["workingConfirmedRecently"], true);
         // Public counts stop at policy thresholds, preventing status storms.
         assert_eq!(value["lanes"][0]["evidence"]["resetFlows"], 3);
         assert_eq!(value["lanes"][0]["evidence"]["resetTargets"], 2);
@@ -489,6 +494,7 @@ mod tests {
                 reset_targets: 2,
                 ..EvidenceSummary::default()
             },
+            working_confirmed_recently: true,
             evidence_epoch: 2,
             assessed_at_ms: 100,
             cooldown_until_ms: None,
@@ -508,6 +514,7 @@ mod tests {
             AssessmentClassification::SensorUnreliable
         );
         assert_eq!(status.lanes[0].evidence, EvidenceSummary::default());
+        assert!(!status.lanes[0].working_confirmed_recently);
         assert_eq!(
             status.presumed_intent,
             PresumedIntent::Wait {

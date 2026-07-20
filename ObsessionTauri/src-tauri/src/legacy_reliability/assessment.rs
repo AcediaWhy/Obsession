@@ -20,6 +20,9 @@ pub const BLACKHOLE_FLOW_QUORUM: usize = 2;
 pub const BLACKHOLE_TARGET_QUORUM: usize = 2;
 pub const WORKING_FLOW_QUORUM: usize = 2;
 pub const WORKING_TARGET_QUORUM: usize = 2;
+/// UX-only memory of a confirmed Working quorum. It never contributes to an
+/// adverse quorum or authorizes a policy action.
+pub const RECENT_WORKING_CONFIRMATION_TTL_MS: u64 = 5 * 60 * 1_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -88,6 +91,9 @@ pub struct LaneAssessment {
     pub classification: AssessmentClassification,
     pub confidence: AssessmentConfidence,
     pub evidence: EvidenceSummary,
+    /// Privacy-safe projection; the monotonic confirmation timestamp remains
+    /// private to the assessor and is never exposed to UI or local logs.
+    pub working_confirmed_recently: bool,
     pub evidence_epoch: u64,
     pub assessed_at_ms: u64,
     pub cooldown_until_ms: Option<u64>,
@@ -156,6 +162,7 @@ struct LaneState {
     pending_gate: Option<PendingGateRequest>,
     gate_in_flight: bool,
     applied_gate: Option<AppliedGate>,
+    last_working_confirmation_ms: Option<u64>,
 }
 
 impl LaneState {
@@ -167,6 +174,7 @@ impl LaneState {
             pending_gate: None,
             gate_in_flight: false,
             applied_gate: None,
+            last_working_confirmation_ms: None,
         }
     }
 
@@ -177,6 +185,15 @@ impl LaneState {
         // only the deque front.
         self.evidence
             .retain(|point| now_ms.saturating_sub(point.ts_ms) <= EVIDENCE_WINDOW_MS);
+        if self
+            .last_working_confirmation_ms
+            .is_some_and(|confirmed_at| {
+                confirmed_at > now_ms
+                    || now_ms.saturating_sub(confirmed_at) > RECENT_WORKING_CONFIRMATION_TTL_MS
+            })
+        {
+            self.last_working_confirmation_ms = None;
+        }
 
         // A completed non-cooldown result belongs only to the evidence window
         // that armed it. Once all adverse evidence expires, return to passive
@@ -279,6 +296,9 @@ impl LaneAssessor {
             return true;
         }
 
+        if matches!(kind, EvidenceKind::Reset | EvidenceKind::TlsBlackhole) {
+            lane.last_working_confirmation_ms = None;
+        }
         let before = summarize(&lane.evidence);
         lane.evidence.push_back(EvidencePoint {
             ts_ms: flow.monotonic_ts,
@@ -289,6 +309,7 @@ impl LaneAssessor {
         });
         let mut after = summarize(&lane.evidence);
         if kind == EvidenceKind::Working && working_quorum(after, lane.eligible_target_count) {
+            lane.last_working_confirmation_ms = Some(now_ms);
             lane.evidence
                 .retain(|point| point.kind == EvidenceKind::Working);
             lane.pending_gate = None;
@@ -313,6 +334,7 @@ impl LaneAssessor {
             lane.pending_gate = None;
             lane.gate_in_flight = false;
             lane.applied_gate = None;
+            lane.last_working_confirmation_ms = None;
         }
     }
 
@@ -677,6 +699,10 @@ fn assess_lane(
         classification,
         confidence,
         evidence,
+        working_confirmed_recently: working_confirmation_is_recent(
+            lane.last_working_confirmation_ms,
+            now_ms,
+        ),
         evidence_epoch,
         assessed_at_ms: lane
             .applied_gate
@@ -684,6 +710,13 @@ fn assess_lane(
             .map_or(now_ms, |gate| gate.assessed_at_ms),
         cooldown_until_ms,
     }
+}
+
+fn working_confirmation_is_recent(confirmed_at_ms: Option<u64>, now_ms: u64) -> bool {
+    confirmed_at_ms.is_some_and(|confirmed_at| {
+        confirmed_at <= now_ms
+            && now_ms.saturating_sub(confirmed_at) <= RECENT_WORKING_CONFIRMATION_TTL_MS
+    })
 }
 
 fn working_quorum(evidence: EvidenceSummary, eligible_target_count: usize) -> bool {
@@ -802,15 +835,69 @@ mod tests {
     #[test]
     fn working_needs_quorum_and_silence_is_not_healthy() {
         let mut two_targets = assessor(2);
-        assert_eq!(two_targets.snapshots(0)[0].phase, LanePhase::Observing);
+        let initial = two_targets.snapshots(0).remove(0);
+        assert_eq!(initial.phase, LanePhase::Observing);
+        assert!(!initial.working_confirmed_recently);
         observe(&mut two_targets, 1, "one.test", 1, Diagnosis::Working);
         observe(&mut two_targets, 2, "two.test", 2, Diagnosis::Working);
-        assert_eq!(two_targets.snapshots(2)[0].phase, LanePhase::Healthy);
+        let confirmed = two_targets.snapshots(2).remove(0);
+        assert_eq!(confirmed.phase, LanePhase::Healthy);
+        assert!(confirmed.working_confirmed_recently);
 
         let mut one_target = assessor(1);
         observe(&mut one_target, 1, "only.test", 1, Diagnosis::Working);
         observe(&mut one_target, 2, "only.test", 2, Diagnosis::Working);
         assert_eq!(one_target.snapshots(2)[0].phase, LanePhase::Healthy);
+    }
+
+    #[test]
+    fn working_confirmation_outlives_policy_window_but_expires_after_five_minutes() {
+        let mut assessor = assessor(2);
+        observe(&mut assessor, 1, "one.test", 1, Diagnosis::Working);
+        observe(&mut assessor, 2, "two.test", 2, Diagnosis::Working);
+
+        let after_policy_window = EVIDENCE_WINDOW_MS + 3;
+        assessor.poll(after_policy_window);
+        let recent = assessor.snapshots(after_policy_window).remove(0);
+        assert_eq!(recent.phase, LanePhase::Observing);
+        assert_eq!(
+            recent.classification,
+            AssessmentClassification::AwaitingEvidence
+        );
+        assert_eq!(recent.evidence, EvidenceSummary::default());
+        assert!(recent.working_confirmed_recently);
+        assert!(assessor.take_gate_request().is_none());
+
+        let ttl_boundary = 2 + RECENT_WORKING_CONFIRMATION_TTL_MS;
+        assessor.poll(ttl_boundary);
+        assert!(assessor.snapshots(ttl_boundary)[0].working_confirmed_recently);
+        assessor.poll(ttl_boundary + 1);
+        assert!(!assessor.snapshots(ttl_boundary + 1)[0].working_confirmed_recently);
+    }
+
+    #[test]
+    fn adverse_incident_and_sensor_invalidation_clear_working_confirmation() {
+        for diagnosis in [Diagnosis::TcpReset, Diagnosis::TlsBlackhole] {
+            let mut assessor = assessor(2);
+            observe(&mut assessor, 1, "one.test", 1, Diagnosis::Working);
+            observe(&mut assessor, 2, "two.test", 2, Diagnosis::Working);
+            assert!(assessor.snapshots(2)[0].working_confirmed_recently);
+
+            observe(&mut assessor, 3, "one.test", 3, diagnosis);
+            assert!(!assessor.snapshots(3)[0].working_confirmed_recently);
+        }
+
+        for reason in [
+            SensorInvalidationReason::Gap,
+            SensorInvalidationReason::Health,
+            SensorInvalidationReason::ReceiverFailure,
+        ] {
+            let mut assessor = assessor(2);
+            observe(&mut assessor, 1, "one.test", 1, Diagnosis::Working);
+            observe(&mut assessor, 2, "two.test", 2, Diagnosis::Working);
+            assessor.invalidate(reason);
+            assert!(!assessor.snapshots(3)[0].working_confirmed_recently);
+        }
     }
 
     #[test]
