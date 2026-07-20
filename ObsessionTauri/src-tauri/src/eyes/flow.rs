@@ -18,6 +18,18 @@ use crate::eyes::fake_filter::{is_winws_fake, FakeContext};
 use crate::eyes::parse::{classify_record, extract_sni, ParsedPacket, TlsHandshake, TlsRecord};
 use crate::eyes::signal::{Observation, Verdict};
 
+/// How inbound payload proves that an armed flow is working.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WorkingSignalMode {
+    /// Preserve the original Eyes behavior used by Zapret2: every non-empty
+    /// inbound payload except a recognized TLS Alert is a positive signal.
+    #[default]
+    Compatibility,
+    /// Require a complete, length-valid TLS ServerHello or non-empty AppData
+    /// record reconstructed from the inbound TCP stream.
+    StrictTls,
+}
+
 /// Пороги и таймауты автомата. Все времена — в мс логического времени.
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -37,6 +49,8 @@ pub struct Config {
     pub min_ch_retx: u8,
     /// Ёмкость кэша IP→domain (для атрибуции SYN-level blackhole).
     pub ip_cache_cap: usize,
+    /// Семантика положительного сигнала для входящего TCP payload.
+    pub working_signal_mode: WorkingSignalMode,
 }
 
 impl Default for Config {
@@ -56,6 +70,7 @@ impl Default for Config {
             min_syn_retx: 3,
             min_ch_retx: 2,
             ip_cache_cap: 1024,
+            working_signal_mode: WorkingSignalMode::Compatibility,
         }
     }
 }
@@ -141,13 +156,278 @@ impl Reasm {
     }
 }
 
+/// Bounded inbound TCP prefix used only by [`WorkingSignalMode::StrictTls`].
+///
+/// A SYN-ACK anchors the first data sequence when it was observed. Without a
+/// SYN-ACK (capture started mid-flow), the lowest observed payload sequence is
+/// used, which still permits deterministic out-of-order reconstruction.
+#[derive(Default)]
+struct InboundReasm {
+    base: Option<u32>,
+    anchored: bool,
+    segs: BTreeMap<u32, Vec<u8>>,
+    stored: usize,
+    conflicted: bool,
+}
+
+impl InboundReasm {
+    const CAP: usize = 32 * 1024;
+    const MAX_SEGMENTS: usize = 128;
+
+    fn anchor_after_syn_ack(&mut self, syn_ack_seq: u32) {
+        if self.base.is_none() {
+            self.base = Some(syn_ack_seq.wrapping_add(1));
+            self.anchored = true;
+        }
+    }
+
+    fn insert(&mut self, seq: u32, data: &[u8]) -> bool {
+        if data.is_empty() || self.conflicted || self.stored >= Self::CAP {
+            return false;
+        }
+
+        match self.base {
+            None => self.base = Some(seq),
+            Some(base) if !self.anchored && seq_lt(seq, base) => self.base = Some(seq),
+            _ => {}
+        }
+        let base = self.base.expect("base set above");
+
+        let mut start = seq;
+        let mut bytes = data;
+        if seq_lt(start, base) {
+            let end = start.wrapping_add(bytes.len() as u32);
+            if seq_le(end, base) {
+                return false;
+            }
+            let overlap = base.wrapping_sub(start) as usize;
+            bytes = &bytes[overlap..];
+            start = base;
+        }
+
+        let offset = start.wrapping_sub(base) as usize;
+        if offset >= Self::CAP {
+            return false;
+        }
+        let keep = bytes.len().min(Self::CAP - offset);
+        if keep == 0 {
+            return false;
+        }
+        let candidate = &bytes[..keep];
+        let candidate_end = offset + candidate.len();
+        let mut touched = Vec::new();
+        let mut conflict = false;
+        let mut merged_start = offset;
+        let mut merged_end = candidate_end;
+
+        for (&existing_seq, existing) in &self.segs {
+            let existing_start = existing_seq.wrapping_sub(base) as usize;
+            if existing_start >= Self::CAP {
+                continue;
+            }
+            let existing_end = (existing_start + existing.len()).min(Self::CAP);
+            if existing_end < offset || candidate_end < existing_start {
+                continue;
+            }
+
+            let overlap_start = existing_start.max(offset);
+            let overlap_end = existing_end.min(candidate_end);
+            if overlap_start < overlap_end
+                && existing[overlap_start - existing_start..overlap_end - existing_start]
+                    != candidate[overlap_start - offset..overlap_end - offset]
+            {
+                conflict = true;
+                break;
+            }
+            touched.push(existing_seq);
+            merged_start = merged_start.min(existing_start);
+            merged_end = merged_end.max(existing_end);
+        }
+        if conflict {
+            self.conflicted = true;
+            return false;
+        }
+        if touched.is_empty() && self.segs.len() >= Self::MAX_SEGMENTS {
+            return false;
+        }
+
+        let removed_len = touched
+            .iter()
+            .filter_map(|key| self.segs.get(key))
+            .map(Vec::len)
+            .sum::<usize>();
+        let merged_len = merged_end - merged_start;
+        if merged_len <= removed_len {
+            return false;
+        }
+
+        let mut merged = vec![0u8; merged_len];
+        for key in &touched {
+            let existing = self.segs.get(key).expect("touched segment remains present");
+            let existing_start = key.wrapping_sub(base) as usize;
+            let copy_len = existing
+                .len()
+                .min(merged_end.saturating_sub(existing_start));
+            let at = existing_start - merged_start;
+            merged[at..at + copy_len].copy_from_slice(&existing[..copy_len]);
+        }
+        let candidate_at = offset - merged_start;
+        merged[candidate_at..candidate_at + candidate.len()].copy_from_slice(candidate);
+
+        for key in touched {
+            if let Some(removed) = self.segs.remove(&key) {
+                self.stored -= removed.len();
+            }
+        }
+        let merged_seq = base.wrapping_add(merged_start as u32);
+        self.stored += merged.len();
+        self.segs.insert(merged_seq, merged);
+        true
+    }
+
+    fn contiguous(&self) -> Vec<u8> {
+        if self.conflicted {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        let mut want = match self.base {
+            Some(base) => base,
+            None => return out,
+        };
+
+        while out.len() < Self::CAP {
+            let mut advanced = false;
+            for (&start, data) in &self.segs {
+                let end = start.wrapping_add(data.len() as u32);
+                if seq_le(start, want) && seq_lt(want, end) {
+                    let offset = want.wrapping_sub(start) as usize;
+                    let remaining = Self::CAP - out.len();
+                    let bytes = &data[offset..];
+                    let keep = bytes.len().min(remaining);
+                    out.extend_from_slice(&bytes[..keep]);
+                    want = want.wrapping_add(keep as u32);
+                    advanced = keep != 0;
+                    break;
+                }
+            }
+            if !advanced {
+                break;
+            }
+        }
+        out
+    }
+}
+
+const TLS_RECORD_HEADER_LEN: usize = 5;
+// RFC 8446 permits 2^14 bytes of plaintext plus bounded expansion. TLS 1.2
+// permits up to 2048 bytes of ciphertext expansion, which is the wider limit.
+const MAX_TLS_RECORD_PAYLOAD: usize = (1 << 14) + 2048;
+
+fn compatibility_working_evidence(payload: &[u8]) -> Option<&'static str> {
+    let record = classify_record(payload);
+    let is_alive = matches!(
+        record,
+        TlsRecord::Handshake(TlsHandshake::ServerHello) | TlsRecord::AppData
+    ) || !matches!(record, TlsRecord::Alert);
+    is_alive.then_some("server_hello")
+}
+
+fn strict_tls_working_evidence(stream: &[u8]) -> Option<&'static str> {
+    let mut record_at = 0usize;
+    let mut handshake = Vec::new();
+    let mut handshake_at = 0usize;
+
+    while record_at < stream.len() {
+        let header = stream.get(record_at..record_at + TLS_RECORD_HEADER_LEN)?;
+        let content_type = header[0];
+        if !matches!(content_type, 0x14..=0x18) || header[1] != 0x03 || header[2] > 0x04 {
+            return None;
+        }
+
+        let payload_len = u16::from_be_bytes([header[3], header[4]]) as usize;
+        if payload_len > MAX_TLS_RECORD_PAYLOAD {
+            return None;
+        }
+        let payload_at = record_at.checked_add(TLS_RECORD_HEADER_LEN)?;
+        let record_end = payload_at.checked_add(payload_len)?;
+        let payload = stream.get(payload_at..record_end)?;
+
+        match content_type {
+            0x16 => {
+                if handshake.len().checked_add(payload.len())? > InboundReasm::CAP {
+                    return None;
+                }
+                handshake.extend_from_slice(payload);
+                while handshake.len().saturating_sub(handshake_at) >= 4 {
+                    let message_type = handshake[handshake_at];
+                    let message_len = ((handshake[handshake_at + 1] as usize) << 16)
+                        | ((handshake[handshake_at + 2] as usize) << 8)
+                        | handshake[handshake_at + 3] as usize;
+                    if message_len > InboundReasm::CAP - 4 {
+                        return None;
+                    }
+                    let message_end = handshake_at.checked_add(4)?.checked_add(message_len)?;
+                    if message_end > handshake.len() {
+                        break;
+                    }
+                    if message_type == 0x02
+                        && valid_server_hello_body(&handshake[handshake_at + 4..message_end])
+                    {
+                        return Some("server_hello");
+                    }
+                    handshake_at = message_end;
+                }
+            }
+            0x17 if !payload.is_empty() => return Some("tls_app_data"),
+            _ => {}
+        }
+
+        record_at = record_end;
+    }
+    None
+}
+
+/// Checks the bounded structural fields of a TLS ServerHello body. This is
+/// intentionally not a full TLS parser, but a handshake type plus one byte is
+/// not enough to prove a real ServerHello and would make block-page noise look
+/// healthy.
+fn valid_server_hello_body(body: &[u8]) -> bool {
+    // legacy_version(2) + random(32) + session_id_len(1) + cipher(2) +
+    // compression(1), with an optional extensions vector.
+    if body.len() < 38 || body[0] != 0x03 || body[1] > 0x04 {
+        return false;
+    }
+    let session_len = body[34] as usize;
+    if session_len > 32 {
+        return false;
+    }
+    let fixed_end = 35usize + session_len + 3;
+    if fixed_end > body.len() {
+        return false;
+    }
+    if fixed_end == body.len() {
+        return true;
+    }
+    let Some(length) = body.get(fixed_end..fixed_end + 2) else {
+        return false;
+    };
+    let extensions_len = u16::from_be_bytes([length[0], length[1]]) as usize;
+    fixed_end
+        .checked_add(2)
+        .and_then(|start| start.checked_add(extensions_len))
+        .is_some_and(|end| end == body.len())
+}
+
 /// Один отслеживаемый поток.
 struct Flow {
+    id: u64,
     key_ip: IpAddr,
     local_port: u16,
+    remote_port: u16,
     phase: Phase,
     fake_ctx: FakeContext,
     reasm: Reasm,
+    inbound_reasm: InboundReasm,
     created_ms: u64,
     last_seen_ms: u64,
     syn_seen: bool,
@@ -159,13 +439,16 @@ struct Flow {
 }
 
 impl Flow {
-    fn new(key_ip: IpAddr, local_port: u16, now: u64) -> Self {
+    fn new(id: u64, key_ip: IpAddr, local_port: u16, remote_port: u16, now: u64) -> Self {
         Self {
+            id,
             key_ip,
             local_port,
+            remote_port,
             phase: Phase::Handshake,
             fake_ctx: FakeContext::default(),
             reasm: Reasm::default(),
+            inbound_reasm: InboundReasm::default(),
             created_ms: now,
             last_seen_ms: now,
             syn_seen: false,
@@ -184,6 +467,7 @@ pub struct FlowTable {
     flows: HashMap<crate::eyes::parse::FlowKey, Flow>,
     /// Learned IP→domain: наполняется при arming, нужен для атрибуции SYN-level blackhole.
     ip_domain: HashMap<IpAddr, String>,
+    next_flow_id: u64,
 }
 
 impl FlowTable {
@@ -192,7 +476,17 @@ impl FlowTable {
             cfg,
             flows: HashMap::new(),
             ip_domain: HashMap::new(),
+            next_flow_id: 1,
         }
+    }
+
+    fn allocate_flow_id(&mut self) -> u64 {
+        let id = self.next_flow_id;
+        self.next_flow_id = self.next_flow_id.wrapping_add(1);
+        if self.next_flow_id == 0 {
+            self.next_flow_id = 1;
+        }
+        id
     }
 
     #[cfg(test)]
@@ -237,10 +531,20 @@ impl FlowTable {
             if self.flows.len() >= self.cfg.max_flows && !self.flows.contains_key(&pkt.key) {
                 self.evict_one();
             }
-            let f = self
-                .flows
-                .entry(pkt.key)
-                .or_insert_with(|| Flow::new(pkt.key.remote_ip, pkt.key.local_port, now));
+            if !self.flows.contains_key(&pkt.key) {
+                let flow_id = self.allocate_flow_id();
+                self.flows.insert(
+                    pkt.key,
+                    Flow::new(
+                        flow_id,
+                        pkt.key.remote_ip,
+                        pkt.key.local_port,
+                        pkt.key.remote_port,
+                        now,
+                    ),
+                );
+            }
+            let f = self.flows.get_mut(&pkt.key).expect("flow inserted above");
             if f.syn_seen {
                 f.syn_retx = f.syn_retx.saturating_add(1); // ретрансмит SYN
             } else {
@@ -274,9 +578,16 @@ impl FlowTable {
                 if self.flows.len() >= self.cfg.max_flows {
                     self.evict_one();
                 }
+                let flow_id = self.allocate_flow_id();
                 self.flows.insert(
                     pkt.key,
-                    Flow::new(pkt.key.remote_ip, pkt.key.local_port, now),
+                    Flow::new(
+                        flow_id,
+                        pkt.key.remote_ip,
+                        pkt.key.local_port,
+                        pkt.key.remote_port,
+                        now,
+                    ),
                 );
             }
             let f = self.flows.get_mut(&pkt.key).unwrap();
@@ -321,12 +632,16 @@ impl FlowTable {
     }
 
     fn on_inbound(&mut self, pkt: &ParsedPacket, now: u64) -> Option<Observation> {
+        let working_signal_mode = self.cfg.working_signal_mode;
         let f = self.flows.get_mut(&pkt.key)?;
         f.last_seen_ms = now;
 
         // Входящий SYN-ACK — TCP встал, это уже не SYN-level blackhole.
         if pkt.flags.syn && pkt.flags.ack {
             f.syn_ack_seen = true;
+            if working_signal_mode == WorkingSignalMode::StrictTls {
+                f.inbound_reasm.anchor_after_syn_ack(pkt.seq);
+            }
             return None;
         }
 
@@ -334,9 +649,11 @@ impl FlowTable {
         if pkt.flags.rst {
             if let Phase::Armed { domain, .. } = &f.phase {
                 let obs = Observation {
+                    flow_id: f.id,
                     domain: domain.clone(),
                     dst_ip: f.key_ip,
                     local_port: f.local_port,
+                    remote_port: f.remote_port,
                     verdict: Verdict::Reset,
                     evidence: "inbound_rst",
                     ts_ms: now,
@@ -353,19 +670,23 @@ impl FlowTable {
         // Входящие данные с полезной нагрузкой — соединение живо.
         if !pkt.payload.is_empty() {
             f.inbound_data_seen = true;
-            let rec = classify_record(&pkt.payload);
-            let is_alive = matches!(
-                rec,
-                TlsRecord::Handshake(TlsHandshake::ServerHello) | TlsRecord::AppData
-            ) || !matches!(rec, TlsRecord::Alert);
-            if is_alive {
+            let evidence = match working_signal_mode {
+                WorkingSignalMode::Compatibility => compatibility_working_evidence(&pkt.payload),
+                WorkingSignalMode::StrictTls => {
+                    f.inbound_reasm.insert(pkt.seq, &pkt.payload);
+                    strict_tls_working_evidence(&f.inbound_reasm.contiguous())
+                }
+            };
+            if let Some(evidence) = evidence {
                 if let Phase::Armed { domain, .. } = &f.phase {
                     let obs = Observation {
+                        flow_id: f.id,
                         domain: domain.clone(),
                         dst_ip: f.key_ip,
                         local_port: f.local_port,
+                        remote_port: f.remote_port,
                         verdict: Verdict::Working,
-                        evidence: "server_hello",
+                        evidence,
                         ts_ms: now,
                     };
                     f.emitted = true;
@@ -407,9 +728,11 @@ impl FlowTable {
                             // Домен неизвестен (SNI не видели) — берём из learned IP→domain.
                             if let Some(domain) = self.ip_domain.get(&f.key_ip).cloned() {
                                 out.push(Observation {
+                                    flow_id: f.id,
                                     domain,
                                     dst_ip: f.key_ip,
                                     local_port: f.local_port,
+                                    remote_port: f.remote_port,
                                     verdict: Verdict::Blackhole,
                                     evidence: "syn_no_synack",
                                     ts_ms: now,
@@ -421,12 +744,14 @@ impl FlowTable {
                 }
                 Phase::Armed { domain, t0 } => {
                     let silent = now.saturating_sub(*t0);
-                    if !f.inbound_data_seen && silent >= self.cfg.armed_silence_timeout_ms {
-                        if f.ch_retx >= self.cfg.min_ch_retx {
+                    if silent >= self.cfg.armed_silence_timeout_ms {
+                        if !f.inbound_data_seen && f.ch_retx >= self.cfg.min_ch_retx {
                             out.push(Observation {
+                                flow_id: f.id,
                                 domain: domain.clone(),
                                 dst_ip: f.key_ip,
                                 local_port: f.local_port,
+                                remote_port: f.remote_port,
                                 verdict: Verdict::Blackhole,
                                 evidence: "silence+retransmit",
                                 ts_ms: now,
@@ -513,6 +838,13 @@ mod tests {
         }
     }
 
+    fn strict_cfg() -> Config {
+        Config {
+            working_signal_mode: WorkingSignalMode::StrictTls,
+            ..cfg()
+        }
+    }
+
     fn syn(seq: u32) -> ParsedPacket {
         ParsedPacket {
             outbound: true,
@@ -571,12 +903,12 @@ mod tests {
         }
     }
 
-    fn in_data(payload: Vec<u8>) -> ParsedPacket {
+    fn in_data_at(seq: u32, payload: Vec<u8>) -> ParsedPacket {
         ParsedPacket {
             outbound: false,
             key: key(),
             ttl: 64,
-            seq: 5001,
+            seq,
             flags: TcpFlags {
                 psh: true,
                 ack: true,
@@ -584,6 +916,10 @@ mod tests {
             },
             payload,
         }
+    }
+
+    fn in_data(payload: Vec<u8>) -> ParsedPacket {
+        in_data_at(5001, payload)
     }
 
     fn out_fin() -> ParsedPacket {
@@ -658,7 +994,18 @@ mod tests {
     }
 
     fn server_hello() -> Vec<u8> {
-        vec![0x16, 0x03, 0x03, 0x00, 0x04, 0x02, 0x00, 0x00, 0x00]
+        let mut body = vec![0x03, 0x03];
+        body.extend_from_slice(&[0u8; 32]);
+        body.push(0); // session id length
+        body.extend_from_slice(&[0x00, 0x2f]); // TLS_RSA_WITH_AES_128_CBC_SHA
+        body.push(0); // null compression
+
+        let mut handshake = vec![0x02, 0x00, 0x00, body.len() as u8];
+        handshake.extend_from_slice(&body);
+        let mut record = vec![0x16, 0x03, 0x03];
+        record.extend_from_slice(&(handshake.len() as u16).to_be_bytes());
+        record.extend_from_slice(&handshake);
+        record
     }
 
     #[test]
@@ -673,6 +1020,201 @@ mod tests {
         assert_eq!(obs.verdict, Verdict::Working);
         assert_eq!(obs.domain, "www.youtube.com");
         assert_eq!(obs.local_port, LPORT);
+        assert_ne!(obs.flow_id, 0);
+        assert_eq!(obs.remote_port, 443);
+        assert_eq!(obs.evidence, "server_hello");
+    }
+
+    #[test]
+    fn default_mode_preserves_compatibility_payload_semantics() {
+        assert_eq!(
+            Config::default().working_signal_mode,
+            WorkingSignalMode::Compatibility
+        );
+        let mut t = FlowTable::new(cfg());
+        t.on_packet(&syn(1000), 0);
+        t.on_packet(&out_data(1001, client_hello("www.youtube.com")), 20);
+
+        let obs = t
+            .on_packet(&in_data(b"HTTP/1.1 302 Found\r\n\r\n".to_vec()), 40)
+            .unwrap();
+        assert_eq!(obs.verdict, Verdict::Working);
+        assert_eq!(obs.evidence, "server_hello");
+    }
+
+    #[test]
+    fn compatibility_still_rejects_a_recognized_tls_alert() {
+        let mut t = FlowTable::new(cfg());
+        t.on_packet(&syn(1000), 0);
+        t.on_packet(&out_data(1001, client_hello("www.youtube.com")), 20);
+
+        assert!(t
+            .on_packet(&in_data(vec![0x15, 0x03, 0x03, 0x00, 0x02, 0x02, 0x28]), 40)
+            .is_none());
+    }
+
+    #[test]
+    fn strict_tls_rejects_non_tls_payload() {
+        let mut t = FlowTable::new(strict_cfg());
+        t.on_packet(&syn(1000), 0);
+        t.on_packet(&synack(), 10);
+        t.on_packet(&out_data(1001, client_hello("www.youtube.com")), 20);
+
+        assert!(t
+            .on_packet(&in_data(b"HTTP/1.1 302 Found\r\n\r\n".to_vec()), 40)
+            .is_none());
+    }
+
+    #[test]
+    fn strict_tls_reassembles_server_hello_at_header_boundaries() {
+        for split_at in [1usize, 4, 5] {
+            let mut t = FlowTable::new(strict_cfg());
+            t.on_packet(&syn(1000), 0);
+            t.on_packet(&synack(), 10);
+            t.on_packet(&out_data(1001, client_hello("www.youtube.com")), 20);
+
+            let record = server_hello();
+            let (first, second) = record.split_at(split_at);
+            assert!(t.on_packet(&in_data_at(5001, first.to_vec()), 40).is_none());
+            let obs = t
+                .on_packet(&in_data_at(5001 + split_at as u32, second.to_vec()), 41)
+                .unwrap();
+            assert_eq!(obs.verdict, Verdict::Working);
+            assert_eq!(obs.evidence, "server_hello");
+        }
+    }
+
+    #[test]
+    fn strict_tls_scans_coalesced_complete_records() {
+        let mut t = FlowTable::new(strict_cfg());
+        t.on_packet(&syn(1000), 0);
+        t.on_packet(&synack(), 10);
+        t.on_packet(&out_data(1001, client_hello("www.youtube.com")), 20);
+
+        let mut records = vec![0x14, 0x03, 0x03, 0x00, 0x01, 0x01];
+        records.extend_from_slice(&server_hello());
+        let obs = t.on_packet(&in_data(records), 40).unwrap();
+        assert_eq!(obs.verdict, Verdict::Working);
+        assert_eq!(obs.evidence, "server_hello");
+    }
+
+    #[test]
+    fn strict_tls_app_data_requires_its_declared_nonempty_body() {
+        let mut t = FlowTable::new(strict_cfg());
+        t.on_packet(&syn(1000), 0);
+        t.on_packet(&synack(), 10);
+        t.on_packet(&out_data(1001, client_hello("www.youtube.com")), 20);
+
+        let header = vec![0x17, 0x03, 0x03, 0x00, 0x01];
+        assert!(t.on_packet(&in_data_at(5001, header), 40).is_none());
+        let obs = t.on_packet(&in_data_at(5006, vec![0x00]), 41).unwrap();
+        assert_eq!(obs.verdict, Verdict::Working);
+        assert_eq!(obs.evidence, "tls_app_data");
+    }
+
+    #[test]
+    fn strict_tls_accepts_a_more_complete_same_seq_retransmission() {
+        let mut t = FlowTable::new(strict_cfg());
+        t.on_packet(&syn(1000), 0);
+        t.on_packet(&synack(), 10);
+        t.on_packet(&out_data(1001, client_hello("www.youtube.com")), 20);
+
+        let record = vec![0x17, 0x03, 0x03, 0x00, 0x01, 0x2a];
+        assert!(t
+            .on_packet(&in_data_at(5001, record[..5].to_vec()), 40)
+            .is_none());
+        let obs = t.on_packet(&in_data_at(5001, record), 41).unwrap();
+        assert_eq!(obs.evidence, "tls_app_data");
+    }
+
+    #[test]
+    fn strict_tls_zero_length_app_data_is_not_working() {
+        let mut t = FlowTable::new(strict_cfg());
+        t.on_packet(&syn(1000), 0);
+        t.on_packet(&synack(), 10);
+        t.on_packet(&out_data(1001, client_hello("www.youtube.com")), 20);
+
+        assert!(t
+            .on_packet(&in_data(vec![0x17, 0x03, 0x03, 0x00, 0x00]), 40)
+            .is_none());
+    }
+
+    #[test]
+    fn strict_tls_rejects_impossible_record_length() {
+        let mut t = FlowTable::new(strict_cfg());
+        t.on_packet(&syn(1000), 0);
+        t.on_packet(&synack(), 10);
+        t.on_packet(&out_data(1001, client_hello("www.youtube.com")), 20);
+
+        let impossible = (MAX_TLS_RECORD_PAYLOAD + 1) as u16;
+        let mut payload = vec![0x17, 0x03, 0x03];
+        payload.extend_from_slice(&impossible.to_be_bytes());
+        payload.extend_from_slice(&server_hello());
+        assert!(t.on_packet(&in_data(payload), 40).is_none());
+    }
+
+    #[test]
+    fn strict_tls_rejects_structurally_short_server_hello() {
+        let mut t = FlowTable::new(strict_cfg());
+        t.on_packet(&syn(1000), 0);
+        t.on_packet(&synack(), 10);
+        t.on_packet(&out_data(1001, client_hello("www.youtube.com")), 20);
+
+        let too_short = vec![0x16, 0x03, 0x03, 0x00, 0x05, 0x02, 0x00, 0x00, 0x01, 0x00];
+        assert!(t.on_packet(&in_data(too_short), 40).is_none());
+    }
+
+    #[test]
+    fn strict_tls_conflicting_overlap_never_becomes_working() {
+        let mut t = FlowTable::new(strict_cfg());
+        t.on_packet(&syn(1000), 0);
+        t.on_packet(&synack(), 10);
+        t.on_packet(&out_data(1001, client_hello("www.youtube.com")), 20);
+
+        assert!(t
+            .on_packet(&in_data_at(5005, vec![0xff, 0xff]), 30)
+            .is_none());
+        assert!(t
+            .on_packet(
+                &in_data_at(5001, vec![0x17, 0x03, 0x03, 0x00, 0x01, 0x2a]),
+                40,
+            )
+            .is_none());
+        let flow = t.flows.get(&key()).unwrap();
+        assert!(flow.inbound_reasm.conflicted);
+        assert!(flow.inbound_reasm.contiguous().is_empty());
+    }
+
+    #[test]
+    fn strict_tls_invalid_inbound_is_evicted_without_policy_verdict() {
+        let mut t = FlowTable::new(strict_cfg());
+        t.on_packet(&syn(1000), 0);
+        t.on_packet(&synack(), 10);
+        let hello = client_hello("www.youtube.com");
+        t.on_packet(&out_data(1001, hello.clone()), 20);
+        t.on_packet(&out_data(1001, hello.clone()), 30);
+        t.on_packet(&out_data(1001, hello), 40);
+        assert!(t
+            .on_packet(&in_data(vec![0x17, 0x03, 0x03, 0x00, 0x01]), 50)
+            .is_none());
+
+        assert!(t.on_tick(9_000).is_empty());
+        assert_eq!(t.len(), 0);
+    }
+
+    #[test]
+    fn strict_tls_inbound_reassembly_is_bounded_per_flow() {
+        let mut t = FlowTable::new(strict_cfg());
+        t.on_packet(&syn(1000), 0);
+        t.on_packet(&synack(), 10);
+        t.on_packet(&out_data(1001, client_hello("www.youtube.com")), 20);
+
+        assert!(t
+            .on_packet(&in_data(vec![0; InboundReasm::CAP * 2]), 40)
+            .is_none());
+        let flow = t.flows.get(&key()).unwrap();
+        assert_eq!(flow.inbound_reasm.stored, InboundReasm::CAP);
+        assert_eq!(flow.inbound_reasm.contiguous().len(), InboundReasm::CAP);
     }
 
     #[test]
@@ -683,6 +1225,8 @@ mod tests {
         let obs = t.on_packet(&in_rst(), 30).unwrap();
         assert_eq!(obs.verdict, Verdict::Reset);
         assert_eq!(obs.evidence, "inbound_rst");
+        assert_ne!(obs.flow_id, 0);
+        assert_eq!(obs.remote_port, 443);
     }
 
     #[test]

@@ -33,9 +33,9 @@ pub mod signal;
 #[cfg(test)]
 mod replay;
 
-pub use flow::{Config, FlowTable};
+pub use flow::{Config, FlowTable, WorkingSignalMode};
 pub use quic::{classify_udp, UdpKind};
 pub use signal::{Diagnosis, Observation, Verdict};
 
 #[cfg(windows)]
-pub use capture::{start, EyesHandle};
+pub use capture::{start, start_legacy, EyesHandle};

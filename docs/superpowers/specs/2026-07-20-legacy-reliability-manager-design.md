@@ -75,7 +75,8 @@ Manager и не получает его intents.
 - `lane_generation[category]` увеличивается только при start/restart процесса
   этой категории;
 - `sensor_generation` увеличивается при каждом restart Eyes;
-- `target_registry_version` увеличивается при смене registry snapshot.
+- `target_registry_version` детерминированно меняется при смене snapshot или
+  active selection и сравнивается только на точное равенство.
 
 Повышение generation одной lane не инвалидирует события рабочих категорий.
 Flow получает category и текущую `lane_generation` при создании потока, а не в
@@ -112,12 +113,17 @@ flag сохраняются даже при полной очереди; отд�
 Пересекающий evidence/confirmation window `Gap`, `Degraded` или `Blind`
 запрещает вывод `Healthy`. Вернуться к оценке можно после десятисекундного
 чистого окна без роста drop/error counters.
+Неожиданный отказ capture/tracker является terminal `Blind` для текущего
+`sensor_generation`; восстановление требует нового поколения Eyes.
 
 Публичное событие для UI может быть проекцией Flow, но policy использует только
 полный внутренний контракт. В Legacy v1 automatic evidence ограничен TLS over
-TCP. TCP/80 наблюдается только диагностически и не создаёт `Working`/failure
-evidence для auto-switch. UDP/QUIC сохраняются как typed `out_of_scope` события
-до отдельного этапа.
+TCP. TCP/80 входит в capture plan только ради packet/parse/drop health counters:
+обычный HTTP/80 не создаёт policy Flow, `Working` или failure evidence. Событие
+`syn_no_synack`, полученное через эвристику `IP -> last domain`, также остаётся
+unattributed diagnostic (`category = lane_generation = None`) до появления
+надёжной DNS/socket correlation. UDP/QUIC сохраняются как typed `out_of_scope`
+события до отдельного этапа.
 
 ### 4.3 TargetRegistry
 
@@ -127,13 +133,25 @@ TargetRegistry — единственный источник attribution. В н�
 домена выполняется longest-suffix с границей label; неоднозначные домены
 исключаются из automatic switching и остаются видимыми для диагностики.
 
-TCP capture plan является bounded union портов и hostlists этого snapshot,
-включая 80 и альтернативные TLS-порты. При switch уже загруженный candidate
-становится active owner, повышаются registry version и generation его lane, но
-Eyes не перезапускается. Если candidate отсутствует в snapshot или его content
-hash изменился, попытка отменяется до stop и требуется новая сессия. В Legacy v1
-UDP/443 и QUIC не вооружают automatic recovery. Один и тот же registry
-используется Eyes, Manager и Brain; локальные hardcoded suffix maps запрещены.
+Registry хранит bounded union метаданных candidates, но production capture plan
+строится только из портов и hostlists текущих active selections. Union всех
+candidates используется для attribution/preflight и никогда напрямую не
+передаётся WinDivert. Фильтр direction-aware: outbound сверяется только с
+удалённым `DstPort`, inbound — только с удалённым `SrcPort`; локальный ephemeral
+port не расширяет capture. TCP/80 влияет только на health counters и не поступает
+в policy. Обычные runtime Flow атрибутируются только active owners; более
+глубокий suffix неактивного candidate не может перехватить lane. Полный
+candidate attribution доступен лишь диагностике и fenced preflight.
+
+В будущем scoped switch candidate добавляется в отдельный fenced sensor plan до
+остановки его lane. Такая переинициализация пассивного Eyes повышает
+`sensor_generation`, создаёт явный Gap и не останавливает DPI-процессы или
+соединения рабочих категорий. Candidate становится active owner только после
+успешного start/confirm, с новой registry version и generation его lane. Если
+candidate отсутствует в snapshot или его content hash изменился, попытка
+отменяется до stop и требуется новая сессия. В Legacy v1 UDP/443 и QUIC не
+вооружают automatic recovery. Один и тот же registry используется Eyes, Manager
+и Brain; локальные hardcoded suffix maps запрещены.
 
 ## 5. Reliability policy
 
@@ -151,10 +169,11 @@ BlockedCooldown | SensorUnreliable | ProcessFailed | Exhausted
 здоровьем. Один reset только переводит lane в `Suspect`; переключение возможно
 после трёх reset от двух независимых целей в 30 секунд. Независимыми считаются
 разные registry targets, а не повторные события одного flow. Два подтверждённых
-blackhole от разных flow и registry targets без пересекающего gap переводят
-категорию в cooldown на 300 секунд. После cooldown только новый здоровый
-Environment Gate разрешает ровно одну candidate attempt. Отсутствие трафика
-само по себе ничего не доказывает.
+атрибутированных TLS-level blackhole от разных flow и registry targets без
+пересекающего gap переводят категорию в cooldown на 300 секунд. Диагностический
+`syn_no_synack` в этот quorum не входит. После cooldown только новый здоровый
+Environment Gate разрешает ровно одну candidate attempt. Отсутствие трафика само
+по себе ничего не доказывает.
 
 Crash процесса сначала вызывает bounded retry того же конфига. Один recovery
 cycle проверяет ровно одного кандидата. Между автоматическими заменами минимум

@@ -12,7 +12,7 @@ use std::net::{IpAddr, Ipv4Addr};
 
 use crate::eyes::flow::{Config, FlowTable};
 use crate::eyes::parse::{FlowKey, ParsedPacket, TcpFlags};
-use crate::eyes::signal::Verdict;
+use crate::eyes::signal::{Observation, Verdict};
 
 /// Событие сценария: пакет в момент `t_ms`, либо тик времени.
 enum Ev {
@@ -21,19 +21,19 @@ enum Ev {
 }
 
 /// Прогоняет сценарий и собирает все вердикты в порядке появления.
-fn run(cfg: Config, events: Vec<Ev>) -> Vec<(String, Verdict, &'static str)> {
+fn run(cfg: Config, events: Vec<Ev>) -> Vec<Observation> {
     let mut table = FlowTable::new(cfg);
     let mut out = Vec::new();
     for ev in events {
         match ev {
             Ev::Pkt(p, t) => {
                 if let Some(o) = table.on_packet(&p, t) {
-                    out.push((o.domain, o.verdict, o.evidence));
+                    out.push(o);
                 }
             }
             Ev::Tick(t) => {
                 for o in table.on_tick(t) {
-                    out.push((o.domain, o.verdict, o.evidence));
+                    out.push(o);
                 }
             }
         }
@@ -184,10 +184,16 @@ fn scenario_clean_working() {
             Ev::Pkt(p_in(40001, sh()), 45),
         ],
     );
-    assert_eq!(
-        out,
-        vec![("www.youtube.com".into(), Verdict::Working, "server_hello")]
-    );
+    assert_eq!(out.len(), 1);
+    let observation = &out[0];
+    assert_eq!(observation.domain, "www.youtube.com");
+    assert_eq!(observation.verdict, Verdict::Working);
+    assert_eq!(observation.evidence, "server_hello");
+    assert_eq!(observation.dst_ip, SRV);
+    assert_eq!(observation.local_port, 40001);
+    assert_eq!(observation.remote_port, 443);
+    assert_ne!(observation.flow_id, 0);
+    assert_eq!(observation.ts_ms, 45);
 }
 
 #[test]
@@ -201,10 +207,12 @@ fn scenario_dpi_reset() {
             Ev::Pkt(p_in_rst(40002), 33),
         ],
     );
-    assert_eq!(
-        out,
-        vec![("discord.com".into(), Verdict::Reset, "inbound_rst")]
-    );
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].domain, "discord.com");
+    assert_eq!(out[0].verdict, Verdict::Reset);
+    assert_eq!(out[0].evidence, "inbound_rst");
+    assert_eq!(out[0].local_port, 40002);
+    assert_eq!(out[0].ts_ms, 33);
 }
 
 #[test]
@@ -221,14 +229,12 @@ fn scenario_armed_blackhole_silence() {
             Ev::Tick(9000),
         ],
     );
-    assert_eq!(
-        out,
-        vec![(
-            "www.youtube.com".into(),
-            Verdict::Blackhole,
-            "silence+retransmit"
-        )]
-    );
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].domain, "www.youtube.com");
+    assert_eq!(out[0].verdict, Verdict::Blackhole);
+    assert_eq!(out[0].evidence, "silence+retransmit");
+    assert_eq!(out[0].local_port, 40003);
+    assert_eq!(out[0].ts_ms, 9000);
 }
 
 #[test]
@@ -250,10 +256,10 @@ fn scenario_split_and_fake_mixed() {
             Ev::Pkt(p_in(40004, sh()), 40),
         ],
     );
-    assert_eq!(
-        out,
-        vec![("www.youtube.com".into(), Verdict::Working, "server_hello")]
-    );
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].domain, "www.youtube.com");
+    assert_eq!(out[0].verdict, Verdict::Working);
+    assert_eq!(out[0].evidence, "server_hello");
 }
 
 #[test]
@@ -287,6 +293,15 @@ fn scenario_multiple_flows_independent() {
         ],
     );
     assert_eq!(out.len(), 2);
-    assert!(out.contains(&("www.youtube.com".into(), Verdict::Working, "server_hello")));
-    assert!(out.contains(&("discord.com".into(), Verdict::Reset, "inbound_rst")));
+    assert!(out.iter().any(|observation| {
+        observation.domain == "www.youtube.com"
+            && observation.verdict == Verdict::Working
+            && observation.evidence == "server_hello"
+    }));
+    assert!(out.iter().any(|observation| {
+        observation.domain == "discord.com"
+            && observation.verdict == Verdict::Reset
+            && observation.evidence == "inbound_rst"
+    }));
+    assert_ne!(out[0].flow_id, out[1].flow_id);
 }

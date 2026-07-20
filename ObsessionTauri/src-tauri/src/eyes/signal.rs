@@ -96,15 +96,19 @@ impl Diagnosis {
 /// Плоское и сериализуемое: фронт просто рисует статус per-domain, ничего не вычисляя.
 #[derive(Clone, Debug, Serialize)]
 pub struct Observation {
+    /// Монотонный идентификатор потока внутри одного запуска Eyes.
+    pub flow_id: u64,
     /// SNI-хост, к которому шло соединение (из ClientHello).
     pub domain: String,
     /// Удалённый IP (serde сериализует `IpAddr` как строку).
     pub dst_ip: IpAddr,
     /// Локальный порт — идентификатор конкретного соединения внутри домена.
     pub local_port: u16,
+    /// Удалённый TCP-порт. Нужен transport plan и диагностике альтернативного TLS.
+    pub remote_port: u16,
     pub verdict: Verdict,
-    /// Признак, по которому вынесен вердикт: "server_hello" | "inbound_rst"
-    /// | "silence+retransmit" | "silence" | "syn_no_synack".
+    /// Признак, по которому вынесен вердикт: "server_hello" | "tls_app_data"
+    /// | "inbound_rst" | "silence+retransmit" | "silence" | "syn_no_synack".
     pub evidence: &'static str,
     /// Логическое время события в мс (передаётся снаружи ради детерминизма тестов).
     pub ts_ms: u64,

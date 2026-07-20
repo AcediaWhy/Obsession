@@ -100,8 +100,16 @@ pub fn extract_sni(payload: &[u8]) -> Option<String> {
     if classify_record(payload) != TlsRecord::Handshake(TlsHandshake::ClientHello) {
         return None;
     }
-    // Тело хендшейка идёт после 5-байтного record-заголовка.
-    let hs = &payload[5..];
+    let record_len = read_u16(payload, 3)? as usize;
+    let record_end = 5usize.checked_add(record_len)?;
+    let record = payload.get(5..record_end)?;
+    let handshake_len = ((record.get(1).copied()? as usize) << 16)
+        | ((record.get(2).copied()? as usize) << 8)
+        | record.get(3).copied()? as usize;
+    let handshake_end = 4usize.checked_add(handshake_len)?;
+    // Bound every ClientHello field to both its TLS record and handshake
+    // declarations. Coalesced bytes after either boundary are not part of SNI.
+    let hs = record.get(..handshake_end)?;
     // hs[0]=0x01 (тип), hs[1..4]=длина. Дальше — тело ClientHello.
     let mut p: usize = 4; // пропускаем handshake type(1) + length(3)
 
@@ -140,21 +148,23 @@ pub fn extract_sni(payload: &[u8]) -> Option<String> {
 /// Раскладка: server_name_list_len(2) | [ name_type(1) | name_len(2) | name ]...
 fn parse_sni_extension(ext: &[u8]) -> Option<String> {
     let list_len = read_u16(ext, 0)? as usize;
-    let list_end = 2usize.checked_add(list_len)?.min(ext.len());
+    let list_end = 2usize.checked_add(list_len)?;
+    if list_end > ext.len() {
+        return None;
+    }
     let mut p = 2;
     while p + 3 <= list_end {
         let name_type = ext[p];
         let name_len = read_u16(ext, p + 1)? as usize;
         let name_start = p + 3;
         let name_end = name_start.checked_add(name_len)?;
-        if name_end > ext.len() {
+        if name_end > list_end {
             return None;
         }
         if name_type == 0x00 {
             // host_name
-            return std::str::from_utf8(&ext[name_start..name_end])
-                .ok()
-                .map(|s| s.to_ascii_lowercase());
+            let host = std::str::from_utf8(&ext[name_start..name_end]).ok()?;
+            return (!host.is_empty()).then(|| host.to_ascii_lowercase());
         }
         p = name_end;
     }
@@ -395,6 +405,27 @@ mod tests {
             // Не должно паниковать ни на одном обрезке.
             let _ = extract_sni(&ch[..cut]);
         }
+    }
+
+    #[test]
+    fn client_hello_cannot_read_sni_past_declared_boundaries() {
+        let original = client_hello_with_sni("example.com");
+
+        let mut short_record = original.clone();
+        let declared = u16::from_be_bytes([short_record[3], short_record[4]]);
+        short_record[3..5].copy_from_slice(&(declared - 1).to_be_bytes());
+        assert_eq!(extract_sni(&short_record), None);
+
+        let mut short_handshake = original.clone();
+        // The generated fixture uses a body shorter than 256 bytes.
+        short_handshake[6..9].copy_from_slice(&[0, 0, 43]);
+        assert_eq!(extract_sni(&short_handshake), None);
+
+        let mut short_sni_list = original;
+        // Fixed offset in the fixture: SNI list length immediately precedes
+        // name_type/name_len. It declares only that header, not the hostname.
+        short_sni_list[56..58].copy_from_slice(&3u16.to_be_bytes());
+        assert_eq!(extract_sni(&short_sni_list), None);
     }
 
     #[test]

@@ -28,9 +28,11 @@ use std::time::{Duration, Instant};
 use libloading::{Library, Symbol};
 
 use crate::dpi_supervisor::{join_workers_bounded, WorkerStopOutcome};
-use crate::eyes::flow::{Config, FlowTable};
+use crate::eyes::flow::{Config, FlowTable, WorkingSignalMode};
 use crate::eyes::parse::{decode_ip_tcp, ParsedPacket};
 use crate::eyes::signal::Observation;
+use crate::legacy_reliability::health::AtomicHealthCounters;
+use crate::legacy_reliability::target_registry::PortPlan;
 
 // --- значения из windivert.h (2.2), подтверждены по официальному заголовку ---
 const LAYER_NETWORK: u8 = 0;
@@ -46,6 +48,7 @@ const PACKET_BUF: usize = 65535;
 const PACKET_QUEUE_CAP: usize = 4096;
 const TRACKER_TICK: Duration = Duration::from_millis(250);
 const DROP_LOG_INTERVAL: Duration = Duration::from_secs(5);
+const PARTIAL_START_CLEANUP_TIMEOUT: Duration = Duration::from_secs(1);
 
 struct TickDeadline {
     period: Duration,
@@ -72,6 +75,39 @@ impl TickDeadline {
         }
         self.next = now + self.period;
         true
+    }
+}
+
+/// Marks an unexpected worker unwind/return as a terminal sensor failure. An
+/// intentional stop sets the shared flag before workers leave, disarming this
+/// guard without needing a second control channel.
+struct SensorWorkerGuard {
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    health: Option<Arc<AtomicHealthCounters>>,
+    started: Instant,
+}
+
+impl SensorWorkerGuard {
+    fn new(
+        stop: Arc<std::sync::atomic::AtomicBool>,
+        health: Option<Arc<AtomicHealthCounters>>,
+        started: Instant,
+    ) -> Self {
+        Self {
+            stop,
+            health,
+            started,
+        }
+    }
+}
+
+impl Drop for SensorWorkerGuard {
+    fn drop(&mut self) {
+        if !self.stop.load(std::sync::atomic::Ordering::SeqCst) {
+            if let Some(health) = self.health.as_ref() {
+                health.record_sensor_failure(self.started.elapsed().as_millis() as u64);
+            }
+        }
     }
 }
 
@@ -279,7 +315,43 @@ pub fn start<F>(dll_path: &Path, cfg: Config, on_observation: F) -> Result<EyesH
 where
     F: Fn(Observation) + Send + 'static,
 {
-    let divert = Arc::new(unsafe { WinDivert::open(dll_path, FILTER)? });
+    start_inner(dll_path, cfg, FILTER, None, on_observation)
+}
+
+/// Legacy-only entry point with a registry-derived TCP capture plan and
+/// out-of-band health counters. The compatibility [`start`] path used by
+/// Zapret2 remains fixed to TCP/443.
+pub fn start_legacy<F>(
+    dll_path: &Path,
+    mut cfg: Config,
+    port_plan: &PortPlan,
+    health: Arc<AtomicHealthCounters>,
+    on_observation: F,
+) -> Result<EyesHandle, String>
+where
+    F: Fn(Observation) + Send + 'static,
+{
+    // The Legacy entry point owns the strict policy boundary. Keep this
+    // invariant here as well as at the current dpi caller so future callers
+    // cannot accidentally re-enable compatibility semantics.
+    cfg.working_signal_mode = WorkingSignalMode::StrictTls;
+    let filter = port_plan
+        .to_windivert_filter()
+        .ok_or_else(|| "Legacy Eyes capture plan is empty".to_string())?;
+    start_inner(dll_path, cfg, &filter, Some(health), on_observation)
+}
+
+fn start_inner<F>(
+    dll_path: &Path,
+    cfg: Config,
+    filter: &str,
+    health: Option<Arc<AtomicHealthCounters>>,
+    on_observation: F,
+) -> Result<EyesHandle, String>
+where
+    F: Fn(Observation) + Send + 'static,
+{
+    let divert = Arc::new(unsafe { WinDivert::open(dll_path, filter)? });
     let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     // Bounded канал: поток захвата -> поток трекинга. Capture не блокируется
@@ -290,20 +362,35 @@ where
     // Поток захвата: блокирующий recv, декод, отправка в трекер.
     let capture = {
         let divert = Arc::clone(&divert);
-        let stop = Arc::clone(&stop);
+        let capture_stop = Arc::clone(&stop);
+        let health = health.clone();
         std::thread::Builder::new()
             .name("eyes-capture".into())
             .spawn(move || {
                 let mut buf = vec![0u8; PACKET_BUF];
                 let mut dropped = 0u64;
                 let mut last_drop_log: Option<Instant> = None;
-                while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+                let started = Instant::now();
+                let _worker_guard = SensorWorkerGuard::new(
+                    Arc::clone(&capture_stop),
+                    health.clone(),
+                    started,
+                );
+                while !capture_stop.load(std::sync::atomic::Ordering::SeqCst) {
                     match unsafe { divert.recv_into(&mut buf) } {
                         Some((len, outbound)) => {
-                            if let Some(pkt) = decode_ip_tcp(&buf[..len], outbound) {
-                                match tx.try_send(pkt) {
+                            let now_ms = started.elapsed().as_millis() as u64;
+                            if let Some(health) = health.as_ref() {
+                                health.record_packet(now_ms);
+                            }
+                            match decode_ip_tcp(&buf[..len], outbound) {
+                                Some(pkt) => match tx.try_send(pkt) {
                                     Ok(()) => {}
                                     Err(TrySendError::Full(_)) => {
+                                        if let Some(health) = health.as_ref() {
+                                            health.record_queue_drop(now_ms);
+                                            continue;
+                                        }
                                         dropped = dropped.saturating_add(1);
                                         let now = Instant::now();
                                         let should_log = last_drop_log
@@ -317,14 +404,30 @@ where
                                             last_drop_log = Some(now);
                                         }
                                     }
-                                    Err(TrySendError::Disconnected(_)) => break,
+                                    Err(TrySendError::Disconnected(_)) => {
+                                        if let Some(health) = health.as_ref() {
+                                            health.record_sensor_failure(now_ms);
+                                        }
+                                        break;
+                                    }
+                                },
+                                None => {
+                                    if let Some(health) = health.as_ref() {
+                                        health.record_parse_error(now_ms);
+                                    }
                                 }
                             }
                         }
                         None => {
                             // recv вернул ошибку: shutdown при остановке — это норма.
-                            if stop.load(std::sync::atomic::Ordering::SeqCst) {
+                            if capture_stop.load(std::sync::atomic::Ordering::SeqCst) {
                                 break;
+                            }
+                            // Не превращаем ошибку WinDivert в автоматический
+                            // verdict. Это терминальный сбой текущего sensor
+                            // generation; Manager переведёт его в Blind.
+                            if let Some(health) = health.as_ref() {
+                                health.record_sensor_failure(started.elapsed().as_millis() as u64);
                             }
                             // Иначе краткая пауза, чтобы не крутить busy-loop на сбое.
                             std::thread::sleep(Duration::from_millis(50));
@@ -337,12 +440,34 @@ where
 
     // Поток трекинга: единоличный владелец FlowTable. Пакеты + тики времени.
     let tracker = {
-        let stop = Arc::clone(&stop);
-        std::thread::Builder::new()
+        let tracker_stop = Arc::clone(&stop);
+        let divert_for_tracker = Arc::clone(&divert);
+        let health = health.clone();
+        let spawned = std::thread::Builder::new()
             .name("eyes-tracker".into())
             .spawn(move || {
-                let mut table = FlowTable::new(cfg);
                 let start = Instant::now();
+                let _worker_guard =
+                    SensorWorkerGuard::new(Arc::clone(&tracker_stop), health.clone(), start);
+                let emit_observation = |observation: Observation| {
+                    let callback_result =
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            on_observation(observation)
+                        }));
+                    if callback_result.is_ok() {
+                        true
+                    } else {
+                        if let Some(health) = health.as_ref() {
+                            health.record_sensor_failure(start.elapsed().as_millis() as u64);
+                        }
+                        tracker_stop.store(true, std::sync::atomic::Ordering::SeqCst);
+                        unsafe {
+                            (divert_for_tracker.shutdown)(divert_for_tracker.handle, SHUTDOWN_BOTH);
+                        }
+                        false
+                    }
+                };
+                let mut table = FlowTable::new(cfg);
                 let mut tick = TickDeadline::new(Instant::now(), TRACKER_TICK);
                 loop {
                     let wait = tick.wait(Instant::now());
@@ -350,11 +475,21 @@ where
                         Ok(pkt) => {
                             let now = start.elapsed().as_millis() as u64;
                             if let Some(obs) = table.on_packet(&pkt, now) {
-                                on_observation(obs);
+                                if !emit_observation(obs) {
+                                    break;
+                                }
                             }
                         }
                         Err(RecvTimeoutError::Timeout) => {}
-                        Err(RecvTimeoutError::Disconnected) => break,
+                        Err(RecvTimeoutError::Disconnected) => {
+                            if !tracker_stop.load(std::sync::atomic::Ordering::SeqCst) {
+                                if let Some(health) = health.as_ref() {
+                                    health
+                                        .record_sensor_failure(start.elapsed().as_millis() as u64);
+                                }
+                            }
+                            break;
+                        }
                     }
                     // Пакеты могут будить tracker тысячами раз в секунду, но полный
                     // O(flows) tick выполняется только по временному дедлайну.
@@ -362,15 +497,32 @@ where
                     if tick.take_due(wall_now) {
                         let now = start.elapsed().as_millis() as u64;
                         for obs in table.on_tick(now) {
-                            on_observation(obs);
+                            if !emit_observation(obs) {
+                                break;
+                            }
                         }
                     }
-                    if stop.load(std::sync::atomic::Ordering::SeqCst) {
+                    if tracker_stop.load(std::sync::atomic::Ordering::SeqCst) {
                         break;
                     }
                 }
-            })
-            .map_err(|e| format!("не удалось создать поток трекинга: {e}"))?
+            });
+        match spawned {
+            Ok(tracker) => tracker,
+            Err(error) => {
+                stop.store(true, std::sync::atomic::Ordering::SeqCst);
+                unsafe {
+                    (divert.shutdown)(divert.handle, SHUTDOWN_BOTH);
+                }
+                let cleanup = join_workers_bounded(
+                    vec![("eyes-capture-partial-start", capture)],
+                    PARTIAL_START_CLEANUP_TIMEOUT,
+                );
+                return Err(format!(
+                    "не удалось создать поток трекинга: {error}; capture cleanup: {cleanup:?}"
+                ));
+            }
+        }
     };
 
     Ok(EyesHandle {

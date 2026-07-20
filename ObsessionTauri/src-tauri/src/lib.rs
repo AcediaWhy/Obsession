@@ -14,6 +14,7 @@ mod eyes;
 mod hosts;
 mod hosts_snapshot;
 mod hosts_validate;
+mod legacy_reliability;
 mod lists;
 mod lists_validate;
 mod net;

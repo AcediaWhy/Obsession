@@ -15,8 +15,8 @@ use crate::adaptive_strategy::dsl::{override_key, StrategyCandidate, StrategyTra
 use crate::state::{AppState, DpiLaunchSpec, DpiProc, DpiRuntimeSnapshot};
 use crate::util::{self, DpiProcPublic, DpiStatusPayload, LockExt, VersionedSection};
 
-/// Регэкспы разбора конфигов/вывода команд — компилируются один раз на процесс,
-/// а не на каждый вызов (collect_hostlist* и detect_orphaned зовутся регулярно).
+/// Регэкспы разбора legacy-моста/вывода команд — компилируются один раз на процесс.
+#[allow(dead_code)]
 static HOSTLIST_RE: std::sync::LazyLock<regex::Regex> =
     std::sync::LazyLock::new(|| regex::Regex::new(r#"--hostlist(?:-auto)?="([^"]+)""#).unwrap());
 static ORPHAN_PID_RE: std::sync::LazyLock<regex::Regex> =
@@ -349,13 +349,21 @@ pub async fn start(app: &AppHandle, category: &str, config_file: &str) -> Result
         let intentional = {
             let state = app_mon.state::<AppState>();
             let mut d = state.dpi.lock_recover();
-            if d.procs
+            let owned = d
+                .procs
                 .get(&pid)
-                .is_some_and(|proc| proc.generation == generation)
-            {
+                .is_some_and(|proc| proc.generation == generation);
+            if owned {
                 d.procs.remove(&pid);
             }
-            d.stopping.remove(&pid)
+            let intentional = d.stopping.remove(&pid);
+            if owned && !intentional {
+                // The exact launch snapshot is no longer true once any Legacy
+                // process exits unexpectedly. Remaining processes stay owned,
+                // but generation-aware operations must re-read their state.
+                d.active_launch = None;
+            }
+            intentional
         };
 
         if !intentional {
@@ -390,44 +398,12 @@ pub async fn start(app: &AppHandle, category: &str, config_file: &str) -> Result
     Ok(pid)
 }
 
-/// Собирает хостлист для Глаз из активных конфигов winws: вытаскивает пути
-/// `--hostlist="..."`/`--hostlist-auto="..."`, читает эти файлы и собирает домены.
-/// Так Глаза следят ровно за теми хостами, что обходит текущая стратегия.
+/// Старый мост `домен → категория` для совместимости Legacy Brain. Новый
+/// observe-only контур использует единый TargetRegistry с longest-suffix.
+/// Если домен встречается в нескольких категориях — первая по порядку
+/// `configs` (детерминизм). Нужен только для отложенной миграции Brain.
 #[cfg(windows)]
-fn collect_hostlist(app: &AppHandle, configs: &[(String, String)]) -> Vec<String> {
-    use std::collections::BTreeSet;
-    let st = app.state::<AppState>();
-    let base = st.paths.base_dir.clone();
-    let mut domains: BTreeSet<String> = BTreeSet::new();
-    for (category, config_file) in configs {
-        let conf = st.paths.config_path(category, config_file);
-        let Ok(text) = std::fs::read_to_string(&conf) else {
-            continue;
-        };
-        for cap in HOSTLIST_RE.captures_iter(&text) {
-            // Пути в конфигах с бэкслешами (lists\discord.txt) — нормализуем.
-            let rel = cap[1].replace('\\', "/");
-            let path = base.join(&rel);
-            let Ok(list) = std::fs::read_to_string(&path) else {
-                continue; // autohosts может ещё не существовать — это норма
-            };
-            for line in list.lines() {
-                let d = line.trim();
-                if d.is_empty() || d.starts_with('#') {
-                    continue;
-                }
-                domains.insert(d.to_ascii_lowercase());
-            }
-        }
-    }
-    domains.into_iter().collect()
-}
-
-/// Как [`collect_hostlist`], но строит мост `домен → категория` для Мозга: по
-/// какой категории обхода наблюдается данный SNI. Если домен встречается в
-/// нескольких категориях — первая по порядку `configs` (детерминизм). Нужен для
-/// `BrainEvent::SessionStart`, чтобы Reset/Working скоупились по категории.
-#[cfg(windows)]
+#[allow(dead_code)]
 pub fn collect_hostlist_by_category(
     app: &AppHandle,
     configs: &[(String, String)],
@@ -477,26 +453,36 @@ fn collect_category_hostlist(app: &AppHandle, selections: &[(String, String)]) -
     domains.into_iter().collect()
 }
 
-/// Запускает «Глаза» после старта winws. Льёт per-flow вердикты в общий лог
-/// (source `eyes`) + stderr. Пустой хостлист = следим за всеми :443 (фолбэк).
+/// Compatibility Eyes path for Zapret2 Adaptive. It intentionally keeps the
+/// existing TCP/443 observation contract while remaining isolated from Legacy
+/// Brain and Legacy Reliability Manager.
 #[cfg(windows)]
-fn start_eyes(app: &AppHandle, hostlist: Vec<String>) {
-    let dll = {
+fn start_zapret2_eyes(app: &AppHandle, hostlist: Vec<String>) {
+    let runtime = {
         let state = app.state::<AppState>();
-        let zapret2_active = matches!(
-            state.dpi.lock_recover().active_launch.as_ref(),
+        let dpi = state.dpi.lock_recover();
+        matches!(
+            dpi.active_launch.as_ref(),
             Some(DpiLaunchSpec::Zapret2 { .. })
-        );
-        if zapret2_active {
-            state
+        )
+        .then(|| {
+            let dll = state
                 .paths
                 .winws2_path()
                 .parent()
                 .map(|dir| dir.join("WinDivert.dll"))
-                .unwrap_or_else(|| state.paths.bin_dir().join("WinDivert.dll"))
-        } else {
-            state.paths.bin_dir().join("WinDivert.dll")
-        }
+                .unwrap_or_else(|| state.paths.bin_dir().join("WinDivert.dll"));
+            (dll, dpi.generation)
+        })
+    };
+    let Some((dll, eyes_generation)) = runtime else {
+        util::emit_log(
+            app,
+            "warn",
+            "eyes",
+            "Zapret2 Eyes не запущены: runtime fence уже закрыт",
+        );
+        return;
     };
     if !dll.exists() {
         util::emit_log(
@@ -514,6 +500,18 @@ fn start_eyes(app: &AppHandle, hostlist: Vec<String>) {
     };
     let app_cb = app.clone();
     match crate::eyes::start(&dll, cfg, move |obs| {
+        let current = {
+            let state = app_cb.state::<AppState>();
+            let dpi = state.dpi.lock_recover();
+            dpi.is_current_generation(eyes_generation)
+                && matches!(
+                    dpi.active_launch.as_ref(),
+                    Some(DpiLaunchSpec::Zapret2 { .. })
+                )
+        };
+        if !current {
+            return;
+        }
         let line = format!(
             "{:?} {} :{} — {}",
             obs.verdict, obs.domain, obs.local_port, obs.evidence
@@ -523,32 +521,13 @@ fn start_eyes(app: &AppHandle, hostlist: Vec<String>) {
         util::emit_log(&app_cb, "info", "eyes", &line);
         // Сырое наблюдение во фронт (debug-читалка Глаз).
         let _ = app_cb.emit("eyes://observation", &obs);
-        // Packet-driven observations идут в отдельный bounded channel. При
-        // перегрузке отдельные сигналы дропаются, но RAM и control queue не растут.
-        let brain_input = {
-            let st = app_cb.state::<AppState>();
-            let guard = st.brain.lock().ok();
-            guard.and_then(|g| g.as_ref().map(|bh| bh.input.clone()))
-        };
-        if let Some(input) = brain_input {
-            if let Some(dropped) = input.try_observation(obs.domain.clone(), obs.verdict, obs.ts_ms)
-            {
-                util::emit_log(
-                    &app_cb,
-                    "warn",
-                    "brain",
-                    &format!("Очередь наблюдений переполнена: отброшено {dropped} событий"),
-                );
-            }
-        }
         let adaptive_input = {
             let st = app_cb.state::<AppState>();
             let guard = st.adaptive.lock().ok();
             guard.and_then(|value| value.as_ref().map(|handle| handle.input.clone()))
         };
         if let Some(input) = adaptive_input {
-            let generation = app_cb.state::<AppState>().dpi.lock_recover().generation;
-            let _ = input.try_observation(obs.domain.clone(), obs.verdict, generation);
+            let _ = input.try_observation(obs.domain.clone(), obs.verdict, eyes_generation);
         }
     }) {
         Ok(handle) => {
@@ -567,6 +546,71 @@ fn start_eyes(app: &AppHandle, hostlist: Vec<String>) {
             util::emit_log(app, "error", "eyes", &format!("Глаза не запустились: {e}"));
         }
     }
+}
+
+#[cfg(windows)]
+fn start_legacy_eyes(
+    app: &AppHandle,
+    registry: std::sync::Arc<crate::legacy_reliability::target_registry::TargetRegistry>,
+    envelope: crate::legacy_reliability::contracts::EventEnvelope,
+    lane_generations: std::sync::Arc<
+        std::collections::BTreeMap<String, crate::legacy_reliability::contracts::LaneGeneration>,
+    >,
+    ingress: crate::legacy_reliability::ingress::LegacyIngress,
+) -> Result<(), String> {
+    let dll = app
+        .state::<AppState>()
+        .paths
+        .bin_dir()
+        .join("WinDivert.dll");
+    if !dll.exists() {
+        return Err("WinDivert.dll не найдена — Legacy Eyes не стартуют".to_string());
+    }
+
+    let hostlist = registry
+        .active_target_suffixes()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    let capture_plan = registry
+        .active_capture_plan()
+        .map_err(|error| format!("Legacy active capture plan недоступен: {error}"))?;
+    if hostlist.is_empty() || capture_plan.is_empty() {
+        return Err(
+            "Legacy TargetRegistry не содержит активных доменов или TCP capture plan".to_string(),
+        );
+    }
+    let target_count = hostlist.len();
+    let cfg = crate::eyes::Config {
+        hostlist,
+        working_signal_mode: crate::eyes::WorkingSignalMode::StrictTls,
+        ..Default::default()
+    };
+    let counters = ingress.counters();
+    let registry_cb = std::sync::Arc::clone(&registry);
+    let lanes_cb = std::sync::Arc::clone(&lane_generations);
+    let ingress_cb = ingress.clone();
+    let handle =
+        crate::eyes::start_legacy(&dll, cfg, &capture_plan, counters, move |observation| {
+            if let Ok(adapted) = crate::legacy_reliability::adapter::adapt_observation(
+                observation,
+                envelope,
+                &registry_cb,
+                &lanes_cb,
+            ) {
+                let _ = ingress_cb.try_flow(adapted.event);
+            }
+        })?;
+    *app.state::<AppState>().eyes.lock_recover() = Some(handle);
+    util::emit_log(
+        app,
+        "info",
+        "legacy-reliability",
+        &format!(
+            "Observe-only Eyes запущены: targets={target_count}, tcp_ranges={}",
+            capture_plan.tcp_ranges().len()
+        ),
+    );
+    Ok(())
 }
 
 /// Останавливает наблюдателя, если запущен.
@@ -600,6 +644,13 @@ fn stop_eyes(app: &AppHandle) -> Vec<crate::dpi_supervisor::WorkerStopOutcome> {
 /// Останавливает все свои DPI-процессы и ждёт подтверждения teardown.
 /// DNS не сбрасывается здесь: host-mapping paths вызывают `flush_dns` условно.
 pub async fn stop_all(app: &AppHandle) {
+    // Close the Legacy session fence before Eyes teardown. Late callbacks can
+    // still race with WinDivert shutdown, but they no longer have a live sink.
+    let legacy_manager = app.state::<AppState>().legacy_manager.lock_recover().take();
+    if let Some(manager) = legacy_manager {
+        manager.shutdown().await;
+    }
+
     #[cfg(windows)]
     let eyes_clean = {
         let app2 = app.clone();
@@ -1176,7 +1227,7 @@ pub(crate) async fn start_zapret2_with_overrides(
     #[cfg(windows)]
     {
         let hostlist = collect_category_hostlist(app, selections);
-        start_eyes(app, hostlist);
+        start_zapret2_eyes(app, hostlist);
     }
 
     // Монитор краха: обновляет UI + сигналит (аналог winws-монитора).
@@ -1325,18 +1376,22 @@ pub async fn start_many(app: &AppHandle, configs: &[(String, String)]) -> Result
         return Err("Ни один DPI-процесс не был запущен".to_string());
     }
 
-    {
+    let start_generation = {
         let state = app.state::<AppState>();
         let mut dpi = state.dpi.lock_recover();
         dpi.last_legacy_selection = started_pairs.clone();
         dpi.active_launch = Some(DpiLaunchSpec::Legacy {
-            selections: started_pairs,
+            selections: started_pairs.clone(),
         });
-    }
+        dpi.generation
+    };
+    #[cfg(not(windows))]
+    let _ = start_generation;
 
-    // Поднимаем Глаза после winws — драйвер WinDivert уже установлен,
-    // NO_INSTALL-хендл откроется. Даём winws мгновение на init. Хостлист —
-    // домены из активных конфигов, чтобы следить только за обходимыми хостами.
+    // Поднимаем Legacy Eyes после winws — драйвер WinDivert уже установлен,
+    // NO_INSTALL-хендл откроется. Registry snapshots all eligible candidates,
+    // while the running capture plan is limited to the selected configs so a
+    // future broad candidate cannot turn Legacy Eyes into a watch-all sensor.
     #[cfg(windows)]
     {
         tokio::time::sleep(Duration::from_millis(800)).await;
@@ -1344,8 +1399,116 @@ pub async fn start_many(app: &AppHandle, configs: &[(String, String)]) -> Result
             stop_all(app).await;
             return Err("Запуск отменён: приложение завершает работу.".to_string());
         }
-        let hostlist = collect_hostlist(app, configs);
-        start_eyes(app, hostlist);
+        if !app
+            .state::<AppState>()
+            .dpi
+            .lock_recover()
+            .owns_exact_legacy_runtime(start_generation, &started, &started_pairs)
+        {
+            util::emit_log(
+                app,
+                "warn",
+                "legacy-reliability",
+                "Observe-only Manager не запущен: Legacy runtime изменился до sensor startup",
+            );
+            return Ok(started);
+        }
+        let paths = app.state::<AppState>().paths.clone();
+        let selections = started_pairs.clone();
+        let registry = tauri::async_runtime::spawn_blocking(move || {
+            crate::legacy_reliability::registry_loader::load_target_registry(&paths, &selections)
+        })
+        .await;
+        if !app
+            .state::<AppState>()
+            .dpi
+            .lock_recover()
+            .owns_exact_legacy_runtime(start_generation, &started, &started_pairs)
+        {
+            util::emit_log(
+                app,
+                "warn",
+                "legacy-reliability",
+                "Observe-only Manager не запущен: Legacy runtime изменился во время registry snapshot",
+            );
+            return Ok(started);
+        }
+        match registry {
+            Ok(Ok(registry)) => {
+                use crate::legacy_reliability::contracts::{
+                    EventEnvelope, LaneGeneration, LegacySessionContext, NetworkFingerprint,
+                    SensorGeneration, SessionId,
+                };
+
+                let (session_id, sensor_generation) = {
+                    let state = app.state::<AppState>();
+                    (
+                        SessionId::new(state.legacy_session_revision.bump()),
+                        SensorGeneration::new(state.legacy_sensor_revision.bump()),
+                    )
+                };
+                let lane_generations = started_pairs
+                    .iter()
+                    .map(|(category, _)| (category.clone(), LaneGeneration::new(start_generation)))
+                    .collect::<std::collections::BTreeMap<_, _>>();
+                let active_categories = lane_generations.keys().cloned().collect::<Vec<_>>();
+                let context = LegacySessionContext::new(
+                    session_id,
+                    active_categories,
+                    NetworkFingerprint::Unknown,
+                );
+                let registry = std::sync::Arc::new(registry);
+                match crate::legacy_reliability::runtime::spawn(
+                    context,
+                    sensor_generation,
+                    &registry,
+                    lane_generations.clone(),
+                ) {
+                    Ok(manager) => {
+                        let envelope =
+                            EventEnvelope::new(session_id, sensor_generation, registry.version());
+                        let ingress = manager.ingress.clone();
+                        let start_result = start_legacy_eyes(
+                            app,
+                            registry,
+                            envelope,
+                            std::sync::Arc::new(lane_generations),
+                            ingress,
+                        );
+                        if let Err(error) = &start_result {
+                            use crate::legacy_reliability::contracts::{
+                                EyeHealthCounters, EyeHealthState, HealthEvent,
+                            };
+                            let _ = manager.ingress.try_health(HealthEvent {
+                                envelope,
+                                state: EyeHealthState::Blind,
+                                counters: EyeHealthCounters::default(),
+                            });
+                            util::emit_log(app, "error", "legacy-reliability", error);
+                        }
+                        *app.state::<AppState>().legacy_manager.lock_recover() = Some(manager);
+                    }
+                    Err(error) => util::emit_log(
+                        app,
+                        "error",
+                        "legacy-reliability",
+                        &format!("Не удалось создать observe-only Manager: {error:?}"),
+                    ),
+                }
+            }
+            Ok(Err(error)) => util::emit_log(
+                app,
+                "error",
+                "legacy-reliability",
+                &format!("TargetRegistry недоступен; Eyes отключены: {error}"),
+            ),
+            Err(error) => util::emit_log(
+                app,
+                "error",
+                "legacy-reliability",
+                &format!("Сборка TargetRegistry прервана: {error}"),
+            ),
+        }
     }
 
     Ok(started)
@@ -1574,25 +1737,31 @@ pub fn kill_orphans(app: &AppHandle, pids: &[u32]) {
     emit_status(app);
 }
 
-/// Крайняя мера: убивает ВСЕ winws.exe в системе (включая чужие).
+/// Крайняя мера: убивает ВСЕ winws.exe/winws2.exe в системе (включая чужие).
 pub fn emergency_kill_all(app: &AppHandle) {
     util::emit_log(
         app,
         "warn",
         "dpi",
-        "EMERGENCY: завершение ВСЕХ процессов winws.exe в системе.",
+        "EMERGENCY: завершение ВСЕХ процессов winws.exe/winws2.exe в системе.",
     );
     #[cfg(windows)]
     stop_eyes(app);
     {
         let state = app.state::<AppState>();
         let mut d = state.dpi.lock_recover();
+        d.advance_generation();
         let tracked: Vec<u32> = d.procs.keys().copied().collect();
         d.stopping.extend(tracked);
         d.procs.clear();
+        d.active_launch = None;
+        d.started_at_unix = None;
     }
     let _ = util::std_command("taskkill")
         .args(["/F", "/T", "/IM", crate::paths::WINWS_EXE])
+        .output();
+    let _ = util::std_command("taskkill")
+        .args(["/F", "/T", "/IM", "winws2.exe"])
         .output();
     emit_status(app);
 }

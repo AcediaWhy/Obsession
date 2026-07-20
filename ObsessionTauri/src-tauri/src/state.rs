@@ -116,6 +116,37 @@ impl DpiState {
         }
     }
 
+    /// Verifies that a delayed Legacy startup continuation still refers to
+    /// the exact live process set it created. Process monitors may mutate this
+    /// state while startup is sleeping or building the registry.
+    pub fn owns_exact_legacy_runtime(
+        &self,
+        generation: u64,
+        pids: &[u32],
+        selections: &[(String, String)],
+    ) -> bool {
+        if !self.is_current_generation(generation)
+            || pids.len() != selections.len()
+            || self.procs.len() != pids.len()
+            || !matches!(
+                self.active_launch.as_ref(),
+                Some(DpiLaunchSpec::Legacy { selections: active }) if active == selections
+            )
+        {
+            return false;
+        }
+
+        pids.iter().all(|pid| {
+            self.procs.get(pid).is_some_and(|process| {
+                process.generation == generation && process.engine == "legacy"
+            })
+        }) && selections.iter().all(|(category, config_file)| {
+            self.procs
+                .values()
+                .any(|process| process.category == *category && process.config_file == *config_file)
+        })
+    }
+
     /// Поддерживает инвариант `started_at_unix = Some ⟺ procs непуст`. Возвращает
     /// текущее значение для payload. `now` — Unix-секунды (передаём снаружи, т.к.
     /// state не тянет системное время). Первый процесс сессии фиксирует старт;
@@ -229,6 +260,13 @@ pub struct AppState {
     /// вызова оба видят пустой кэш и дважды дёргают ipinfo (лишний внешний
     /// round-trip + дребезг значения). Держится через `.await` резолва.
     pub netid_gate: tokio::sync::Mutex<()>,
+    /// Observe-only Legacy Reliability Manager. Не пересекается с Brain и
+    /// adaptive Zapret2 coordinator; хранит только текущую session ingress.
+    pub legacy_manager: Mutex<Option<crate::legacy_reliability::runtime::LegacyReliabilityHandle>>,
+    /// Monotonic session/sensor clocks. Они не используют Observation.ts_ms:
+    /// часы Eyes сбрасываются при каждом restart.
+    pub legacy_session_revision: RevisionClock,
+    pub legacy_sensor_revision: RevisionClock,
 }
 
 impl AppState {
@@ -252,6 +290,9 @@ impl AppState {
             adaptive_revision: RevisionClock::default(),
             netid: Mutex::new(None),
             netid_gate: tokio::sync::Mutex::new(()),
+            legacy_manager: Mutex::new(None),
+            legacy_session_revision: RevisionClock::default(),
+            legacy_sensor_revision: RevisionClock::default(),
         }
     }
 }
@@ -336,6 +377,22 @@ mod tests {
         let snapshot = state.runtime_snapshot();
         assert_eq!(snapshot.generation, generation);
         assert_eq!(snapshot.launch, state.active_launch);
+    }
+
+    #[test]
+    fn exact_legacy_runtime_rejects_stale_or_missing_processes() {
+        let mut state = DpiState::default();
+        let generation = state.advance_generation();
+        let selections = vec![("discord".into(), "discord_1.conf".into())];
+        state.active_launch = Some(DpiLaunchSpec::Legacy {
+            selections: selections.clone(),
+        });
+        insert_proc(&mut state, 10);
+
+        assert!(state.owns_exact_legacy_runtime(generation, &[10], &selections));
+        assert!(!state.owns_exact_legacy_runtime(generation.wrapping_add(1), &[10], &selections));
+        state.procs.clear();
+        assert!(!state.owns_exact_legacy_runtime(generation, &[10], &selections));
     }
 
     #[test]

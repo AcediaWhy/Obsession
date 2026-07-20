@@ -141,13 +141,17 @@ async fn dpi_start_locked(
         crate::dpi::stop_all(app).await;
         return Err("Запуск отменён: приложение завершает работу.".to_string());
     }
+    // Phase 1 keeps the old global Brain observe-only. Its SessionStart would
+    // allow Action::Switch/StopBypass to call global start_many/stop_all and
+    // violate the per-category safety boundary. The new Legacy Manager owns
+    // observation; scoped DecisionIntents are enabled only in a later phase.
     if brain_is_running(app) {
-        let ev = crate::brain::runtime::build_session_start(app, pairs).await;
-        if runtime_is_shutting_down(app) {
-            crate::dpi::stop_all(app).await;
-            return Err("Запуск отменён: приложение завершает работу.".to_string());
-        }
-        send_brain_event(app, ev).await;
+        crate::util::emit_log(
+            app,
+            "debug",
+            "legacy-reliability",
+            "Legacy Brain SessionStart suppressed: observe-only migration phase",
+        );
     }
     Ok(pids)
 }
@@ -368,6 +372,13 @@ pub async fn dpi_emergency_kill(app: AppHandle) {
     let state = app.state::<AppState>();
     let _gate = state.dpi_gate.lock().await;
     send_brain_event(&app, crate::brain::BrainEvent::SessionStop).await;
+    // Close the Legacy session before the blocking emergency teardown. The
+    // manager task owns its ingress sender, so merely stopping Eyes would
+    // otherwise leave the observe-only runtime alive until the next start.
+    let legacy_manager = state.legacy_manager.lock_recover().take();
+    if let Some(manager) = legacy_manager {
+        manager.shutdown().await;
+    }
     // emergency_kill_all делает блокирующий stop_eyes(join) + taskkill /IM —
     // уводим с tokio-воркера, чтобы не занимать его под dpi_gate.
     let app2 = app.clone();

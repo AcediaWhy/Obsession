@@ -163,9 +163,11 @@ export type Verdict = "working" | "reset" | "blackhole";
 
 /** Сырое per-flow наблюдение Глаз (событие `eyes://observation`). */
 export interface Observation {
+  flow_id: number;
   domain: string;
   dst_ip: string;
   local_port: number;
+  remote_port: number;
   verdict: Verdict;
   evidence: string;
   ts_ms: number;
