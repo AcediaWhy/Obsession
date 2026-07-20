@@ -10,4 +10,5 @@ pub mod ingress;
 pub mod manager;
 pub mod registry_loader;
 pub mod runtime;
+pub mod status;
 pub mod target_registry;

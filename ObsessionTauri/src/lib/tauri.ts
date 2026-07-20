@@ -69,6 +69,7 @@ export interface BootstrapSnapshot {
   proxy: VersionedSection<ProxyStatus>;
   brain: VersionedSection<BrainStatus | null>;
   adaptive: VersionedSection<AdaptiveStatus | null>;
+  legacyReliability: VersionedSection<LegacyReliabilityStatus>;
   hosts: VersionedSection<HostsStatus>;
 }
 
@@ -191,6 +192,22 @@ export interface BrainStatus {
   backoffSecs: number | null;
   asnRegion: string | null;
   gatewayMacMasked: string | null;
+}
+
+export type LegacyReliabilityPhase =
+  | "inactive"
+  | "starting"
+  | "observing"
+  | "degraded"
+  | "blind";
+
+/** Read-only lifecycle projection of the active Legacy Reliability Manager. */
+export interface LegacyReliabilityStatus {
+  mode: "observe_only";
+  phase: LegacyReliabilityPhase;
+  activeCategories: string[];
+  sessionId: number | null;
+  sensorGeneration: number | null;
 }
 
 export type AdaptiveCategory = "discord" | "youtube_twitch" | "gaming";
@@ -431,6 +448,20 @@ export const on = {
     cb: (section: VersionedSection<BrainStatus>) => void,
   ): Promise<UnlistenFn> =>
     listen<VersionedSection<BrainStatus>>("brain://status", (e) => cb(e.payload)),
+  legacyReliabilityStatus: (
+    cb: (status: LegacyReliabilityStatus) => void,
+  ): Promise<UnlistenFn> =>
+    listen<VersionedSection<LegacyReliabilityStatus>>(
+      "legacy-reliability://status",
+      (e) => cb(e.payload.value),
+    ),
+  legacyReliabilityStatusVersioned: (
+    cb: (section: VersionedSection<LegacyReliabilityStatus>) => void,
+  ): Promise<UnlistenFn> =>
+    listen<VersionedSection<LegacyReliabilityStatus>>(
+      "legacy-reliability://status",
+      (e) => cb(e.payload),
+    ),
   adaptiveStatus: (cb: (s: AdaptiveStatus) => void): Promise<UnlistenFn> =>
     listen<VersionedSection<AdaptiveStatus>>("adaptive://status", (e) => {
       cb(e.payload.value);

@@ -11,6 +11,7 @@ import {
   type BootstrapSnapshot,
   type BrainStatus,
   type DpiStatus,
+  type LegacyReliabilityStatus,
   type ProxyStatus,
   type Settings,
   type VersionedSection,
@@ -19,10 +20,11 @@ import { useAdaptiveStrategyStore } from "./adaptiveStrategyStore";
 import { useBrainStore } from "./brainStore";
 import { useDpiStore } from "./dpiStore";
 import { subscribeHostsToSettings, useHostsStore } from "./hostsStore";
+import { useLegacyReliabilityStore } from "./legacyReliabilityStore";
 import { useProxyStore } from "./proxyStore";
 import { useSettingsStore } from "./settingsStore";
 
-const BOOTSTRAP_SCHEMA_VERSION = 1;
+const BOOTSTRAP_SCHEMA_VERSION = 2;
 
 type BootstrapErrorScope = "listeners" | "snapshot" | "dpi" | "proxy";
 
@@ -38,6 +40,9 @@ export interface LauncherBootstrapPorts {
   ) => Promise<UnlistenFn>;
   listenAdaptive: (
     cb: (section: VersionedSection<AdaptiveStatus>) => void,
+  ) => Promise<UnlistenFn>;
+  listenLegacyReliability: (
+    cb: (section: VersionedSection<LegacyReliabilityStatus>) => void,
   ) => Promise<UnlistenFn>;
   listenSuggestion: (
     cb: (suggestion: AdaptiveSuggestion) => void,
@@ -57,6 +62,9 @@ export interface LauncherBootstrapPorts {
   applyBrain: (section: BootstrapSnapshot["brain"]) => boolean;
   applyAdaptive: (
     section: BootstrapSnapshot["adaptive"],
+  ) => boolean;
+  applyLegacyReliability: (
+    section: BootstrapSnapshot["legacyReliability"],
   ) => boolean;
   applyHosts: (section: BootstrapSnapshot["hosts"]) => boolean;
   applySuggestion: (suggestion: AdaptiveSuggestion) => void;
@@ -96,6 +104,7 @@ function applySnapshot(
   ports.applyProxy(snapshot.proxy);
   ports.applyBrain(snapshot.brain);
   ports.applyAdaptive(snapshot.adaptive);
+  ports.applyLegacyReliability(snapshot.legacyReliability);
 }
 
 async function hydrateStartup(ports: LauncherBootstrapPorts): Promise<void> {
@@ -154,6 +163,9 @@ async function startSession(
     ports.listenProxy(ports.applyProxy),
     ports.listenBrain((section) => ports.applyBrain(section)),
     ports.listenAdaptive((section) => ports.applyAdaptive(section)),
+    ports.listenLegacyReliability((section) =>
+      ports.applyLegacyReliability(section),
+    ),
     ports.listenSuggestion(ports.applySuggestion),
     ports.listenProbe(ports.applyProbe),
   ]);
@@ -233,6 +245,7 @@ const realPorts: LauncherBootstrapPorts = {
   listenProxy: on.proxyStatusVersioned,
   listenBrain: on.brainStatusVersioned,
   listenAdaptive: on.adaptiveStatusVersioned,
+  listenLegacyReliability: on.legacyReliabilityStatusVersioned,
   listenSuggestion: on.adaptiveSuggestion,
   listenProbe: on.adaptiveProbe,
   subscribeSettings: subscribeHostsToSettings,
@@ -249,6 +262,8 @@ const realPorts: LauncherBootstrapPorts = {
     useBrainStore.getState().applyVersionedStatus(section),
   applyAdaptive: (section) =>
     useAdaptiveStrategyStore.getState().applyVersionedStatus(section),
+  applyLegacyReliability: (section) =>
+    useLegacyReliabilityStore.getState().applyVersionedStatus(section),
   applyHosts: (section) =>
     useHostsStore.getState().applyVersionedStatus(section),
   applySuggestion: (suggestion) =>

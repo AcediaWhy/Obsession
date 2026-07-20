@@ -16,6 +16,7 @@ import type {
   BootstrapSnapshot,
   BrainStatus,
   DpiStatus,
+  LegacyReliabilityStatus,
   ProxyStatus,
   Settings,
   VersionedSection,
@@ -57,9 +58,21 @@ const config: AppConfig = {
   lists: [],
 };
 
+function legacyStatus(
+  phase: LegacyReliabilityStatus["phase"],
+): LegacyReliabilityStatus {
+  return {
+    mode: "observe_only",
+    phase,
+    activeCategories: phase === "inactive" ? [] : ["discord"],
+    sessionId: phase === "inactive" ? null : 11,
+    sensorGeneration: phase === "observing" ? 3 : null,
+  };
+}
+
 function makeSnapshot(revisions: Partial<Record<string, number>> = {}) {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     settings: {
       revision: revisions.settings ?? 1,
       value: { settings, elevated: true, autostart: false },
@@ -90,6 +103,10 @@ function makeSnapshot(revisions: Partial<Record<string, number>> = {}) {
       revision: revisions.adaptive ?? 1,
       value: { phase: "idle" } as AdaptiveStatus,
     },
+    legacyReliability: {
+      revision: revisions.legacyReliability ?? 1,
+      value: legacyStatus("inactive"),
+    },
     hosts: {
       revision: revisions.hosts ?? 1,
       value: {
@@ -109,6 +126,7 @@ type SectionKey =
   | "proxy"
   | "brain"
   | "adaptive"
+  | "legacyReliability"
   | "hosts";
 
 function createHarness(listenerGate?: Promise<void>) {
@@ -118,6 +136,7 @@ function createHarness(listenerGate?: Promise<void>) {
     proxy: -1,
     brain: -1,
     adaptive: -1,
+    legacyReliability: -1,
     hosts: -1,
   };
   const values: Partial<Record<SectionKey, unknown>> = {};
@@ -126,8 +145,11 @@ function createHarness(listenerGate?: Promise<void>) {
     proxy?: (section: VersionedSection<ProxyStatus>) => void;
     brain?: (section: VersionedSection<BrainStatus>) => void;
     adaptive?: (section: VersionedSection<AdaptiveStatus>) => void;
+    legacyReliability?: (
+      section: VersionedSection<LegacyReliabilityStatus>,
+    ) => void;
   } = {};
-  const unlisteners = Array.from({ length: 7 }, () => vi.fn());
+  const unlisteners = Array.from({ length: 8 }, () => vi.fn());
   let unlistenIndex = 0;
   const snapshots: Array<Promise<BootstrapSnapshot>> = [];
 
@@ -155,6 +177,9 @@ function createHarness(listenerGate?: Promise<void>) {
     listenProxy: vi.fn((cb) => register("proxy", cb)),
     listenBrain: vi.fn((cb) => register("brain", cb)),
     listenAdaptive: vi.fn((cb) => register("adaptive", cb)),
+    listenLegacyReliability: vi.fn((cb) =>
+      register("legacyReliability", cb),
+    ),
     listenSuggestion: vi.fn(async () => {
       if (listenerGate) await listenerGate;
       return unlisteners[unlistenIndex++];
@@ -176,6 +201,8 @@ function createHarness(listenerGate?: Promise<void>) {
     applyProxy: (section) => apply("proxy", section),
     applyBrain: (section) => apply("brain", section),
     applyAdaptive: (section) => apply("adaptive", section),
+    applyLegacyReliability: (section) =>
+      apply("legacyReliability", section),
     applyHosts: (section) => apply("hosts", section),
     applySuggestion: vi.fn(),
     applyProbe: vi.fn(),
@@ -202,7 +229,7 @@ describe("launcherBootstrap", () => {
     vi.clearAllMocks();
   });
 
-  it("registers listeners before snapshot and rejects a stale overlapping section", async () => {
+  it("registers listeners before snapshot and rejects stale overlapping sections", async () => {
     const listenersReady = deferred<void>();
     const snapshotReady = deferred<BootstrapSnapshot>();
     const harness = createHarness(listenersReady.promise);
@@ -226,11 +253,19 @@ describe("launcherBootstrap", () => {
         started_at: 10,
       } as DpiStatus,
     });
-    snapshotReady.resolve(makeSnapshot({ dpi: 1 }));
+    harness.callbacks.legacyReliability?.({
+      revision: 2,
+      value: legacyStatus("observing"),
+    });
+    snapshotReady.resolve(makeSnapshot({ dpi: 1, legacyReliability: 1 }));
     await bootstrap.whenReady();
 
     expect(harness.revisions.dpi).toBe(2);
     expect((harness.values.dpi as DpiStatus).active).toBe(true);
+    expect(harness.revisions.legacyReliability).toBe(2);
+    expect(
+      (harness.values.legacyReliability as LegacyReliabilityStatus).phase,
+    ).toBe("observing");
     release();
   });
 
@@ -272,6 +307,7 @@ describe("launcherBootstrap", () => {
 
     expect(harness.ports.listenDpi).toHaveBeenCalledTimes(1);
     expect(harness.ports.listenProxy).toHaveBeenCalledTimes(1);
+    expect(harness.ports.listenLegacyReliability).toHaveBeenCalledTimes(1);
 
     releaseSecond();
     await Promise.resolve();
@@ -304,6 +340,26 @@ describe("launcherBootstrap", () => {
     expect((harness.values.adaptive as AdaptiveStatus).phase).toBe(
       "searching",
     );
+    release();
+  });
+
+  it("rejects an unsupported bootstrap schema through the snapshot error path", async () => {
+    const harness = createHarness();
+    harness.enqueueSnapshot(
+      Promise.resolve({ ...makeSnapshot(), schemaVersion: 1 }),
+    );
+    const bootstrap = createLauncherBootstrap(harness.ports);
+
+    const release = bootstrap.acquire();
+    await bootstrap.whenReady();
+
+    expect(harness.ports.reportError).toHaveBeenCalledWith(
+      "snapshot",
+      expect.objectContaining({
+        message: "Unsupported bootstrap schema 1",
+      }),
+    );
+    expect(harness.revisions.legacyReliability).toBe(-1);
     release();
   });
 

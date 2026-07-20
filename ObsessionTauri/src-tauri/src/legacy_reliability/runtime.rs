@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use tauri::AppHandle;
 use tokio::sync::{watch, Notify};
 use tokio::task::JoinHandle;
 
@@ -27,6 +28,43 @@ pub struct LegacyReliabilityHandle {
 impl LegacyReliabilityHandle {
     pub fn snapshot(&self) -> ObserveOnlySnapshot {
         self.status.borrow().clone()
+    }
+
+    /// Forwards health/lifecycle snapshots into the app-owned public status.
+    /// The publisher performs exact session+sensor fencing and deduplicates the
+    /// public projection, so frequent manager polls cannot create an event storm.
+    pub fn forward_public_status(&self, app: AppHandle) {
+        let mut status = self.status.clone();
+        let owner = self.snapshot();
+        let session_id = owner.session.session_id;
+        let sensor_generation = owner.session.sensor_generation;
+        let active_categories = owner.session.active_categories;
+        tauri::async_runtime::spawn(async move {
+            loop {
+                match status.changed().await {
+                    Ok(()) => {
+                        let snapshot = status.borrow_and_update().clone();
+                        super::status::publish_snapshot_if_owned(&app, &snapshot);
+                    }
+                    Err(_) => {
+                        // A panic/abort can close the watch sender without a
+                        // terminal snapshot. Normal stop already published
+                        // inactive, so its old owner is rejected here.
+                        super::status::publish_if_owned(
+                            &app,
+                            session_id,
+                            sensor_generation,
+                            super::status::LegacyReliabilityStatus::blind(
+                                active_categories,
+                                session_id,
+                                sensor_generation,
+                            ),
+                        );
+                        break;
+                    }
+                }
+            }
+        });
     }
 
     pub async fn shutdown(self) {

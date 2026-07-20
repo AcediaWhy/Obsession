@@ -263,6 +263,10 @@ pub struct AppState {
     /// Observe-only Legacy Reliability Manager. Не пересекается с Brain и
     /// adaptive Zapret2 coordinator; хранит только текущую session ingress.
     pub legacy_manager: Mutex<Option<crate::legacy_reliability::runtime::LegacyReliabilityHandle>>,
+    /// Последняя публичная lifecycle/health проекция observe-only Manager.
+    pub legacy_reliability_status:
+        Mutex<crate::legacy_reliability::status::LegacyReliabilityStatus>,
+    pub legacy_reliability_revision: RevisionClock,
     /// Monotonic session/sensor clocks. Они не используют Observation.ts_ms:
     /// часы Eyes сбрасываются при каждом restart.
     pub legacy_session_revision: RevisionClock,
@@ -291,6 +295,10 @@ impl AppState {
             netid: Mutex::new(None),
             netid_gate: tokio::sync::Mutex::new(()),
             legacy_manager: Mutex::new(None),
+            legacy_reliability_status: Mutex::new(
+                crate::legacy_reliability::status::LegacyReliabilityStatus::inactive(),
+            ),
+            legacy_reliability_revision: RevisionClock::default(),
             legacy_session_revision: RevisionClock::default(),
             legacy_sensor_revision: RevisionClock::default(),
         }
@@ -316,14 +324,17 @@ mod tests {
         let hosts = RevisionClock::default();
         let brain = RevisionClock::default();
         let adaptive = RevisionClock::default();
+        let legacy_reliability = RevisionClock::default();
 
         assert_eq!(brain.bump(), 1);
         assert_eq!(adaptive.bump(), 1);
         assert_eq!(adaptive.bump(), 2);
+        assert_eq!(legacy_reliability.bump(), 1);
         assert_eq!(settings.current(), 0);
         assert_eq!(hosts.current(), 0);
         assert_eq!(brain.current(), 1);
         assert_eq!(adaptive.current(), 2);
+        assert_eq!(legacy_reliability.current(), 1);
     }
 
     #[test]

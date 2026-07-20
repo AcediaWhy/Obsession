@@ -11,6 +11,7 @@ import { Stagger, StaggerItem } from "../design/components/Stagger";
 import { LogStream } from "../design/components/LogStream";
 import { Diagnostics } from "../design/components/Diagnostics";
 import { BrainPanel } from "../design/components/BrainPanel";
+import { LegacyReliabilityPanel } from "../design/components/LegacyReliabilityPanel";
 import { Zapret2StrategyPanel } from "../design/components/Zapret2StrategyPanel";
 import {
   Button,
@@ -288,9 +289,10 @@ export function DpiScreen() {
               <Diagnostics />
             </StaggerItem>
 
-            {/* Авто-восстановление (Мозг L3) — debug-читалка статуса. */}
+            {/* Legacy показывает фактический observe-only Manager; Zapret2
+                сохраняет существующую карточку Brain без изменений. */}
             <StaggerItem className="w-full">
-              <BrainPanel />
+              {zapret2Selected ? <BrainPanel /> : <LegacyReliabilityPanel />}
             </StaggerItem>
           </Stagger>
         </GlassPanel>

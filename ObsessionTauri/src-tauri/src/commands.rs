@@ -141,18 +141,8 @@ async fn dpi_start_locked(
         crate::dpi::stop_all(app).await;
         return Err("Запуск отменён: приложение завершает работу.".to_string());
     }
-    // Phase 1 keeps the old global Brain observe-only. Its SessionStart would
-    // allow Action::Switch/StopBypass to call global start_many/stop_all and
-    // violate the per-category safety boundary. The new Legacy Manager owns
-    // observation; scoped DecisionIntents are enabled only in a later phase.
-    if brain_is_running(app) {
-        crate::util::emit_log(
-            app,
-            "debug",
-            "legacy-reliability",
-            "Legacy Brain SessionStart suppressed: observe-only migration phase",
-        );
-    }
+    // Legacy SessionStart остаётся намеренно отключён: старый глобальный Brain
+    // умеет выполнять Switch/StopBypass, а Phase 1 только наблюдает.
     Ok(pids)
 }
 
@@ -372,6 +362,10 @@ pub async fn dpi_emergency_kill(app: AppHandle) {
     let state = app.state::<AppState>();
     let _gate = state.dpi_gate.lock().await;
     send_brain_event(&app, crate::brain::BrainEvent::SessionStop).await;
+    crate::legacy_reliability::status::publish(
+        &app,
+        crate::legacy_reliability::status::LegacyReliabilityStatus::inactive(),
+    );
     // Close the Legacy session before the blocking emergency teardown. The
     // manager task owns its ingress sender, so merely stopping Eyes would
     // otherwise leave the observe-only runtime alive until the next start.
@@ -661,7 +655,7 @@ pub fn runtime_get_snapshot(app: AppHandle) -> RuntimeSnapshot {
 }
 
 /// Версия wire-контракта единого startup/resume snapshot.
-pub const BOOTSTRAP_SCHEMA_VERSION: u32 = 1;
+pub const BOOTSTRAP_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Serialize)]
 pub struct BootstrapSettings {
@@ -679,6 +673,8 @@ pub struct BootstrapSnapshot {
     pub proxy: VersionedSection<crate::util::ProxyStatusPayload>,
     pub brain: VersionedSection<Option<crate::brain::BrainStatus>>,
     pub adaptive: VersionedSection<Option<crate::adaptive_strategy::model::RecoveryStatus>>,
+    pub legacy_reliability:
+        VersionedSection<crate::legacy_reliability::status::LegacyReliabilityStatus>,
     pub hosts: VersionedSection<crate::hosts::HostsStatus>,
 }
 
@@ -763,6 +759,12 @@ pub fn bootstrap_get_snapshot(app: AppHandle) -> BootstrapSnapshot {
         VersionedSection::new(revision, value)
     };
 
+    let legacy_reliability = {
+        let revision = state.legacy_reliability_revision.current();
+        let value = state.legacy_reliability_status.lock_recover().clone();
+        VersionedSection::new(revision, value)
+    };
+
     let hosts_revision = state.hosts_revision.current();
     let hosts = VersionedSection::new(
         hosts_revision,
@@ -776,6 +778,7 @@ pub fn bootstrap_get_snapshot(app: AppHandle) -> BootstrapSnapshot {
         proxy,
         brain,
         adaptive,
+        legacy_reliability,
         hosts,
     }
 }
@@ -858,15 +861,6 @@ pub fn set_hotkey(app: AppHandle, hotkey: String) -> Result<(), String> {
 }
 
 // ─── Мозг (авто-восстановление, L3) ───────────────────────────────────────
-
-/// Есть ли живая задача Мозга в состоянии.
-fn brain_is_running(app: &AppHandle) -> bool {
-    app.state::<AppState>()
-        .brain
-        .lock()
-        .map(|g| g.is_some())
-        .unwrap_or(false)
-}
 
 /// Шлёт событие Мозгу, если он запущен (иначе тихо игнорирует).
 async fn send_brain_event(app: &AppHandle, ev: crate::brain::BrainEvent) {
@@ -1183,8 +1177,12 @@ mod bootstrap_tests {
             ),
             brain: VersionedSection::new(5, None),
             adaptive: VersionedSection::new(6, None),
-            hosts: VersionedSection::new(
+            legacy_reliability: VersionedSection::new(
                 7,
+                crate::legacy_reliability::status::LegacyReliabilityStatus::inactive(),
+            ),
+            hosts: VersionedSection::new(
+                8,
                 crate::hosts::HostsStatus {
                     provider: "malw".to_string(),
                     status: "not_installed".to_string(),
@@ -1203,7 +1201,9 @@ mod bootstrap_tests {
         assert_eq!(value["proxy"]["revision"], 4);
         assert_eq!(value["brain"]["revision"], 5);
         assert_eq!(value["adaptive"]["revision"], 6);
-        assert_eq!(value["hosts"]["revision"], 7);
+        assert_eq!(value["legacyReliability"]["revision"], 7);
+        assert_eq!(value["legacyReliability"]["value"]["phase"], "inactive");
+        assert_eq!(value["hosts"]["revision"], 8);
         assert_eq!(value["hosts"]["value"]["provider"], "malw");
     }
 }

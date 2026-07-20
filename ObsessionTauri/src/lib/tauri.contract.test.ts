@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { BootstrapSnapshot, DpiStatus } from "./tauri";
 
 const fixture = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   settings: {
     revision: 2,
     value: {
@@ -50,8 +50,18 @@ const fixture = {
   },
   brain: { revision: 5, value: null },
   adaptive: { revision: 6, value: null },
-  hosts: {
+  legacyReliability: {
     revision: 7,
+    value: {
+      mode: "observe_only",
+      phase: "observing",
+      activeCategories: ["discord"],
+      sessionId: 42,
+      sensorGeneration: 9,
+    },
+  },
+  hosts: {
+    revision: 8,
     value: {
       provider: "malw",
       status: "not_installed",
@@ -64,21 +74,29 @@ const fixture = {
 
 describe("BootstrapSnapshot contract", () => {
   it("keeps every subsystem revision independent", () => {
-    expect(fixture.schemaVersion).toBe(1);
+    expect(fixture.schemaVersion).toBe(2);
     expect([
       fixture.settings.revision,
       fixture.dpi.revision,
       fixture.proxy.revision,
       fixture.brain.revision,
       fixture.adaptive.revision,
+      fixture.legacyReliability.revision,
       fixture.hosts.revision,
-    ]).toEqual([2, 3, 4, 5, 6, 7]);
+    ]).toEqual([2, 3, 4, 5, 6, 7, 8]);
   });
 
   it("keeps settings metadata and runtime values in versioned sections", () => {
     expect(fixture.settings.value.settings.ai_provider).toBe("malw");
     expect(fixture.settings.value.elevated).toBe(true);
     expect(fixture.dpi.value.processes).toEqual([]);
+    expect(fixture.legacyReliability.value).toEqual({
+      mode: "observe_only",
+      phase: "observing",
+      activeCategories: ["discord"],
+      sessionId: 42,
+      sensorGeneration: 9,
+    });
     expect(fixture.hosts.value.status).toBe("not_installed");
   });
 });

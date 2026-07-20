@@ -178,6 +178,44 @@ pub fn emit_status(app: &AppHandle) {
     );
 }
 
+/// An unexpected Legacy process exit invalidates the exact Manager snapshot.
+/// Process monitors remove the PID immediately, then serialize this teardown
+/// with start/stop before touching the public owner. A later session has a new
+/// DPI generation and is therefore left untouched.
+async fn invalidate_legacy_reliability_after_unexpected_exit(app: &AppHandle, generation: u64) {
+    let state = app.state::<AppState>();
+    let _gate = state.dpi_gate.lock().await;
+    let legacy_processes_remain = {
+        let dpi = state.dpi.lock_recover();
+        if !dpi.is_current_generation(generation) {
+            return;
+        }
+        dpi.procs
+            .values()
+            .any(|process| process.generation == generation && process.engine == "legacy")
+    };
+
+    if legacy_processes_remain {
+        crate::legacy_reliability::status::publish_current_blind(app);
+    } else {
+        crate::legacy_reliability::status::publish(
+            app,
+            crate::legacy_reliability::status::LegacyReliabilityStatus::inactive(),
+        );
+    }
+
+    let manager = state.legacy_manager.lock_recover().take();
+    if let Some(manager) = manager {
+        manager.shutdown().await;
+    }
+
+    #[cfg(windows)]
+    {
+        let app = app.clone();
+        let _ = tauri::async_runtime::spawn_blocking(move || stop_eyes(&app)).await;
+    }
+}
+
 /// Запускает winws с конфигом категории. Возвращает PID запущенного процесса.
 pub async fn start(app: &AppHandle, category: &str, config_file: &str) -> Result<u32, String> {
     let (winws, conf, base) = {
@@ -346,7 +384,7 @@ pub async fn start(app: &AppHandle, category: &str, config_file: &str) -> Result
         let code = status.ok().and_then(|s| s.code()).unwrap_or(-1);
         let lived = started.elapsed().as_millis();
 
-        let intentional = {
+        let (intentional, unexpected_owned_exit, reliability_owner) = {
             let state = app_mon.state::<AppState>();
             let mut d = state.dpi.lock_recover();
             let owned = d
@@ -363,8 +401,16 @@ pub async fn start(app: &AppHandle, category: &str, config_file: &str) -> Result
                 // but generation-aware operations must re-read their state.
                 d.active_launch = None;
             }
-            intentional
+            let unexpected_owned_exit = owned && !intentional;
+            let reliability_owner = unexpected_owned_exit
+                .then(|| crate::legacy_reliability::status::current_owner(&app_mon))
+                .flatten();
+            (intentional, unexpected_owned_exit, reliability_owner)
         };
+
+        if let Some(owner) = reliability_owner {
+            crate::legacy_reliability::status::publish_blind_if_owner(&app_mon, owner);
+        }
 
         if !intentional {
             if lived < 2000 {
@@ -393,6 +439,9 @@ pub async fn start(app: &AppHandle, category: &str, config_file: &str) -> Result
             );
         }
         emit_status(&app_mon);
+        if unexpected_owned_exit {
+            invalidate_legacy_reliability_after_unexpected_exit(&app_mon, generation).await;
+        }
     });
 
     Ok(pid)
@@ -606,7 +655,7 @@ fn start_legacy_eyes(
         "info",
         "legacy-reliability",
         &format!(
-            "Observe-only Eyes запущены: targets={target_count}, tcp_ranges={}",
+            "Наблюдатель Legacy запущен: целей={target_count}, диапазонов TCP={}",
             capture_plan.tcp_ranges().len()
         ),
     );
@@ -644,6 +693,11 @@ fn stop_eyes(app: &AppHandle) -> Vec<crate::dpi_supervisor::WorkerStopOutcome> {
 /// Останавливает все свои DPI-процессы и ждёт подтверждения teardown.
 /// DNS не сбрасывается здесь: host-mapping paths вызывают `flush_dns` условно.
 pub async fn stop_all(app: &AppHandle) {
+    // Invalidate the public owner before manager shutdown can emit Stopped.
+    crate::legacy_reliability::status::publish(
+        app,
+        crate::legacy_reliability::status::LegacyReliabilityStatus::inactive(),
+    );
     // Close the Legacy session fence before Eyes teardown. Late callbacks can
     // still race with WinDivert shutdown, but they no longer have a live sink.
     let legacy_manager = app.state::<AppState>().legacy_manager.lock_recover().take();
@@ -1376,6 +1430,68 @@ pub async fn start_many(app: &AppHandle, configs: &[(String, String)]) -> Result
         return Err("Ни один DPI-процесс не был запущен".to_string());
     }
 
+    #[cfg(windows)]
+    let (session_id, sensor_generation, active_categories) = {
+        use crate::legacy_reliability::contracts::{SensorGeneration, SessionId};
+        let state = app.state::<AppState>();
+        let active_categories = started_pairs
+            .iter()
+            .map(|(category, _)| category.clone())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        (
+            SessionId::new(state.legacy_session_revision.bump()),
+            SensorGeneration::new(state.legacy_sensor_revision.bump()),
+            active_categories,
+        )
+    };
+
+    #[cfg(windows)]
+    let (start_generation, exact_runtime) = {
+        let state = app.state::<AppState>();
+        let mut dpi = state.dpi.lock_recover();
+        dpi.last_legacy_selection = started_pairs.clone();
+        dpi.active_launch = Some(DpiLaunchSpec::Legacy {
+            selections: started_pairs.clone(),
+        });
+        let generation = dpi.generation;
+        let exact_runtime = dpi.owns_exact_legacy_runtime(generation, &started, &started_pairs);
+        if !exact_runtime {
+            dpi.active_launch = None;
+        }
+        if exact_runtime {
+            crate::legacy_reliability::status::publish(
+                app,
+                crate::legacy_reliability::status::LegacyReliabilityStatus::starting(
+                    active_categories.clone(),
+                    session_id,
+                    sensor_generation,
+                ),
+            );
+        } else if dpi
+            .procs
+            .values()
+            .any(|process| process.generation == generation && process.engine == "legacy")
+        {
+            crate::legacy_reliability::status::publish(
+                app,
+                crate::legacy_reliability::status::LegacyReliabilityStatus::blind(
+                    active_categories.clone(),
+                    session_id,
+                    sensor_generation,
+                ),
+            );
+        } else {
+            crate::legacy_reliability::status::publish(
+                app,
+                crate::legacy_reliability::status::LegacyReliabilityStatus::inactive(),
+            );
+        }
+        (generation, exact_runtime)
+    };
+
+    #[cfg(not(windows))]
     let start_generation = {
         let state = app.state::<AppState>();
         let mut dpi = state.dpi.lock_recover();
@@ -1388,12 +1504,33 @@ pub async fn start_many(app: &AppHandle, configs: &[(String, String)]) -> Result
     #[cfg(not(windows))]
     let _ = start_generation;
 
+    #[cfg(windows)]
+    if !exact_runtime {
+        util::emit_log(
+            app,
+            "warn",
+            "legacy-reliability",
+            "Мониторинг Legacy не запущен: runtime изменился до фиксации сессии",
+        );
+        return Ok(started);
+    }
+
     // Поднимаем Legacy Eyes после winws — драйвер WinDivert уже установлен,
     // NO_INSTALL-хендл откроется. Registry snapshots all eligible candidates,
     // while the running capture plan is limited to the selected configs so a
     // future broad candidate cannot turn Legacy Eyes into a watch-all sensor.
     #[cfg(windows)]
     {
+        use crate::legacy_reliability::contracts::{
+            EventEnvelope, LaneGeneration, LegacySessionContext, NetworkFingerprint,
+        };
+        use crate::legacy_reliability::status::{self, LegacyReliabilityStatus};
+
+        let lane_generations = started_pairs
+            .iter()
+            .map(|(category, _)| (category.clone(), LaneGeneration::new(start_generation)))
+            .collect::<std::collections::BTreeMap<_, _>>();
+
         tokio::time::sleep(Duration::from_millis(800)).await;
         if runtime_shutting_down(app) {
             stop_all(app).await;
@@ -1411,8 +1548,19 @@ pub async fn start_many(app: &AppHandle, configs: &[(String, String)]) -> Result
                 "legacy-reliability",
                 "Observe-only Manager не запущен: Legacy runtime изменился до sensor startup",
             );
+            status::publish_if_owned(
+                app,
+                session_id,
+                sensor_generation,
+                LegacyReliabilityStatus::blind(
+                    active_categories.clone(),
+                    session_id,
+                    sensor_generation,
+                ),
+            );
             return Ok(started);
         }
+
         let paths = app.state::<AppState>().paths.clone();
         let selections = started_pairs.clone();
         let registry = tauri::async_runtime::spawn_blocking(move || {
@@ -1431,30 +1579,23 @@ pub async fn start_many(app: &AppHandle, configs: &[(String, String)]) -> Result
                 "legacy-reliability",
                 "Observe-only Manager не запущен: Legacy runtime изменился во время registry snapshot",
             );
+            status::publish_if_owned(
+                app,
+                session_id,
+                sensor_generation,
+                LegacyReliabilityStatus::blind(
+                    active_categories.clone(),
+                    session_id,
+                    sensor_generation,
+                ),
+            );
             return Ok(started);
         }
         match registry {
             Ok(Ok(registry)) => {
-                use crate::legacy_reliability::contracts::{
-                    EventEnvelope, LaneGeneration, LegacySessionContext, NetworkFingerprint,
-                    SensorGeneration, SessionId,
-                };
-
-                let (session_id, sensor_generation) = {
-                    let state = app.state::<AppState>();
-                    (
-                        SessionId::new(state.legacy_session_revision.bump()),
-                        SensorGeneration::new(state.legacy_sensor_revision.bump()),
-                    )
-                };
-                let lane_generations = started_pairs
-                    .iter()
-                    .map(|(category, _)| (category.clone(), LaneGeneration::new(start_generation)))
-                    .collect::<std::collections::BTreeMap<_, _>>();
-                let active_categories = lane_generations.keys().cloned().collect::<Vec<_>>();
                 let context = LegacySessionContext::new(
                     session_id,
-                    active_categories,
+                    active_categories.clone(),
                     NetworkFingerprint::Unknown,
                 );
                 let registry = std::sync::Arc::new(registry);
@@ -1465,6 +1606,31 @@ pub async fn start_many(app: &AppHandle, configs: &[(String, String)]) -> Result
                     lane_generations.clone(),
                 ) {
                     Ok(manager) => {
+                        if !app
+                            .state::<AppState>()
+                            .dpi
+                            .lock_recover()
+                            .owns_exact_legacy_runtime(start_generation, &started, &started_pairs)
+                        {
+                            status::publish_if_owned(
+                                app,
+                                session_id,
+                                sensor_generation,
+                                LegacyReliabilityStatus::blind(
+                                    active_categories.clone(),
+                                    session_id,
+                                    sensor_generation,
+                                ),
+                            );
+                            manager.shutdown().await;
+                            util::emit_log(
+                                app,
+                                "warn",
+                                "legacy-reliability",
+                                "Мониторинг Legacy не запущен: runtime изменился до запуска наблюдателя",
+                            );
+                            return Ok(started);
+                        }
                         let envelope =
                             EventEnvelope::new(session_id, sensor_generation, registry.version());
                         let ingress = manager.ingress.clone();
@@ -1475,6 +1641,42 @@ pub async fn start_many(app: &AppHandle, configs: &[(String, String)]) -> Result
                             std::sync::Arc::new(lane_generations),
                             ingress,
                         );
+                        if !app
+                            .state::<AppState>()
+                            .dpi
+                            .lock_recover()
+                            .owns_exact_legacy_runtime(start_generation, &started, &started_pairs)
+                        {
+                            let eyes_started = start_result.is_ok();
+                            if let Err(error) = &start_result {
+                                util::emit_log(app, "error", "legacy-reliability", error);
+                            }
+                            status::publish_if_owned(
+                                app,
+                                session_id,
+                                sensor_generation,
+                                LegacyReliabilityStatus::blind(
+                                    active_categories.clone(),
+                                    session_id,
+                                    sensor_generation,
+                                ),
+                            );
+                            manager.shutdown().await;
+                            if eyes_started {
+                                let app_for_eyes = app.clone();
+                                let _ = tauri::async_runtime::spawn_blocking(move || {
+                                    stop_eyes(&app_for_eyes)
+                                })
+                                .await;
+                            }
+                            util::emit_log(
+                                app,
+                                "warn",
+                                "legacy-reliability",
+                                "Мониторинг Legacy остановлен: runtime изменился во время запуска наблюдателя",
+                            );
+                            return Ok(started);
+                        }
                         if let Err(error) = &start_result {
                             use crate::legacy_reliability::contracts::{
                                 EyeHealthCounters, EyeHealthState, HealthEvent,
@@ -1484,30 +1686,85 @@ pub async fn start_many(app: &AppHandle, configs: &[(String, String)]) -> Result
                                 state: EyeHealthState::Blind,
                                 counters: EyeHealthCounters::default(),
                             });
+                            status::publish_if_owned(
+                                app,
+                                session_id,
+                                sensor_generation,
+                                LegacyReliabilityStatus::blind(
+                                    active_categories.clone(),
+                                    session_id,
+                                    sensor_generation,
+                                ),
+                            );
                             util::emit_log(app, "error", "legacy-reliability", error);
+                        } else {
+                            status::publish_snapshot_if_owned(app, &manager.snapshot());
+                            manager.forward_public_status(app.clone());
+                            util::emit_log(
+                                app,
+                                "success",
+                                "legacy-reliability",
+                                "Мониторинг Legacy запущен в режиме наблюдения; конфигурации не изменяются автоматически.",
+                            );
                         }
                         *app.state::<AppState>().legacy_manager.lock_recover() = Some(manager);
                     }
-                    Err(error) => util::emit_log(
-                        app,
-                        "error",
-                        "legacy-reliability",
-                        &format!("Не удалось создать observe-only Manager: {error:?}"),
-                    ),
+                    Err(error) => {
+                        status::publish_if_owned(
+                            app,
+                            session_id,
+                            sensor_generation,
+                            LegacyReliabilityStatus::blind(
+                                active_categories.clone(),
+                                session_id,
+                                sensor_generation,
+                            ),
+                        );
+                        util::emit_log(
+                            app,
+                            "error",
+                            "legacy-reliability",
+                            &format!("Не удалось создать observe-only Manager: {error:?}"),
+                        );
+                    }
                 }
             }
-            Ok(Err(error)) => util::emit_log(
-                app,
-                "error",
-                "legacy-reliability",
-                &format!("TargetRegistry недоступен; Eyes отключены: {error}"),
-            ),
-            Err(error) => util::emit_log(
-                app,
-                "error",
-                "legacy-reliability",
-                &format!("Сборка TargetRegistry прервана: {error}"),
-            ),
+            Ok(Err(error)) => {
+                status::publish_if_owned(
+                    app,
+                    session_id,
+                    sensor_generation,
+                    LegacyReliabilityStatus::blind(
+                        active_categories.clone(),
+                        session_id,
+                        sensor_generation,
+                    ),
+                );
+                util::emit_log(
+                    app,
+                    "error",
+                    "legacy-reliability",
+                    &format!("TargetRegistry недоступен; Eyes отключены: {error}"),
+                );
+            }
+            Err(error) => {
+                status::publish_if_owned(
+                    app,
+                    session_id,
+                    sensor_generation,
+                    LegacyReliabilityStatus::blind(
+                        active_categories,
+                        session_id,
+                        sensor_generation,
+                    ),
+                );
+                util::emit_log(
+                    app,
+                    "error",
+                    "legacy-reliability",
+                    &format!("Сборка TargetRegistry прервана: {error}"),
+                );
+            }
         }
     }
 
@@ -1739,6 +1996,10 @@ pub fn kill_orphans(app: &AppHandle, pids: &[u32]) {
 
 /// Крайняя мера: убивает ВСЕ winws.exe/winws2.exe в системе (включая чужие).
 pub fn emergency_kill_all(app: &AppHandle) {
+    crate::legacy_reliability::status::publish(
+        app,
+        crate::legacy_reliability::status::LegacyReliabilityStatus::inactive(),
+    );
     util::emit_log(
         app,
         "warn",
