@@ -2,7 +2,7 @@
 
 Date: 2026-07-21
 
-Status: approved direction, pending written-spec review
+Status: implemented and verified
 
 ## Context
 
@@ -54,7 +54,7 @@ Result: `www.youtube.com` learned by Discord cannot outrank the authoritative `y
 A bounded `autohost_isolation` component will build a pure migration plan before any Legacy process starts. It scans known static lists and auto-hostlists and applies these rules:
 
 - A learned host matching its source category's static ownership stays in place.
-- A learned host matching exactly one foreign category, and not its source category, moves to that category's auto-hostlist.
+- A learned host matching exactly one foreign category, and not its source category, moves to that category's auto-hostlist. If that authoritative category is intentionally static-only and has no auto-hostlist, the host is removed from the foreign mutable file and retained only in the recoverable backup.
 - A host matching multiple static categories is removed from category-specific auto ownership and retained in the backup; static shared ownership continues to cover it.
 - A host matching no static category stays in its source auto-hostlist. It remains available to `winws` but is ignored by reliability attribution.
 
@@ -113,7 +113,7 @@ No new primary controls are required.
 
 ## 7. Failure handling and data safety
 
-- Migration and overlay preparation occur before process mutation.
+- Migration and overlay preparation occur before process mutation. The read-only gate validates the exact runtime and backup directory chains even when the selected configs do not need a generated overlay.
 - Existing source configs are never rewritten.
 - Existing auto-hostlists are recoverable from bounded backups.
 - Ambiguous or malformed learned entries never authorize category actions.

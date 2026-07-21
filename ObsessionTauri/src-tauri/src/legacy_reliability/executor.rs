@@ -347,7 +347,8 @@ pub fn authorize_gate_report(
         return Err(PreflightGateError::StaleReport);
     }
     match report.classification {
-        GateClassification::Stable | GateClassification::DpiSuspected => Ok(()),
+        GateClassification::DpiSuspected | GateClassification::DpiBlocked => Ok(()),
+        GateClassification::Stable => Err(PreflightGateError::IncidentNotActionable),
         GateClassification::Offline
         | GateClassification::DnsFailure
         | GateClassification::UpstreamDegraded => Err(PreflightGateError::Environment),
@@ -355,9 +356,34 @@ pub fn authorize_gate_report(
             Err(PreflightGateError::Target)
         }
         GateClassification::SensorUnreliable => Err(PreflightGateError::Sensor),
-        // A blackhole incident must complete its policy cooldown and obtain a
-        // new Stable gate; the executor never bypasses that policy boundary.
-        GateClassification::DpiBlocked => Err(PreflightGateError::IncidentNotActionable),
+    }
+}
+
+fn authorize_current_passive_quorum(
+    report: &GateReport,
+    expected_evidence_epoch: u64,
+    current_evidence_epoch: u64,
+    current_evidence: PassiveEvidenceSummary,
+) -> Result<(), PreflightGateError> {
+    if current_evidence_epoch != expected_evidence_epoch {
+        return Err(PreflightGateError::StaleFence);
+    }
+    match report.classification {
+        GateClassification::DpiSuspected if current_evidence.has_reset_quorum() => Ok(()),
+        GateClassification::DpiBlocked if current_evidence.has_blackhole_quorum() => Ok(()),
+        GateClassification::DpiSuspected | GateClassification::DpiBlocked => {
+            Err(PreflightGateError::IncidentNotActionable)
+        }
+        _ => Err(PreflightGateError::IncidentNotActionable),
+    }
+}
+
+fn lane_passive_evidence(lane: &super::assessment::LaneAssessment) -> PassiveEvidenceSummary {
+    PassiveEvidenceSummary {
+        reset_after_client_hello_flows: u32::from(lane.evidence.reset_flows),
+        reset_targets: u32::from(lane.evidence.reset_targets),
+        confirmed_tls_blackhole_flows: u32::from(lane.evidence.blackhole_flows),
+        blackhole_targets: u32::from(lane.evidence.blackhole_targets),
     }
 }
 
@@ -1031,6 +1057,16 @@ pub trait ScopedExecutorBackend: Send {
         &'a mut self,
         selections: Vec<(String, String)>,
     ) -> BackendFuture<'a, Result<Arc<TargetRegistry>, BackendFailure>>;
+
+    /// Validates the exact generated config for one target without touching
+    /// runtime files. Preflight invokes this for both candidate and rollback
+    /// selections before the first observer/process mutation.
+    fn preflight_scoped_launch<'a>(
+        &'a mut self,
+        selections: Vec<(String, String)>,
+        category: String,
+        config_file: String,
+    ) -> BackendFuture<'a, Result<(), BackendFailure>>;
 
     fn fresh_environment_gate<'a>(
         &'a mut self,
@@ -1849,6 +1885,22 @@ where
                     "tentative candidate did not produce a new registry version",
                 ),
             ));
+        }
+
+        for (selections, config_file) in [
+            (plan.previous_selections(), previous.config_id().to_owned()),
+            (
+                plan.candidate_selections(),
+                candidate.config_id().to_owned(),
+            ),
+        ] {
+            if let Err(failure) = self
+                .backend
+                .preflight_scoped_launch(selections, envelope.category.clone(), config_file)
+                .await
+            {
+                return Ok(self.preflight_rejected(envelope, failure));
+            }
         }
 
         let report = match self.backend.fresh_environment_gate(&envelope).await {
@@ -2975,6 +3027,21 @@ pub(crate) enum CrashRetryRunOutcome {
     Deferred,
 }
 
+async fn replace_crash_retry_observer_after_preflight<B>(
+    backend: &mut B,
+    selections: Vec<(String, String)>,
+    config_file: String,
+    observer_plan: ObserverReplacementPlan,
+) -> Result<IntentFence, BackendFailure>
+where
+    B: ScopedExecutorBackend,
+{
+    backend
+        .preflight_scoped_launch(selections, observer_plan.category.clone(), config_file)
+        .await?;
+    backend.replace_observer(observer_plan).await
+}
+
 pub(crate) async fn retry_crashed_legacy_lane(
     app: &AppHandle,
     event: &crate::dpi::LegacyProcessExit,
@@ -3023,9 +3090,10 @@ pub(crate) async fn retry_crashed_legacy_lane(
     let registry = backend.current_registry().map_err(|error| error.message)?;
     let active_config = registry
         .active_config(&event.owner.category)
-        .ok_or_else(|| "crashed category is absent from TargetRegistry".to_owned())?;
+        .ok_or_else(|| "crashed category is absent from TargetRegistry".to_owned())?
+        .to_owned();
     let active_fingerprint = registry
-        .config_fingerprint(&event.owner.category, active_config)
+        .config_fingerprint(&event.owner.category, &active_config)
         .map_err(|error| error.to_string())?;
     if !active_config.eq_ignore_ascii_case(&event.owner.config_file)
         || active_fingerprint.as_hex() != event.owner.config_fingerprint
@@ -3038,7 +3106,7 @@ pub(crate) async fn retry_crashed_legacy_lane(
         .map(|(category, config)| (category.to_owned(), config.to_owned()))
         .collect::<Vec<_>>();
     let reloaded = backend
-        .reload_registry(selections)
+        .reload_registry(selections.clone())
         .await
         .map_err(|error| error.message)?;
     if reloaded.version() != registry.version()
@@ -3075,10 +3143,14 @@ pub(crate) async fn retry_crashed_legacy_lane(
         category: event.owner.category.clone(),
         target_state: ObserverTargetState::Absent,
     };
-    let retry_fence = backend
-        .replace_observer(observer_plan)
-        .await
-        .map_err(|error| error.message)?;
+    let retry_fence = replace_crash_retry_observer_after_preflight(
+        &mut backend,
+        selections,
+        active_config,
+        observer_plan,
+    )
+    .await
+    .map_err(|error| error.message)?;
     if retry_fence.session_id != snapshot.session.session_id
         || retry_fence.category != event.owner.category
         || retry_fence.lane_generation != retry_lane_generation
@@ -3512,6 +3584,40 @@ impl ScopedExecutorBackend for AppScopedExecutorBackend {
         })
     }
 
+    fn preflight_scoped_launch<'a>(
+        &'a mut self,
+        selections: Vec<(String, String)>,
+        category: String,
+        config_file: String,
+    ) -> BackendFuture<'a, Result<(), BackendFailure>> {
+        let base = self.app.state::<AppState>().paths.base_dir.clone();
+        Box::pin(async move {
+            tauri::async_runtime::spawn_blocking(move || {
+                super::autohost_isolation::preflight_scoped_launch_from_disk(
+                    &base,
+                    &selections,
+                    &category,
+                    &config_file,
+                )
+                .map_err(|error| {
+                    BackendFailure::new(
+                        ConfirmationFailure::Sensor,
+                        format!(
+                            "Legacy scoped isolation preflight failed for {category}/{config_file}: {error}"
+                        ),
+                    )
+                })
+            })
+            .await
+            .map_err(|error| {
+                BackendFailure::new(
+                    ConfirmationFailure::Sensor,
+                    format!("Legacy scoped isolation preflight worker failed: {error}"),
+                )
+            })?
+        })
+    }
+
     fn fresh_environment_gate<'a>(
         &'a mut self,
         envelope: &'a IntentEnvelope,
@@ -3579,12 +3685,7 @@ impl ScopedExecutorBackend for AppScopedExecutorBackend {
                         super::assessment::AssessmentClassification::SensorUnreliable
                     ),
                 },
-                passive_evidence: PassiveEvidenceSummary {
-                    reset_after_client_hello_flows: u32::from(lane.evidence.reset_flows),
-                    reset_targets: u32::from(lane.evidence.reset_targets),
-                    confirmed_tls_blackhole_flows: u32::from(lane.evidence.blackhole_flows),
-                    blackhole_targets: u32::from(lane.evidence.blackhole_targets),
-                },
+                passive_evidence: lane_passive_evidence(lane),
                 requested_at_monotonic_ms: snapshot.logical_now_ms,
             };
             let gate = self.manager_gate()?;
@@ -3623,7 +3724,6 @@ impl ScopedExecutorBackend for AppScopedExecutorBackend {
                 || current.session.sensor_generation != gate_sensor
                 || current.session.target_registry_version != gate_registry
                 || current_lane.lane_generation != gate_lane
-                || current_lane.evidence_epoch != gate_evidence_epoch
                 || current.last_gap_sequence != gate_gap_sequence
                 || current.health.state != EyeHealthState::Ready
                 || current.health.counters.parse_errors > gate_counters.parse_errors
@@ -3634,6 +3734,18 @@ impl ScopedExecutorBackend for AppScopedExecutorBackend {
                     "sensor/evidence fence changed during fresh Environment Gate",
                 ));
             }
+            authorize_current_passive_quorum(
+                &report,
+                gate_evidence_epoch,
+                current_lane.evidence_epoch,
+                lane_passive_evidence(current_lane),
+            )
+            .map_err(|error| {
+                BackendFailure::new(
+                    error.failure_reason(),
+                    format!("fresh Environment Gate passive evidence rejected: {error:?}"),
+                )
+            })?;
             Ok(report)
         })
     }
@@ -4165,6 +4277,137 @@ mod tests {
         }
     }
 
+    fn preflight_gate_fence() -> GateFence {
+        GateFence {
+            session_id: SessionId::new(7),
+            lane_generation: LaneGeneration::new(3),
+            sensor_generation: SensorGeneration::new(5),
+            target_registry_version: RegistryVersion::new(11),
+            network_fingerprint: network(),
+        }
+    }
+
+    fn preflight_gate_report(classification: GateClassification, fence: GateFence) -> GateReport {
+        GateReport {
+            fence,
+            category: "video".into(),
+            classification,
+            controls: Vec::new(),
+            category_targets: Vec::new(),
+            baseline_latency_ms: Some(100),
+            slow_threshold_ms: Some(1_600),
+            generated_at_monotonic_ms: 100,
+            valid_until_monotonic_ms: 10_100,
+        }
+    }
+
+    #[test]
+    fn preflight_authorizes_a_fresh_exact_dpi_blocked_report() {
+        let fence = preflight_gate_fence();
+        let report = preflight_gate_report(GateClassification::DpiBlocked, fence.clone());
+        assert_eq!(authorize_gate_report(&report, &fence, 100), Ok(()));
+    }
+
+    #[test]
+    fn fresh_gate_rejects_expired_or_cleared_quorum_without_evidence_epoch_change() {
+        let unchanged_epoch = 17;
+        let cases = [
+            (
+                GateClassification::DpiSuspected,
+                PassiveEvidenceSummary {
+                    reset_after_client_hello_flows: 3,
+                    reset_targets: 2,
+                    ..PassiveEvidenceSummary::default()
+                },
+                PassiveEvidenceSummary {
+                    reset_after_client_hello_flows: 2,
+                    reset_targets: 2,
+                    ..PassiveEvidenceSummary::default()
+                },
+            ),
+            (
+                GateClassification::DpiBlocked,
+                PassiveEvidenceSummary {
+                    confirmed_tls_blackhole_flows: 2,
+                    blackhole_targets: 2,
+                    ..PassiveEvidenceSummary::default()
+                },
+                PassiveEvidenceSummary::default(),
+            ),
+        ];
+
+        for (classification, initial_quorum, current_evidence) in cases {
+            let report = preflight_gate_report(classification, preflight_gate_fence());
+            assert_eq!(
+                authorize_current_passive_quorum(
+                    &report,
+                    unchanged_epoch,
+                    unchanged_epoch,
+                    initial_quorum,
+                ),
+                Ok(())
+            );
+            assert_eq!(
+                authorize_current_passive_quorum(
+                    &report,
+                    unchanged_epoch,
+                    unchanged_epoch,
+                    current_evidence,
+                ),
+                Err(PreflightGateError::IncidentNotActionable)
+            );
+        }
+    }
+
+    #[test]
+    fn preflight_rejects_environment_target_sensor_and_stale_reports() {
+        let fence = preflight_gate_fence();
+        let recovered = preflight_gate_report(GateClassification::Stable, fence.clone());
+        assert_eq!(
+            authorize_gate_report(&recovered, &fence, 100),
+            Err(PreflightGateError::IncidentNotActionable)
+        );
+        for classification in [
+            GateClassification::Offline,
+            GateClassification::DnsFailure,
+            GateClassification::UpstreamDegraded,
+        ] {
+            let report = preflight_gate_report(classification, fence.clone());
+            assert_eq!(
+                authorize_gate_report(&report, &fence, 100),
+                Err(PreflightGateError::Environment)
+            );
+        }
+        for classification in [
+            GateClassification::TargetUnavailable,
+            GateClassification::ServiceSlow,
+        ] {
+            let report = preflight_gate_report(classification, fence.clone());
+            assert_eq!(
+                authorize_gate_report(&report, &fence, 100),
+                Err(PreflightGateError::Target)
+            );
+        }
+        let blind = preflight_gate_report(GateClassification::SensorUnreliable, fence.clone());
+        assert_eq!(
+            authorize_gate_report(&blind, &fence, 100),
+            Err(PreflightGateError::Sensor)
+        );
+
+        let expired = preflight_gate_report(GateClassification::DpiBlocked, fence.clone());
+        assert_eq!(
+            authorize_gate_report(&expired, &fence, 10_101),
+            Err(PreflightGateError::StaleReport)
+        );
+        let mut wrong_fence = fence.clone();
+        wrong_fence.sensor_generation = SensorGeneration::new(6);
+        let mismatched = preflight_gate_report(GateClassification::DpiBlocked, wrong_fence);
+        assert_eq!(
+            authorize_gate_report(&mismatched, &fence, 100),
+            Err(PreflightGateError::StaleReport)
+        );
+    }
+
     fn process_owner(
         pid: u32,
         identity: u64,
@@ -4441,6 +4684,8 @@ mod tests {
                     ("chat".into(), self.neighbor_owner.clone()),
                 ]),
                 next_pid: 100,
+                gate_classification: GateClassification::DpiSuspected,
+                fail_isolation_preflight_for: None,
                 confirmation: ConfirmationDecision::Succeeded,
                 change_network_on_confirmation: false,
                 crash_candidate_on_confirmation: false,
@@ -4512,6 +4757,8 @@ mod tests {
         lanes: BTreeMap<String, LaneGeneration>,
         processes: BTreeMap<String, ProcessOwner>,
         next_pid: u32,
+        gate_classification: GateClassification,
+        fail_isolation_preflight_for: Option<String>,
         confirmation: ConfirmationDecision,
         change_network_on_confirmation: bool,
         crash_candidate_on_confirmation: bool,
@@ -4632,6 +4879,25 @@ mod tests {
             Box::pin(async move { Ok(registry) })
         }
 
+        fn preflight_scoped_launch<'a>(
+            &'a mut self,
+            _selections: Vec<(String, String)>,
+            category: String,
+            config_file: String,
+        ) -> BackendFuture<'a, Result<(), BackendFailure>> {
+            self.calls
+                .push(format!("isolation:{category}/{config_file}"));
+            let failure = (self.fail_isolation_preflight_for.as_deref()
+                == Some(config_file.as_str()))
+            .then(|| {
+                BackendFailure::new(
+                    ConfirmationFailure::Sensor,
+                    format!("simulated isolation preflight failure for {config_file}"),
+                )
+            });
+            Box::pin(async move { failure.map_or(Ok(()), Err) })
+        }
+
         fn fresh_environment_gate<'a>(
             &'a mut self,
             envelope: &'a IntentEnvelope,
@@ -4639,11 +4905,12 @@ mod tests {
             self.calls.push("gate".into());
             let now = self.now_ms;
             let gate = gate_fence(envelope);
+            let classification = self.gate_classification;
             Box::pin(async move {
                 Ok(GateReport {
                     fence: gate,
                     category: envelope.category.clone(),
-                    classification: GateClassification::DpiSuspected,
+                    classification,
                     controls: Vec::new(),
                     category_targets: Vec::new(),
                     baseline_latency_ms: None,
@@ -4809,6 +5076,80 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn crash_retry_isolation_preflight_precedes_and_can_block_observer_mutation() {
+        let fixture = ExecutorFixture::new();
+        let observer_plan = ObserverReplacementPlan {
+            session_id: fixture.fence.session_id,
+            network_fingerprint: fixture.fence.network_fingerprint.clone(),
+            registry: Arc::clone(&fixture.registry),
+            lane_generations: BTreeMap::from([
+                ("video".into(), LaneGeneration::new(8)),
+                ("chat".into(), LaneGeneration::new(4)),
+            ]),
+            category: "video".into(),
+            target_state: ObserverTargetState::Absent,
+        };
+        let config_file = fixture.previous.config_id().to_owned();
+
+        let mut blocked = fixture.backend();
+        blocked.processes.remove("video");
+        blocked.fail_isolation_preflight_for = Some(config_file.clone());
+        let failure = replace_crash_retry_observer_after_preflight(
+            &mut blocked,
+            old_selections(),
+            config_file.clone(),
+            observer_plan.clone(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(failure.reason, ConfirmationFailure::Sensor);
+        assert_eq!(blocked.calls, ["isolation:video/video_1.conf"]);
+
+        let mut backend = fixture.backend();
+        backend.processes.remove("video");
+        replace_crash_retry_observer_after_preflight(
+            &mut backend,
+            old_selections(),
+            config_file,
+            observer_plan,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            backend.calls,
+            ["isolation:video/video_1.conf", "observer:video_1.conf"]
+        );
+    }
+
+    #[tokio::test]
+    async fn scoped_isolation_failure_preserves_previous_lane_before_any_mutation() {
+        let fixture = ExecutorFixture::new();
+        let (mut coordinator, action) = fixture.coordinator();
+        let mut backend = fixture.backend();
+        backend.fail_isolation_preflight_for = Some(fixture.candidate.config_id().to_owned());
+        let mut executor = ScopedExecutor::new(backend);
+
+        let terminal = drive(&mut executor, &mut coordinator, action).await;
+
+        assert_eq!(
+            disposition(&terminal),
+            RecoveryDisposition::PreviousPreserved
+        );
+        assert_eq!(
+            executor.backend().processes.get("video"),
+            Some(&fixture.previous_owner)
+        );
+        assert!(executor
+            .backend()
+            .calls
+            .iter()
+            .any(|call| call == "isolation:video/video_2.conf"));
+        assert!(!executor.backend().calls.iter().any(|call| {
+            call == "gate" || call.starts_with("observer:") || call.starts_with("stop:")
+        }));
+    }
+
     #[test]
     fn unexpected_candidate_exit_is_persisted_as_readiness_not_strategy() {
         let fixture = ExecutorFixture::new();
@@ -4833,6 +5174,30 @@ mod tests {
         .unwrap();
         assert_eq!(failure.kind, super::super::cache::FailureKind::Readiness);
         assert_eq!(failure.reason, "unexpected_exit");
+    }
+
+    #[tokio::test]
+    async fn stable_preflight_preserves_the_lane_before_observer_or_stop() {
+        let fixture = ExecutorFixture::new();
+        let (mut coordinator, action) = fixture.coordinator();
+        let mut backend = fixture.backend();
+        backend.gate_classification = GateClassification::Stable;
+        let mut executor = ScopedExecutor::new(backend);
+
+        let terminal = drive(&mut executor, &mut coordinator, action).await;
+        assert_eq!(
+            disposition(&terminal),
+            RecoveryDisposition::PreviousPreserved
+        );
+        assert_eq!(
+            executor.backend().processes.get("video"),
+            Some(&fixture.previous_owner)
+        );
+        assert!(executor.backend().calls.iter().any(|call| call == "gate"));
+        assert!(!executor.backend().calls.iter().any(|call| {
+            call.starts_with("observer:") || call.starts_with("stop:") || call.starts_with("start:")
+        }));
+        assert_eq!(coordinator.status().negative_cooldown_count, 0);
     }
 
     #[tokio::test]

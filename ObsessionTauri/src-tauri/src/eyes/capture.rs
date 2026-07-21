@@ -27,7 +27,7 @@ use std::time::{Duration, Instant};
 
 use libloading::{Library, Symbol};
 
-use crate::dpi_supervisor::{join_workers_bounded, WorkerStopOutcome};
+use crate::dpi_supervisor::{WorkerStopOutcome, WorkerTeardown};
 use crate::eyes::flow::{Config, FlowTable, WorkingSignalMode};
 use crate::eyes::parse::{decode_ip_tcp, ParsedPacket};
 use crate::eyes::signal::Observation;
@@ -248,10 +248,21 @@ pub struct EyesHandle {
     divert: Arc<WinDivert>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EyesStartError {
     message: String,
     safe_to_retry: bool,
+    pending_teardown: Option<WorkerTeardown>,
+}
+
+impl std::fmt::Debug for EyesStartError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("EyesStartError")
+            .field("message", &self.message)
+            .field("safe_to_retry", &self.safe_to_retry)
+            .field("pending_teardown", &self.pending_teardown.is_some())
+            .finish()
+    }
 }
 
 impl EyesStartError {
@@ -259,18 +270,28 @@ impl EyesStartError {
         Self {
             message: message.into(),
             safe_to_retry: true,
+            pending_teardown: None,
         }
     }
 
-    fn partial(message: impl Into<String>, safe_to_retry: bool) -> Self {
+    pub(crate) fn partial(
+        message: impl Into<String>,
+        safe_to_retry: bool,
+        pending_teardown: Option<WorkerTeardown>,
+    ) -> Self {
         Self {
             message: message.into(),
             safe_to_retry,
+            pending_teardown,
         }
     }
 
     pub fn safe_to_retry(&self) -> bool {
         self.safe_to_retry
+    }
+
+    pub(crate) fn into_parts(self) -> (String, bool, Option<WorkerTeardown>) {
+        (self.message, self.safe_to_retry, self.pending_teardown)
     }
 }
 
@@ -282,8 +303,26 @@ impl std::fmt::Display for EyesStartError {
 
 impl std::error::Error for EyesStartError {}
 
+struct PartialStartCleanup {
+    outcomes: Vec<WorkerStopOutcome>,
+    safe_to_retry: bool,
+    pending_teardown: Option<WorkerTeardown>,
+}
+
+fn cleanup_partial_capture(capture: JoinHandle<()>, timeout: Duration) -> PartialStartCleanup {
+    let mut teardown = WorkerTeardown::new(vec![("eyes-capture-partial-start", capture)]);
+    let outcomes = teardown.wait_bounded(timeout);
+    let safe_to_retry = outcomes.iter().all(|outcome| outcome.is_clean());
+    let pending_teardown = (!teardown.is_resolved()).then_some(teardown);
+    PartialStartCleanup {
+        outcomes,
+        safe_to_retry,
+        pending_teardown,
+    }
+}
+
 impl EyesHandle {
-    pub fn stop_bounded(mut self, timeout: Duration) -> Vec<WorkerStopOutcome> {
+    pub(crate) fn begin_stop(mut self) -> WorkerTeardown {
         self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
         unsafe {
             (self.divert.shutdown)(self.divert.handle, SHUTDOWN_BOTH);
@@ -295,7 +334,11 @@ impl EyesHandle {
         if let Some(tracker) = self.tracker.take() {
             workers.push(("eyes-tracker", tracker));
         }
-        join_workers_bounded(workers, timeout)
+        WorkerTeardown::new(workers)
+    }
+
+    pub fn stop_bounded(self, timeout: Duration) -> Vec<WorkerStopOutcome> {
+        self.begin_stop().wait_bounded(timeout)
     }
 
     /// Останавливает наблюдение: будит recv через shutdown, ждёт завершения потоков.
@@ -345,11 +388,15 @@ const FILTER: &str = "tcp and (tcp.SrcPort == 443 or tcp.DstPort == 443)";
 ///
 /// `dll_path` — путь к нашей `WinDivert.dll` (обычно `bin_dir()/WinDivert.dll`).
 /// `on_observation` вызывается для каждого готового per-flow вердикта.
-pub fn start<F>(dll_path: &Path, cfg: Config, on_observation: F) -> Result<EyesHandle, String>
+pub fn start<F>(
+    dll_path: &Path,
+    cfg: Config,
+    on_observation: F,
+) -> Result<EyesHandle, EyesStartError>
 where
     F: Fn(Observation) + Send + 'static,
 {
-    start_inner(dll_path, cfg, FILTER, None, on_observation).map_err(|error| error.to_string())
+    start_inner(dll_path, cfg, FILTER, None, on_observation)
 }
 
 /// Legacy-only entry point with a registry-derived TCP capture plan and
@@ -549,16 +596,14 @@ where
                 unsafe {
                     (divert.shutdown)(divert.handle, SHUTDOWN_BOTH);
                 }
-                let cleanup = join_workers_bounded(
-                    vec![("eyes-capture-partial-start", capture)],
-                    PARTIAL_START_CLEANUP_TIMEOUT,
-                );
-                let safe_to_retry = cleanup.iter().all(|outcome| outcome.is_clean());
+                let cleanup = cleanup_partial_capture(capture, PARTIAL_START_CLEANUP_TIMEOUT);
                 return Err(EyesStartError::partial(
                     format!(
-                        "не удалось создать поток трекинга: {error}; capture cleanup: {cleanup:?}"
+                        "не удалось создать поток трекинга: {error}; capture cleanup: {:?}",
+                        cleanup.outcomes
                     ),
-                    safe_to_retry,
+                    cleanup.safe_to_retry,
+                    cleanup.pending_teardown,
                 ));
             }
         }
@@ -579,7 +624,29 @@ mod tests {
     #[test]
     fn partial_start_error_preserves_cleanup_safety() {
         assert!(EyesStartError::clean("before open").safe_to_retry());
-        assert!(!EyesStartError::partial("worker leaked", false).safe_to_retry());
+        assert!(!EyesStartError::partial("worker leaked", false, None).safe_to_retry());
+    }
+
+    #[test]
+    fn partial_start_timeout_returns_a_persistent_teardown_ticket() {
+        let (release, blocked) = std::sync::mpsc::channel();
+        let capture = std::thread::spawn(move || {
+            let _ = blocked.recv();
+        });
+
+        let cleanup = cleanup_partial_capture(capture, Duration::ZERO);
+
+        assert!(!cleanup.safe_to_retry);
+        assert!(cleanup
+            .outcomes
+            .iter()
+            .any(|outcome| { outcome.state == crate::dpi_supervisor::WorkerStopState::TimedOut }));
+        let mut teardown = cleanup.pending_teardown.unwrap();
+        assert!(!teardown.is_resolved());
+
+        release.send(()).unwrap();
+        teardown.wait_bounded(Duration::from_secs(1));
+        assert!(teardown.is_resolved());
     }
 
     #[test]

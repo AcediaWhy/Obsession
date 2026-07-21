@@ -20,6 +20,7 @@ pub const BLACKHOLE_FLOW_QUORUM: usize = 2;
 pub const BLACKHOLE_TARGET_QUORUM: usize = 2;
 pub const WORKING_FLOW_QUORUM: usize = 2;
 pub const WORKING_TARGET_QUORUM: usize = 2;
+pub const WORKING_RECOVERY_HYSTERESIS_MS: u64 = 10_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -151,6 +152,49 @@ struct AppliedGate {
     assessed_at_ms: u64,
     valid_until_ms: u64,
     cooldown_until_ms: Option<u64>,
+    working_recovery_started_at_ms: Option<u64>,
+}
+
+impl AppliedGate {
+    fn requires_working_recovery(&self) -> bool {
+        matches!(
+            self.classification,
+            AssessmentClassification::DpiSuspected | AssessmentClassification::DpiBlocked
+        )
+    }
+
+    fn cooldown_active(&self, now_ms: u64) -> bool {
+        self.cooldown_until_ms
+            .is_some_and(|until_ms| now_ms < until_ms)
+    }
+
+    fn working_recovery_complete(&self, now_ms: u64) -> bool {
+        self.working_recovery_started_at_ms
+            .is_some_and(|started_at_ms| {
+                now_ms >= started_at_ms.saturating_add(WORKING_RECOVERY_HYSTERESIS_MS)
+            })
+    }
+
+    fn recovered_by_working(&self, now_ms: u64) -> bool {
+        self.requires_working_recovery()
+            && self.working_recovery_complete(now_ms)
+            && !self.cooldown_active(now_ms)
+    }
+
+    fn remains_authoritative(&self, gate_quorum_still_valid: bool, now_ms: u64) -> bool {
+        if self.cooldown_active(now_ms) {
+            return true;
+        }
+        if self.requires_working_recovery() {
+            return !self.recovered_by_working(now_ms);
+        }
+        gate_quorum_still_valid && now_ms <= self.valid_until_ms
+    }
+
+    fn blocks_new_gate(&self, now_ms: u64) -> bool {
+        self.cooldown_active(now_ms)
+            || (self.requires_working_recovery() && !self.working_recovery_complete(now_ms))
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -184,24 +228,43 @@ impl LaneState {
         // a newer one: control-first queue draining and capture scheduling may
         // reorder independent flows. Retain by timestamp instead of popping
         // only the deque front.
-        self.evidence
-            .retain(|point| now_ms.saturating_sub(point.ts_ms) <= EVIDENCE_WINDOW_MS);
-        // A completed non-cooldown result belongs only to the evidence window
-        // that armed it. Once all adverse evidence expires, return to passive
-        // observation instead of preserving an old diagnosis indefinitely.
+        let preserve_adverse_during_recovery = self.applied_gate.as_ref().is_some_and(|gate| {
+            gate.requires_working_recovery()
+                && gate.working_recovery_started_at_ms.is_some()
+                && !gate.recovered_by_working(now_ms)
+        });
+        self.evidence.retain(|point| {
+            now_ms.saturating_sub(point.ts_ms) <= EVIDENCE_WINDOW_MS
+                || (preserve_adverse_during_recovery && point.kind != EvidenceKind::Working)
+        });
+        // Transient environment/site results belong only to the evidence
+        // window that armed them. Confirmed DPI verdicts are different: they
+        // remain latched through silence and expire only after Working
+        // hysteresis (and any explicit caller-supplied cooldown).
         let summary = summarize(&self.evidence);
         if !summary.reset_quorum() && !summary.blackhole_quorum() {
             self.pending_gate = None;
             self.gate_in_flight = false;
         }
         let gate_quorum_still_valid = summary.reset_quorum() || summary.blackhole_quorum();
-        let applied_gate_is_stale = self.applied_gate.as_ref().is_some_and(|gate| {
-            let cooldown_active = gate
-                .cooldown_until_ms
-                .is_some_and(|until_ms| now_ms < until_ms);
-            !cooldown_active && (!gate_quorum_still_valid || now_ms > gate.valid_until_ms)
-        });
+        let recovered_by_working = self
+            .applied_gate
+            .as_ref()
+            .is_some_and(|gate| gate.recovered_by_working(now_ms));
+        let applied_gate_is_stale = self
+            .applied_gate
+            .as_ref()
+            .is_some_and(|gate| !gate.remains_authoritative(gate_quorum_still_valid, now_ms));
         if applied_gate_is_stale {
+            if recovered_by_working {
+                // Publish recovery as one state transition: the old adverse
+                // quorum remains visible for the entire clean interval, then
+                // disappears in the same mutation that releases the DPI gate.
+                self.evidence
+                    .retain(|point| point.kind == EvidenceKind::Working);
+                self.pending_gate = None;
+                self.gate_in_flight = false;
+            }
             self.applied_gate = None;
         }
     }
@@ -273,7 +336,6 @@ impl LaneAssessor {
         if flow.lane_generation != Some(lane.generation) {
             return false;
         }
-        lane.prune(now_ms);
         if now_ms.saturating_sub(flow.monotonic_ts) > EVIDENCE_WINDOW_MS
             || lane
                 .evidence
@@ -282,6 +344,30 @@ impl LaneAssessor {
         {
             return false;
         }
+        if kind == EvidenceKind::Working
+            && lane.applied_gate.as_ref().is_some_and(|gate| {
+                gate.requires_working_recovery() && flow.monotonic_ts <= gate.assessed_at_ms
+            })
+        {
+            // Control-first draining may deliver a flow after the Gate even
+            // though Eyes observed it before the verdict. Such a delayed
+            // success cannot count as post-Gate recovery evidence.
+            lane.prune(now_ms);
+            return false;
+        }
+        // Do this before time-based pruning: an accepted adverse event that
+        // arrives on the hysteresis boundary must interrupt the old recovery,
+        // not let pruning briefly publish Healthy first.
+        if kind != EvidenceKind::Working {
+            if let Some(gate) = lane
+                .applied_gate
+                .as_mut()
+                .filter(|gate| gate.requires_working_recovery())
+            {
+                gate.working_recovery_started_at_ms = None;
+            }
+        }
+        lane.prune(now_ms);
         if lane.evidence.len() >= MAX_EVIDENCE_PER_LANE {
             self.invalidate(SensorInvalidationReason::EvidenceOverflow);
             return true;
@@ -295,14 +381,38 @@ impl LaneAssessor {
             probe_host: flow.domain.clone(),
             kind,
         });
+        if kind != EvidenceKind::Working
+            && lane
+                .applied_gate
+                .as_ref()
+                .is_some_and(|gate| gate.requires_working_recovery())
+        {
+            // Recovery needs a new Working quorum after every adverse signal;
+            // flows observed before the interruption cannot complete the new
+            // clean interval.
+            lane.evidence
+                .retain(|point| point.kind != EvidenceKind::Working);
+        }
         let mut after = summarize(&lane.evidence);
         if kind == EvidenceKind::Working && working_quorum(after, lane.eligible_target_count) {
             lane.unrefuted_working_confirmation = true;
-            lane.evidence
-                .retain(|point| point.kind == EvidenceKind::Working);
             lane.pending_gate = None;
             lane.gate_in_flight = false;
-            lane.applied_gate = None;
+            if let Some(gate) = lane
+                .applied_gate
+                .as_mut()
+                .filter(|gate| gate.requires_working_recovery())
+            {
+                // The first complete Working quorum starts one clean interval.
+                // More successful flows do not keep pushing its deadline out.
+                gate.working_recovery_started_at_ms.get_or_insert(now_ms);
+            } else {
+                // Non-DPI Gate results remain immediately refutable by a fresh
+                // Working quorum.
+                lane.evidence
+                    .retain(|point| point.kind == EvidenceKind::Working);
+                lane.applied_gate = None;
+            }
             after = summarize(&lane.evidence);
         } else if after.reset_quorum() || after.blackhole_quorum() {
             // A single endpoint can timeout or reset transiently while the
@@ -429,6 +539,16 @@ impl LaneAssessor {
         }
         lane.pending_gate = None;
         lane.gate_in_flight = false;
+        if matches!(
+            classification,
+            AssessmentClassification::DpiSuspected | AssessmentClassification::DpiBlocked
+        ) {
+            // Recovery evidence must be strictly newer than the Gate verdict.
+            // Otherwise successes captured before the adverse incident could
+            // start (or nearly complete) the clean hysteresis interval.
+            lane.evidence
+                .retain(|point| point.kind != EvidenceKind::Working);
+        }
         lane.applied_gate = Some(AppliedGate {
             gate_id: request.gate_id,
             evidence_epoch: request.evidence_epoch,
@@ -437,6 +557,7 @@ impl LaneAssessor {
             assessed_at_ms,
             valid_until_ms,
             cooldown_until_ms,
+            working_recovery_started_at_ms: None,
         });
         true
     }
@@ -525,20 +646,30 @@ impl LaneAssessor {
             return;
         };
 
-        let already_handled = lane.pending_gate.as_ref().is_some_and(|request| {
-            request.evidence_epoch == self.evidence_epoch && request.trigger == trigger
-        }) || lane.applied_gate.as_ref().is_some_and(|gate| {
-            gate.evidence_epoch == self.evidence_epoch
-                && gate.trigger == trigger
-                && (now_ms <= gate.valid_until_ms
-                    || gate
-                        .cooldown_until_ms
-                        .is_some_and(|until_ms| now_ms < until_ms))
-                && match trigger {
-                    GateTrigger::ResetQuorum => summary.reset_quorum(),
-                    GateTrigger::BlackholeQuorum => summary.blackhole_quorum(),
-                }
-        });
+        // An applied DPI verdict owns the lane until a full Working quorum and
+        // ten-second clean interval recover it. This is lane-wide: switching
+        // from blackhole evidence to resets cannot bypass the hysteresis (or an
+        // explicit cooldown supplied by a caller).
+        let applied_gate_blocks = lane
+            .applied_gate
+            .as_ref()
+            .is_some_and(|gate| gate.blocks_new_gate(now_ms));
+        let already_handled = applied_gate_blocks
+            || lane.pending_gate.as_ref().is_some_and(|request| {
+                request.evidence_epoch == self.evidence_epoch && request.trigger == trigger
+            })
+            || lane.applied_gate.as_ref().is_some_and(|gate| {
+                gate.evidence_epoch == self.evidence_epoch
+                    && gate.trigger == trigger
+                    && (now_ms <= gate.valid_until_ms
+                        || gate
+                            .cooldown_until_ms
+                            .is_some_and(|until_ms| now_ms < until_ms))
+                    && match trigger {
+                        GateTrigger::ResetQuorum => summary.reset_quorum(),
+                        GateTrigger::BlackholeQuorum => summary.blackhole_quorum(),
+                    }
+            });
         if already_handled {
             return;
         }
@@ -630,10 +761,11 @@ fn assess_lane(
             AssessmentConfidence::None,
             None,
         )
-    } else if let Some(gate) = lane.applied_gate.as_ref().filter(|gate| {
-        gate.cooldown_until_ms.is_some_and(|until| now_ms < until)
-            || (now_ms <= gate.valid_until_ms && gate_quorum_still_valid)
-    }) {
+    } else if let Some(gate) = lane
+        .applied_gate
+        .as_ref()
+        .filter(|gate| gate.remains_authoritative(gate_quorum_still_valid, now_ms))
+    {
         let cooldown_active = gate.cooldown_until_ms.is_some_and(|until| now_ms < until);
         (
             if gate.classification == AssessmentClassification::SensorUnreliable {
@@ -1057,13 +1189,13 @@ mod tests {
     }
 
     #[test]
-    fn expired_blackhole_cooldown_does_not_suppress_a_future_incident() {
+    fn silence_and_cooldown_expiry_do_not_clear_an_applied_dpi_incident() {
         let mut assessor = assessor(2);
         observe(&mut assessor, 1, "one.test", 1, Diagnosis::TlsBlackhole);
         observe(&mut assessor, 2, "two.test", 2, Diagnosis::TlsBlackhole);
-        let first = assessor.take_gate_request().unwrap();
+        let request = assessor.take_gate_request().unwrap();
         assert!(assessor.apply_gate_result(
-            &first,
+            &request,
             AssessmentClassification::DpiBlocked,
             3,
             13,
@@ -1071,26 +1203,18 @@ mod tests {
         ));
 
         assessor.poll(300_004);
-        observe(
-            &mut assessor,
-            3,
-            "one.test",
-            300_005,
-            Diagnosis::TlsBlackhole,
+        let after_silence = assessor.snapshots(300_004).remove(0);
+        assert_eq!(
+            after_silence.classification,
+            AssessmentClassification::DpiBlocked
         );
-        observe(
-            &mut assessor,
-            4,
-            "two.test",
-            300_006,
-            Diagnosis::TlsBlackhole,
-        );
-        let second = assessor.take_gate_request().unwrap();
-        assert_ne!(second.gate_id, first.gate_id);
+        assert_eq!(after_silence.cooldown_until_ms, None);
+        assert_eq!(after_silence.evidence, EvidenceSummary::default());
+        assert!(assessor.take_gate_request().is_none());
     }
 
     #[test]
-    fn blackhole_quorum_escalates_an_applied_reset_assessment() {
+    fn a_cross_trigger_cannot_replace_an_applied_dpi_assessment() {
         let mut assessor = assessor(2);
         for (id, target) in [(1, "one.test"), (2, "two.test"), (3, "two.test")] {
             observe(&mut assessor, id, target, id, Diagnosis::TcpReset);
@@ -1106,13 +1230,132 @@ mod tests {
 
         observe(&mut assessor, 4, "one.test", 5, Diagnosis::TlsBlackhole);
         observe(&mut assessor, 5, "two.test", 6, Diagnosis::TlsBlackhole);
-        let blackhole = assessor.take_gate_request().unwrap();
-        assert_eq!(blackhole.trigger, GateTrigger::BlackholeQuorum);
-        assert_ne!(blackhole.gate_id, reset.gate_id);
+        let snapshot = assessor.snapshots(6).remove(0);
+        assert_eq!(
+            snapshot.classification,
+            AssessmentClassification::DpiSuspected
+        );
+        assert_eq!(snapshot.evidence.blackhole_targets, 2);
+        assert!(assessor.take_gate_request().is_none());
     }
 
     #[test]
-    fn working_quorum_cancels_a_blocked_incident() {
+    fn applied_dpi_requires_a_ten_second_clean_working_interval() {
+        for (diagnosis, classification, flows) in [
+            (
+                Diagnosis::TlsBlackhole,
+                AssessmentClassification::DpiBlocked,
+                2,
+            ),
+            (
+                Diagnosis::TcpReset,
+                AssessmentClassification::DpiSuspected,
+                3,
+            ),
+        ] {
+            let mut assessor = assessor(2);
+            for id in 1..=flows {
+                let target = if id == 1 { "one.test" } else { "two.test" };
+                observe(&mut assessor, id, target, id, diagnosis);
+            }
+            let request = assessor.take_gate_request().unwrap();
+            assert!(assessor.apply_gate_result(
+                &request,
+                classification,
+                flows + 1,
+                flows + 10_001,
+                None,
+            ));
+
+            observe(&mut assessor, 10, "one.test", 10, Diagnosis::Working);
+            observe(&mut assessor, 11, "two.test", 11, Diagnosis::Working);
+            let recovering = assessor.snapshots(11).remove(0);
+            assert_eq!(recovering.classification, classification);
+            assert_eq!(recovering.evidence.working_flows, 2);
+            assert_eq!(
+                recovering.evidence.reset_flows,
+                if classification == AssessmentClassification::DpiSuspected {
+                    3
+                } else {
+                    0
+                }
+            );
+            assert_eq!(
+                recovering.evidence.blackhole_flows,
+                if classification == AssessmentClassification::DpiBlocked {
+                    2
+                } else {
+                    0
+                }
+            );
+
+            assessor.poll(11 + WORKING_RECOVERY_HYSTERESIS_MS - 1);
+            assert_eq!(assessor.snapshots(10_010)[0].classification, classification);
+            assessor.poll(11 + WORKING_RECOVERY_HYSTERESIS_MS);
+            let recovered = assessor
+                .snapshots(11 + WORKING_RECOVERY_HYSTERESIS_MS)
+                .remove(0);
+            assert_eq!(recovered.phase, LanePhase::Healthy);
+            assert_eq!(recovered.classification, AssessmentClassification::Working);
+            assert_eq!(recovered.evidence.reset_flows, 0);
+            assert_eq!(recovered.evidence.blackhole_flows, 0);
+            assert_eq!(recovered.evidence.working_flows, 2);
+            assert!(assessor.take_gate_request().is_none());
+        }
+    }
+
+    #[test]
+    fn applied_dpi_does_not_reuse_working_evidence_from_before_the_gate() {
+        let mut assessor = assessor(2);
+        observe(&mut assessor, 1, "one.test", 1, Diagnosis::Working);
+        observe(&mut assessor, 2, "two.test", 2, Diagnosis::Working);
+        observe(&mut assessor, 3, "one.test", 3, Diagnosis::TlsBlackhole);
+        observe(&mut assessor, 4, "two.test", 4, Diagnosis::TlsBlackhole);
+        let request = assessor.take_gate_request().unwrap();
+
+        assert!(assessor.apply_gate_result(
+            &request,
+            AssessmentClassification::DpiBlocked,
+            5,
+            10_005,
+            None,
+        ));
+        assert_eq!(assessor.snapshots(5)[0].evidence.working_flows, 0);
+
+        let delayed_one = flow(7, 4, Diagnosis::Working);
+        let delayed_two = flow(8, 5, Diagnosis::Working);
+        assert!(!assessor.observe_flow("video", "one.test", &delayed_one, 6));
+        assert!(!assessor.observe_flow("video", "two.test", &delayed_two, 7));
+        assert_eq!(assessor.snapshots(7)[0].evidence.working_flows, 0);
+
+        observe(&mut assessor, 5, "one.test", 6, Diagnosis::Working);
+        assessor.poll(6 + WORKING_RECOVERY_HYSTERESIS_MS);
+        assert_eq!(
+            assessor.snapshots(6 + WORKING_RECOVERY_HYSTERESIS_MS)[0].classification,
+            AssessmentClassification::DpiBlocked
+        );
+
+        observe(
+            &mut assessor,
+            6,
+            "two.test",
+            7 + WORKING_RECOVERY_HYSTERESIS_MS,
+            Diagnosis::Working,
+        );
+        assessor.poll(7 + WORKING_RECOVERY_HYSTERESIS_MS * 2 - 1);
+        assert_eq!(
+            assessor.snapshots(7 + WORKING_RECOVERY_HYSTERESIS_MS * 2 - 1)[0].classification,
+            AssessmentClassification::DpiBlocked
+        );
+        assessor.poll(7 + WORKING_RECOVERY_HYSTERESIS_MS * 2);
+        assert_eq!(
+            assessor.snapshots(7 + WORKING_RECOVERY_HYSTERESIS_MS * 2)[0].classification,
+            AssessmentClassification::Working
+        );
+    }
+
+    #[test]
+    fn any_adverse_flow_restarts_the_clean_working_interval() {
         let mut assessor = assessor(2);
         observe(&mut assessor, 1, "one.test", 1, Diagnosis::TlsBlackhole);
         observe(&mut assessor, 2, "two.test", 2, Diagnosis::TlsBlackhole);
@@ -1121,20 +1364,123 @@ mod tests {
             &request,
             AssessmentClassification::DpiBlocked,
             3,
-            13,
-            Some(300_003),
+            10_003,
+            None,
         ));
 
         observe(&mut assessor, 3, "one.test", 4, Diagnosis::Working);
         observe(&mut assessor, 4, "two.test", 5, Diagnosis::Working);
-        let snapshot = assessor.snapshots(5).remove(0);
-        assert_eq!(snapshot.phase, LanePhase::Healthy);
-        assert_eq!(snapshot.classification, AssessmentClassification::Working);
-        assert_eq!(snapshot.evidence.blackhole_flows, 0);
+        observe(&mut assessor, 5, "one.test", 10_004, Diagnosis::TcpReset);
+        assessor.poll(20_004);
+        let interrupted = assessor.snapshots(20_004).remove(0);
+        assert_eq!(
+            interrupted.classification,
+            AssessmentClassification::DpiBlocked
+        );
+        assert_eq!(interrupted.evidence.working_flows, 0);
+        assert!(assessor.take_gate_request().is_none());
+
+        observe(&mut assessor, 6, "one.test", 20_005, Diagnosis::Working);
+        observe(&mut assessor, 7, "two.test", 20_006, Diagnosis::Working);
+        assessor.poll(30_005);
+        assert_eq!(
+            assessor.snapshots(30_005)[0].classification,
+            AssessmentClassification::DpiBlocked
+        );
+        assessor.poll(30_006);
+        assert_eq!(
+            assessor.snapshots(30_006)[0].classification,
+            AssessmentClassification::Working
+        );
     }
 
     #[test]
-    fn expired_gate_result_rearms_while_adverse_quorum_is_still_current() {
+    fn adverse_delivery_on_the_clean_deadline_interrupts_before_pruning() {
+        let mut assessor = assessor(2);
+        observe(&mut assessor, 1, "one.test", 1, Diagnosis::TlsBlackhole);
+        observe(&mut assessor, 2, "two.test", 2, Diagnosis::TlsBlackhole);
+        let request = assessor.take_gate_request().unwrap();
+        assert!(assessor.apply_gate_result(
+            &request,
+            AssessmentClassification::DpiBlocked,
+            3,
+            10_003,
+            None,
+        ));
+        observe(&mut assessor, 3, "one.test", 4, Diagnosis::Working);
+        observe(&mut assessor, 4, "two.test", 5, Diagnosis::Working);
+
+        let late_adverse = flow(5, 10_004, Diagnosis::TcpReset);
+        assert!(assessor.observe_flow("video", "one.test", &late_adverse, 10_005));
+        let snapshot = assessor.snapshots(10_005).remove(0);
+        assert_eq!(
+            snapshot.classification,
+            AssessmentClassification::DpiBlocked
+        );
+        assert_eq!(snapshot.evidence.working_flows, 0);
+        assert_eq!(snapshot.evidence.reset_flows, 1);
+    }
+
+    #[test]
+    fn working_quorum_immediately_clears_a_non_dpi_gate_result() {
+        let mut assessor = assessor(2);
+        for (id, target) in [(1, "one.test"), (2, "two.test"), (3, "two.test")] {
+            observe(&mut assessor, id, target, id, Diagnosis::TcpReset);
+        }
+        let request = assessor.take_gate_request().unwrap();
+        assert!(assessor.apply_gate_result(
+            &request,
+            AssessmentClassification::TargetUnavailable,
+            4,
+            14,
+            None,
+        ));
+
+        observe(&mut assessor, 4, "one.test", 5, Diagnosis::Working);
+        observe(&mut assessor, 5, "two.test", 6, Diagnosis::Working);
+        let snapshot = assessor.snapshots(6).remove(0);
+        assert_eq!(snapshot.phase, LanePhase::Healthy);
+        assert_eq!(snapshot.classification, AssessmentClassification::Working);
+        assert!(assessor.take_gate_request().is_none());
+    }
+
+    #[test]
+    fn explicit_cooldown_and_dpi_hysteresis_are_both_lane_wide() {
+        let mut assessor = assessor(2);
+        observe(&mut assessor, 1, "one.test", 1, Diagnosis::TlsBlackhole);
+        observe(&mut assessor, 2, "two.test", 2, Diagnosis::TlsBlackhole);
+        let blocked = assessor.take_gate_request().unwrap();
+        assert!(assessor.apply_gate_result(
+            &blocked,
+            AssessmentClassification::DpiBlocked,
+            3,
+            13,
+            Some(300_003),
+        ));
+
+        for (id, target, at) in [
+            (3, "one.test", 299_990),
+            (4, "two.test", 299_991),
+            (5, "two.test", 299_992),
+        ] {
+            observe(&mut assessor, id, target, at, Diagnosis::TcpReset);
+        }
+        assert!(assessor.take_gate_request().is_none());
+        assert_eq!(
+            assessor.snapshots(300_002)[0].phase,
+            LanePhase::BlockedCooldown
+        );
+
+        assessor.poll(300_003);
+        assert_eq!(
+            assessor.snapshots(300_003)[0].classification,
+            AssessmentClassification::DpiBlocked
+        );
+        assert!(assessor.take_gate_request().is_none());
+    }
+
+    #[test]
+    fn expired_non_dpi_gate_result_rearms_while_adverse_quorum_is_current() {
         let mut assessor = assessor(2);
         for (id, target) in [(1, "one.test"), (2, "two.test"), (3, "two.test")] {
             observe(&mut assessor, id, target, id, Diagnosis::TcpReset);
@@ -1142,14 +1488,14 @@ mod tests {
         let first = assessor.take_gate_request().unwrap();
         assert!(assessor.apply_gate_result(
             &first,
-            AssessmentClassification::DpiSuspected,
+            AssessmentClassification::TargetUnavailable,
             4,
             14,
             None,
         ));
         assert_eq!(
             assessor.snapshots(14)[0].classification,
-            AssessmentClassification::DpiSuspected
+            AssessmentClassification::TargetUnavailable
         );
 
         assessor.poll(15);

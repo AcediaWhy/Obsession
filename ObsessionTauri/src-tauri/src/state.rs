@@ -652,6 +652,10 @@ pub struct AppState {
     /// Активный наблюдатель трафика («Глаза»), пока запущен winws.
     #[cfg(windows)]
     pub eyes: Mutex<Option<crate::eyes::EyesHandle>>,
+    /// Bounded Eyes joins that have not yet produced terminal worker evidence.
+    /// A replacement observer is forbidden while this set is non-empty.
+    #[cfg(windows)]
+    pub eyes_teardowns: Mutex<Vec<crate::dpi_supervisor::WorkerTeardown>>,
     /// Задача «Мозга» (L3), пока включено авто-восстановление.
     pub brain: Mutex<Option<crate::brain::runtime::BrainHandle>>,
     pub brain_revision: RevisionClock,
@@ -744,6 +748,8 @@ impl AppState {
             hosts_revision: RevisionClock::default(),
             #[cfg(windows)]
             eyes: Mutex::new(None),
+            #[cfg(windows)]
+            eyes_teardowns: Mutex::new(Vec::new()),
             brain: Mutex::new(None),
             brain_revision: RevisionClock::default(),
             adaptive: Mutex::new(None),

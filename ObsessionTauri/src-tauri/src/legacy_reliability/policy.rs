@@ -86,25 +86,27 @@ impl ObserveOnlyBrain {
         now_ms: u64,
     ) -> PresumedIntent {
         match assessment.classification {
-            AssessmentClassification::DpiBlocked => PresumedIntent::FreezeLane {
-                category: assessment.category.clone(),
-                until_ms: assessment
-                    .cooldown_until_ms
-                    .unwrap_or_else(|| now_ms.saturating_add(BLACKHOLE_COOLDOWN_MS)),
-                reason: AssessmentClassification::DpiBlocked,
-            },
-            AssessmentClassification::DpiSuspected => candidates
+            reason @ (AssessmentClassification::DpiSuspected
+            | AssessmentClassification::DpiBlocked) => candidates
                 .iter()
                 .find(|candidate| Some(candidate.as_str()) != active_config)
                 .cloned()
                 .map_or(
-                    PresumedIntent::Wait {
-                        reason: AssessmentClassification::DpiSuspected,
+                    if reason == AssessmentClassification::DpiBlocked {
+                        PresumedIntent::FreezeLane {
+                            category: assessment.category.clone(),
+                            until_ms: assessment
+                                .cooldown_until_ms
+                                .unwrap_or_else(|| now_ms.saturating_add(BLACKHOLE_COOLDOWN_MS)),
+                            reason,
+                        }
+                    } else {
+                        PresumedIntent::Wait { reason }
                     },
                     |candidate_config| PresumedIntent::SwitchLane {
                         category: assessment.category.clone(),
                         candidate_config,
-                        reason: AssessmentClassification::DpiSuspected,
+                        reason,
                     },
                 ),
             reason => PresumedIntent::Wait { reason },
@@ -206,7 +208,7 @@ mod tests {
     }
 
     #[test]
-    fn blackhole_proposes_freeze_but_executes_nothing() {
+    fn blackhole_without_an_eligible_candidate_freezes_the_lane() {
         assert_eq!(
             ObserveOnlyBrain::decide(
                 &assessment(AssessmentClassification::DpiBlocked),
@@ -217,6 +219,23 @@ mod tests {
             PresumedIntent::FreezeLane {
                 category: "video".into(),
                 until_ms: 300_050,
+                reason: AssessmentClassification::DpiBlocked,
+            }
+        );
+    }
+
+    #[test]
+    fn blackhole_with_an_eligible_candidate_proposes_a_scoped_switch() {
+        assert_eq!(
+            ObserveOnlyBrain::decide(
+                &assessment(AssessmentClassification::DpiBlocked),
+                Some("video_1.conf"),
+                &["video_1.conf".into(), "video_2.conf".into()],
+                50,
+            ),
+            PresumedIntent::SwitchLane {
+                category: "video".into(),
+                candidate_config: "video_2.conf".into(),
                 reason: AssessmentClassification::DpiBlocked,
             }
         );

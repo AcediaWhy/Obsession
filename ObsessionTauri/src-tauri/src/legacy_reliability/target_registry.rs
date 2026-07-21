@@ -12,9 +12,9 @@ use sha2::{Digest, Sha256};
 
 use super::contracts::RegistryVersion;
 
-const CONTENT_HASH_DOMAIN: &[u8] = b"obsession/legacy-target-registry-content/v1";
-const VERSION_HASH_DOMAIN: &[u8] = b"obsession/legacy-target-registry-version/v1";
-const CONFIG_FINGERPRINT_DOMAIN: &[u8] = b"obsession/legacy-target-registry-config-fingerprint/v1";
+const CONTENT_HASH_DOMAIN: &[u8] = b"obsession/legacy-target-registry-content/v2";
+const VERSION_HASH_DOMAIN: &[u8] = b"obsession/legacy-target-registry-version/v2";
+const CONFIG_FINGERPRINT_DOMAIN: &[u8] = b"obsession/legacy-target-registry-config-fingerprint/v2";
 const CONFIG_RESOURCE_DOMAIN: &[u8] = b"obsession/legacy-config-resource/v1";
 const HOSTLIST_RESOURCE_DOMAIN: &[u8] = b"obsession/legacy-hostlist-resource/v1";
 const HOSTLIST_CONTENT_DOMAIN: &[u8] = b"obsession/legacy-hostlist-content/v1";
@@ -678,10 +678,13 @@ impl TargetRegistry {
             hash_field(&mut hasher, record.category.as_bytes());
             hash_field(&mut hasher, record.config_name.as_bytes());
             hash_field(&mut hasher, record.config_content.as_bytes());
-            hash_field(
-                &mut hasher,
-                &(record.parsed.hostlists.len() as u64).to_be_bytes(),
-            );
+            let static_hostlist_count = record
+                .parsed
+                .hostlists
+                .iter()
+                .filter(|reference| reference.kind != HostlistKind::AutoInclude)
+                .count();
+            hash_field(&mut hasher, &(static_hostlist_count as u64).to_be_bytes());
 
             port_plan.add_ranges(record.parsed.tcp_ports.tcp_ranges.iter().copied());
             let owner = OwnerKey {
@@ -692,6 +695,13 @@ impl TargetRegistry {
             config_fingerprints.insert(owner.clone(), fingerprint_record(record));
 
             for reference in &record.parsed.hostlists {
+                // `--hostlist-auto` is runtime-learned winws state, not a
+                // bundled source of attribution. Its safe relative reference
+                // remains parsed above, but neither its presence nor bytes may
+                // affect registry ownership or content identity.
+                if reference.kind == HostlistKind::AutoInclude {
+                    continue;
+                }
                 hash_field(&mut hasher, &[hostlist_kind_tag(reference.kind)]);
                 hash_field(&mut hasher, reference.reference.as_bytes());
                 let content = record.hostlists.get(&reference.reference);
@@ -714,13 +724,16 @@ impl TargetRegistry {
                         });
                     }
                     let destination = match reference.kind {
-                        HostlistKind::Include | HostlistKind::AutoInclude => &mut targets,
+                        HostlistKind::Include => &mut targets,
                         HostlistKind::Exclude => &mut exclusions,
+                        HostlistKind::AutoInclude => {
+                            unreachable!("auto hostlists are skipped before static attribution")
+                        }
                     };
                     for domain in domains {
                         destination.entry(domain).or_default().insert(owner.clone());
                     }
-                } else if reference.kind != HostlistKind::AutoInclude {
+                } else {
                     return Err(RegistryBuildError::MissingHostlist {
                         category: record.category.clone(),
                         config_name: record.config_name.clone(),
@@ -1604,14 +1617,20 @@ fn fingerprint_record(record: &PreparedRecord) -> ConfigFingerprint {
     hash_field(&mut hasher, CONFIG_FINGERPRINT_DOMAIN);
     hash_field(&mut hasher, CONFIG_RESOURCE_DOMAIN);
     hash_field(&mut hasher, record.config_content.as_bytes());
-    hash_field(
-        &mut hasher,
-        &(record.parsed.hostlists.len() as u64).to_be_bytes(),
-    );
+    let static_hostlist_count = record
+        .parsed
+        .hostlists
+        .iter()
+        .filter(|reference| reference.kind != HostlistKind::AutoInclude)
+        .count();
+    hash_field(&mut hasher, &(static_hostlist_count as u64).to_be_bytes());
 
     // Parsed references are already normalized and sorted. Unreferenced
     // supplied resources intentionally do not enter this per-config fence.
     for reference in &record.parsed.hostlists {
+        if reference.kind == HostlistKind::AutoInclude {
+            continue;
+        }
         hash_field(&mut hasher, HOSTLIST_RESOURCE_DOMAIN);
         hash_field(&mut hasher, &[hostlist_kind_tag(reference.kind)]);
         hash_field(&mut hasher, reference.reference.as_bytes());
@@ -1821,7 +1840,7 @@ mod tests {
     }
 
     #[test]
-    fn comments_auto_hostlists_and_exclusions_are_applied() {
+    fn comments_static_hostlists_and_exclusions_are_applied_but_auto_is_ignored() {
         let config = "# ignored --wf-tcp=9999\n\
             --wf-tcp=80,443 \
             --hostlist=\"lists\\gaming.txt\" \
@@ -1847,10 +1866,9 @@ mod tests {
             "gaming",
             "epicgames.com",
         );
-        assert_match(
+        assert_eq!(
             registry.attribute("cdn.learned.game.example"),
-            "gaming",
-            "learned.game.example",
+            Attribution::Unmatched
         );
         assert!(matches!(
             registry.attribute("cdn.steamcommunity.com"),
@@ -1871,6 +1889,130 @@ mod tests {
         .unwrap();
 
         assert_match(registry.attribute("discord.com"), "discord", "discord.com");
+    }
+
+    #[test]
+    fn foreign_exact_auto_target_cannot_steal_a_static_suffix() {
+        let static_owner = record(
+            "video",
+            "video.conf",
+            "--wf-tcp=443 --hostlist=lists/video.txt",
+            &[("lists/video.txt", "service.example\n")],
+        );
+        let foreign_auto = record(
+            "foreign",
+            "foreign.conf",
+            "--wf-tcp=443 --hostlist=lists/foreign.txt \
+             --hostlist-auto=autohosts/foreign.txt",
+            &[
+                ("lists/foreign.txt", "foreign.example\n"),
+                ("autohosts/foreign.txt", "exact.service.example\n"),
+            ],
+        );
+        let registry = TargetRegistry::from_records([static_owner, foreign_auto]).unwrap();
+
+        assert_match(
+            registry.attribute("exact.service.example"),
+            "video",
+            "service.example",
+        );
+    }
+
+    #[test]
+    fn auto_content_is_not_identity_but_static_content_and_config_are() {
+        let config = "--wf-tcp=443 --hostlist=lists/video.txt \
+                      --hostlist-auto=autohosts/video.txt \
+                      --hostlist-exclude=lists/video-exclude.txt";
+        let base = record(
+            "video",
+            "video.conf",
+            config,
+            &[
+                ("lists/video.txt", "video.example\n"),
+                ("autohosts/video.txt", "learned-one.example\n"),
+                ("lists/video-exclude.txt", "safe.video.example\n"),
+            ],
+        );
+        let base_registry = TargetRegistry::from_records([base.clone()]).unwrap();
+        let base_fingerprint = base_registry
+            .config_fingerprint("video", "video.conf")
+            .unwrap();
+
+        let auto_changed = base
+            .clone()
+            .with_hostlist("autohosts/video.txt", "learned-two.example\n");
+        let auto_changed = TargetRegistry::from_records([auto_changed]).unwrap();
+        assert_eq!(base_registry.version(), auto_changed.version());
+        assert_eq!(base_registry.content_hash(), auto_changed.content_hash());
+        assert_eq!(
+            base_fingerprint,
+            auto_changed
+                .config_fingerprint("video", "video.conf")
+                .unwrap()
+        );
+
+        let auto_missing = record(
+            "video",
+            "video.conf",
+            config,
+            &[
+                ("lists/video.txt", "video.example\n"),
+                ("lists/video-exclude.txt", "safe.video.example\n"),
+            ],
+        );
+        let auto_missing = TargetRegistry::from_records([auto_missing]).unwrap();
+        assert_eq!(base_registry.version(), auto_missing.version());
+        assert_eq!(
+            base_fingerprint,
+            auto_missing
+                .config_fingerprint("video", "video.conf")
+                .unwrap()
+        );
+
+        let static_include_changed = base
+            .clone()
+            .with_hostlist("lists/video.txt", "video.example\ncdn.video.example\n");
+        let static_include_changed =
+            TargetRegistry::from_records([static_include_changed]).unwrap();
+        assert_ne!(base_registry.version(), static_include_changed.version());
+        assert_ne!(
+            base_fingerprint,
+            static_include_changed
+                .config_fingerprint("video", "video.conf")
+                .unwrap()
+        );
+
+        let static_exclude_changed = base
+            .clone()
+            .with_hostlist("lists/video-exclude.txt", "other-safe.video.example\n");
+        let static_exclude_changed =
+            TargetRegistry::from_records([static_exclude_changed]).unwrap();
+        assert_ne!(base_registry.version(), static_exclude_changed.version());
+        assert_ne!(
+            base_fingerprint,
+            static_exclude_changed
+                .config_fingerprint("video", "video.conf")
+                .unwrap()
+        );
+
+        let config_changed = record(
+            "video",
+            "video.conf",
+            &config.replace("--wf-tcp=443", "--wf-tcp=8443"),
+            &[
+                ("lists/video.txt", "video.example\n"),
+                ("autohosts/video.txt", "learned-one.example\n"),
+                ("lists/video-exclude.txt", "safe.video.example\n"),
+            ],
+        );
+        let config_changed = TargetRegistry::from_records([config_changed]).unwrap();
+        assert_ne!(base_registry.version(), config_changed.version());
+        assert_ne!(
+            base_fingerprint,
+            config_changed
+                .config_fingerprint("video", "video.conf")
+                .unwrap()
+        );
     }
 
     #[test]
@@ -2348,6 +2490,13 @@ mod tests {
             parse_legacy_config(r#"--hostlist="C:\\lists\\outside.txt""#),
             Err(ConfigParseError::InvalidHostlistReference {
                 source: HostlistReferenceError::AbsoluteOrDriveQualified,
+                ..
+            })
+        ));
+        assert!(matches!(
+            parse_legacy_config("--hostlist-auto=../outside.txt"),
+            Err(ConfigParseError::InvalidHostlistReference {
+                source: HostlistReferenceError::Traversal,
                 ..
             })
         ));

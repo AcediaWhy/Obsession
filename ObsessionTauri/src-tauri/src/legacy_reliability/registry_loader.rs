@@ -14,7 +14,8 @@ use std::path::{Path, PathBuf};
 use crate::paths::Paths;
 
 use super::target_registry::{
-    parse_legacy_config, ConfigParseError, LegacyConfigRecord, RegistryBuildError, TargetRegistry,
+    parse_legacy_config, ConfigParseError, HostlistKind, LegacyConfigRecord, RegistryBuildError,
+    TargetRegistry,
 };
 
 const MAX_ACTIVE_CATEGORIES: usize = 32;
@@ -263,6 +264,13 @@ pub fn load_target_registry(
             let mut record =
                 LegacyConfigRecord::new(category.clone(), config_name.clone(), config_content);
             for hostlist in parsed.hostlists {
+                // Auto-hostlists are mutable winws runtime state. Their safe
+                // references are validated by the parser above, but their
+                // filesystem state must not poison or expand this immutable
+                // static snapshot.
+                if hostlist.kind == HostlistKind::AutoInclude {
+                    continue;
+                }
                 let requested_hostlist = paths.base_dir.join(&hostlist.reference);
                 let canonical_hostlist = match fs::canonicalize(&requested_hostlist) {
                     Ok(path) => path,
@@ -531,9 +539,23 @@ mod tests {
         }
 
         fn write(&self, relative: &str, content: &str) {
+            self.write_bytes(relative, content.as_bytes());
+        }
+
+        fn write_bytes(&self, relative: &str, content: &[u8]) {
             let path = self.path.join(relative);
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(path, content).unwrap();
+        }
+
+        fn create_file_with_len(&self, relative: &str, len: u64) {
+            let path = self.path.join(relative);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            File::create(path).unwrap().set_len(len).unwrap();
+        }
+
+        fn create_dir(&self, relative: &str) {
+            fs::create_dir_all(self.path.join(relative)).unwrap();
         }
     }
 
@@ -662,6 +684,74 @@ mod tests {
         let registry =
             load_target_registry(&automatic.paths(), &selection("video", "video.conf")).unwrap();
         assert_eq!(registry.target_count(), 1);
+    }
+
+    #[test]
+    fn mutable_auto_hostlists_are_not_read_into_the_static_snapshot() {
+        let dir = TestDir::new("mutable-auto");
+        dir.write("lists/video.txt", "video.example\n");
+        dir.create_file_with_len("autohosts/oversized.txt", MAX_HOSTLIST_BYTES as u64 + 1);
+        dir.write_bytes("autohosts/invalid-utf8.txt", &[0xff, 0xfe, 0xfd]);
+        dir.create_dir("autohosts/directory.txt");
+        dir.write("autohosts/valid.txt", "learned.other.example\n");
+        dir.write(
+            "configs/video/video.conf",
+            "--wf-tcp=443 \
+             --hostlist=lists/video.txt \
+             --hostlist-auto=autohosts/oversized.txt \
+             --hostlist-auto=autohosts/invalid-utf8.txt \
+             --hostlist-auto=autohosts/directory.txt \
+             --hostlist-auto=autohosts/valid.txt",
+        );
+
+        let registry =
+            load_target_registry(&dir.paths(), &selection("video", "video.conf")).unwrap();
+
+        assert_eq!(registry.target_count(), 1);
+        assert!(matches!(
+            registry.attribute("www.video.example"),
+            Attribution::Matched { .. }
+        ));
+        assert_eq!(
+            registry.attribute("learned.other.example"),
+            Attribution::Unmatched
+        );
+    }
+
+    #[test]
+    fn oversized_static_include_is_still_rejected() {
+        let dir = TestDir::new("oversized-static");
+        dir.create_file_with_len("lists/video.txt", MAX_HOSTLIST_BYTES as u64 + 1);
+        dir.write(
+            "configs/video/video.conf",
+            "--wf-tcp=443 --hostlist=lists/video.txt",
+        );
+
+        let error =
+            load_target_registry(&dir.paths(), &selection("video", "video.conf")).unwrap_err();
+
+        assert!(matches!(
+            error,
+            RegistryLoadError::FileTooLarge {
+                limit: MAX_HOSTLIST_BYTES,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn invalid_utf8_static_include_is_still_rejected() {
+        let dir = TestDir::new("invalid-static-utf8");
+        dir.write_bytes("lists/video.txt", &[0xff, 0xfe, 0xfd]);
+        dir.write(
+            "configs/video/video.conf",
+            "--wf-tcp=443 --hostlist=lists/video.txt",
+        );
+
+        let error =
+            load_target_registry(&dir.paths(), &selection("video", "video.conf")).unwrap_err();
+
+        assert!(matches!(error, RegistryLoadError::InvalidUtf8 { .. }));
     }
 
     #[test]

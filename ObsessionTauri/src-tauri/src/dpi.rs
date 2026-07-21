@@ -547,15 +547,62 @@ fn finalize_legacy_exit(
     }
 }
 
-/// Запускает winws с конфигом категории. Возвращает PID запущенного процесса.
-pub async fn start(app: &AppHandle, category: &str, config_file: &str) -> Result<u32, String> {
-    let (winws, conf, base) = {
+fn prepare_legacy_launch_paths(
+    app: &AppHandle,
+    selections: &[(String, String)],
+    migrate_existing: bool,
+) -> Result<crate::legacy_reliability::autohost_isolation::IsolationPrepareResult, String> {
+    let base = app.state::<AppState>().paths.base_dir.clone();
+    let prepared = crate::legacy_reliability::autohost_isolation::prepare_launches_from_disk(
+        &base,
+        selections,
+        migrate_existing,
+    )
+    .map_err(|error| format!("Legacy isolation preparation failed: {error}"))?;
+    if migrate_existing && prepared.migration != Default::default() {
+        util::emit_log(
+            app,
+            "info",
+            "legacy-reliability",
+            &format!("Legacy auto-hostlist isolation: {}", prepared.migration),
+        );
+    }
+    Ok(prepared)
+}
+
+fn preflight_legacy_launch_paths(
+    app: &AppHandle,
+    selections: &[(String, String)],
+) -> Result<(), String> {
+    let base = app.state::<AppState>().paths.base_dir.clone();
+    crate::legacy_reliability::autohost_isolation::preflight_launches_from_disk(&base, selections)
+        .map_err(|error| format!("Legacy isolation preflight failed: {error}"))
+}
+
+fn prepared_legacy_config_path<'a>(
+    prepared: &'a crate::legacy_reliability::autohost_isolation::IsolationPrepareResult,
+    category: &str,
+    config_file: &str,
+) -> Result<&'a Path, String> {
+    prepared
+        .effective_paths
+        .get(&(category.to_ascii_lowercase(), config_file.to_string()))
+        .map(std::path::PathBuf::as_path)
+        .ok_or_else(|| {
+            format!("Legacy isolation did not produce a launch path for {category}/{config_file}")
+        })
+}
+
+/// Запускает winws с уже подготовленным immutable/effective конфигом категории.
+async fn start_prepared(
+    app: &AppHandle,
+    category: &str,
+    config_file: &str,
+    conf: &Path,
+) -> Result<u32, String> {
+    let (winws, base) = {
         let state = app.state::<AppState>();
-        (
-            state.paths.winws_path(),
-            state.paths.config_path(category, config_file),
-            state.paths.base_dir.clone(),
-        )
+        (state.paths.winws_path(), state.paths.base_dir.clone())
     };
 
     crate::dpi_engine::resources::validate_engine_resources(&base, "zapret1")
@@ -752,6 +799,15 @@ pub async fn start(app: &AppHandle, category: &str, config_file: &str) -> Result
     });
 
     Ok(pid)
+}
+
+/// Запускает одиночный winws. Основной multi-category путь заранее готовит
+/// полный набор через [`start_many`]; этот wrapper нужен ручному config-test.
+pub async fn start(app: &AppHandle, category: &str, config_file: &str) -> Result<u32, String> {
+    let selections = vec![(category.to_string(), config_file.to_string())];
+    let prepared = prepare_legacy_launch_paths(app, &selections, false)?;
+    let conf = prepared_legacy_config_path(&prepared, category, config_file)?;
+    start_prepared(app, category, config_file, conf).await
 }
 
 /// A scoped process that passed readiness but is not yet visible in DpiState.
@@ -1016,7 +1072,7 @@ pub(crate) async fn spawn_scoped_legacy_lane_locked(
         return Err("scoped Legacy start requires complete generation/fingerprint fences".into());
     }
 
-    let (winws, conf, base) = {
+    let (winws, base, isolation_selections) = {
         let state = app.state::<AppState>();
         let dpi = state.dpi.lock_recover();
         if !dpi.is_current_generation(runtime_generation) {
@@ -1040,12 +1096,28 @@ pub(crate) async fn spawn_scoped_legacy_lane_locked(
         ) {
             return Err("DPI runtime switched to Zapret2".into());
         }
+        let mut isolation_selections = match dpi.active_launch.as_ref() {
+            Some(DpiLaunchSpec::Legacy { selections }) => selections.clone(),
+            None => Vec::new(),
+            Some(DpiLaunchSpec::Zapret2 { .. }) => {
+                return Err("DPI runtime switched to Zapret2".into())
+            }
+        };
+        isolation_selections.push((category.to_owned(), config_file.to_owned()));
         (
             state.paths.winws_path(),
-            state.paths.config_path(category, config_file),
             state.paths.base_dir.clone(),
+            isolation_selections,
         )
     };
+
+    let conf = crate::legacy_reliability::autohost_isolation::prepare_scoped_launch_from_disk(
+        &base,
+        &isolation_selections,
+        category,
+        config_file,
+    )
+    .map_err(|error| format!("Legacy scoped isolation preparation failed: {error}"))?;
 
     crate::dpi_engine::resources::validate_engine_resources(&base, "zapret1")
         .map_err(|error| format!("Zapret Legacy resource validation failed: {error}"))?;
@@ -1335,6 +1407,15 @@ fn collect_category_hostlist(app: &AppHandle, selections: &[(String, String)]) -
 /// Brain and Legacy Reliability Manager.
 #[cfg(windows)]
 fn start_zapret2_eyes(app: &AppHandle, hostlist: Vec<String>) {
+    if !eyes_teardown_ready_for_start(app) {
+        util::emit_log(
+            app,
+            "warn",
+            "eyes",
+            "Zapret2 Eyes не запущены: предыдущий teardown ещё не подтверждён",
+        );
+        return;
+    }
     let runtime = {
         let state = app.state::<AppState>();
         let dpi = state.dpi.lock_recover();
@@ -1409,7 +1490,19 @@ fn start_zapret2_eyes(app: &AppHandle, hostlist: Vec<String>) {
     }) {
         Ok(handle) => {
             let st = app.state::<AppState>();
-            *st.eyes.lock_recover() = Some(handle);
+            let mut slot = st.eyes.lock_recover();
+            if slot.is_some() {
+                drop(slot);
+                let outcomes = retire_eyes_handle_bounded(app, handle, EYES_STOP_TIMEOUT);
+                util::emit_log(
+                    app,
+                    "warn",
+                    "eyes",
+                    &format!("Zapret2 Eyes slot занят; staged cleanup: {outcomes:?}"),
+                );
+                return;
+            }
+            *slot = Some(handle);
             let msg = if n == 0 {
                 "Наблюдатель запущен (sniff :443, хостлист пуст — все хосты)".to_string()
             } else {
@@ -1418,11 +1511,38 @@ fn start_zapret2_eyes(app: &AppHandle, hostlist: Vec<String>) {
             eprintln!("[eyes] {msg}");
             util::emit_log(app, "info", "eyes", &msg);
         }
-        Err(e) => {
-            eprintln!("[eyes] Глаза не запустились: {e}");
-            util::emit_log(app, "error", "eyes", &format!("Глаза не запустились: {e}"));
+        Err(error) => {
+            let (message, _) = retain_eyes_start_failure(app, error);
+            eprintln!("[eyes] Глаза не запустились: {message}");
+            util::emit_log(
+                app,
+                "error",
+                "eyes",
+                &format!("Глаза не запустились: {message}"),
+            );
         }
     }
+}
+
+#[cfg(windows)]
+fn retain_eyes_start_failure_in(
+    slot: &std::sync::Mutex<Vec<crate::dpi_supervisor::WorkerTeardown>>,
+    error: crate::eyes::EyesStartError,
+) -> (String, bool) {
+    let (message, safe_to_retry, pending_teardown) = error.into_parts();
+    if let Some(teardown) = pending_teardown {
+        slot.lock_recover().push(teardown);
+    }
+    (message, safe_to_retry)
+}
+
+#[cfg(windows)]
+fn retain_eyes_start_failure(
+    app: &AppHandle,
+    error: crate::eyes::EyesStartError,
+) -> (String, bool) {
+    let state = app.state::<AppState>();
+    retain_eyes_start_failure_in(&state.eyes_teardowns, error)
 }
 
 #[cfg(windows)]
@@ -1495,9 +1615,12 @@ fn create_legacy_eyes(
                 let _ = ingress_cb.try_flow(adapted.event);
             }
         })
-        .map_err(|error| LegacyEyesStartFailure {
-            message: error.to_string(),
-            safe_to_restore: error.safe_to_retry(),
+        .map_err(|error| {
+            let (message, safe_to_restore) = retain_eyes_start_failure(app, error);
+            LegacyEyesStartFailure {
+                message,
+                safe_to_restore,
+            }
         })?;
     util::emit_log(
         app,
@@ -1512,6 +1635,76 @@ fn create_legacy_eyes(
 }
 
 #[cfg(windows)]
+#[derive(Debug)]
+struct EyesTeardownReport {
+    outcomes: Vec<crate::dpi_supervisor::WorkerStopOutcome>,
+    unresolved: bool,
+}
+
+#[cfg(windows)]
+fn poll_pending_eyes_teardowns(app: &AppHandle, timeout: Duration) -> EyesTeardownReport {
+    let state = app.state::<AppState>();
+    poll_pending_eyes_teardowns_in(&state.eyes_teardowns, timeout)
+}
+
+#[cfg(windows)]
+fn poll_pending_eyes_teardowns_in(
+    slot: &std::sync::Mutex<Vec<crate::dpi_supervisor::WorkerTeardown>>,
+    timeout: Duration,
+) -> EyesTeardownReport {
+    // Keep the same mutex held while tickets are polled. A concurrent start
+    // must either see an unresolved ticket or wait until this function has
+    // proved that every worker exited; an empty transient `mem::take` window
+    // would permit a second WinDivert observer to open.
+    let mut pending = slot.lock_recover();
+    let deadline = Instant::now() + timeout;
+    let mut outcomes = Vec::new();
+    for teardown in pending.iter_mut() {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        outcomes.extend(teardown.wait_bounded(remaining));
+    }
+    pending.retain(|teardown| !teardown.is_resolved());
+    let unresolved = !pending.is_empty();
+    EyesTeardownReport {
+        outcomes,
+        unresolved,
+    }
+}
+
+#[cfg(windows)]
+fn retire_eyes_handle_bounded(
+    app: &AppHandle,
+    handle: crate::eyes::EyesHandle,
+    timeout: Duration,
+) -> Vec<crate::dpi_supervisor::WorkerStopOutcome> {
+    let mut teardown = handle.begin_stop();
+    let outcomes = teardown.wait_bounded(timeout);
+    if !teardown.is_resolved() {
+        app.state::<AppState>()
+            .eyes_teardowns
+            .lock_recover()
+            .push(teardown);
+    }
+    outcomes
+}
+
+#[cfg(windows)]
+fn eyes_teardown_ready_for_start(app: &AppHandle) -> bool {
+    let report = poll_pending_eyes_teardowns(app, Duration::ZERO);
+    if report.unresolved {
+        util::emit_log(
+            app,
+            "warn",
+            "eyes",
+            "Новый наблюдатель отложен: завершение предыдущего ещё не подтверждено",
+        );
+        false
+    } else {
+        true
+    }
+}
+
+#[cfg(windows)]
 fn start_legacy_eyes(
     app: &AppHandle,
     registry: std::sync::Arc<crate::legacy_reliability::target_registry::TargetRegistry>,
@@ -1521,6 +1714,9 @@ fn start_legacy_eyes(
     >,
     ingress: crate::legacy_reliability::ingress::LegacyIngress,
 ) -> Result<(), String> {
+    if !eyes_teardown_ready_for_start(app) {
+        return Err("previous Eyes teardown is still pending".into());
+    }
     if app.state::<AppState>().eyes.lock_recover().is_some() {
         return Err("Legacy Eyes slot is already occupied".into());
     }
@@ -1530,7 +1726,7 @@ fn start_legacy_eyes(
     let mut slot = state.eyes.lock_recover();
     if slot.is_some() {
         drop(slot);
-        let outcomes = handle.stop_bounded(EYES_STOP_TIMEOUT);
+        let outcomes = retire_eyes_handle_bounded(app, handle, EYES_STOP_TIMEOUT);
         return Err(format!(
             "Legacy Eyes slot was claimed during start; staged cleanup: {outcomes:?}"
         ));
@@ -1541,30 +1737,41 @@ fn start_legacy_eyes(
 
 /// Останавливает наблюдателя, если запущен.
 #[cfg(windows)]
-fn stop_eyes(app: &AppHandle) -> Vec<crate::dpi_supervisor::WorkerStopOutcome> {
+fn stop_eyes(app: &AppHandle) -> EyesTeardownReport {
     let handle = app.state::<AppState>().eyes.lock_recover().take();
     if let Some(h) = handle {
-        let outcomes = h.stop_bounded(EYES_STOP_TIMEOUT);
-        let clean = outcomes
+        app.state::<AppState>()
+            .eyes_teardowns
+            .lock_recover()
+            .push(h.begin_stop());
+    }
+    let report = poll_pending_eyes_teardowns(app, EYES_STOP_TIMEOUT);
+    let clean = !report.unresolved
+        && report
+            .outcomes
             .iter()
             .all(|outcome| outcome.state == crate::dpi_supervisor::WorkerStopState::Joined);
+    util::emit_log(
+        app,
+        if clean { "info" } else { "warn" },
+        "eyes",
+        if clean {
+            "Наблюдатель остановлен"
+        } else if report.unresolved {
+            "Наблюдатель превысил bounded stop deadline; завершение отслеживается"
+        } else {
+            "Наблюдатель завершился с ошибкой worker-потока"
+        },
+    );
+    if !clean {
         util::emit_log(
             app,
-            if clean { "info" } else { "warn" },
+            "warn",
             "eyes",
-            if clean {
-                "Наблюдатель остановлен"
-            } else {
-                "Наблюдатель превысил bounded stop deadline; teardown продолжен"
-            },
+            &format!("eyes_stop={:?}", report.outcomes),
         );
-        if !clean {
-            util::emit_log(app, "warn", "eyes", &format!("eyes_stop={outcomes:?}"));
-        }
-        outcomes
-    } else {
-        Vec::new()
     }
+    report
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2030,8 +2237,11 @@ async fn cleanup_uninstalled_observer(
     }
 
     if let Some(eyes) = eyes {
-        match tauri::async_runtime::spawn_blocking(move || eyes.stop_bounded(EYES_STOP_TIMEOUT))
-            .await
+        let app2 = app.clone();
+        match tauri::async_runtime::spawn_blocking(move || {
+            retire_eyes_handle_bounded(&app2, eyes, EYES_STOP_TIMEOUT)
+        })
+        .await
         {
             Ok(outcomes)
                 if !outcomes.is_empty() && outcomes.iter().all(|outcome| outcome.is_clean()) => {}
@@ -2091,8 +2301,11 @@ async fn cleanup_installed_observer_generation(
     manager.shutdown().await;
     match eyes {
         Some(eyes) => {
-            match tauri::async_runtime::spawn_blocking(move || eyes.stop_bounded(EYES_STOP_TIMEOUT))
-                .await
+            let app2 = app.clone();
+            match tauri::async_runtime::spawn_blocking(move || {
+                retire_eyes_handle_bounded(&app2, eyes, EYES_STOP_TIMEOUT)
+            })
+            .await
             {
                 Ok(outcomes)
                     if !outcomes.is_empty()
@@ -2245,6 +2458,11 @@ async fn start_legacy_observer_generation(
     {
         return Err(ObserverStartFailure::before_generation(
             "another Legacy Manager already owns the observer slot",
+        ));
+    }
+    if !eyes_teardown_ready_for_start(app) {
+        return Err(ObserverStartFailure::before_generation(
+            "previous Eyes teardown is still pending",
         ));
     }
     if app.state::<AppState>().eyes.lock_recover().is_some() {
@@ -2441,13 +2659,15 @@ async fn stop_captured_observer(
     let app_for_eyes = app.clone();
     let eyes_stopped_cleanly =
         match tauri::async_runtime::spawn_blocking(move || stop_eyes(&app_for_eyes)).await {
-            Ok(outcomes)
-                if !outcomes.is_empty() && outcomes.iter().all(|outcome| outcome.is_clean()) =>
+            Ok(report)
+                if !report.unresolved
+                    && !report.outcomes.is_empty()
+                    && report.outcomes.iter().all(|outcome| outcome.is_clean()) =>
             {
                 true
             }
-            Ok(outcomes) => {
-                failures.push(format!("Legacy Eyes bounded stop failed: {outcomes:?}"));
+            Ok(report) => {
+                failures.push(format!("Legacy Eyes bounded stop failed: {report:?}"));
                 false
             }
             Err(error) => {
@@ -2744,9 +2964,58 @@ pub(crate) async fn replace_legacy_observer_locked(
     Err("Scoped Legacy observer restart поддерживается только на Windows".into())
 }
 
-/// Останавливает все свои DPI-процессы и ждёт подтверждения teardown.
+#[derive(Debug)]
+struct StopAllReport {
+    eyes_clean: bool,
+    unverified_pids: Vec<u32>,
+}
+
+impl StopAllReport {
+    fn is_clean(&self) -> bool {
+        self.eyes_clean && self.unverified_pids.is_empty()
+    }
+
+    fn start_blocker(&self, action: &str) -> String {
+        let mut blockers = Vec::new();
+        if !self.eyes_clean {
+            blockers.push("остановка сетевого наблюдателя не подтверждена".to_string());
+        }
+        if !self.unverified_pids.is_empty() {
+            blockers.push(format!(
+                "остановка winws PID {} не подтверждена",
+                self.unverified_pids
+                    .iter()
+                    .map(u32::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        format!("{action} отменён: {}.", blockers.join("; "))
+    }
+}
+
+fn unverified_tracked_processes(
+    tracked: &[DpiProc],
+    outcomes: &[crate::dpi_supervisor::ProcessStopOutcome],
+) -> Vec<DpiProc> {
+    tracked
+        .iter()
+        .filter(|process| {
+            !outcomes
+                .iter()
+                .find(|outcome| outcome.pid == process.pid)
+                .is_some_and(|outcome| outcome.original_exited())
+        })
+        .cloned()
+        .collect()
+}
+
+/// Останавливает все свои DPI-процессы и ждёт подтверждения teardown. Владение
+/// процессом сохраняется, пока bounded reaper не подтвердил завершение именно
+/// исходного PID/identity. Это позволяет следующему stop повторить попытку и не
+/// даёт start-path менять auto-hostlist рядом с ещё живым winws.
 /// DNS не сбрасывается здесь: host-mapping paths вызывают `flush_dns` условно.
-pub async fn stop_all(app: &AppHandle) {
+async fn stop_all_with_report(app: &AppHandle) -> StopAllReport {
     // Invalidate the public owner before manager shutdown can emit Stopped.
     crate::legacy_reliability::status::publish(
         app,
@@ -2763,7 +3032,7 @@ pub async fn stop_all(app: &AppHandle) {
     let eyes_clean = {
         let app2 = app.clone();
         match tauri::async_runtime::spawn_blocking(move || stop_eyes(&app2)).await {
-            Ok(outcomes) => outcomes.iter().all(|outcome| outcome.is_clean()),
+            Ok(report) => !report.unresolved,
             Err(error) => {
                 util::emit_log(
                     app,
@@ -2778,18 +3047,11 @@ pub async fn stop_all(app: &AppHandle) {
     #[cfg(not(windows))]
     let eyes_clean = true;
 
-    let processes = {
+    let tracked_processes = {
         let state = app.state::<AppState>();
         let mut d = state.dpi.lock_recover();
         d.advance_generation();
-        let processes = d
-            .procs
-            .values()
-            .map(|process| crate::dpi_supervisor::OwnedProcess {
-                pid: process.pid,
-                identity: process.process_identity,
-            })
-            .collect::<Vec<_>>();
+        let processes = d.procs.values().cloned().collect::<Vec<_>>();
         for process in &processes {
             d.stopping.insert(process.pid);
         }
@@ -2798,28 +3060,39 @@ pub async fn stop_all(app: &AppHandle) {
         processes
     };
 
-    let process_outcomes = stop_owned_processes_async(processes).await;
-    let processes_clean = process_outcomes
+    let owned_processes = tracked_processes
         .iter()
-        .all(|outcome| outcome.original_exited());
-    for outcome in &process_outcomes {
-        if !outcome.original_exited() {
-            util::emit_log(
-                app,
-                "warn",
-                "dpi",
-                &format!(
-                    "process teardown pid={} state={:?}",
-                    outcome.pid, outcome.state
-                ),
-            );
-        }
+        .map(|process| crate::dpi_supervisor::OwnedProcess {
+            pid: process.pid,
+            identity: process.process_identity,
+        })
+        .collect::<Vec<_>>();
+    let process_outcomes = stop_owned_processes_async(owned_processes).await;
+    let retained_processes = unverified_tracked_processes(&tracked_processes, &process_outcomes);
+    let processes_clean = retained_processes.is_empty();
+    for process in &retained_processes {
+        let state = process_outcomes
+            .iter()
+            .find(|outcome| outcome.pid == process.pid)
+            .map(|outcome| format!("{:?}", outcome.state))
+            .unwrap_or_else(|| "MissingOutcome".to_string());
+        util::emit_log(
+            app,
+            "warn",
+            "dpi",
+            &format!("process teardown pid={} state={state}", process.pid),
+        );
     }
     {
         let state = app.state::<AppState>();
         let mut dpi = state.dpi.lock_recover();
-        for outcome in &process_outcomes {
-            dpi.stopping.remove(&outcome.pid);
+        for process in &tracked_processes {
+            dpi.stopping.remove(&process.pid);
+        }
+        for process in &retained_processes {
+            dpi.procs
+                .entry(process.pid)
+                .or_insert_with(|| process.clone());
         }
     }
     emit_status(app);
@@ -2827,6 +3100,28 @@ pub async fn stop_all(app: &AppHandle) {
     // Sleep остаётся только fallback, когда exit/handle evidence неполно.
     if !(eyes_clean && processes_clean) {
         tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+
+    let mut unverified_pids = retained_processes
+        .iter()
+        .map(|process| process.pid)
+        .collect::<Vec<_>>();
+    unverified_pids.sort_unstable();
+    StopAllReport {
+        eyes_clean,
+        unverified_pids,
+    }
+}
+
+pub async fn stop_all(app: &AppHandle) {
+    let report = stop_all_with_report(app).await;
+    if !report.is_clean() {
+        util::emit_log(
+            app,
+            "error",
+            "dpi",
+            &report.start_blocker("Полная остановка DPI"),
+        );
     }
 }
 
@@ -3022,7 +3317,10 @@ pub(crate) async fn start_zapret2_with_overrides(
 
     // Backend-инвариант: даже прямой вызов вне UI не должен оставить Legacy и
     // Zapret2 одновременно на пересекающемся трафике.
-    stop_all(app).await;
+    let stop = stop_all_with_report(app).await;
+    if !stop.is_clean() {
+        return Err(stop.start_blocker("Запуск Zapret2"));
+    }
     if runtime_shutting_down(app) {
         return Err("Запуск Zapret2 отменён: приложение завершает работу.".to_string());
     }
@@ -3470,10 +3768,18 @@ pub async fn start_many(app: &AppHandle, configs: &[(String, String)]) -> Result
     if runtime_shutting_down(app) {
         return Err("Приложение завершает работу.".to_string());
     }
-    stop_all(app).await;
+    // Read-only validation deliberately precedes teardown: malformed configs,
+    // unsafe paths and an oversized migration plan must leave the currently
+    // working bypass untouched.
+    preflight_legacy_launch_paths(app, configs)?;
+    let stop = stop_all_with_report(app).await;
+    if !stop.is_clean() {
+        return Err(stop.start_blocker("Запуск Legacy"));
+    }
     if runtime_shutting_down(app) {
         return Err("Запуск отменён: приложение завершает работу.".to_string());
     }
+    let prepared = prepare_legacy_launch_paths(app, configs, true)?;
     let mut started = Vec::new();
     let mut started_pairs = Vec::new();
     for (category, config_file) in configs {
@@ -3481,7 +3787,8 @@ pub async fn start_many(app: &AppHandle, configs: &[(String, String)]) -> Result
             stop_all(app).await;
             return Err("Запуск отменён: приложение завершает работу.".to_string());
         }
-        match start(app, category, config_file).await {
+        let conf = prepared_legacy_config_path(&prepared, category, config_file)?;
+        match start_prepared(app, category, config_file, conf).await {
             Ok(pid) => {
                 started.push(pid);
                 started_pairs.push((category.clone(), config_file.clone()));
@@ -3968,7 +4275,16 @@ pub async fn test(app: &AppHandle, category: &str, config_file: &str) -> bool {
         .test_cancel
         .store(false, Ordering::SeqCst);
 
-    stop_all(app).await;
+    let stop = stop_all_with_report(app).await;
+    if !stop.is_clean() {
+        util::emit_log(
+            app,
+            "error",
+            "dpi",
+            &stop.start_blocker("Проверка конфигурации"),
+        );
+        return false;
+    }
     if test_cancelled(app) {
         return false;
     }
@@ -4217,6 +4533,75 @@ fn spawn_reader<R>(
 mod tests {
     use super::*;
 
+    #[cfg(windows)]
+    #[test]
+    fn partial_eyes_start_timeout_is_retained_until_the_worker_exits() {
+        let (release, blocked) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let _ = blocked.recv();
+        });
+        let mut teardown = crate::dpi_supervisor::WorkerTeardown::new(vec![(
+            "eyes-capture-partial-start",
+            worker,
+        )]);
+        assert!(!teardown.is_resolved());
+        assert!(teardown
+            .wait_bounded(Duration::ZERO)
+            .iter()
+            .any(|outcome| { outcome.state == crate::dpi_supervisor::WorkerStopState::TimedOut }));
+
+        let error =
+            crate::eyes::EyesStartError::partial("tracker spawn failed", false, Some(teardown));
+        let pending = std::sync::Mutex::new(Vec::new());
+        let (message, safe_to_retry) = retain_eyes_start_failure_in(&pending, error);
+
+        assert_eq!(message, "tracker spawn failed");
+        assert!(!safe_to_retry);
+        let mut retained = pending.lock_recover().pop().unwrap();
+        assert!(!retained.is_resolved());
+
+        release.send(()).unwrap();
+        retained.wait_bounded(Duration::from_secs(1));
+        assert!(retained.is_resolved());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn eyes_teardown_ticket_remains_atomically_visible_while_polled() {
+        let (release, blocked) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let _ = blocked.recv();
+        });
+        let pending = std::sync::Arc::new(std::sync::Mutex::new(vec![
+            crate::dpi_supervisor::WorkerTeardown::new(vec![("eyes-capture", worker)]),
+        ]));
+        let polled = std::sync::Arc::clone(&pending);
+        let polling = std::thread::spawn(move || {
+            poll_pending_eyes_teardowns_in(&polled, Duration::from_secs(5))
+        });
+
+        let lock_deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            match pending.try_lock() {
+                Err(std::sync::TryLockError::WouldBlock) => break,
+                Err(std::sync::TryLockError::Poisoned(_)) => panic!("teardown slot was poisoned"),
+                Ok(guard) => {
+                    drop(guard);
+                    assert!(
+                        Instant::now() < lock_deadline,
+                        "poller never made the pending ticket atomically visible"
+                    );
+                    std::thread::yield_now();
+                }
+            }
+        }
+
+        release.send(()).unwrap();
+        let report = polling.join().unwrap();
+        assert!(!report.unresolved);
+        assert!(pending.lock_recover().is_empty());
+    }
+
     #[test]
     fn crash_retry_is_one_shot_until_the_lane_is_healthy_again() {
         assert_eq!(
@@ -4293,6 +4678,47 @@ mod tests {
             }),
             ..crate::state::DpiState::default()
         }
+    }
+
+    #[test]
+    fn global_stop_retains_only_processes_without_verified_teardown() {
+        let runtime = two_lane_runtime();
+        let mut tracked = runtime.procs.values().cloned().collect::<Vec<_>>();
+        tracked.sort_by_key(|process| process.pid);
+        let outcomes = vec![
+            crate::dpi_supervisor::ProcessStopOutcome {
+                pid: 10,
+                state: crate::dpi_supervisor::ProcessStopState::Exited,
+            },
+            crate::dpi_supervisor::ProcessStopOutcome {
+                pid: 20,
+                state: crate::dpi_supervisor::ProcessStopState::TimedOut,
+            },
+        ];
+
+        let retained = unverified_tracked_processes(&tracked, &outcomes);
+
+        assert_eq!(retained.len(), 1);
+        assert_eq!(retained[0].pid, 20);
+        assert_eq!(retained[0].process_identity, tracked[1].process_identity);
+        assert!(unverified_tracked_processes(
+            &retained,
+            &[crate::dpi_supervisor::ProcessStopOutcome {
+                pid: 20,
+                state: crate::dpi_supervisor::ProcessStopState::AlreadyExited,
+            }]
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn global_stop_treats_missing_reaper_outcome_as_unverified() {
+        let runtime = two_lane_runtime();
+        let tracked = runtime.procs.values().cloned().collect::<Vec<_>>();
+
+        let retained = unverified_tracked_processes(&tracked, &[]);
+
+        assert_eq!(retained.len(), tracked.len());
     }
 
     fn observer_registries() -> (

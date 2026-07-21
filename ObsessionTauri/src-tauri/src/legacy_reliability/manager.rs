@@ -30,7 +30,7 @@ use super::health::{
 use super::ingress::{
     AcceptedScope, FenceBuildError, FenceRejection, LegacyIngressReceiver, SessionFence,
 };
-use super::policy::{LaneConfigOptions, ObserveOnlyBrain, PresumedIntent, BLACKHOLE_COOLDOWN_MS};
+use super::policy::{LaneConfigOptions, ObserveOnlyBrain, PresumedIntent};
 use super::target_registry::{Attribution, TargetRegistry};
 
 /// Immutable session identity plus the mutable epochs fenced by this manager.
@@ -639,14 +639,15 @@ impl ObserveOnlyManager {
             return false;
         }
         let classification = assessment_classification(report.classification);
-        let cooldown_until_ms = matches!(report.classification, GateClassification::DpiBlocked)
-            .then(|| now_ms.saturating_add(BLACKHOLE_COOLDOWN_MS));
         self.assessor.apply_gate_result(
             &prepared.pending,
             classification,
             now_ms,
             report.valid_until_monotonic_ms,
-            cooldown_until_ms,
+            // A confirmed DPI incident is held by the assessor's Working
+            // hysteresis. Long-lived pacing and failed-candidate cooldowns
+            // belong to the recovery coordinator/cache, not the display lane.
+            None,
         )
     }
 
@@ -1413,6 +1414,155 @@ mod tests {
         assert_eq!(
             assessed.session.lane_generations["discord"],
             LaneGeneration::new(LANE)
+        );
+    }
+
+    #[test]
+    fn production_timeline_holds_dpi_blocked_until_ten_clean_working_seconds() {
+        let (mut manager, registry) = production_fixture();
+        for (flow_id, domain) in [(1, "one.example"), (2, "two.example")] {
+            manager.process_event(
+                flow_id,
+                EyeEvent::Flow(flow_for(
+                    registry.version(),
+                    domain,
+                    flow_id,
+                    Diagnosis::TlsBlackhole,
+                    flow_id,
+                )),
+            );
+        }
+        let prepared = manager
+            .take_environment_gate_request(LocalNetworkSnapshot {
+                online: true,
+                interface_up: true,
+                default_route_available: true,
+                gateway_reachable: true,
+                network_fingerprint: NetworkFingerprint::Stable {
+                    key: "test-network".to_owned(),
+                },
+            })
+            .unwrap();
+        let report = GateReport {
+            fence: prepared.request.fence.clone(),
+            category: "discord".into(),
+            classification: GateClassification::DpiBlocked,
+            controls: Vec::new(),
+            category_targets: Vec::new(),
+            baseline_latency_ms: Some(100),
+            slow_threshold_ms: Some(1_600),
+            generated_at_monotonic_ms: 3,
+            valid_until_monotonic_ms: 10_003,
+        };
+        assert!(manager.apply_environment_gate_report(&prepared, &report, 3));
+
+        let blocked = manager.snapshot();
+        assert_eq!(
+            blocked.lanes[0].classification,
+            AssessmentClassification::DpiBlocked
+        );
+        assert_eq!(blocked.lanes[0].cooldown_until_ms, None);
+        assert_eq!(
+            blocked.presumed_intent,
+            PresumedIntent::SwitchLane {
+                category: "discord".into(),
+                candidate_config: "discord_2.conf".into(),
+                reason: AssessmentClassification::DpiBlocked,
+            }
+        );
+
+        manager.process_event(
+            4,
+            EyeEvent::Flow(flow_for(
+                registry.version(),
+                "one.example",
+                3,
+                Diagnosis::Working,
+                4,
+            )),
+        );
+        manager.process_event(
+            5,
+            EyeEvent::Flow(flow_for(
+                registry.version(),
+                "two.example",
+                4,
+                Diagnosis::Working,
+                5,
+            )),
+        );
+        assert_eq!(
+            manager.snapshot().lanes[0].classification,
+            AssessmentClassification::DpiBlocked
+        );
+
+        // A single adverse flow just before the clean deadline invalidates the
+        // first Working quorum. Silence after it cannot recover the lane.
+        manager.process_event(
+            10_004,
+            EyeEvent::Flow(flow_for(
+                registry.version(),
+                "one.example",
+                5,
+                Diagnosis::TcpReset,
+                10_004,
+            )),
+        );
+        manager.poll(20_004);
+        let interrupted = manager.snapshot();
+        assert_eq!(
+            interrupted.lanes[0].classification,
+            AssessmentClassification::DpiBlocked
+        );
+        assert_eq!(interrupted.lanes[0].evidence.working_flows, 0);
+        assert!(manager
+            .take_environment_gate_request(LocalNetworkSnapshot {
+                online: true,
+                interface_up: true,
+                default_route_available: true,
+                gateway_reachable: true,
+                network_fingerprint: NetworkFingerprint::Stable {
+                    key: "test-network".to_owned(),
+                },
+            })
+            .is_none());
+
+        manager.process_event(
+            20_005,
+            EyeEvent::Flow(flow_for(
+                registry.version(),
+                "one.example",
+                6,
+                Diagnosis::Working,
+                20_005,
+            )),
+        );
+        manager.process_event(
+            20_006,
+            EyeEvent::Flow(flow_for(
+                registry.version(),
+                "two.example",
+                7,
+                Diagnosis::Working,
+                20_006,
+            )),
+        );
+        manager.poll(30_005);
+        assert_eq!(
+            manager.snapshot().lanes[0].classification,
+            AssessmentClassification::DpiBlocked
+        );
+        manager.poll(30_006);
+        let recovered = manager.snapshot();
+        assert_eq!(
+            recovered.lanes[0].classification,
+            AssessmentClassification::Working
+        );
+        assert_eq!(
+            recovered.presumed_intent,
+            PresumedIntent::Wait {
+                reason: AssessmentClassification::Working,
+            }
         );
     }
 

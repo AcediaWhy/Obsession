@@ -75,59 +75,135 @@ impl WorkerStopOutcome {
     }
 }
 
+/// Retains completion evidence for worker joins that outlive one bounded wait.
+/// Dropping a timed-out ticket loses the only safe way to distinguish a slow
+/// shutdown from a still-live capture worker, so Eyes stores unresolved tickets
+/// in `AppState` and polls them before any replacement observer may start.
+pub(crate) struct WorkerTeardown {
+    names: Vec<&'static str>,
+    states: Vec<Option<WorkerStopState>>,
+    receiver: mpsc::Receiver<(usize, WorkerStopState)>,
+    pending: usize,
+}
+
+impl WorkerTeardown {
+    pub(crate) fn new(workers: Vec<(&'static str, JoinHandle<()>)>) -> Self {
+        let names = workers.iter().map(|(name, _)| *name).collect::<Vec<_>>();
+        let mut states = vec![None; workers.len()];
+        let (tx, receiver) = mpsc::channel();
+        let mut pending = 0usize;
+
+        for (index, (name, worker)) in workers.into_iter().enumerate() {
+            let tx = tx.clone();
+            let reaper = std::thread::Builder::new()
+                .name(format!("dpi-reaper-{name}"))
+                .spawn(move || {
+                    let state = if worker.join().is_ok() {
+                        WorkerStopState::Joined
+                    } else {
+                        WorkerStopState::Panicked
+                    };
+                    let _ = tx.send((index, state));
+                });
+            if reaper.is_ok() {
+                pending += 1;
+            } else {
+                // The original JoinHandle was moved into the failed spawn
+                // closure and is now detached. Its exit can never be proven.
+                states[index] = Some(WorkerStopState::ReaperFailed);
+            }
+        }
+        drop(tx);
+
+        Self {
+            names,
+            states,
+            receiver,
+            pending,
+        }
+    }
+
+    fn record(&mut self, index: usize, state: WorkerStopState) {
+        if self
+            .states
+            .get_mut(index)
+            .is_some_and(|slot| slot.replace(state).is_none())
+        {
+            self.pending = self.pending.saturating_sub(1);
+        }
+    }
+
+    fn mark_disconnected(&mut self) {
+        for state in &mut self.states {
+            if state.is_none() {
+                *state = Some(WorkerStopState::ReaperFailed);
+            }
+        }
+        self.pending = 0;
+    }
+
+    fn drain_ready(&mut self) {
+        while self.pending > 0 {
+            match self.receiver.try_recv() {
+                Ok((index, state)) => self.record(index, state),
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.mark_disconnected();
+                    break;
+                }
+            }
+        }
+    }
+
+    pub(crate) fn wait_bounded(&mut self, timeout: Duration) -> Vec<WorkerStopOutcome> {
+        self.drain_ready();
+        let deadline = Instant::now() + timeout;
+        while self.pending > 0 {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            match self.receiver.recv_timeout(remaining) {
+                Ok((index, state)) => self.record(index, state),
+                Err(mpsc::RecvTimeoutError::Timeout) => break,
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    self.mark_disconnected();
+                    break;
+                }
+            }
+        }
+        self.outcomes()
+    }
+
+    pub(crate) fn outcomes(&self) -> Vec<WorkerStopOutcome> {
+        self.names
+            .iter()
+            .enumerate()
+            .map(|(index, name)| WorkerStopOutcome {
+                name,
+                state: self.states[index].unwrap_or(WorkerStopState::TimedOut),
+            })
+            .collect()
+    }
+
+    /// `Panicked` is terminal and therefore safe from a duplicate-capture
+    /// perspective. `ReaperFailed` is permanently unresolved because the
+    /// detached original worker can no longer provide completion evidence.
+    pub(crate) fn is_resolved(&self) -> bool {
+        self.pending == 0
+            && self
+                .states
+                .iter()
+                .all(|state| !matches!(state, Some(WorkerStopState::ReaperFailed) | None))
+    }
+}
+
+#[cfg(test)]
 pub(crate) fn join_workers_bounded(
     workers: Vec<(&'static str, JoinHandle<()>)>,
     timeout: Duration,
 ) -> Vec<WorkerStopOutcome> {
-    let names = workers.iter().map(|(name, _)| *name).collect::<Vec<_>>();
-    let mut states = vec![None; workers.len()];
-    let (tx, rx) = mpsc::channel();
-    let mut pending = 0usize;
-
-    for (index, (name, worker)) in workers.into_iter().enumerate() {
-        let tx = tx.clone();
-        let reaper = std::thread::Builder::new()
-            .name(format!("dpi-reaper-{name}"))
-            .spawn(move || {
-                let state = if worker.join().is_ok() {
-                    WorkerStopState::Joined
-                } else {
-                    WorkerStopState::Panicked
-                };
-                let _ = tx.send((index, state));
-            });
-        if reaper.is_ok() {
-            pending += 1;
-        } else {
-            states[index] = Some(WorkerStopState::ReaperFailed);
-        }
-    }
-    drop(tx);
-
-    let deadline = Instant::now() + timeout;
-    while pending > 0 {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            break;
-        }
-        match rx.recv_timeout(remaining) {
-            Ok((index, state)) => {
-                if states[index].replace(state).is_none() {
-                    pending -= 1;
-                }
-            }
-            Err(mpsc::RecvTimeoutError::Timeout | mpsc::RecvTimeoutError::Disconnected) => break,
-        }
-    }
-
-    names
-        .into_iter()
-        .enumerate()
-        .map(|(index, name)| WorkerStopOutcome {
-            name,
-            state: states[index].unwrap_or(WorkerStopState::TimedOut),
-        })
-        .collect()
+    WorkerTeardown::new(workers).wait_bounded(timeout)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -503,6 +579,34 @@ mod tests {
     }
 
     #[test]
+    fn timed_out_worker_teardown_can_be_confirmed_on_a_later_poll() {
+        let (release, blocked) = mpsc::channel();
+        let slow = std::thread::spawn(move || {
+            let _ = blocked.recv();
+        });
+        let mut teardown = WorkerTeardown::new(vec![("slow", slow)]);
+
+        assert_eq!(
+            teardown.wait_bounded(Duration::from_millis(1)),
+            vec![WorkerStopOutcome {
+                name: "slow",
+                state: WorkerStopState::TimedOut,
+            }]
+        );
+        assert!(!teardown.is_resolved());
+
+        release.send(()).unwrap();
+        assert_eq!(
+            teardown.wait_bounded(Duration::from_secs(1)),
+            vec![WorkerStopOutcome {
+                name: "slow",
+                state: WorkerStopState::Joined,
+            }]
+        );
+        assert!(teardown.is_resolved());
+    }
+
+    #[test]
     fn worker_panic_is_typed() {
         let worker = std::thread::spawn(|| panic!("fixture"));
         let outcomes = join_workers_bounded(vec![("panic", worker)], Duration::from_millis(100));
@@ -646,7 +750,11 @@ mod tests {
 
         impl ProcessControl for UnavailableIdentityControl {
             fn identity(&self, _pid: u32) -> Result<Option<ProcessIdentity>, String> {
-                Err("fixture identity failure".into())
+                if self.killed.load(Ordering::SeqCst) {
+                    Ok(None)
+                } else {
+                    Err("fixture identity failure".into())
+                }
             }
 
             fn kill(&self, _pid: u32, _deadline: Instant) -> Result<(), ProcessKillError> {
@@ -658,17 +766,17 @@ mod tests {
         let control = Arc::new(UnavailableIdentityControl {
             killed: AtomicBool::new(false),
         });
-        let outcomes = stop_processes_bounded(
-            vec![OwnedProcess {
+        let outcome = stop_process(
+            OwnedProcess {
                 pid: 7,
                 identity: None,
-            }],
-            Duration::from_millis(10),
-            control.clone(),
+            },
+            Instant::now() + Duration::from_secs(1),
+            control.as_ref(),
         );
 
         assert!(control.killed.load(Ordering::SeqCst));
-        assert_eq!(outcomes[0].state, ProcessStopState::VerificationFailed);
+        assert_eq!(outcome, ProcessStopState::Exited);
     }
 
     #[test]
