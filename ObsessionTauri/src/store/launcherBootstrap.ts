@@ -24,7 +24,7 @@ import { useLegacyReliabilityStore } from "./legacyReliabilityStore";
 import { useProxyStore } from "./proxyStore";
 import { useSettingsStore } from "./settingsStore";
 
-const BOOTSTRAP_SCHEMA_VERSION = 4;
+const BOOTSTRAP_SCHEMA_VERSION = 5;
 
 type BootstrapErrorScope = "listeners" | "snapshot" | "dpi" | "proxy";
 

@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use serde::{Deserialize, Serialize};
 
 static SAVE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+const LEGACY_RELIABILITY_MIGRATION_VERSION: u8 = 1;
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -25,11 +26,22 @@ pub struct Settings {
     pub fake_tls_domain: String,
     pub ai_provider: String,
     pub has_completed_onboarding: bool,
-    /// Авто-восстановление обхода (Мозг L3). Default false — пока не обкатано.
+    /// Compatibility flag for the quarantined L3 Brain. It is independent from
+    /// Legacy Reliability and can never opt in to the new Automatic mode.
     pub auto_recovery: bool,
-    /// Legacy Reliability rollout mode. Phase 3 supports only explicit
-    /// observe-only and user-confirmed assisted replacement.
+    /// One-way migration marker. Field-level serde default intentionally maps
+    /// old files without this property to zero, while new defaults start current.
+    #[serde(default)]
+    pub legacy_reliability_migration_version: u8,
+    /// Legacy Reliability rollout mode. Automatic remains a separate explicit
+    /// opt-in and is never inferred from the compatibility `auto_recovery` flag.
     pub legacy_reliability_mode: String,
+    /// Persisted Phase 4 kill switch. Missing/old settings deserialize to the
+    /// safe engaged state; explicitly selecting Automatic disarms it atomically.
+    pub legacy_automatic_paused: bool,
+    /// Categories excluded from future Assisted/Automatic attempts. Active
+    /// stop/start transactions still finish to candidate or exact rollback.
+    pub legacy_reliability_frozen_categories: Vec<String>,
     /// Меньше анимаций: гасит canvas/WebGL-фон и Framer-циклы.
     pub reduce_motion: bool,
     /// Глобальный хоткей вкл/выкл защиты. Пустая строка = выключен.
@@ -44,8 +56,7 @@ pub struct Settings {
     /// Уровень агрессивности стратегии Zapret2 (1=мягко … 3=жёстко). Выбирает
     /// стратегию из лестницы пака по aggressiveness. 0 = авто (максимальная).
     pub zapret2_level: u8,
-    /// Локальный подбор Safe Strategy DSL для Zapret2. Отдельный feature flag;
-    /// не меняет семантику Legacy `auto_recovery`.
+    /// Локальный подбор Safe Strategy DSL для Zapret2. Отдельный feature flag.
     pub adaptive_strategy_enabled: bool,
     /// Adaptive search budget: balanced (default), fast or deep.
     pub adaptive_search_mode: String,
@@ -67,6 +78,8 @@ pub struct SettingsPatch {
     pub has_completed_onboarding: Option<bool>,
     pub auto_recovery: Option<bool>,
     pub legacy_reliability_mode: Option<String>,
+    pub legacy_automatic_paused: Option<bool>,
+    pub legacy_reliability_frozen_categories: Option<Vec<String>>,
     pub reduce_motion: Option<bool>,
     pub hotkey_toggle: Option<String>,
     pub lan_publish_secs: Option<u16>,
@@ -89,7 +102,10 @@ impl Default for Settings {
             ai_provider: "malw".to_string(),
             has_completed_onboarding: false,
             auto_recovery: false,
+            legacy_reliability_migration_version: LEGACY_RELIABILITY_MIGRATION_VERSION,
             legacy_reliability_mode: "observe_only".to_string(),
+            legacy_automatic_paused: true,
+            legacy_reliability_frozen_categories: Vec::new(),
             reduce_motion: false,
             hotkey_toggle: "Ctrl+Shift+KeyO".to_string(),
             lan_publish_secs: 0,
@@ -111,18 +127,27 @@ impl Settings {
             Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
             Err(_) => Self::default(),
         };
-        // The retired global Brain flag must never silently become an
-        // automatic Legacy executor. Existing installations migrate to the
-        // conservative observe-only mode and persist on the next settings save.
-        if settings.auto_recovery {
-            settings.auto_recovery = false;
-            settings.legacy_reliability_mode = "observe_only".to_string();
-        } else if !matches!(
+        // Migrate the old global Brain flag exactly once. A user may explicitly
+        // re-enable that compatibility feature later, but it never arms Legacy
+        // Automatic because the two controls remain independent.
+        if settings.legacy_reliability_migration_version < LEGACY_RELIABILITY_MIGRATION_VERSION {
+            settings.legacy_reliability_migration_version = LEGACY_RELIABILITY_MIGRATION_VERSION;
+            if settings.auto_recovery {
+                settings.auto_recovery = false;
+                settings.legacy_reliability_mode = "observe_only".to_string();
+                settings.legacy_automatic_paused = true;
+            }
+        }
+        if !matches!(
             settings.legacy_reliability_mode.as_str(),
-            "observe_only" | "assisted"
+            "observe_only" | "assisted" | "automatic"
         ) {
             settings.legacy_reliability_mode = "observe_only".to_string();
+            settings.legacy_automatic_paused = true;
+        } else if settings.legacy_reliability_mode != "automatic" {
+            settings.legacy_automatic_paused = true;
         }
+        sanitize_frozen_categories(&mut settings.legacy_reliability_frozen_categories);
         settings
     }
 
@@ -146,11 +171,32 @@ impl Settings {
         if patch.auto_recovery.is_some() {
             self.auto_recovery = false;
         }
+        let requested_pause = patch.legacy_automatic_paused;
         if let Some(mode) = patch.legacy_reliability_mode {
-            self.legacy_reliability_mode = match mode.as_str() {
-                "assisted" => mode,
-                _ => "observe_only".to_string(),
+            match mode.as_str() {
+                "automatic" => {
+                    self.legacy_reliability_mode = mode;
+                    self.legacy_automatic_paused = requested_pause.unwrap_or(false);
+                }
+                "assisted" => {
+                    self.legacy_reliability_mode = mode;
+                    self.legacy_automatic_paused = true;
+                }
+                _ => {
+                    self.legacy_reliability_mode = "observe_only".to_string();
+                    self.legacy_automatic_paused = true;
+                }
+            }
+        } else if let Some(paused) = requested_pause {
+            self.legacy_automatic_paused = if self.legacy_reliability_mode == "automatic" {
+                paused
+            } else {
+                true
             };
+        }
+        if let Some(mut categories) = patch.legacy_reliability_frozen_categories {
+            sanitize_frozen_categories(&mut categories);
+            self.legacy_reliability_frozen_categories = categories;
         }
         apply!(reduce_motion);
         apply!(hotkey_toggle);
@@ -194,6 +240,22 @@ impl Settings {
         }
         result
     }
+}
+
+fn sanitize_frozen_categories(categories: &mut Vec<String>) {
+    for category in categories.iter_mut() {
+        category.make_ascii_lowercase();
+    }
+    categories.retain(|category| {
+        !category.is_empty()
+            && category.len() <= 64
+            && category
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    });
+    categories.sort_unstable();
+    categories.dedup();
+    categories.truncate(64);
 }
 
 fn atomic_replace_with_retry(source: &Path, destination: &Path) -> io::Result<()> {
@@ -298,33 +360,73 @@ mod tests {
     }
 
     #[test]
-    fn legacy_reliability_mode_is_explicit_and_old_automatic_flag_migrates_safe() {
+    fn legacy_automatic_mode_is_explicit_and_old_flag_migrates_safe() {
         let mut settings = Settings::default();
         assert_eq!(settings.legacy_reliability_mode, "observe_only");
+        assert!(settings.legacy_automatic_paused);
         settings.apply_patch(SettingsPatch {
             legacy_reliability_mode: Some("assisted".into()),
             ..Default::default()
         });
         assert_eq!(settings.legacy_reliability_mode, "assisted");
+        assert!(settings.legacy_automatic_paused);
         settings.apply_patch(SettingsPatch {
             legacy_reliability_mode: Some("automatic".into()),
-            auto_recovery: Some(true),
+            ..Default::default()
+        });
+        assert_eq!(settings.legacy_reliability_mode, "automatic");
+        assert!(!settings.legacy_automatic_paused);
+        settings.apply_patch(SettingsPatch {
+            legacy_automatic_paused: Some(true),
+            legacy_reliability_frozen_categories: Some(vec![
+                "youtube_twitch".into(),
+                "bad category".into(),
+                "Discord".into(),
+                "discord".into(),
+            ]),
+            ..Default::default()
+        });
+        assert!(settings.legacy_automatic_paused);
+        assert_eq!(
+            settings.legacy_reliability_frozen_categories,
+            vec!["discord", "youtube_twitch"]
+        );
+        settings.apply_patch(SettingsPatch {
+            legacy_reliability_mode: Some("unsupported".into()),
+            legacy_automatic_paused: Some(false),
             ..Default::default()
         });
         assert_eq!(settings.legacy_reliability_mode, "observe_only");
+        assert!(settings.legacy_automatic_paused);
         assert!(!settings.auto_recovery);
 
         let dir = test_dir("legacy-mode-migration");
         std::fs::create_dir_all(&dir).unwrap();
-        let legacy = Settings {
-            auto_recovery: true,
-            legacy_reliability_mode: "assisted".into(),
-            ..Default::default()
-        };
-        legacy.save(&dir).unwrap();
+        std::fs::write(
+            Settings::file(&dir),
+            r#"{"auto_recovery":true,"legacy_reliability_mode":"assisted"}"#,
+        )
+        .unwrap();
         let migrated = Settings::load(&dir);
         assert!(!migrated.auto_recovery);
         assert_eq!(migrated.legacy_reliability_mode, "observe_only");
+        assert!(migrated.legacy_automatic_paused);
+        assert_eq!(
+            migrated.legacy_reliability_migration_version,
+            LEGACY_RELIABILITY_MIGRATION_VERSION
+        );
+
+        let explicitly_reenabled = Settings {
+            auto_recovery: true,
+            legacy_reliability_mode: "automatic".into(),
+            legacy_automatic_paused: false,
+            ..migrated
+        };
+        explicitly_reenabled.save(&dir).unwrap();
+        let reloaded = Settings::load(&dir);
+        assert!(reloaded.auto_recovery);
+        assert_eq!(reloaded.legacy_reliability_mode, "automatic");
+        assert!(!reloaded.legacy_automatic_paused);
         let _ = std::fs::remove_dir_all(dir);
     }
 

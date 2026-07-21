@@ -1,10 +1,10 @@
-//! Pure Phase 3 recovery coordinator.
+//! Pure scoped Legacy recovery coordinator (Assisted and Automatic).
 //!
-//! This module describes what a scoped executor is allowed to do. It never
+//! This module describes what the Phase 3/4 executor is allowed to do. It never
 //! starts a process, writes selection/cache state, or reads a wall clock. All
 //! time values are supplied by the caller from one monotonic clock.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use serde::{Deserialize, Serialize};
 
@@ -14,6 +14,7 @@ use super::contracts::{
 };
 
 pub const ASSISTED_PROPOSAL_TTL_MS: u64 = 30_000;
+pub const AUTOMATIC_PACING_MS: u64 = 30_000;
 pub const NEGATIVE_COOLDOWN_MS: u64 = 300_000;
 pub const MAX_NEGATIVE_COOLDOWNS: usize = 128;
 
@@ -25,6 +26,21 @@ pub enum RecoveryMode {
     #[default]
     ObserveOnly,
     Assisted,
+    Automatic,
+}
+
+/// How an attempt was armed. Automatic actions carry the exact operator
+/// control generation observed when Manager produced the request so the
+/// executor can reject a queued action after pause/freeze/mode changes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum RecoveryOrigin {
+    Assisted,
+    Automatic { control_generation: u64 },
 }
 
 /// Monotonic incident sequence assigned per session and category by Manager.
@@ -86,6 +102,7 @@ pub struct RecoveryRequest {
     previous: RecoveryConfig,
     previous_owner: ProcessOwner,
     candidates: Vec<RecoveryConfig>,
+    automatic_control_generation: u64,
 }
 
 impl RecoveryRequest {
@@ -96,12 +113,31 @@ impl RecoveryRequest {
         previous_owner: ProcessOwner,
         candidates: Vec<RecoveryConfig>,
     ) -> Self {
+        Self::new_with_control_generation(
+            incident_id,
+            fence,
+            previous,
+            previous_owner,
+            candidates,
+            0,
+        )
+    }
+
+    pub fn new_with_control_generation(
+        incident_id: IncidentId,
+        fence: IntentFence,
+        previous: RecoveryConfig,
+        previous_owner: ProcessOwner,
+        candidates: Vec<RecoveryConfig>,
+        automatic_control_generation: u64,
+    ) -> Self {
         Self {
             incident_id,
             fence,
             previous,
             previous_owner,
             candidates,
+            automatic_control_generation,
         }
     }
 
@@ -111,6 +147,10 @@ impl RecoveryRequest {
 
     pub const fn fence(&self) -> &IntentFence {
         &self.fence
+    }
+
+    pub const fn automatic_control_generation(&self) -> u64 {
+        self.automatic_control_generation
     }
 }
 
@@ -132,6 +172,7 @@ pub struct RecoverySuggestion {
 pub enum RecoveryDecision {
     ObserveOnly { suggestion: RecoverySuggestion },
     Assisted { proposal: AssistedProposalView },
+    Automatic { action: RecoveryAction },
 }
 
 /// Backend-owned proposal. Fence fields and candidate fingerprints are never
@@ -232,6 +273,7 @@ pub struct RecoveryAttemptView {
     pub category: String,
     pub previous_config_id: String,
     pub candidate_config_id: String,
+    pub origin: RecoveryOrigin,
     pub phase: RecoveryPhase,
     pub phase_started_at_monotonic_ms: u64,
 }
@@ -244,6 +286,7 @@ pub struct RecoveryCompletion {
     pub category: String,
     pub previous_config_id: String,
     pub candidate_config_id: String,
+    pub origin: RecoveryOrigin,
     pub phase: RecoveryPhase,
     pub disposition: RecoveryDisposition,
     pub finished_at_monotonic_ms: u64,
@@ -253,6 +296,10 @@ pub struct RecoveryCompletion {
 #[serde(rename_all = "camelCase")]
 pub struct RecoveryStatus {
     pub mode: RecoveryMode,
+    pub automatic_paused: bool,
+    pub manual_frozen_categories: Vec<String>,
+    pub halted_categories: Vec<String>,
+    pub automatic_pacing_until_monotonic_ms: Option<u64>,
     pub proposal: Option<AssistedProposalView>,
     pub active_attempt: Option<RecoveryAttemptView>,
     pub last_completion: Option<RecoveryCompletion>,
@@ -274,11 +321,13 @@ pub enum RecoveryAction {
         previous: RecoveryConfig,
         previous_owner: ProcessOwner,
         candidate: RecoveryConfig,
+        origin: RecoveryOrigin,
     },
     StopPrevious {
         envelope: IntentEnvelope,
         previous: RecoveryConfig,
         previous_owner: ProcessOwner,
+        origin: RecoveryOrigin,
     },
     StartCandidate {
         envelope: IntentEnvelope,
@@ -315,6 +364,10 @@ pub enum ConsiderError {
     StableNetworkRequired,
     NoEligibleCandidate,
     PreviousOwnerMismatch,
+    AutomaticPaused,
+    CategoryFrozen,
+    CategoryHalted,
+    AutomaticPacing { until_monotonic_ms: u64 },
     ClockMovedBack,
 }
 
@@ -374,6 +427,7 @@ struct ActiveAttempt {
     expected_rollback_generation: Option<LaneGeneration>,
     candidate_owner: Option<ProcessOwner>,
     confirmation_succeeded: bool,
+    origin: RecoveryOrigin,
     phase: RecoveryPhase,
     phase_started_at_monotonic_ms: u64,
 }
@@ -386,6 +440,7 @@ impl ActiveAttempt {
             category: self.envelope.category.clone(),
             previous_config_id: self.previous.config_id.clone(),
             candidate_config_id: self.candidate.config_id.clone(),
+            origin: self.origin,
             phase: self.phase,
             phase_started_at_monotonic_ms: self.phase_started_at_monotonic_ms,
         }
@@ -403,6 +458,7 @@ impl ActiveAttempt {
             category: self.envelope.category.clone(),
             previous_config_id: self.previous.config_id.clone(),
             candidate_config_id: self.candidate.config_id.clone(),
+            origin: self.origin,
             phase,
             disposition,
             finished_at_monotonic_ms,
@@ -418,6 +474,10 @@ impl ActiveAttempt {
 #[derive(Debug)]
 pub struct RecoveryCoordinator {
     mode: RecoveryMode,
+    automatic_paused: bool,
+    manual_frozen_categories: BTreeSet<String>,
+    halted_categories: BTreeSet<String>,
+    automatic_pacing_until_monotonic_ms: Option<u64>,
     next_attempt_id: u64,
     next_proposal_id: u64,
     last_monotonic_ms: u64,
@@ -439,6 +499,10 @@ impl RecoveryCoordinator {
     pub fn new(mode: RecoveryMode) -> Self {
         Self {
             mode,
+            automatic_paused: false,
+            manual_frozen_categories: BTreeSet::new(),
+            halted_categories: BTreeSet::new(),
+            automatic_pacing_until_monotonic_ms: None,
             next_attempt_id: 1,
             next_proposal_id: 1,
             last_monotonic_ms: 0,
@@ -455,14 +519,68 @@ impl RecoveryCoordinator {
         self.mode
     }
 
-    /// Downgrading the mode revokes an unapproved proposal. An attempt that has
-    /// already entered stop/start continues so it can reach candidate or exact
-    /// rollback safely.
+    /// Any transition away from Assisted revokes its unapproved proposal. An
+    /// active attempt remains executor-owned and must reach a safe terminal
+    /// state; automatic control generation fencing decides whether its queued
+    /// preflight is still authorized.
     pub fn set_mode(&mut self, mode: RecoveryMode) {
         self.mode = mode;
-        if mode == RecoveryMode::ObserveOnly {
+        if mode != RecoveryMode::Assisted {
             self.cancel_pending();
         }
+    }
+
+    pub fn set_automatic_paused(&mut self, paused: bool) {
+        self.automatic_paused = paused;
+    }
+
+    pub fn freeze_category(&mut self, category: impl Into<String>) -> bool {
+        let category = category.into();
+        let inserted = self.manual_frozen_categories.insert(category.clone());
+        if self
+            .proposal
+            .as_ref()
+            .is_some_and(|proposal| proposal.envelope.category == category)
+        {
+            self.cancel_pending();
+        }
+        inserted
+    }
+
+    pub fn set_manual_frozen_categories<I, C>(&mut self, categories: I) -> bool
+    where
+        I: IntoIterator<Item = C>,
+        C: Into<String>,
+    {
+        let next = categories
+            .into_iter()
+            .map(Into::into)
+            .collect::<BTreeSet<_>>();
+        if self.manual_frozen_categories == next {
+            return false;
+        }
+        self.manual_frozen_categories = next;
+        if self.proposal.as_ref().is_some_and(|proposal| {
+            self.manual_frozen_categories
+                .contains(&proposal.envelope.category)
+        }) {
+            self.cancel_pending();
+        }
+        true
+    }
+
+    pub fn unfreeze_category(&mut self, category: &str) -> bool {
+        self.manual_frozen_categories.remove(category)
+    }
+
+    pub fn clear_halt(&mut self, category: &str) -> bool {
+        self.halted_categories.remove(category)
+    }
+
+    /// A real Legacy session boundary clears automatic terminal failures from
+    /// the retired session. Manual freezes are operator controls and survive.
+    pub fn clear_automatic_halts(&mut self) {
+        self.halted_categories.clear();
     }
 
     /// Revokes only an unapproved proposal. An active stop/start transaction
@@ -490,6 +608,7 @@ impl RecoveryCoordinator {
             RecoveryDisposition::ProcessFailed,
             self.last_monotonic_ms,
         );
+        self.finish_automatic_attempt(&active, self.last_monotonic_ms, true);
         self.last_completion = Some(completion.clone());
         Some(RecoveryAction::ManualIntervention { completion })
     }
@@ -506,6 +625,10 @@ impl RecoveryCoordinator {
     pub fn status(&self) -> RecoveryStatus {
         RecoveryStatus {
             mode: self.mode,
+            automatic_paused: self.automatic_paused,
+            manual_frozen_categories: self.manual_frozen_categories.iter().cloned().collect(),
+            halted_categories: self.halted_categories.iter().cloned().collect(),
+            automatic_pacing_until_monotonic_ms: self.automatic_pacing_until_monotonic_ms,
             proposal: self.proposal.as_ref().map(AssistedProposal::view),
             active_attempt: self.active.as_ref().map(ActiveAttempt::view),
             last_completion: self.last_completion.clone(),
@@ -580,12 +703,46 @@ impl RecoveryCoordinator {
             return Ok(RecoveryDecision::ObserveOnly { suggestion });
         }
 
+        let category = request.fence.category.clone();
+        if self.manual_frozen_categories.contains(&category) {
+            return Err(ConsiderError::CategoryFrozen);
+        }
+        if self.halted_categories.contains(&category) {
+            return Err(ConsiderError::CategoryHalted);
+        }
+        if self.mode == RecoveryMode::Automatic {
+            if self.automatic_paused {
+                return Err(ConsiderError::AutomaticPaused);
+            }
+            if let Some(until_monotonic_ms) = self.automatic_pacing_until_monotonic_ms {
+                return Err(ConsiderError::AutomaticPacing { until_monotonic_ms });
+            }
+        }
+
         let attempt_id = AttemptId::new(self.take_attempt_id());
+        let envelope = IntentEnvelope::from_fence(attempt_id, &request.fence);
+        if self.mode == RecoveryMode::Automatic {
+            self.latest_handled_incident
+                .insert(incident_lane, request.incident_id);
+            let action = self.begin_attempt(
+                request.incident_id,
+                envelope,
+                request.previous,
+                request.previous_owner,
+                candidate,
+                RecoveryOrigin::Automatic {
+                    control_generation: request.automatic_control_generation,
+                },
+                now_ms,
+            );
+            return Ok(RecoveryDecision::Automatic { action });
+        }
+
         let proposal_id = ProposalId(self.take_proposal_id());
         let proposal = AssistedProposal {
             proposal_id,
             incident_id: request.incident_id,
-            envelope: IntentEnvelope::from_fence(attempt_id, &request.fence),
+            envelope,
             previous: request.previous,
             previous_owner: request.previous_owner,
             candidate,
@@ -637,29 +794,15 @@ impl RecoveryCoordinator {
 
         let pending = self.proposal.take().expect("proposal checked above");
         self.retire_proposal(pending.proposal_id, RetiredProposalReason::Approved);
-        let candidate_lane_generation = next_generation(pending.envelope.expected_lane_generation);
-        let active = ActiveAttempt {
-            incident_id: pending.incident_id,
-            current_lane_generation: pending.envelope.expected_lane_generation,
-            candidate_lane_generation,
-            expected_rollback_generation: None,
-            candidate_owner: None,
-            confirmation_succeeded: false,
-            phase: RecoveryPhase::Preflight,
-            phase_started_at_monotonic_ms: now_ms,
-            envelope: pending.envelope,
-            previous: pending.previous,
-            previous_owner: pending.previous_owner,
-            candidate: pending.candidate,
-        };
-        let action = RecoveryAction::Preflight {
-            envelope: active.envelope.clone(),
-            previous: active.previous.clone(),
-            previous_owner: active.previous_owner.clone(),
-            candidate: active.candidate.clone(),
-        };
-        self.active = Some(active);
-        Ok(action)
+        Ok(self.begin_attempt(
+            pending.incident_id,
+            pending.envelope,
+            pending.previous,
+            pending.previous_owner,
+            pending.candidate,
+            RecoveryOrigin::Assisted,
+            now_ms,
+        ))
     }
 
     pub fn apply_result(
@@ -695,6 +838,7 @@ impl RecoveryCoordinator {
                 Ok(action)
             }
             Ok(Transition::Complete(completion, manual)) => {
+                self.finish_automatic_attempt(&active, completion.finished_at_monotonic_ms, manual);
                 self.last_completion = Some(completion.clone());
                 if manual {
                     Ok(RecoveryAction::ManualIntervention { completion })
@@ -731,6 +875,44 @@ impl RecoveryCoordinator {
             .copied())
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn begin_attempt(
+        &mut self,
+        incident_id: IncidentId,
+        envelope: IntentEnvelope,
+        previous: RecoveryConfig,
+        previous_owner: ProcessOwner,
+        candidate: RecoveryConfig,
+        origin: RecoveryOrigin,
+        now_ms: u64,
+    ) -> RecoveryAction {
+        let candidate_lane_generation = next_generation(envelope.expected_lane_generation);
+        let active = ActiveAttempt {
+            incident_id,
+            current_lane_generation: envelope.expected_lane_generation,
+            candidate_lane_generation,
+            expected_rollback_generation: None,
+            candidate_owner: None,
+            confirmation_succeeded: false,
+            origin,
+            phase: RecoveryPhase::Preflight,
+            phase_started_at_monotonic_ms: now_ms,
+            envelope,
+            previous,
+            previous_owner,
+            candidate,
+        };
+        let action = RecoveryAction::Preflight {
+            envelope: active.envelope.clone(),
+            previous: active.previous.clone(),
+            previous_owner: active.previous_owner.clone(),
+            candidate: active.candidate.clone(),
+            origin,
+        };
+        self.active = Some(active);
+        action
+    }
+
     fn transition(
         &mut self,
         active: &mut ActiveAttempt,
@@ -745,6 +927,7 @@ impl RecoveryCoordinator {
                     envelope: active.envelope.clone(),
                     previous: active.previous.clone(),
                     previous_owner: active.previous_owner.clone(),
+                    origin: active.origin,
                 }))
             }
             (RecoveryPhase::Preflight, ExecutorOutcome::PreflightRejected) => {
@@ -999,6 +1182,26 @@ impl RecoveryCoordinator {
         }
     }
 
+    fn finish_automatic_attempt(
+        &mut self,
+        active: &ActiveAttempt,
+        now_ms: u64,
+        manual_failure: bool,
+    ) {
+        if !matches!(active.origin, RecoveryOrigin::Automatic { .. }) {
+            return;
+        }
+        let until = now_ms.saturating_add(AUTOMATIC_PACING_MS);
+        self.automatic_pacing_until_monotonic_ms = Some(
+            self.automatic_pacing_until_monotonic_ms
+                .map_or(until, |current| current.max(until)),
+        );
+        if manual_failure {
+            self.halted_categories
+                .insert(active.envelope.category.clone());
+        }
+    }
+
     fn tick(&mut self, now_ms: u64) -> Result<(), ()> {
         if now_ms < self.last_monotonic_ms {
             return Err(());
@@ -1006,6 +1209,12 @@ impl RecoveryCoordinator {
         self.last_monotonic_ms = now_ms;
         self.negative_cooldowns
             .retain(|_, until_ms| now_ms < *until_ms);
+        if self
+            .automatic_pacing_until_monotonic_ms
+            .is_some_and(|until_ms| now_ms >= until_ms)
+        {
+            self.automatic_pacing_until_monotonic_ms = None;
+        }
         if self
             .proposal
             .as_ref()
@@ -1154,6 +1363,16 @@ mod tests {
         }
     }
 
+    #[test]
+    fn automatic_origin_uses_the_strict_camel_case_wire_shape() {
+        let value = serde_json::to_value(RecoveryOrigin::Automatic {
+            control_generation: 73,
+        })
+        .unwrap();
+        assert_eq!(value["kind"], "automatic");
+        assert_eq!(value["controlGeneration"], 73);
+    }
+
     fn fence() -> IntentFence {
         IntentFence {
             session_id: SessionId::new(11),
@@ -1178,6 +1397,21 @@ mod tests {
             config("active"),
             owner("active", 7, 1),
             candidates.iter().map(|id| config(id)).collect(),
+        )
+    }
+
+    fn request_with_control(
+        incident: u64,
+        candidates: &[&str],
+        control_generation: u64,
+    ) -> RecoveryRequest {
+        RecoveryRequest::new_with_control_generation(
+            IncidentId::new(incident),
+            fence(),
+            config("active"),
+            owner("active", 7, 1),
+            candidates.iter().map(|id| config(id)).collect(),
+            control_generation,
         )
     }
 
@@ -1283,6 +1517,254 @@ mod tests {
             coordinator.consider(request(1, &["candidate-a"]), clock.now()),
             Ok(RecoveryDecision::Assisted { .. })
         ));
+    }
+
+    #[test]
+    fn automatic_arms_one_backend_owned_preflight_without_a_proposal() {
+        let clock = FakeClock::default();
+        let mut coordinator = RecoveryCoordinator::new(RecoveryMode::Automatic);
+        let decision = coordinator
+            .consider(request_with_control(1, &["candidate-a"], 41), clock.now())
+            .unwrap();
+        let RecoveryDecision::Automatic { action } = decision else {
+            panic!("automatic mode must return an executable preflight");
+        };
+        let (envelope, origin) = match action {
+            RecoveryAction::Preflight {
+                envelope, origin, ..
+            } => (envelope, origin),
+            other => panic!("unexpected automatic action: {other:?}"),
+        };
+        assert_eq!(
+            origin,
+            RecoveryOrigin::Automatic {
+                control_generation: 41
+            }
+        );
+        assert!(coordinator.status().proposal.is_none());
+        assert_eq!(coordinator.status().active_attempt.unwrap().origin, origin);
+        assert_eq!(
+            coordinator.consider(request_with_control(2, &["candidate-b"], 41), clock.now()),
+            Err(ConsiderError::Busy)
+        );
+
+        let stop = coordinator
+            .apply_result(result(&envelope, preflight_outcome(&envelope), &clock))
+            .unwrap();
+        assert!(matches!(
+            stop,
+            RecoveryAction::StopPrevious {
+                origin: RecoveryOrigin::Automatic {
+                    control_generation: 41
+                },
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn automatic_controls_block_without_consuming_the_incident_or_attempt_id() {
+        let clock = FakeClock::default();
+        let mut coordinator = RecoveryCoordinator::new(RecoveryMode::Automatic);
+        coordinator.set_automatic_paused(true);
+        assert_eq!(
+            coordinator.consider(request_with_control(7, &["candidate-a"], 10), clock.now()),
+            Err(ConsiderError::AutomaticPaused)
+        );
+        coordinator.set_automatic_paused(false);
+        coordinator.freeze_category("video");
+        assert_eq!(
+            coordinator.consider(request_with_control(7, &["candidate-a"], 11), clock.now()),
+            Err(ConsiderError::CategoryFrozen)
+        );
+        coordinator.unfreeze_category("video");
+
+        let decision = coordinator
+            .consider(request_with_control(7, &["candidate-a"], 12), clock.now())
+            .unwrap();
+        let RecoveryDecision::Automatic { action } = decision else {
+            panic!("unblocked incident must remain actionable");
+        };
+        assert!(matches!(
+            action,
+            RecoveryAction::Preflight {
+                envelope: IntentEnvelope {
+                    attempt_id: AttemptId(1),
+                    ..
+                },
+                origin: RecoveryOrigin::Automatic {
+                    control_generation: 12
+                },
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn observe_only_remains_diagnostic_while_automatic_controls_are_blocked() {
+        let clock = FakeClock::default();
+        let mut coordinator = RecoveryCoordinator::new(RecoveryMode::Automatic);
+        let _ = coordinator
+            .consider(request_with_control(1, &["candidate-a"], 1), clock.now())
+            .unwrap();
+        let _ = coordinator.force_manual_failure(clock.now()).unwrap();
+        coordinator.set_mode(RecoveryMode::ObserveOnly);
+        coordinator.set_automatic_paused(true);
+        coordinator.freeze_category("video");
+
+        assert!(matches!(
+            coordinator.consider(request(2, &["candidate-b"]), clock.now()),
+            Ok(RecoveryDecision::ObserveOnly { .. })
+        ));
+    }
+
+    #[test]
+    fn assisted_proposal_is_revoked_by_mode_transition_or_matching_freeze() {
+        let clock = FakeClock::default();
+        for mode in [RecoveryMode::ObserveOnly, RecoveryMode::Automatic] {
+            let mut coordinator = RecoveryCoordinator::new(RecoveryMode::Assisted);
+            let proposal = propose(&mut coordinator, &clock, 1, &["candidate-a"]);
+            coordinator.set_mode(mode);
+            assert!(coordinator.proposal().is_none());
+            assert_eq!(
+                coordinator.approve(proposal.approval(), &fence(), clock.now()),
+                Err(ApprovalError::Cancelled)
+            );
+        }
+
+        let mut coordinator = RecoveryCoordinator::new(RecoveryMode::Assisted);
+        let proposal = propose(&mut coordinator, &clock, 2, &["candidate-b"]);
+        coordinator.freeze_category("chat");
+        assert!(coordinator.proposal().is_some());
+        coordinator.freeze_category("video");
+        assert!(coordinator.proposal().is_none());
+        assert_eq!(
+            coordinator.approve(proposal.approval(), &fence(), clock.now()),
+            Err(ApprovalError::Cancelled)
+        );
+    }
+
+    #[test]
+    fn frozen_category_snapshot_is_exact_sorted_and_revokes_a_matching_proposal() {
+        let clock = FakeClock::default();
+        let mut coordinator = RecoveryCoordinator::new(RecoveryMode::Assisted);
+        let _ = propose(&mut coordinator, &clock, 1, &["candidate-a"]);
+
+        assert!(coordinator.set_manual_frozen_categories([
+            "video".to_owned(),
+            "chat".to_owned(),
+            "video".to_owned(),
+        ]));
+        assert!(coordinator.proposal().is_none());
+        assert_eq!(
+            coordinator.status().manual_frozen_categories,
+            ["chat", "video"]
+        );
+        assert!(!coordinator.set_manual_frozen_categories(["chat".to_owned(), "video".to_owned(),]));
+        assert!(coordinator.set_manual_frozen_categories(["chat".to_owned()]));
+        assert!(!coordinator
+            .status()
+            .manual_frozen_categories
+            .contains(&"video".into()));
+    }
+
+    #[test]
+    fn automatic_pacing_starts_at_terminal_completion_and_expires_exactly() {
+        let mut clock = FakeClock::default();
+        let mut coordinator = RecoveryCoordinator::new(RecoveryMode::Automatic);
+        let decision = coordinator
+            .consider(request_with_control(1, &["candidate-a"], 1), clock.now())
+            .unwrap();
+        let RecoveryDecision::Automatic { action } = decision else {
+            panic!("automatic fixture");
+        };
+        let RecoveryAction::Preflight { envelope, .. } = action else {
+            panic!("preflight fixture");
+        };
+        clock.advance(5);
+        let terminal = coordinator
+            .apply_result(result(
+                &envelope,
+                ExecutorOutcome::PreflightRejected,
+                &clock,
+            ))
+            .unwrap();
+        assert!(matches!(terminal, RecoveryAction::Complete { .. }));
+        let until = clock.now() + AUTOMATIC_PACING_MS;
+        assert_eq!(
+            coordinator.status().automatic_pacing_until_monotonic_ms,
+            Some(until)
+        );
+        assert_eq!(
+            coordinator.consider(
+                request_with_control(2, &["candidate-b"], 1),
+                clock.now() - 1
+            ),
+            Err(ConsiderError::ClockMovedBack)
+        );
+
+        clock.advance(AUTOMATIC_PACING_MS - 1);
+        assert_eq!(
+            coordinator.consider(request_with_control(2, &["candidate-b"], 1), clock.now()),
+            Err(ConsiderError::AutomaticPacing {
+                until_monotonic_ms: until
+            })
+        );
+        clock.advance(1);
+        assert!(matches!(
+            coordinator.consider(request_with_control(2, &["candidate-b"], 1), clock.now()),
+            Ok(RecoveryDecision::Automatic { .. })
+        ));
+    }
+
+    #[test]
+    fn automatic_manual_failure_halts_only_its_lane_until_explicit_clear() {
+        let mut clock = FakeClock::default();
+        let mut coordinator = RecoveryCoordinator::new(RecoveryMode::Automatic);
+        let _ = coordinator
+            .consider(request_with_control(1, &["candidate-a"], 7), clock.now())
+            .unwrap();
+        clock.advance(2);
+        let terminal = coordinator.force_manual_failure(clock.now()).unwrap();
+        assert!(matches!(
+            terminal,
+            RecoveryAction::ManualIntervention { .. }
+        ));
+        assert_eq!(coordinator.status().halted_categories, ["video"]);
+        assert_eq!(
+            coordinator.consider(request_with_control(2, &["candidate-b"], 7), clock.now()),
+            Err(ConsiderError::CategoryHalted)
+        );
+
+        assert!(coordinator.clear_halt("video"));
+        assert!(!coordinator.clear_halt("video"));
+        assert_eq!(
+            coordinator.consider(request_with_control(2, &["candidate-b"], 7), clock.now()),
+            Err(ConsiderError::AutomaticPacing {
+                until_monotonic_ms: clock.now() + AUTOMATIC_PACING_MS
+            })
+        );
+    }
+
+    #[test]
+    fn assisted_attempt_does_not_arm_automatic_pacing_or_halt() {
+        let clock = FakeClock::default();
+        let mut coordinator = RecoveryCoordinator::new(RecoveryMode::Assisted);
+        let proposal = propose(&mut coordinator, &clock, 1, &["candidate-a"]);
+        let envelope = approve(&mut coordinator, &clock, &proposal);
+        let terminal = coordinator
+            .apply_result(result(
+                &envelope,
+                ExecutorOutcome::PreflightRejected,
+                &clock,
+            ))
+            .unwrap();
+        assert!(matches!(terminal, RecoveryAction::Complete { .. }));
+        assert_eq!(
+            coordinator.status().automatic_pacing_until_monotonic_ms,
+            None
+        );
+        assert!(coordinator.status().halted_categories.is_empty());
     }
 
     #[test]

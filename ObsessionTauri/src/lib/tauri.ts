@@ -115,8 +115,14 @@ export interface Settings {
   ai_provider: string;
   has_completed_onboarding: boolean;
   auto_recovery: boolean;
-  /** Legacy reliability rollout; automatic mode is intentionally unavailable. */
-  legacy_reliability_mode: "observe_only" | "assisted";
+  /** One-way backend migration marker; not an Automatic opt-in control. */
+  legacy_reliability_migration_version: number;
+  /** Legacy reliability rollout. Automatic is an explicit Legacy-only opt-in. */
+  legacy_reliability_mode: "observe_only" | "assisted" | "automatic";
+  /** Global safety latch for new automatic Legacy attempts. */
+  legacy_automatic_paused: boolean;
+  /** Categories excluded from future automatic Legacy attempts by the user. */
+  legacy_reliability_frozen_categories: string[];
   reduce_motion: boolean;
   /** Глобальный хоткей вкл/выкл защиты (Tauri-акселератор, напр. "Ctrl+Shift+KeyO"). */
   hotkey_toggle: string;
@@ -225,7 +231,7 @@ export type LegacyReliabilityClassification =
 
 export type LegacyReliabilityConfidence = "none" | "low" | "medium" | "high";
 
-export type LegacyReliabilityMode = "observe_only" | "assisted";
+export type LegacyReliabilityMode = "observe_only" | "assisted" | "automatic";
 
 export type LegacyRecoveryPhase =
   | "preflight"
@@ -253,12 +259,17 @@ export interface LegacyReliabilityProposal {
   expiresAtMonotonicMs: number;
 }
 
+export type LegacyRecoveryOrigin =
+  | { kind: "assisted" }
+  | { kind: "automatic"; controlGeneration: number };
+
 export interface LegacyRecoveryAttempt {
   attemptId: number;
   incidentId: number;
   category: string;
   previousConfigId: string;
   candidateConfigId: string;
+  origin: LegacyRecoveryOrigin;
   phase: LegacyRecoveryPhase;
   phaseStartedAtMonotonicMs: number;
 }
@@ -269,6 +280,7 @@ export interface LegacyRecoveryCompletion {
   category: string;
   previousConfigId: string;
   candidateConfigId: string;
+  origin: LegacyRecoveryOrigin;
   phase: LegacyRecoveryPhase;
   disposition: LegacyRecoveryDisposition;
   finishedAtMonotonicMs: number;
@@ -335,6 +347,14 @@ export interface LegacyReliabilityStatus {
   activeAttempt: LegacyRecoveryAttempt | null;
   lastCompletion: LegacyRecoveryCompletion | null;
   negativeCooldownCount: number;
+  /** Backend-authoritative global latch for future automatic attempts. */
+  automaticPaused: boolean;
+  /** Remaining backend pacing interval; never compare with the browser clock. */
+  automaticPacingRemainingMs: number | null;
+  /** User-frozen lanes reconciled by the backend. */
+  frozenCategories: string[];
+  /** Lanes halted after a terminal recovery failure. */
+  haltedCategories: string[];
 }
 
 export type AdaptiveCategory = "discord" | "youtube_twitch" | "gaming";

@@ -36,6 +36,10 @@ export const INITIAL_LEGACY_RELIABILITY_STATUS: LegacyReliabilityStatus = {
   activeAttempt: null,
   lastCompletion: null,
   negativeCooldownCount: 0,
+  automaticPaused: true,
+  automaticPacingRemainingMs: null,
+  frozenCategories: [],
+  haltedCategories: [],
 };
 
 export const useLegacyReliabilityStore = create<LegacyReliabilityState>(

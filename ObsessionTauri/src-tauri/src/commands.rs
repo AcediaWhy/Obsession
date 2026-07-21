@@ -297,6 +297,17 @@ pub async fn dpi_engine_set(app: AppHandle, engine: String) -> Result<(), String
     }
     // Сериализуем с активным DPI-циклом, чтобы не переключить движок посреди start.
     let _gate = state.dpi_gate.lock().await;
+    let current = EngineKind::parse(&state.settings.lock_recover().dpi_engine);
+    if current == kind {
+        return Ok(());
+    }
+    let runtime_active = {
+        let dpi = state.dpi.lock_recover();
+        !dpi.procs.is_empty() || dpi.active_launch.is_some()
+    };
+    if runtime_active {
+        return Err("Сначала остановите активный обход, затем переключите DPI-движок.".to_string());
+    }
     mutate_settings(&app, |s| s.dpi_engine = kind.name().to_string())?;
     crate::util::emit_log(
         &app,
@@ -655,7 +666,7 @@ pub fn runtime_get_snapshot(app: AppHandle) -> RuntimeSnapshot {
 }
 
 /// Версия wire-контракта единого startup/resume snapshot.
-pub const BOOTSTRAP_SCHEMA_VERSION: u32 = 4;
+pub const BOOTSTRAP_SCHEMA_VERSION: u32 = 5;
 
 #[derive(Serialize)]
 pub struct BootstrapSettings {
@@ -808,9 +819,15 @@ where
         .map_err(|_| "settings lock poisoned".to_string())?;
     let mut next = guard.clone();
     mutate(&mut next);
+    let legacy_automation_changed = guard.legacy_reliability_mode != next.legacy_reliability_mode
+        || guard.legacy_automatic_paused != next.legacy_automatic_paused
+        || guard.legacy_reliability_frozen_categories != next.legacy_reliability_frozen_categories;
     next.save(&base).map_err(|e| e.to_string())?;
     *guard = next.clone();
     state.settings_revision.bump();
+    if legacy_automation_changed {
+        state.legacy_automation_revision.bump();
+    }
     Ok(next)
 }
 

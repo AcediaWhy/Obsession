@@ -32,7 +32,7 @@ use super::environment_gate::{
     GATE_REPORT_TTL,
 };
 use super::manager::{ConfirmationFlow, ObserveOnlySnapshot};
-use super::recovery::{RecoveryAction, RecoveryConfig};
+use super::recovery::{RecoveryAction, RecoveryConfig, RecoveryOrigin};
 use super::target_registry::{ConfigLookupError, TargetRegistry};
 
 pub const CONFIRMATION_DEADLINE_MS: u64 = 20_000;
@@ -998,6 +998,16 @@ pub struct CommitRequest {
 /// method bounded and must not weaken PID start-identity checks to PID-only.
 pub trait ScopedExecutorBackend: Send {
     fn monotonic_ms(&self) -> u64;
+    /// Revalidates Phase 4 operator controls. Automatic actions carry a
+    /// generation that becomes permanently stale after any mode/pause/freeze
+    /// transition; Assisted actions are unaffected.
+    fn authorize_recovery<'a>(
+        &'a mut self,
+        _origin: RecoveryOrigin,
+        _category: String,
+    ) -> BackendFuture<'a, Result<(), BackendFailure>> {
+        Box::pin(async { Ok(()) })
+    }
     fn current_fence<'a>(
         &'a mut self,
         category: String,
@@ -1067,6 +1077,7 @@ struct ActiveExecution {
     previous: RecoveryConfig,
     previous_owner: ProcessOwner,
     candidate: RecoveryConfig,
+    origin: RecoveryOrigin,
     candidate_owner: Option<ProcessOwner>,
     confirmation_arm: Option<ConfirmationArm>,
     gate_valid_until_process_ms: u64,
@@ -1320,9 +1331,9 @@ impl fmt::Display for ScopedRecoveryRunError {
 
 impl Error for ScopedRecoveryRunError {}
 
-/// Runs an approved attempt to a terminal coordinator action while holding the
-/// same DPI operation gate. Commands supply only the backend-owned initial
-/// `Preflight` action returned by approval.
+/// Runs a backend-owned Assisted or Automatic attempt to a terminal coordinator
+/// action while holding the same DPI operation gate. The caller supplies only
+/// the initial `Preflight` action produced by the recovery coordinator.
 pub async fn run_scoped_recovery(
     app: &AppHandle,
     initial_action: RecoveryAction,
@@ -1356,7 +1367,9 @@ pub async fn run_scoped_recovery(
     };
     let mut executor = ScopedExecutor::new(backend);
     let mut action = initial_action;
+    let mut pending_cache_failure = None;
     for _ in 0..12 {
+        let executed_action = action.clone();
         let result = match executor.execute(action).await {
             Ok(result) => result,
             Err(error) => {
@@ -1366,10 +1379,14 @@ pub async fn run_scoped_recovery(
                     .lock_recover()
                     .force_manual_failure(state.legacy_monotonic_ms())
                     .ok_or(ScopedRecoveryRunError::Executor(error))?;
+                persist_candidate_failure(app, pending_cache_failure.take()).await;
                 super::status::refresh_recovery_overlay(app);
                 return Ok(terminal);
             }
         };
+        if let Some(failure) = candidate_cache_failure(&executed_action, &result) {
+            pending_cache_failure = Some(failure);
+        }
         let next_action = { state.legacy_recovery.lock_recover().apply_result(result) };
         action = match next_action {
             Ok(action) => action,
@@ -1380,6 +1397,7 @@ pub async fn run_scoped_recovery(
                     .lock_recover()
                     .force_manual_failure(state.legacy_monotonic_ms())
                     .ok_or(ScopedRecoveryRunError::Coordinator(error))?;
+                persist_candidate_failure(app, pending_cache_failure.take()).await;
                 super::status::refresh_recovery_overlay(app);
                 return Ok(terminal);
             }
@@ -1389,6 +1407,7 @@ pub async fn run_scoped_recovery(
             action,
             RecoveryAction::Complete { .. } | RecoveryAction::ManualIntervention { .. }
         ) {
+            persist_candidate_failure(app, pending_cache_failure.take()).await;
             return Ok(action);
         }
     }
@@ -1400,10 +1419,137 @@ pub async fn run_scoped_recovery(
             .force_manual_failure(state.legacy_monotonic_ms())
     };
     if let Some(terminal) = terminal {
+        persist_candidate_failure(app, pending_cache_failure.take()).await;
         super::status::refresh_recovery_overlay(app);
         Ok(terminal)
     } else {
         Err(ScopedRecoveryRunError::TooManyTransitions)
+    }
+}
+
+#[derive(Clone, Debug)]
+struct PendingCandidateCacheFailure {
+    envelope: IntentEnvelope,
+    candidate: RecoveryConfig,
+    kind: super::cache::FailureKind,
+    reason: &'static str,
+}
+
+fn candidate_cache_failure(
+    action: &RecoveryAction,
+    result: &ExecutorResult,
+) -> Option<PendingCandidateCacheFailure> {
+    let (envelope, candidate) = match action {
+        RecoveryAction::StartCandidate {
+            envelope,
+            candidate,
+            ..
+        }
+        | RecoveryAction::ConfirmCandidate {
+            envelope,
+            candidate,
+            ..
+        }
+        | RecoveryAction::CommitCandidate {
+            envelope,
+            candidate,
+            ..
+        } => (envelope, candidate),
+        _ => return None,
+    };
+    if &result.envelope != envelope {
+        return None;
+    }
+    let (kind, reason) = match &result.outcome {
+        ExecutorOutcome::StartFailed { .. } => {
+            (super::cache::FailureKind::Readiness, "readiness_failure")
+        }
+        ExecutorOutcome::ConfirmationFailed {
+            reason: ConfirmationFailure::Strategy,
+            ..
+        }
+        | ExecutorOutcome::ExecutionAborted {
+            reason: ConfirmationFailure::Strategy,
+            ..
+        } => (super::cache::FailureKind::Strategy, "strategy_failure"),
+        ExecutorOutcome::Exited {
+            intentional: false, ..
+        } => (super::cache::FailureKind::Readiness, "unexpected_exit"),
+        _ => return None,
+    };
+    Some(PendingCandidateCacheFailure {
+        envelope: envelope.clone(),
+        candidate: candidate.clone(),
+        kind,
+        reason,
+    })
+}
+
+async fn persist_candidate_failure(app: &AppHandle, failure: Option<PendingCandidateCacheFailure>) {
+    let Some(failure) = failure else {
+        return;
+    };
+    // Rollback may take long enough for the user to move to another Wi-Fi.
+    // Session-start identity alone is therefore insufficient for a persisted
+    // cooldown: resolve the local network again immediately before the write.
+    let local = AppScopedExecutorBackend::local_network().await;
+    if !cache_network_fence_matches(&local, &failure.envelope.expected_network_fingerprint) {
+        return;
+    }
+    let state = app.state::<AppState>();
+    let snapshot = state
+        .legacy_manager
+        .lock_recover()
+        .as_ref()
+        .map(|manager| manager.snapshot());
+    let Some(snapshot) = snapshot.filter(|snapshot| {
+        !snapshot.session.closed
+            && snapshot.session.session_id == failure.envelope.session_id
+            && snapshot.session.network_fingerprint_at_start
+                == failure.envelope.expected_network_fingerprint
+    }) else {
+        return;
+    };
+    let Some(stable_network) = snapshot.session.network_fingerprint_at_start.stable_key() else {
+        return;
+    };
+    let fingerprint_is_exact = state
+        .legacy_manager
+        .lock_recover()
+        .as_ref()
+        .and_then(|manager| {
+            manager
+                .registry()
+                .config_fingerprint(&failure.envelope.category, failure.candidate.config_id())
+                .ok()
+                .map(|fingerprint| fingerprint.as_hex() == failure.candidate.fingerprint().as_str())
+        })
+        .unwrap_or(false);
+    if !fingerprint_is_exact {
+        return;
+    }
+    let paths = state.paths.clone();
+    let result = state.legacy_trust_cache.lock_recover().record_failure(
+        &paths,
+        super::cache::FailureRecord {
+            candidate: super::cache::CandidateIdentity {
+                stable_network_key: stable_network,
+                category: &failure.envelope.category,
+                config_id: failure.candidate.config_id(),
+                config_fingerprint: failure.candidate.fingerprint().as_str(),
+            },
+            kind: failure.kind,
+            reason: failure.reason,
+            failed_at: unix_now_secs(),
+        },
+    );
+    if let Err(error) = result {
+        crate::util::emit_log(
+            app,
+            "warn",
+            "legacy-reliability",
+            &format!("Legacy candidate cooldown was not persisted: {error}"),
+        );
     }
 }
 
@@ -1516,15 +1662,20 @@ where
                 previous,
                 previous_owner,
                 candidate,
+                origin,
             } => {
-                self.execute_preflight(envelope, previous, previous_owner, candidate)
+                self.execute_preflight(origin, envelope, previous, previous_owner, candidate)
                     .await
             }
             RecoveryAction::StopPrevious {
                 envelope,
                 previous,
                 previous_owner,
-            } => self.execute_stop(envelope, previous, previous_owner).await,
+                origin,
+            } => {
+                self.execute_stop(origin, envelope, previous, previous_owner)
+                    .await
+            }
             RecoveryAction::StartCandidate {
                 envelope,
                 candidate,
@@ -1559,6 +1710,7 @@ where
 
     async fn execute_preflight(
         &mut self,
+        origin: RecoveryOrigin,
         envelope: IntentEnvelope,
         previous: RecoveryConfig,
         previous_owner: ProcessOwner,
@@ -1566,6 +1718,13 @@ where
     ) -> Result<ExecutorResult, ExecutorRunError> {
         if self.active.is_some() {
             return Err(ExecutorRunError::Busy);
+        }
+        if let Err(failure) = self
+            .backend
+            .authorize_recovery(origin, envelope.category.clone())
+            .await
+        {
+            return Ok(self.preflight_rejected(envelope, failure));
         }
         let old_fence = match self.exact_current_fence(&envelope).await {
             Ok(fence) => fence,
@@ -1761,6 +1920,13 @@ where
             category: plan.category().to_owned(),
             target_state: ObserverTargetState::Present(previous_owner.clone()),
         };
+        if let Err(failure) = self
+            .backend
+            .authorize_recovery(origin, envelope.category.clone())
+            .await
+        {
+            return Ok(self.preflight_rejected(envelope, failure));
+        }
         let refreshed_fence = match self.backend.replace_observer(observer_plan).await {
             Ok(fence) => fence,
             Err(failure) => return Ok(self.preflight_rejected(envelope, failure)),
@@ -1783,6 +1949,7 @@ where
             previous,
             previous_owner,
             candidate,
+            origin,
             candidate_owner: None,
             confirmation_arm: None,
             gate_valid_until_process_ms: 0,
@@ -1934,12 +2101,16 @@ where
 
     async fn execute_stop(
         &mut self,
+        origin: RecoveryOrigin,
         envelope: IntentEnvelope,
         previous: RecoveryConfig,
         previous_owner: ProcessOwner,
     ) -> Result<ExecutorResult, ExecutorRunError> {
         let active = self.active_for(&envelope)?.clone();
-        if active.previous != previous || active.previous_owner != previous_owner {
+        if active.previous != previous
+            || active.previous_owner != previous_owner
+            || active.origin != origin
+        {
             return Err(ExecutorRunError::ActionMismatch);
         }
         if !self
@@ -1985,6 +2156,9 @@ where
                     "fresh Environment Gate expired before the scoped stop",
                 ));
             }
+            self.backend
+                .authorize_recovery(origin, envelope.category.clone())
+                .await?;
             Ok::<(), BackendFailure>(())
         }
         .await;
@@ -3144,6 +3318,49 @@ impl ScopedExecutorBackend for AppScopedExecutorBackend {
         self.app.state::<AppState>().legacy_monotonic_ms()
     }
 
+    fn authorize_recovery<'a>(
+        &'a mut self,
+        origin: RecoveryOrigin,
+        category: String,
+    ) -> BackendFuture<'a, Result<(), BackendFailure>> {
+        Box::pin(async move {
+            let RecoveryOrigin::Automatic { control_generation } = origin else {
+                return Ok(());
+            };
+            let state = self.app.state::<AppState>();
+            // `mutate_settings` changes the authorization fields and bumps the
+            // dedicated revision while holding this same settings lock. Read
+            // both under it so pause -> resume cannot expose new settings with
+            // an old revision snapshot and revive this queued action.
+            let settings = state.settings.lock_recover();
+            if state
+                .shutting_down
+                .load(std::sync::atomic::Ordering::SeqCst)
+                || state.legacy_automation_revision.current() != control_generation
+            {
+                return Err(BackendFailure::new(
+                    ConfirmationFailure::Sensor,
+                    "Automatic authorization generation changed",
+                ));
+            }
+            let authorized = settings.dpi_engine == "legacy"
+                && settings.legacy_reliability_mode == "automatic"
+                && !settings.legacy_automatic_paused
+                && !settings
+                    .legacy_reliability_frozen_categories
+                    .iter()
+                    .any(|frozen| frozen == &category);
+            if authorized {
+                Ok(())
+            } else {
+                Err(BackendFailure::new(
+                    ConfirmationFailure::Sensor,
+                    "Automatic recovery was paused, frozen, downgraded, or left Legacy",
+                ))
+            }
+        })
+    }
+
     fn current_fence<'a>(
         &'a mut self,
         category: String,
@@ -3652,7 +3869,8 @@ impl ScopedExecutorBackend for AppScopedExecutorBackend {
                     "candidate owner changed before settings commit",
                 ));
             }
-            let base_dir = self.app.state::<AppState>().paths.base_dir.clone();
+            let paths = self.app.state::<AppState>().paths.clone();
+            let base_dir = paths.base_dir.clone();
             let previous_selection = {
                 let state = self.app.state::<AppState>();
                 let mut settings = state.settings.lock_recover();
@@ -3769,9 +3987,90 @@ impl ScopedExecutorBackend for AppScopedExecutorBackend {
                     ),
                 });
             }
+            let cache_fingerprint_is_exact = self
+                .current_registry()
+                .ok()
+                .and_then(|registry| {
+                    registry
+                        .config_fingerprint(
+                            &request.envelope.category,
+                            request.candidate.config_id(),
+                        )
+                        .ok()
+                        .map(|fingerprint| {
+                            fingerprint.as_hex() == request.candidate.fingerprint().as_str()
+                        })
+                })
+                .unwrap_or(false);
+            // Selection/process commit is already successful at this point.
+            // A network change only suppresses trust memory; it must never
+            // roll back the confirmed candidate.
+            let cache_local_network = Self::local_network().await;
+            if let Some(stable_network) = request
+                .envelope
+                .expected_network_fingerprint
+                .stable_key()
+                .filter(|_| {
+                    cache_fingerprint_is_exact
+                        && cache_network_fence_matches(
+                            &cache_local_network,
+                            &request.envelope.expected_network_fingerprint,
+                        )
+                })
+            {
+                let state = self.app.state::<AppState>();
+                let session_key = format!(
+                    "{:032x}:{}",
+                    state.legacy_cache_boot_nonce,
+                    request.envelope.session_id.get()
+                );
+                let confirmed_at = unix_now_secs();
+                let cache_result = state.legacy_trust_cache.lock_recover().record_confirmation(
+                    &paths,
+                    super::cache::ConfirmationRecord {
+                        candidate: super::cache::CandidateIdentity {
+                            stable_network_key: stable_network,
+                            category: &request.envelope.category,
+                            config_id: request.candidate.config_id(),
+                            config_fingerprint: request.candidate.fingerprint().as_str(),
+                        },
+                        session_key: &session_key,
+                        confirmed_at,
+                    },
+                );
+                if let Err(error) = cache_result {
+                    crate::util::emit_log(
+                        &self.app,
+                        "warn",
+                        "legacy-reliability",
+                        &format!(
+                            "Confirmed candidate kept, but Legacy trust cache was not updated: {error}"
+                        ),
+                    );
+                }
+            }
             Ok(())
         })
     }
+}
+
+fn cache_network_fence_matches(
+    local: &crate::netid::LocalNetworkIdentity,
+    expected: &NetworkFingerprint,
+) -> bool {
+    expected.stable_key().is_some()
+        && local.online
+        && local.interface_up
+        && local.default_route_available
+        && local.gateway_reachable
+        && &local.fingerprint == expected
+}
+
+fn unix_now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 fn classify_scoped_start_error(error: String) -> StartLaneError {
@@ -4060,6 +4359,35 @@ mod tests {
         assert!(ConfirmationFailure::Strategy.penalizes_candidate());
     }
 
+    #[test]
+    fn cache_network_fence_requires_healthy_exact_stable_identity() {
+        let expected = network();
+        let healthy = crate::netid::LocalNetworkIdentity {
+            online: true,
+            interface_up: true,
+            default_route_available: true,
+            gateway_reachable: true,
+            fingerprint: expected.clone(),
+        };
+        assert!(cache_network_fence_matches(&healthy, &expected));
+
+        let mut offline = healthy.clone();
+        offline.online = false;
+        assert!(!cache_network_fence_matches(&offline, &expected));
+
+        let mut changed = healthy;
+        changed.fingerprint = NetworkFingerprint::Stable {
+            key: "other-network".into(),
+        };
+        assert!(!cache_network_fence_matches(&changed, &expected));
+        assert!(!cache_network_fence_matches(
+            &changed,
+            &NetworkFingerprint::Unstable {
+                reason: "incomplete".into()
+            }
+        ));
+    }
+
     #[derive(Clone, Debug)]
     struct ExecutorFixture {
         records: Vec<LegacyConfigRecord>,
@@ -4122,6 +4450,11 @@ mod tests {
                 tamper_from_reload: None,
                 persisted: None,
                 commit_failure: None,
+                automatic_authorization_calls: 0,
+                deny_automatic_authorization_at: None,
+                authorized_control_generation: None,
+                revoke_automatic_after_stop: false,
+                automatic_authorization_revoked: false,
                 calls: Vec::new(),
             }
         }
@@ -4145,6 +4478,30 @@ mod tests {
             let action = coordinator.approve(approval, &self.fence, 2).unwrap();
             (coordinator, action)
         }
+
+        fn automatic_coordinator(
+            &self,
+            control_generation: u64,
+        ) -> (RecoveryCoordinator, RecoveryAction) {
+            let mut coordinator = RecoveryCoordinator::new(RecoveryMode::Automatic);
+            let decision = coordinator
+                .consider(
+                    RecoveryRequest::new_with_control_generation(
+                        IncidentId::new(1),
+                        self.fence.clone(),
+                        self.previous.clone(),
+                        self.previous_owner.clone(),
+                        vec![self.candidate.clone()],
+                        control_generation,
+                    ),
+                    1,
+                )
+                .unwrap();
+            let RecoveryDecision::Automatic { action } = decision else {
+                panic!("automatic fixture must arm a direct preflight");
+            };
+            (coordinator, action)
+        }
     }
 
     struct FakeBackend {
@@ -4164,6 +4521,11 @@ mod tests {
         tamper_from_reload: Option<usize>,
         persisted: Option<Vec<(String, String)>>,
         commit_failure: Option<BackendFailure>,
+        automatic_authorization_calls: usize,
+        deny_automatic_authorization_at: Option<usize>,
+        authorized_control_generation: Option<u64>,
+        revoke_automatic_after_stop: bool,
+        automatic_authorization_revoked: bool,
         calls: Vec<String>,
     }
 
@@ -4193,6 +4555,36 @@ mod tests {
     impl ScopedExecutorBackend for FakeBackend {
         fn monotonic_ms(&self) -> u64 {
             self.now_ms
+        }
+
+        fn authorize_recovery<'a>(
+            &'a mut self,
+            origin: RecoveryOrigin,
+            _category: String,
+        ) -> BackendFuture<'a, Result<(), BackendFailure>> {
+            let RecoveryOrigin::Automatic { control_generation } = origin else {
+                return Box::pin(async { Ok(()) });
+            };
+            self.automatic_authorization_calls += 1;
+            let call = self.automatic_authorization_calls;
+            self.calls.push(format!("authorize:{call}"));
+            let denied = self.automatic_authorization_revoked
+                || self
+                    .deny_automatic_authorization_at
+                    .is_some_and(|denied_at| denied_at == call)
+                || self
+                    .authorized_control_generation
+                    .is_some_and(|current| current != control_generation);
+            Box::pin(async move {
+                if denied {
+                    Err(BackendFailure::new(
+                        ConfirmationFailure::Sensor,
+                        "automatic authorization was revoked",
+                    ))
+                } else {
+                    Ok(())
+                }
+            })
         }
 
         fn current_fence<'a>(
@@ -4308,6 +4700,9 @@ mod tests {
             if result == StopLaneResult::Stopped && self.processes.get(category) == Some(owner) {
                 self.processes.remove(category);
             }
+            if self.revoke_automatic_after_stop {
+                self.automatic_authorization_revoked = true;
+            }
             Box::pin(async move { Ok(result) })
         }
 
@@ -4412,6 +4807,149 @@ mod tests {
             | RecoveryAction::ManualIntervention { completion } => completion.disposition,
             _ => panic!("not terminal"),
         }
+    }
+
+    #[test]
+    fn unexpected_candidate_exit_is_persisted_as_readiness_not_strategy() {
+        let fixture = ExecutorFixture::new();
+        let envelope = IntentEnvelope::from_fence(AttemptId::new(91), &fixture.fence);
+        let candidate_owner = process_owner(99, 999, fixture.candidate.fingerprint(), 8);
+        let action = RecoveryAction::ConfirmCandidate {
+            envelope: envelope.clone(),
+            candidate: fixture.candidate.clone(),
+            owner: candidate_owner.clone(),
+        };
+        let failure = candidate_cache_failure(
+            &action,
+            &ExecutorResult {
+                envelope,
+                outcome: ExecutorOutcome::Exited {
+                    process: candidate_owner,
+                    intentional: false,
+                },
+                completed_at_monotonic_ms: 10,
+            },
+        )
+        .unwrap();
+        assert_eq!(failure.kind, super::super::cache::FailureKind::Readiness);
+        assert_eq!(failure.reason, "unexpected_exit");
+    }
+
+    #[tokio::test]
+    async fn automatic_revoke_before_observer_mutation_preserves_every_process() {
+        let fixture = ExecutorFixture::new();
+        let (mut coordinator, action) = fixture.automatic_coordinator(9);
+        let mut backend = fixture.backend();
+        backend.deny_automatic_authorization_at = Some(2);
+        let mut executor = ScopedExecutor::new(backend);
+
+        let terminal = drive(&mut executor, &mut coordinator, action).await;
+        assert_eq!(
+            disposition(&terminal),
+            RecoveryDisposition::PreviousPreserved
+        );
+        assert_eq!(
+            executor.backend().processes.get("video"),
+            Some(&fixture.previous_owner)
+        );
+        assert_eq!(
+            executor.backend().processes.get("chat"),
+            Some(&fixture.neighbor_owner)
+        );
+        assert!(!executor
+            .backend()
+            .calls
+            .iter()
+            .any(|call| call.starts_with("observer:") || call.starts_with("stop:")));
+        assert_eq!(coordinator.status().negative_cooldown_count, 0);
+    }
+
+    #[tokio::test]
+    async fn automatic_revoke_after_observer_replacement_restores_before_stop() {
+        let fixture = ExecutorFixture::new();
+        let (mut coordinator, action) = fixture.automatic_coordinator(9);
+        let mut backend = fixture.backend();
+        backend.deny_automatic_authorization_at = Some(3);
+        let mut executor = ScopedExecutor::new(backend);
+
+        let terminal = drive(&mut executor, &mut coordinator, action).await;
+        assert_eq!(
+            disposition(&terminal),
+            RecoveryDisposition::PreviousPreserved
+        );
+        assert_eq!(
+            executor.backend().processes.get("video"),
+            Some(&fixture.previous_owner)
+        );
+        assert_eq!(
+            executor.backend().registry.active_config("video"),
+            Some("video_1.conf")
+        );
+        assert!(executor
+            .backend()
+            .calls
+            .iter()
+            .any(|call| call == "observer:video_2.conf"));
+        assert!(executor
+            .backend()
+            .calls
+            .iter()
+            .any(|call| call == "observer:video_1.conf"));
+        assert!(!executor
+            .backend()
+            .calls
+            .iter()
+            .any(|call| call == "stop:video"));
+        assert_eq!(coordinator.status().negative_cooldown_count, 0);
+    }
+
+    #[tokio::test]
+    async fn automatic_revoke_after_stop_boundary_finishes_the_safe_transaction() {
+        let fixture = ExecutorFixture::new();
+        let (mut coordinator, action) = fixture.automatic_coordinator(9);
+        let mut backend = fixture.backend();
+        backend.revoke_automatic_after_stop = true;
+        let mut executor = ScopedExecutor::new(backend);
+
+        let terminal = drive(&mut executor, &mut coordinator, action).await;
+        assert_eq!(
+            disposition(&terminal),
+            RecoveryDisposition::CandidateApplied
+        );
+        assert!(executor.backend().automatic_authorization_revoked);
+        assert_eq!(executor.backend().automatic_authorization_calls, 3);
+        assert!(executor
+            .backend()
+            .calls
+            .iter()
+            .any(|call| call == "start:candidate"));
+        assert_eq!(
+            executor.backend().processes.get("chat"),
+            Some(&fixture.neighbor_owner)
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_automatic_control_generation_never_reaches_observer_or_stop() {
+        let fixture = ExecutorFixture::new();
+        let (mut coordinator, action) = fixture.automatic_coordinator(7);
+        let mut backend = fixture.backend();
+        // Models kill -> resume: current controls are authorized again, but on
+        // a newer generation than the queued action.
+        backend.authorized_control_generation = Some(9);
+        let mut executor = ScopedExecutor::new(backend);
+
+        let terminal = drive(&mut executor, &mut coordinator, action).await;
+        assert_eq!(
+            disposition(&terminal),
+            RecoveryDisposition::PreviousPreserved
+        );
+        assert_eq!(executor.backend().automatic_authorization_calls, 1);
+        assert!(!executor
+            .backend()
+            .calls
+            .iter()
+            .any(|call| call.starts_with("observer:") || call.starts_with("stop:")));
     }
 
     #[tokio::test]

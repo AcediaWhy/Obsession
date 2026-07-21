@@ -43,7 +43,10 @@ const settings: Settings = {
   ai_provider: "malw",
   has_completed_onboarding: true,
   auto_recovery: false,
+  legacy_reliability_migration_version: 1,
   legacy_reliability_mode: "observe_only",
+  legacy_automatic_paused: true,
+  legacy_reliability_frozen_categories: [],
   reduce_motion: false,
   hotkey_toggle: "Ctrl+Shift+KeyO",
   lan_publish_secs: 0,
@@ -101,12 +104,16 @@ function legacyStatus(
     activeAttempt: null,
     lastCompletion: null,
     negativeCooldownCount: 0,
+    automaticPaused: true,
+    automaticPacingRemainingMs: null,
+    frozenCategories: [],
+    haltedCategories: [],
   };
 }
 
 function makeSnapshot(revisions: Partial<Record<string, number>> = {}) {
   return {
-    schemaVersion: 4,
+    schemaVersion: 5,
     settings: {
       revision: revisions.settings ?? 1,
       value: { settings, elevated: true, autostart: false },

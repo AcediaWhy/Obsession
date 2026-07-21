@@ -88,6 +88,24 @@ struct CacheEntry {
     fetched_at: u64,
 }
 
+const ASN_POSITIVE_TTL_SECS: u64 = 24 * 60 * 60;
+const ASN_NEGATIVE_TTL_SECS: u64 = 5 * 60;
+
+impl CacheEntry {
+    fn is_fresh_at(&self, now: u64) -> bool {
+        if self.fetched_at > now {
+            return false;
+        }
+
+        let ttl = if self.asn_region.is_some() {
+            ASN_POSITIVE_TTL_SECS
+        } else {
+            ASN_NEGATIVE_TTL_SECS
+        };
+        now - self.fetched_at < ttl
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct NetIdCache {
     schema_version: u32,
@@ -485,7 +503,12 @@ pub async fn resolve(paths: &Paths) -> NetIdentity {
         .unwrap_or_else(|| "unknown".to_string());
 
     let mut cache = load_cache(paths);
-    if let Some(entry) = cache.networks.get(&key) {
+    let now = now_secs();
+    if let Some(entry) = cache
+        .networks
+        .get(&key)
+        .filter(|entry| entry.is_fresh_at(now))
+    {
         return NetIdentity {
             gateway_mac: mac.or_else(|| Some(key.clone())),
             asn_region: entry.asn_region.clone(),
@@ -493,7 +516,7 @@ pub async fn resolve(paths: &Paths) -> NetIdentity {
         };
     }
 
-    // Новая сеть → один запрос ipinfo.
+    // Новая сеть или истёкший positive/negative TTL → новый GeoIP lookup.
     let (asn_region, org) = fetch_ipinfo().await;
     cache.networks.insert(
         key.clone(),
@@ -745,6 +768,26 @@ Interface: 192.168.1.100 --- 0x2
         );
         assert_eq!(normalize_mac("garbage"), None);
         assert_eq!(normalize_mac("00-00-00-00-00-00"), None);
+    }
+
+    #[test]
+    fn asn_cache_uses_separate_positive_and_negative_ttls() {
+        let positive = CacheEntry {
+            asn_region: Some("AS12389_RU-MOSCOW".to_string()),
+            org: Some("Rostelecom".to_string()),
+            fetched_at: 1_000,
+        };
+        assert!(positive.is_fresh_at(1_000 + ASN_POSITIVE_TTL_SECS - 1));
+        assert!(!positive.is_fresh_at(1_000 + ASN_POSITIVE_TTL_SECS));
+
+        let negative = CacheEntry {
+            asn_region: None,
+            org: None,
+            fetched_at: 1_000,
+        };
+        assert!(negative.is_fresh_at(1_000 + ASN_NEGATIVE_TTL_SECS - 1));
+        assert!(!negative.is_fresh_at(1_000 + ASN_NEGATIVE_TTL_SECS));
+        assert!(!negative.is_fresh_at(999));
     }
 
     #[cfg(windows)]

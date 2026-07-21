@@ -77,6 +77,12 @@ impl Paths {
     pub fn netcache_path(&self) -> PathBuf {
         self.base_dir.join("netcache.json")
     }
+    /// Доверие и cooldown автоматического восстановления Legacy. Этот cache
+    /// намеренно отделён от старого `netcache.json`, который наполняется в том
+    /// числе ручными тестами и не содержит content fingerprints.
+    pub fn legacy_reliability_cache_path(&self) -> PathBuf {
+        self.base_dir.join("legacy-reliability-cache.json")
+    }
     /// Подтверждённые Safe Strategy DSL-кандидаты Zapret2 по отпечатку сети.
     /// Хранится отдельно от Legacy `netcache.json`, где `conf` означает `.conf`.
     pub fn adaptive_strategy_cache_path(&self) -> PathBuf {

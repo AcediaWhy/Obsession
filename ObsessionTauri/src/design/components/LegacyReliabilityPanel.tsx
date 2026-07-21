@@ -1,3 +1,5 @@
+import { useState } from "react";
+
 import type {
   LegacyReliabilityClassification,
   LegacyReliabilityConfidence,
@@ -194,6 +196,27 @@ function categoryRank(category: string): number {
   return index === -1 ? CATEGORY_ORDER.length : index;
 }
 
+export function updateLegacyFrozenCategories(
+  categories: readonly string[],
+  category: string,
+  frozen: boolean,
+): string[] {
+  const next = new Set(categories);
+  if (frozen) next.add(category);
+  else next.delete(category);
+  return [...next].sort(
+    (left, right) =>
+      categoryRank(left) - categoryRank(right) || left.localeCompare(right),
+  );
+}
+
+function pacingLabel(remainingMs: number): string {
+  const seconds = Math.max(1, Math.ceil(remainingMs / 1_000));
+  if (seconds < 60) return `около ${seconds} с`;
+  const minutes = Math.ceil(seconds / 60);
+  return `около ${minutes} мин`;
+}
+
 function waitIntentLabel(reason: LegacyReliabilityClassification): string {
   switch (reason) {
     case "working":
@@ -263,17 +286,39 @@ function LegacyIntentCallout({
       <div className="mt-1 text-2xs text-ink-soft">
         {mode === "observe_only"
           ? "Режим наблюдения: изменение не выполнено."
-          : "Без вашего подтверждения изменение не будет выполнено."}
+          : mode === "assisted"
+            ? "Без вашего подтверждения изменение не будет выполнено."
+            : intent.kind === "freeze_lane"
+              ? "Автовосстановление категории приостановлено правилами безопасности."
+              : "Перед автоматической заменой защитные проверки будут повторены."}
       </div>
     </div>
   );
 }
 
-function LegacyLaneRow({ lane }: { lane: LegacyReliabilityLaneAssessment }) {
+function LegacyLaneRow({
+  lane,
+  automatic,
+  frozen,
+  configuredFrozen,
+  halted,
+  controlsPending,
+  onFreezeChange,
+}: {
+  lane: LegacyReliabilityLaneAssessment;
+  automatic: boolean;
+  frozen: boolean;
+  configuredFrozen: boolean;
+  halted: boolean;
+  controlsPending: boolean;
+  onFreezeChange?: (category: string, frozen: boolean) => void;
+}) {
   const display = getLegacyLaneDisplayModel(lane);
   const assessment = `${
     lane.phase === "blocked_cooldown" ? "пауза · " : ""
   }${getLegacyEvidenceLabel(lane)}`;
+  const freezeSynchronized = frozen === configuredFrozen;
+  const freezePending = controlsPending || !freezeSynchronized;
 
   return (
     <li className="rounded-lg bg-white/5 px-3 py-2">
@@ -301,6 +346,51 @@ function LegacyLaneRow({ lane }: { lane: LegacyReliabilityLaneAssessment }) {
           {assessment}
         </span>
       </div>
+      {automatic ? (
+        <div
+          className={`mt-2 border-t pt-2 ${
+            halted ? "border-danger/20" : "border-white/10"
+          }`}
+        >
+          <div className="flex min-w-0 items-center justify-between gap-2 text-3xs">
+            <span
+              className={`min-w-0 truncate font-medium ${
+                halted
+                  ? "text-danger"
+                  : frozen
+                    ? "text-warn"
+                    : "text-ink-muted"
+              }`}
+            >
+              {halted
+                ? "Автовосстановление остановлено"
+                : frozen
+                  ? "Автозамена приостановлена"
+                  : "Автозамена разрешена"}
+            </span>
+            {!halted ? (
+              <button
+                type="button"
+                aria-label={`${configuredFrozen ? "Разрешить" : "Приостановить"} автоматическую замену для ${categoryLabel(lane.category)}`}
+                disabled={freezePending || !onFreezeChange}
+                onClick={() => onFreezeChange?.(lane.category, !configuredFrozen)}
+                className="no-drag shrink-0 rounded-md border border-glass-border bg-white/5 px-2 py-1 font-semibold text-ink-soft transition-colors hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {freezePending
+                  ? "Применяется…"
+                  : configuredFrozen
+                    ? "Разрешить"
+                    : "Приостановить"}
+              </button>
+            ) : null}
+          </div>
+          <p className="mt-1 text-3xs leading-snug text-ink-muted">
+            {halted
+              ? "Требуется ручной перезапуск обхода."
+              : "Только для будущих попыток; текущая операция не прерывается."}
+          </p>
+        </div>
+      ) : null}
     </li>
   );
 }
@@ -315,15 +405,16 @@ function LegacyModeSelector({
   onChange?: (mode: LegacyReliabilityMode) => void;
 }) {
   const options: Array<{ value: LegacyReliabilityMode; label: string }> = [
-    { value: "observe_only", label: "Только наблюдение" },
+    { value: "observe_only", label: "Наблюдение" },
     { value: "assisted", label: "С подтверждением" },
+    { value: "automatic", label: "Автоматически" },
   ];
 
   return (
     <div
       role="radiogroup"
       aria-label="Режим восстановления Legacy"
-      className="grid grid-cols-2 gap-1 rounded-lg bg-black/10 p-1"
+      className="grid grid-cols-3 gap-1 rounded-lg bg-black/10 p-1"
     >
       {options.map((option) => {
         const selected = mode === option.value;
@@ -333,9 +424,12 @@ function LegacyModeSelector({
             type="button"
             role="radio"
             aria-checked={selected}
+            title={option.label}
             disabled={disabled || !onChange}
-            onClick={() => onChange?.(option.value)}
-            className={`no-drag rounded-md px-2 py-1.5 text-2xs font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:cursor-not-allowed disabled:opacity-50 ${
+            onClick={() => {
+              if (!selected) onChange?.(option.value);
+            }}
+            className={`no-drag min-w-0 rounded-md px-1.5 py-1.5 text-3xs font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:cursor-not-allowed disabled:opacity-50 ${
               selected
                 ? "bg-accent/20 text-ink shadow-glow"
                 : "text-ink-muted hover:bg-white/5 hover:text-ink-soft"
@@ -345,6 +439,101 @@ function LegacyModeSelector({
           </button>
         );
       })}
+    </div>
+  );
+}
+
+function LegacyAutomaticOptInCard({
+  disabled,
+  onConfirm,
+  onCancel,
+}: {
+  disabled: boolean;
+  onConfirm?: () => void;
+  onCancel?: () => void;
+}) {
+  return (
+    <div
+      role="alert"
+      className="rounded-lg border border-warn/40 bg-warn/10 px-3 py-2.5 text-xs"
+    >
+      <div className="font-semibold text-warn">
+        Включить автоматическую замену?
+      </div>
+      <p className="mt-1 text-2xs leading-relaxed text-ink-soft">
+        Приложение сможет само заменить конфигурацию только проблемной категории
+        после проверки сети. Если кандидат не подойдёт, прежняя конфигурация
+        будет восстановлена.
+      </p>
+      <div className="mt-2 grid grid-cols-2 gap-2">
+        <Button
+          className="py-1.5 text-2xs"
+          disabled={disabled || !onConfirm}
+          onClick={onConfirm}
+        >
+          Включить
+        </Button>
+        <Button
+          variant="ghost"
+          className="py-1.5 text-2xs"
+          disabled={disabled || !onCancel}
+          onClick={onCancel}
+        >
+          Отмена
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function LegacyAutomaticControlCard({
+  paused,
+  sessionActive,
+  attemptActive,
+  pending,
+  onPauseChange,
+}: {
+  paused: boolean;
+  sessionActive: boolean;
+  attemptActive: boolean;
+  pending: boolean;
+  onPauseChange?: (paused: boolean) => void;
+}) {
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className={`rounded-lg border px-3 py-2.5 text-xs ${
+        paused ? "border-warn/40 bg-warn/10" : "border-ok/35 bg-ok/10"
+      }`}
+    >
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <div className={`font-semibold ${paused ? "text-warn" : "text-ok"}`}>
+            {paused ? "Автозамена остановлена" : "Автозамена включена"}
+          </div>
+          <p className="mt-0.5 text-3xs leading-snug text-ink-soft">
+            {paused
+              ? "Новые автоматические попытки запрещены; текущие конфигурации продолжают работать."
+              : sessionActive
+                ? "Меняется только проблемная категория после защитной проверки."
+                : "Автовосстановление начнёт работу при следующем запуске обхода."}
+          </p>
+        </div>
+        <Button
+          variant={paused ? "primary" : "danger"}
+          className="shrink-0 px-2.5 py-1.5 text-3xs"
+          disabled={pending || !onPauseChange}
+          onClick={() => onPauseChange?.(!paused)}
+        >
+          {pending ? "Применяется…" : paused ? "Возобновить" : "Остановить"}
+        </Button>
+      </div>
+      {paused && attemptActive ? (
+        <p className="mt-1.5 border-t border-warn/20 pt-1.5 text-3xs text-ink-muted">
+          Уже начатая операция будет безопасно завершена или отменена с откатом.
+        </p>
+      ) : null}
     </div>
   );
 }
@@ -472,6 +661,7 @@ function LegacyActiveAttemptCard({
   attempt: LegacyRecoveryAttempt;
 }) {
   const display = RECOVERY_PHASE_DISPLAY[attempt.phase];
+  const automatic = attempt.origin.kind === "automatic";
   return (
     <div
       role={attempt.phase === "process_failed" ? "alert" : "status"}
@@ -486,7 +676,7 @@ function LegacyActiveAttemptCard({
     >
       <div className="flex items-center justify-between gap-3">
         <span className="text-2xs font-semibold uppercase tracking-[0.12em] text-ink-muted">
-          Восстановление · {categoryLabel(attempt.category)}
+          {automatic ? "Автоматическое восстановление" : "Восстановление по подтверждению"} · {categoryLabel(attempt.category)}
         </span>
         <span className={`text-right font-semibold ${TONE_CLASS[display.tone]}`}>
           {display.label}
@@ -506,6 +696,7 @@ function LegacyCompletionCard({
   completion: LegacyRecoveryCompletion;
 }) {
   const display = COMPLETION_DISPLAY[completion.disposition];
+  const automatic = completion.origin.kind === "automatic";
   const activeConfig =
     completion.disposition === "candidate_applied"
       ? completion.candidateConfigId
@@ -526,7 +717,7 @@ function LegacyCompletionCard({
     >
       <div className="flex items-center justify-between gap-3">
         <span className="text-2xs font-semibold uppercase tracking-[0.12em] text-ink-muted">
-          Результат · {categoryLabel(completion.category)}
+          {automatic ? "Автоматический результат" : "Результат по подтверждению"} · {categoryLabel(completion.category)}
         </span>
         <span className={`text-right font-semibold ${TONE_CLASS[display.tone]}`}>
           {display.label}
@@ -547,18 +738,32 @@ function LegacyCompletionCard({
 export function LegacyReliabilityPanelView({
   status,
   configuredMode = status.mode,
+  configuredAutomaticPaused = status.automaticPaused,
+  configuredFrozenCategories = status.frozenCategories,
+  automaticOptInRequested = false,
   modeChangePending = false,
   approvalPending = false,
   approvalError = "",
   onModeChange,
+  onAutomaticOptInConfirm,
+  onAutomaticOptInCancel,
+  onAutomaticPauseChange,
+  onLaneFreezeChange,
   onApprove,
 }: {
   status: LegacyReliabilityStatus;
   configuredMode?: LegacyReliabilityMode;
+  configuredAutomaticPaused?: boolean;
+  configuredFrozenCategories?: string[];
+  automaticOptInRequested?: boolean;
   modeChangePending?: boolean;
   approvalPending?: boolean;
   approvalError?: string;
   onModeChange?: (mode: LegacyReliabilityMode) => void;
+  onAutomaticOptInConfirm?: () => void;
+  onAutomaticOptInCancel?: () => void;
+  onAutomaticPauseChange?: (paused: boolean) => void;
+  onLaneFreezeChange?: (category: string, frozen: boolean) => void;
   onApprove?: (proposal: LegacyReliabilityProposal) => void;
 }) {
   const display = getLegacyReliabilityDisplayModel(status.phase);
@@ -573,6 +778,13 @@ export function LegacyReliabilityPanelView({
       ? { kind: "wait", reason: "sensor_unreliable" }
       : status.presumedIntent;
   const modeSynchronized = configuredMode === status.mode;
+  const automaticActive = modeSynchronized && status.mode === "automatic";
+  const pauseSynchronized =
+    configuredAutomaticPaused === status.automaticPaused;
+  const automaticControlsPending = modeChangePending || !pauseSynchronized;
+  const frozenCategories = new Set(status.frozenCategories);
+  const configuredFrozen = new Set(configuredFrozenCategories);
+  const haltedCategories = new Set(status.haltedCategories);
 
   const activity = status.activeAttempt ? (
     <LegacyActiveAttemptCard attempt={status.activeAttempt} />
@@ -606,7 +818,7 @@ export function LegacyReliabilityPanelView({
           </div>
           <LegacyModeSelector
             mode={configuredMode}
-            disabled={modeChangePending}
+            disabled={modeChangePending || automaticOptInRequested}
             onChange={onModeChange}
           />
         </div>
@@ -620,6 +832,35 @@ export function LegacyReliabilityPanelView({
         </div>
       </div>
 
+      {automaticOptInRequested ? (
+        <div className="mt-2">
+          <LegacyAutomaticOptInCard
+            disabled={modeChangePending}
+            onConfirm={onAutomaticOptInConfirm}
+            onCancel={onAutomaticOptInCancel}
+          />
+        </div>
+      ) : null}
+
+      {automaticActive ? (
+        <div className="mt-2">
+          <LegacyAutomaticControlCard
+            paused={status.automaticPaused}
+            sessionActive={sessionActive}
+            attemptActive={Boolean(status.activeAttempt)}
+            pending={automaticControlsPending}
+            onPauseChange={onAutomaticPauseChange}
+          />
+          {!status.automaticPaused &&
+          status.automaticPacingRemainingMs !== null &&
+          status.automaticPacingRemainingMs > 0 ? (
+            <p className="mt-1.5 px-1 text-3xs text-ink-muted">
+              Защитная пауза перед следующей автозаменой: {pacingLabel(status.automaticPacingRemainingMs)}.
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+
       {lanes.length > 0 ? (
         <div className="mt-3">
           <div className="mb-1.5 px-1 text-2xs font-semibold uppercase tracking-[0.12em] text-ink-muted">
@@ -630,6 +871,12 @@ export function LegacyReliabilityPanelView({
               <LegacyLaneRow
                 key={`${lane.category}:${lane.laneGeneration}`}
                 lane={lane}
+                automatic={automaticActive}
+                frozen={frozenCategories.has(lane.category)}
+                configuredFrozen={configuredFrozen.has(lane.category)}
+                halted={haltedCategories.has(lane.category)}
+                controlsPending={modeChangePending}
+                onFreezeChange={onLaneFreezeChange}
               />
             ))}
           </ul>
@@ -645,17 +892,26 @@ export function LegacyReliabilityPanelView({
       ) : null}
 
       <p className="mt-2 px-1 text-2xs leading-relaxed text-ink-muted">
-        {!modeSynchronized
+        {status.activeAttempt
+          ? status.activeAttempt.origin.kind === "automatic"
+            ? "Текущая автоматическая операция уже начата и безопасно завершится либо откатится; новый режим действует для следующих попыток."
+            : "Ранее подтверждённая операция уже начата и безопасно завершится либо откатится."
+          : !modeSynchronized
           ? "Настройка режима применяется. До завершения конфигурации не меняются."
-          : configuredMode === "assisted"
-            ? "Замена выполняется только после вашего подтверждения."
-            : "Сбои фиксируются, конфигурации не меняются."}
+          : configuredMode === "automatic"
+            ? status.automaticPaused
+              ? "Автоматические попытки остановлены глобальным переключателем."
+              : "Автозамена выполняется только после защитной проверки сети и состояния процесса."
+            : configuredMode === "assisted"
+              ? "Замена выполняется только после вашего подтверждения."
+              : "Сбои фиксируются, конфигурации не меняются."}
       </p>
     </div>
   );
 }
 
 export function LegacyReliabilityPanel() {
+  const [automaticOptInRequested, setAutomaticOptInRequested] = useState(false);
   const status = useLegacyReliabilityStore((state) => state.status);
   const approvalPending = useLegacyReliabilityStore(
     (state) => state.approvalPending,
@@ -672,6 +928,12 @@ export function LegacyReliabilityPanel() {
   const configuredMode = useSettingsStore(
     (state) => state.settings?.legacy_reliability_mode,
   );
+  const configuredAutomaticPaused = useSettingsStore(
+    (state) => state.settings?.legacy_automatic_paused,
+  );
+  const configuredFrozenCategories = useSettingsStore(
+    (state) => state.settings?.legacy_reliability_frozen_categories,
+  );
   const settingsSaving = useSettingsStore((state) => state.saving);
   const patchSettings = useSettingsStore((state) => state.patch);
 
@@ -679,6 +941,15 @@ export function LegacyReliabilityPanel() {
     <LegacyReliabilityPanelView
       status={status}
       configuredMode={configuredMode ?? status.mode}
+      configuredAutomaticPaused={
+        configuredAutomaticPaused ?? status.automaticPaused
+      }
+      configuredFrozenCategories={
+        configuredFrozenCategories ?? status.frozenCategories
+      }
+      automaticOptInRequested={
+        automaticOptInRequested && configuredMode !== "automatic"
+      }
       modeChangePending={settingsSaving}
       approvalPending={approvalPending}
       approvalError={approvalError}
@@ -686,7 +957,42 @@ export function LegacyReliabilityPanel() {
         configuredMode
           ? (mode) => {
               clearApprovalError();
+              if (mode === "automatic" && configuredMode !== "automatic") {
+                setAutomaticOptInRequested(true);
+                return;
+              }
+              setAutomaticOptInRequested(false);
               void patchSettings({ legacy_reliability_mode: mode });
+            }
+          : undefined
+      }
+      onAutomaticOptInConfirm={
+        configuredMode
+          ? () => {
+              setAutomaticOptInRequested(false);
+              clearApprovalError();
+              void patchSettings({ legacy_reliability_mode: "automatic" });
+            }
+          : undefined
+      }
+      onAutomaticOptInCancel={() => setAutomaticOptInRequested(false)}
+      onAutomaticPauseChange={
+        configuredMode
+          ? (paused) => {
+              void patchSettings({ legacy_automatic_paused: paused });
+            }
+          : undefined
+      }
+      onLaneFreezeChange={
+        configuredFrozenCategories
+          ? (category, frozen) => {
+              const categories =
+                useSettingsStore.getState().settings
+                  ?.legacy_reliability_frozen_categories ?? [];
+              void patchSettings({
+                legacy_reliability_frozen_categories:
+                  updateLegacyFrozenCategories(categories, category, frozen),
+              });
             }
           : undefined
       }

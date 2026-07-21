@@ -6,7 +6,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { api, type BootstrapSnapshot, type DpiStatus } from "./tauri";
 
 const fixture = {
-  schemaVersion: 4,
+  schemaVersion: 5,
   settings: {
     revision: 2,
     value: {
@@ -21,7 +21,10 @@ const fixture = {
         ai_provider: "malw",
         has_completed_onboarding: true,
         auto_recovery: false,
+        legacy_reliability_migration_version: 1,
         legacy_reliability_mode: "observe_only",
+        legacy_automatic_paused: true,
+        legacy_reliability_frozen_categories: [],
         reduce_motion: false,
         hotkey_toggle: "Ctrl+Shift+KeyO",
         lan_publish_secs: 0,
@@ -100,6 +103,10 @@ const fixture = {
       activeAttempt: null,
       lastCompletion: null,
       negativeCooldownCount: 1,
+      automaticPaused: true,
+      automaticPacingRemainingMs: null,
+      frozenCategories: [],
+      haltedCategories: [],
     },
   },
   hosts: {
@@ -120,7 +127,7 @@ describe("BootstrapSnapshot contract", () => {
   });
 
   it("keeps every subsystem revision independent", () => {
-    expect(fixture.schemaVersion).toBe(4);
+    expect(fixture.schemaVersion).toBe(5);
     expect([
       fixture.settings.revision,
       fixture.dpi.revision,
@@ -180,6 +187,10 @@ describe("BootstrapSnapshot contract", () => {
       activeAttempt: null,
       lastCompletion: null,
       negativeCooldownCount: 1,
+      automaticPaused: true,
+      automaticPacingRemainingMs: null,
+      frozenCategories: [],
+      haltedCategories: [],
     });
     expect(fixture.hosts.value.status).toBe("not_installed");
   });
@@ -191,6 +202,26 @@ describe("BootstrapSnapshot contract", () => {
 
     expect(invoke).toHaveBeenCalledWith("legacy_reliability_approve", {
       approval: { proposalId: 3, attemptId: 5 },
+    });
+  });
+
+  it("sends Automatic controls through atomic settings patches", async () => {
+    vi.mocked(invoke).mockResolvedValue(undefined);
+
+    await api.updateSettings({ legacy_reliability_mode: "automatic" });
+    await api.updateSettings({ legacy_automatic_paused: true });
+    await api.updateSettings({
+      legacy_reliability_frozen_categories: ["discord"],
+    });
+
+    expect(invoke).toHaveBeenNthCalledWith(1, "update_settings", {
+      patch: { legacy_reliability_mode: "automatic" },
+    });
+    expect(invoke).toHaveBeenNthCalledWith(2, "update_settings", {
+      patch: { legacy_automatic_paused: true },
+    });
+    expect(invoke).toHaveBeenNthCalledWith(3, "update_settings", {
+      patch: { legacy_reliability_frozen_categories: ["discord"] },
     });
   });
 });

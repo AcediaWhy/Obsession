@@ -672,9 +672,19 @@ pub struct AppState {
     pub legacy_reliability_status:
         Mutex<crate::legacy_reliability::status::LegacyReliabilityStatus>,
     pub legacy_reliability_revision: RevisionClock,
-    /// Pure Phase 3 recovery coordinator. It is process-owned so UI approval
-    /// can only refer to the backend proposal kept in this exact instance.
+    /// Process-owned Phase 3/4 recovery coordinator. Assisted approval and
+    /// Automatic execution both refer only to backend-owned state in this instance.
     pub legacy_recovery: Mutex<crate::legacy_reliability::recovery_runtime::LegacyRecoveryRuntime>,
+    /// Changes only when Automatic authorization changes (mode, global pause,
+    /// or frozen categories). Automatic actions carry the exact value so a
+    /// pause->resume race cannot revive an older queued action.
+    pub legacy_automation_revision: RevisionClock,
+    /// Dedicated Phase 4 trust memory. It is intentionally separate from the
+    /// compatibility `netcache.json`, which can be seeded by manual UI tests.
+    pub legacy_trust_cache: Mutex<crate::legacy_reliability::cache::LegacyTrustCacheStore>,
+    /// Process-unique component of persisted confirmation session keys. Raw
+    /// Legacy SessionId values restart from one after an application restart.
+    pub legacy_cache_boot_nonce: u128,
     /// Exact owners installed by the one-shot same-config crash retry. If one
     /// of these owners exits unexpectedly, the incident is exhausted and must
     /// not recursively start another retry.
@@ -691,11 +701,36 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(paths: Paths, settings: Settings) -> Self {
-        let recovery_mode = if settings.legacy_reliability_mode == "assisted" {
-            crate::legacy_reliability::recovery::RecoveryMode::Assisted
-        } else {
-            crate::legacy_reliability::recovery::RecoveryMode::ObserveOnly
+        let legacy_trust_cache =
+            crate::legacy_reliability::cache::LegacyTrustCacheStore::load(&paths);
+        let legacy_cache_boot_nonce = rand::random::<u128>();
+        let recovery_mode = match settings.legacy_reliability_mode.as_str() {
+            "assisted" => crate::legacy_reliability::recovery::RecoveryMode::Assisted,
+            "automatic" => crate::legacy_reliability::recovery::RecoveryMode::Automatic,
+            _ => crate::legacy_reliability::recovery::RecoveryMode::ObserveOnly,
         };
+        let mut legacy_recovery =
+            crate::legacy_reliability::recovery_runtime::LegacyRecoveryRuntime::new(recovery_mode);
+        legacy_recovery.set_automatic_paused(settings.legacy_automatic_paused);
+        for category in &settings.legacy_reliability_frozen_categories {
+            legacy_recovery.freeze_category(category.clone());
+        }
+        let mut initial_reliability =
+            crate::legacy_reliability::status::LegacyReliabilityStatus::inactive();
+        initial_reliability.mode = match recovery_mode {
+            crate::legacy_reliability::recovery::RecoveryMode::ObserveOnly => {
+                crate::legacy_reliability::status::LegacyReliabilityMode::ObserveOnly
+            }
+            crate::legacy_reliability::recovery::RecoveryMode::Assisted => {
+                crate::legacy_reliability::status::LegacyReliabilityMode::Assisted
+            }
+            crate::legacy_reliability::recovery::RecoveryMode::Automatic => {
+                crate::legacy_reliability::status::LegacyReliabilityMode::Automatic
+            }
+        };
+        initial_reliability.automatic_paused = settings.legacy_automatic_paused;
+        initial_reliability.frozen_categories =
+            settings.legacy_reliability_frozen_categories.clone();
         Self {
             paths,
             shutting_down: AtomicBool::new(false),
@@ -716,15 +751,12 @@ impl AppState {
             netid: Mutex::new(None),
             netid_gate: tokio::sync::Mutex::new(()),
             legacy_manager: Mutex::new(None),
-            legacy_reliability_status: Mutex::new(
-                crate::legacy_reliability::status::LegacyReliabilityStatus::inactive(),
-            ),
+            legacy_reliability_status: Mutex::new(initial_reliability),
             legacy_reliability_revision: RevisionClock::default(),
-            legacy_recovery: Mutex::new(
-                crate::legacy_reliability::recovery_runtime::LegacyRecoveryRuntime::new(
-                    recovery_mode,
-                ),
-            ),
+            legacy_recovery: Mutex::new(legacy_recovery),
+            legacy_automation_revision: RevisionClock::default(),
+            legacy_trust_cache: Mutex::new(legacy_trust_cache),
+            legacy_cache_boot_nonce,
             legacy_crash_retry_owners: Mutex::new(HashSet::new()),
             legacy_monotonic_origin: Instant::now(),
             legacy_session_revision: RevisionClock::default(),

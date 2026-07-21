@@ -1,4 +1,4 @@
-//! Public, read-only projection of the active Legacy observe-only runtime.
+//! Public projection and reconciliation boundary for Legacy reliability.
 
 use std::sync::Mutex;
 
@@ -19,7 +19,7 @@ use super::manager::ObserveOnlySnapshot;
 use super::policy::PresumedIntent;
 use super::recovery::{
     AssistedApproval, AssistedProposalView, RecoveryAction, RecoveryAttemptView,
-    RecoveryCompletion, RecoveryConfig, RecoveryMode, RecoveryStatus,
+    RecoveryCompletion, RecoveryConfig, RecoveryDecision, RecoveryMode, RecoveryStatus,
 };
 use super::recovery_runtime::IncidentObservation;
 
@@ -30,6 +30,7 @@ pub const STATUS_EVENT: &str = "legacy-reliability://status";
 pub enum LegacyReliabilityMode {
     ObserveOnly,
     Assisted,
+    Automatic,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -57,6 +58,10 @@ pub struct LegacyReliabilityStatus {
     pub active_attempt: Option<RecoveryAttemptView>,
     pub last_completion: Option<RecoveryCompletion>,
     pub negative_cooldown_count: usize,
+    pub automatic_paused: bool,
+    pub automatic_pacing_remaining_ms: Option<u64>,
+    pub frozen_categories: Vec<String>,
+    pub halted_categories: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -97,6 +102,10 @@ impl LegacyReliabilityStatus {
             active_attempt: None,
             last_completion: None,
             negative_cooldown_count: 0,
+            automatic_paused: true,
+            automatic_pacing_remaining_ms: None,
+            frozen_categories: Vec::new(),
+            halted_categories: Vec::new(),
         }
     }
 
@@ -182,14 +191,26 @@ impl LegacyReliabilityStatus {
             active_attempt: None,
             last_completion: None,
             negative_cooldown_count: 0,
+            automatic_paused: true,
+            automatic_pacing_remaining_ms: None,
+            frozen_categories: Vec::new(),
+            halted_categories: Vec::new(),
         }
     }
 
-    fn apply_recovery(&mut self, recovery: RecoveryStatus) {
+    fn apply_recovery(&mut self, recovery: RecoveryStatus, now_ms: u64) {
         self.mode = match recovery.mode {
             RecoveryMode::ObserveOnly => LegacyReliabilityMode::ObserveOnly,
             RecoveryMode::Assisted => LegacyReliabilityMode::Assisted,
+            RecoveryMode::Automatic => LegacyReliabilityMode::Automatic,
         };
+        self.automatic_paused = recovery.automatic_paused;
+        self.automatic_pacing_remaining_ms = recovery
+            .automatic_pacing_until_monotonic_ms
+            .map(|until_ms| until_ms.saturating_sub(now_ms))
+            .filter(|remaining_ms| *remaining_ms > 0);
+        self.frozen_categories = recovery.manual_frozen_categories;
+        self.halted_categories = recovery.halted_categories;
         self.proposal = recovery.proposal;
         self.active_attempt = recovery.active_attempt;
         self.last_completion = recovery.last_completion;
@@ -410,7 +431,7 @@ fn prepare_recovery(state: &AppState, snapshot: &ObserveOnlySnapshot) -> Option<
             candidate_ids.push(candidate.clone());
         }
     }
-    let candidates = candidate_ids
+    let mut candidates = candidate_ids
         .into_iter()
         .filter_map(|candidate| {
             let fingerprint = registry
@@ -421,6 +442,26 @@ fn prepare_recovery(state: &AppState, snapshot: &ObserveOnlySnapshot) -> Option<
             Some(RecoveryConfig::new(candidate, fingerprint))
         })
         .collect::<Vec<_>>();
+    let stable_network = snapshot.session.network_fingerprint_at_start.stable_key()?;
+    let now_unix = unix_now_secs();
+    {
+        let cache = state
+            .legacy_trust_cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        candidates.retain(|candidate| {
+            cache
+                .cooldown_until(
+                    stable_network,
+                    category,
+                    candidate.fingerprint().as_str(),
+                    now_unix,
+                )
+                .is_none()
+        });
+        let trusted = cache.fresh_trusted_candidates(stable_network, category, now_unix);
+        rank_candidates_by_trusted_fingerprint(&mut candidates, &trusted);
+    }
     if candidates.is_empty() {
         return None;
     }
@@ -453,12 +494,45 @@ fn prepare_recovery(state: &AppState, snapshot: &ObserveOnlySnapshot) -> Option<
     })
 }
 
+fn rank_candidates_by_trusted_fingerprint(
+    candidates: &mut [RecoveryConfig],
+    trusted: &[super::cache::TrustedCandidate],
+) {
+    candidates.sort_by_key(|candidate| {
+        trusted
+            .iter()
+            .position(|entry| entry.config_fingerprint == candidate.fingerprint().as_str())
+            .unwrap_or(usize::MAX)
+    });
+}
+
+fn unix_now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
 fn recovery_mode_from_settings(settings: &crate::settings::Settings) -> RecoveryMode {
-    if settings.legacy_reliability_mode == "assisted" {
-        RecoveryMode::Assisted
-    } else {
-        RecoveryMode::ObserveOnly
+    match settings.legacy_reliability_mode.as_str() {
+        "assisted" => RecoveryMode::Assisted,
+        "automatic" => RecoveryMode::Automatic,
+        _ => RecoveryMode::ObserveOnly,
     }
+}
+
+fn apply_recovery_settings(
+    recovery: &mut super::recovery_runtime::LegacyRecoveryRuntime,
+    settings: &crate::settings::Settings,
+) {
+    recovery.set_mode(recovery_mode_from_settings(settings));
+    recovery.set_automatic_paused(settings.legacy_automatic_paused);
+    recovery.set_manual_frozen_categories(
+        settings
+            .legacy_reliability_frozen_categories
+            .iter()
+            .cloned(),
+    );
 }
 
 pub fn refresh_recovery_overlay(app: &AppHandle) -> bool {
@@ -510,13 +584,12 @@ pub fn approve_pending(
         .settings
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let mode = recovery_mode_from_settings(&settings);
     let action = {
         let mut recovery = state
             .legacy_recovery
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        recovery.set_mode(mode);
+        apply_recovery_settings(&mut recovery, &settings);
         recovery
             .approve(approval, &current_fence, now_ms)
             .map_err(|error| format!("Предложение отклонено: {error:?}"))?
@@ -588,7 +661,7 @@ where
         .settings
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let mode = recovery_mode_from_settings(&settings);
+    let mut automatic_action = None;
 
     let Some(section) = transition_with(
         &state.legacy_reliability_status,
@@ -611,7 +684,7 @@ where
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
                 match recovery_update {
                     RecoveryUpdate::Lifecycle => {
-                        recovery.set_mode(mode);
+                        apply_recovery_settings(&mut recovery, &settings);
                         if matches!(
                             next.phase,
                             LegacyReliabilityPhase::Inactive
@@ -621,24 +694,31 @@ where
                             recovery.cancel_pending();
                         }
                     }
-                    RecoveryUpdate::OverlayOnly => recovery.set_mode(mode),
+                    RecoveryUpdate::OverlayOnly => {
+                        apply_recovery_settings(&mut recovery, &settings)
+                    }
                     RecoveryUpdate::Snapshot {
                         session_id,
                         prepared,
                         now_ms,
                     } => {
                         recovery.observe_session(session_id);
-                        recovery.set_mode(mode);
+                        apply_recovery_settings(&mut recovery, &settings);
                         if let Some(prepared) = prepared {
                             let prepared = *prepared;
-                            let _ = recovery.consider(
-                                prepared.observation,
-                                prepared.fence,
-                                prepared.previous,
-                                prepared.previous_owner,
-                                prepared.candidates,
-                                now_ms,
-                            );
+                            if let Ok(RecoveryDecision::Automatic { action }) = recovery
+                                .consider_with_control_generation(
+                                    prepared.observation,
+                                    prepared.fence,
+                                    prepared.previous,
+                                    prepared.previous_owner,
+                                    prepared.candidates,
+                                    state.legacy_automation_revision.current(),
+                                    now_ms,
+                                )
+                            {
+                                automatic_action = Some(action);
+                            }
                         } else {
                             // A proposal is useful only while the exact adverse
                             // assessment still owns the lane. Active attempts
@@ -649,14 +729,39 @@ where
                 }
                 recovery.status()
             };
-            next.apply_recovery(recovery_status);
+            next.apply_recovery(recovery_status, state.legacy_monotonic_ms());
         },
     ) else {
         return false;
     };
     drop(settings);
     let _ = app.emit(STATUS_EVENT, section);
+    if let Some(action) = automatic_action {
+        spawn_automatic_recovery(app, action);
+    }
     true
+}
+
+fn spawn_automatic_recovery(app: &AppHandle, initial: RecoveryAction) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        match super::executor::run_scoped_recovery(&app, initial).await {
+            Ok(RecoveryAction::Complete { .. } | RecoveryAction::ManualIntervention { .. }) => {}
+            Ok(_) => crate::util::emit_log(
+                &app,
+                "error",
+                "legacy-reliability",
+                "Automatic recovery завершился без terminal результата",
+            ),
+            Err(error) => crate::util::emit_log(
+                &app,
+                "error",
+                "legacy-reliability",
+                &format!("Automatic recovery failed: {error}"),
+            ),
+        }
+        refresh_recovery_overlay(&app);
+    });
 }
 
 #[cfg(test)]
@@ -771,6 +876,31 @@ mod tests {
     }
 
     #[test]
+    fn trusted_ranking_follows_exact_fingerprint_across_rename_and_keeps_duplicate_order() {
+        let mut candidates = vec![
+            RecoveryConfig::new("bundled-first.conf", "other-fingerprint"),
+            RecoveryConfig::new("renamed-b.conf", "trusted-fingerprint"),
+            RecoveryConfig::new("renamed-a.conf", "trusted-fingerprint"),
+        ];
+        let trusted = vec![super::super::cache::TrustedCandidate {
+            config_id: "old-name.conf".into(),
+            config_fingerprint: "trusted-fingerprint".into(),
+            last_success_at: 100,
+            success_count: 2,
+        }];
+
+        rank_candidates_by_trusted_fingerprint(&mut candidates, &trusted);
+
+        assert_eq!(
+            candidates
+                .iter()
+                .map(RecoveryConfig::config_id)
+                .collect::<Vec<_>>(),
+            vec!["renamed-b.conf", "renamed-a.conf", "bundled-first.conf"]
+        );
+    }
+
+    #[test]
     fn payload_serializes_with_exact_camel_case_shape() {
         let value = serde_json::to_value(LegacyReliabilityStatus::starting(
             vec!["discord".into()],
@@ -794,7 +924,11 @@ mod tests {
                 "proposal": null,
                 "activeAttempt": null,
                 "lastCompletion": null,
-                "negativeCooldownCount": 0
+                "negativeCooldownCount": 0,
+                "automaticPaused": true,
+                "automaticPacingRemainingMs": null,
+                "frozenCategories": [],
+                "haltedCategories": []
             })
         );
 

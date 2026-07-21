@@ -52,6 +52,10 @@ function status(
     activeAttempt: null,
     lastCompletion: null,
     negativeCooldownCount: 0,
+    automaticPaused: true,
+    automaticPacingRemainingMs: null,
+    frozenCategories: [],
+    haltedCategories: [],
   };
 }
 
@@ -82,6 +86,10 @@ describe("legacyReliabilityStore", () => {
       activeAttempt: null,
       lastCompletion: null,
       negativeCooldownCount: 0,
+      automaticPaused: true,
+      automaticPacingRemainingMs: null,
+      frozenCategories: [],
+      haltedCategories: [],
     });
   });
 
@@ -143,6 +151,28 @@ describe("legacyReliabilityStore", () => {
       useLegacyReliabilityStore.getState().status.lanes[0]
         .workingConfirmedRecently,
     ).toBe(true);
+  });
+
+  it("preserves backend-authoritative Automatic controls", () => {
+    const automatic = status("observing");
+    automatic.mode = "automatic";
+    automatic.automaticPaused = true;
+    automatic.automaticPacingRemainingMs = 17_500;
+    automatic.frozenCategories = ["discord"];
+    automatic.haltedCategories = ["youtube_twitch"];
+
+    useLegacyReliabilityStore.getState().applyVersionedStatus({
+      revision: 1,
+      value: automatic,
+    });
+
+    expect(useLegacyReliabilityStore.getState().status).toMatchObject({
+      mode: "automatic",
+      automaticPaused: true,
+      automaticPacingRemainingMs: 17_500,
+      frozenCategories: ["discord"],
+      haltedCategories: ["youtube_twitch"],
+    });
   });
 
   it("submits only the opaque proposal and attempt identifiers", async () => {

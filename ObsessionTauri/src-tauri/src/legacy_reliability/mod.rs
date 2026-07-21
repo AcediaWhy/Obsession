@@ -6,6 +6,7 @@
 
 pub mod adapter;
 pub mod assessment;
+pub mod cache;
 pub mod contracts;
 pub mod environment_gate;
 pub mod executor;

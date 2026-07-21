@@ -55,6 +55,30 @@ impl LegacyRecoveryRuntime {
         self.coordinator.set_mode(mode);
     }
 
+    pub fn set_automatic_paused(&mut self, paused: bool) {
+        self.coordinator.set_automatic_paused(paused);
+    }
+
+    pub fn freeze_category(&mut self, category: impl Into<String>) -> bool {
+        self.coordinator.freeze_category(category)
+    }
+
+    pub fn set_manual_frozen_categories<I, C>(&mut self, categories: I) -> bool
+    where
+        I: IntoIterator<Item = C>,
+        C: Into<String>,
+    {
+        self.coordinator.set_manual_frozen_categories(categories)
+    }
+
+    pub fn unfreeze_category(&mut self, category: &str) -> bool {
+        self.coordinator.unfreeze_category(category)
+    }
+
+    pub fn clear_halt(&mut self, category: &str) -> bool {
+        self.coordinator.clear_halt(category)
+    }
+
     pub fn status(&self) -> RecoveryStatus {
         self.coordinator.status()
     }
@@ -71,6 +95,7 @@ impl LegacyRecoveryRuntime {
         self.observed.clear();
         self.coordinator.cancel_pending();
         self.coordinator.clear_last_completion_if_idle();
+        self.coordinator.clear_automatic_halts();
         self.coordinator.retain_incidents_for_session(session_id);
     }
 
@@ -84,9 +109,38 @@ impl LegacyRecoveryRuntime {
         candidates: Vec<RecoveryConfig>,
         now_ms: u64,
     ) -> Result<RecoveryDecision, ConsiderError> {
+        self.consider_with_control_generation(
+            observation,
+            fence,
+            previous,
+            previous_owner,
+            candidates,
+            0,
+            now_ms,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn consider_with_control_generation(
+        &mut self,
+        observation: IncidentObservation,
+        fence: IntentFence,
+        previous: RecoveryConfig,
+        previous_owner: ProcessOwner,
+        candidates: Vec<RecoveryConfig>,
+        automatic_control_generation: u64,
+        now_ms: u64,
+    ) -> Result<RecoveryDecision, ConsiderError> {
         let incident_id = self.incident_id(observation);
         self.coordinator.consider(
-            RecoveryRequest::new(incident_id, fence, previous, previous_owner, candidates),
+            RecoveryRequest::new_with_control_generation(
+                incident_id,
+                fence,
+                previous,
+                previous_owner,
+                candidates,
+                automatic_control_generation,
+            ),
             now_ms,
         )
     }
@@ -205,12 +259,78 @@ mod tests {
 
         let id = |decision: RecoveryDecision| match decision {
             RecoveryDecision::ObserveOnly { suggestion } => suggestion.incident_id,
-            RecoveryDecision::Assisted { .. } => panic!("observe-only fixture"),
+            RecoveryDecision::Assisted { .. } | RecoveryDecision::Automatic { .. } => {
+                panic!("observe-only fixture")
+            }
         };
         let first = id(first);
         let repeated = id(repeated);
         let restarted = id(restarted);
         assert_eq!(first, repeated);
         assert_ne!(repeated, restarted);
+    }
+
+    #[test]
+    fn automatic_control_generation_flows_into_the_backend_owned_action() {
+        let mut runtime = LegacyRecoveryRuntime::new(RecoveryMode::Automatic);
+        let decision = runtime
+            .consider_with_control_generation(
+                observation(1, 2),
+                fence(),
+                RecoveryConfig::new("old.conf", "old-hash"),
+                owner(),
+                vec![RecoveryConfig::new("new.conf", "new-hash")],
+                73,
+                0,
+            )
+            .unwrap();
+        assert!(matches!(
+            decision,
+            RecoveryDecision::Automatic {
+                action: RecoveryAction::Preflight {
+                    origin: super::super::recovery::RecoveryOrigin::Automatic {
+                        control_generation: 73
+                    },
+                    ..
+                }
+            }
+        ));
+    }
+
+    #[test]
+    fn new_session_clears_automatic_halt_but_preserves_manual_freeze() {
+        let mut runtime = LegacyRecoveryRuntime::new(RecoveryMode::Automatic);
+        runtime.observe_session(SessionId::new(7));
+        runtime.freeze_category("discord");
+        let _ = runtime
+            .consider_with_control_generation(
+                observation(1, 2),
+                fence(),
+                RecoveryConfig::new("old.conf", "old-hash"),
+                owner(),
+                vec![RecoveryConfig::new("new.conf", "new-hash")],
+                1,
+                0,
+            )
+            .unwrap_err();
+        runtime.unfreeze_category("discord");
+        let _ = runtime
+            .consider_with_control_generation(
+                observation(1, 2),
+                fence(),
+                RecoveryConfig::new("old.conf", "old-hash"),
+                owner(),
+                vec![RecoveryConfig::new("new.conf", "new-hash")],
+                1,
+                0,
+            )
+            .unwrap();
+        let _ = runtime.force_manual_failure(1).unwrap();
+        assert_eq!(runtime.status().halted_categories, ["discord"]);
+
+        runtime.freeze_category("video");
+        runtime.observe_session(SessionId::new(8));
+        assert!(runtime.status().halted_categories.is_empty());
+        assert_eq!(runtime.status().manual_frozen_categories, ["video"]);
     }
 }
