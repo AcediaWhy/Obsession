@@ -291,7 +291,11 @@ export interface LegacyReliabilityLaneAssessment {
   classification: LegacyReliabilityClassification;
   confidence: LegacyReliabilityConfidence;
   evidence: LegacyReliabilityEvidence;
-  /** UX-only confirmation memory; never authorizes a configuration change. */
+  /**
+   * UX-only last-known-good memory for the current lane generation. The legacy
+   * field name is retained for wire compatibility; it never authorizes a
+   * configuration change.
+   */
   workingConfirmedRecently: boolean;
   cooldownUntilMs: number | null;
 }

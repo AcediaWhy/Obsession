@@ -69,6 +69,8 @@ pub struct LegacyLaneStatus {
     pub classification: AssessmentClassification,
     pub confidence: AssessmentConfidence,
     pub evidence: EvidenceSummary,
+    /// Legacy public name for session/generation-scoped last-known-good state.
+    /// It is display-only and does not participate in recovery policy.
     pub working_confirmed_recently: bool,
     pub cooldown_until_ms: Option<u64>,
 }

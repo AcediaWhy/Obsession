@@ -168,7 +168,7 @@ export function getLegacyLaneDisplayModel(
     lane.classification === "awaiting_evidence" &&
     lane.workingConfirmedRecently
   ) {
-    return { label: "Работало недавно", tone: "ok" };
+    return { label: "Доступ подтверждён", tone: "ok" };
   }
   return CLASSIFICATION_DISPLAY[lane.classification];
 }
@@ -181,8 +181,8 @@ export function getLegacyEvidenceLabel(
 ): string {
   const evidence = lane.evidence;
   const parts = [
-    lane.workingConfirmedRecently && evidence.workingFlows === 0
-      ? "недавнее подтверждение"
+    lane.workingConfirmedRecently && lane.confidence === "none"
+      ? "подтверждено в текущей сессии"
       : CONFIDENCE_LABEL[lane.confidence],
   ];
   if (evidence.workingFlows > 0) {

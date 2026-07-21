@@ -116,19 +116,36 @@ describe("LegacyReliabilityPanel", () => {
     ).toEqual({ label: "Проверка среды", tone: "warn" });
   });
 
-  it("shows a recent Working confirmation instead of returning to data collection", () => {
-    const recent = lane({ workingConfirmedRecently: true });
-    expect(getLegacyLaneDisplayModel(recent)).toEqual({
-      label: "Работало недавно",
+  it("keeps a session Working confirmation instead of returning to data collection", () => {
+    const confirmed = lane({ workingConfirmedRecently: true });
+    expect(getLegacyLaneDisplayModel(confirmed)).toEqual({
+      label: "Доступ подтверждён",
       tone: "ok",
     });
-    expect(getLegacyEvidenceLabel(recent)).toBe("недавнее подтверждение");
+    expect(getLegacyEvidenceLabel(confirmed)).toBe(
+      "подтверждено в текущей сессии",
+    );
+
+    const partial = lane({
+      workingConfirmedRecently: true,
+      confidence: "none",
+      evidence: {
+        ...confirmed.evidence,
+        workingFlows: 1,
+        workingTargets: 1,
+      },
+    });
+    expect(getLegacyEvidenceLabel(partial)).toBe(
+      "подтверждено в текущей сессии · успехи 1/1",
+    );
 
     const markup = renderToStaticMarkup(
-      <LegacyReliabilityPanelView status={status({ lanes: [recent] })} />,
+      <LegacyReliabilityPanelView status={status({ lanes: [partial] })} />,
     );
-    expect(markup).toContain("Работало недавно");
+    expect(markup).toContain("Доступ подтверждён");
+    expect(markup).toContain("подтверждено в текущей сессии");
     expect(markup).not.toContain("Сбор данных");
+    expect(markup).not.toContain("оценка не сформирована");
   });
 
   it("summarizes confidence and bounded evidence without target details", () => {

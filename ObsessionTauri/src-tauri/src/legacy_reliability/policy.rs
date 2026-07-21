@@ -267,12 +267,12 @@ mod tests {
     }
 
     #[test]
-    fn recent_working_confirmation_is_ux_only_and_never_proposes_action() {
-        let mut recent = assessment(AssessmentClassification::AwaitingEvidence);
-        recent.working_confirmed_recently = true;
+    fn session_working_confirmation_is_ux_only_and_never_proposes_action() {
+        let mut confirmed = assessment(AssessmentClassification::AwaitingEvidence);
+        confirmed.working_confirmed_recently = true;
         assert_eq!(
             ObserveOnlyBrain::decide(
-                &recent,
+                &confirmed,
                 Some("video_1.conf"),
                 &["video_1.conf".into(), "video_2.conf".into()],
                 100,
