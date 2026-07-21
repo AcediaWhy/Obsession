@@ -357,6 +357,7 @@ pub fn run() {
             commands::delete_profile,
             commands::brain_set_enabled,
             commands::brain_get_status,
+            commands::legacy_reliability_approve,
             commands::adaptive_get_status,
             commands::adaptive_start_search,
             commands::adaptive_get_recommendation,

@@ -54,9 +54,23 @@ function status(
       kind: "wait",
       reason: "awaiting_evidence",
     },
+    proposal: null,
+    activeAttempt: null,
+    lastCompletion: null,
+    negativeCooldownCount: 0,
     ...overrides,
   };
 }
+
+const PROPOSAL = {
+  proposalId: 5,
+  attemptId: 8,
+  incidentId: 3,
+  category: "youtube_twitch",
+  previousConfigId: "youtube_twitch_1.conf",
+  candidateConfigId: "youtube_twitch_2.conf",
+  expiresAtMonotonicMs: 93_000,
+};
 
 describe("LegacyReliabilityPanel", () => {
   it.each<
@@ -176,7 +190,7 @@ describe("LegacyReliabilityPanel", () => {
       "Режим наблюдения: изменение не выполнено.",
     );
     expect(markup).not.toContain("Авто-восстановление");
-    expect(markup).not.toContain("<button");
+    expect(markup).not.toContain("Подтвердить замену");
     expect(markup).not.toContain('role="switch"');
   });
 
@@ -248,6 +262,174 @@ describe("LegacyReliabilityPanel", () => {
     expect(markup).toContain("Сбои фиксируются, конфигурации не меняются.");
     expect(markup).not.toContain("Оценка категорий");
     expect(markup).not.toContain("Предполагаемое действие");
-    expect(markup).not.toContain("<button");
+    expect(markup).not.toContain("Подтвердить замену");
+  });
+
+  it("offers explicit observe-only and assisted mode choices", () => {
+    const observeMarkup = renderToStaticMarkup(
+      <LegacyReliabilityPanelView
+        status={status()}
+        configuredMode="observe_only"
+        onModeChange={() => {}}
+      />,
+    );
+    expect(observeMarkup).toContain('role="radiogroup"');
+    expect(observeMarkup).toContain("Наблюдение");
+    expect(observeMarkup).toContain("С подтверждением");
+    expect(observeMarkup).toMatch(
+      /role="radio" aria-checked="true"[^>]*>Только наблюдение/,
+    );
+    expect(observeMarkup).toContain(
+      "Сбои фиксируются, конфигурации не меняются.",
+    );
+
+    const assistedMarkup = renderToStaticMarkup(
+      <LegacyReliabilityPanelView
+        status={status({ mode: "assisted" })}
+        configuredMode="assisted"
+        onModeChange={() => {}}
+      />,
+    );
+    expect(assistedMarkup).toMatch(
+      /role="radio" aria-checked="true"[^>]*>С подтверждением/,
+    );
+    expect(assistedMarkup).toContain(
+      "Замена выполняется только после вашего подтверждения.",
+    );
+  });
+
+  it("renders a backend-owned 30-second assisted proposal", () => {
+    const markup = renderToStaticMarkup(
+      <LegacyReliabilityPanelView
+        status={status({ mode: "assisted", proposal: PROPOSAL })}
+        configuredMode="assisted"
+        onModeChange={() => {}}
+        onApprove={() => {}}
+      />,
+    );
+
+    expect(markup).toContain("Предложение на 30 секунд");
+    expect(markup).toContain("YouTube / Twitch");
+    expect(markup).toContain("youtube_twitch_1.conf");
+    expect(markup).toContain("youtube_twitch_2.conf");
+    expect(markup).toContain("Подтвердить замену");
+    expect(markup).not.toContain("Предложение устарело");
+  });
+
+  it("disables blind and stale proposals and never approves in observe-only", () => {
+    const blindMarkup = renderToStaticMarkup(
+      <LegacyReliabilityPanelView
+        status={status({ mode: "assisted", phase: "blind", proposal: PROPOSAL })}
+        configuredMode="assisted"
+        onModeChange={() => {}}
+        onApprove={() => {}}
+      />,
+    );
+    expect(blindMarkup).toContain(
+      "Подтверждение недоступно: наблюдение не видит трафик.",
+    );
+    expect(blindMarkup).toMatch(/disabled=""[^>]*>Подтвердить замену/);
+
+    const staleMarkup = renderToStaticMarkup(
+      <LegacyReliabilityPanelView
+        status={status({
+          mode: "assisted",
+          proposal: { ...PROPOSAL, previousConfigId: "obsolete.conf" },
+        })}
+        configuredMode="assisted"
+        onModeChange={() => {}}
+        onApprove={() => {}}
+      />,
+    );
+    expect(staleMarkup).toContain("Предложение устарело");
+    expect(staleMarkup).toMatch(/disabled=""[^>]*>Подтвердить замену/);
+
+    const observeMarkup = renderToStaticMarkup(
+      <LegacyReliabilityPanelView
+        status={status({ proposal: PROPOSAL })}
+        configuredMode="observe_only"
+        onModeChange={() => {}}
+        onApprove={() => {}}
+      />,
+    );
+    expect(observeMarkup).not.toContain("Подтвердить замену");
+    expect(observeMarkup).toContain(
+      "Подтверждение недоступно в текущем режиме.",
+    );
+  });
+
+  it("shows understandable attempt progress and rollback progress", () => {
+    const confirmingMarkup = renderToStaticMarkup(
+      <LegacyReliabilityPanelView
+        status={status({
+          mode: "assisted",
+          activeAttempt: {
+            ...PROPOSAL,
+            phase: "confirming",
+            phaseStartedAtMonotonicMs: 71_000,
+          },
+        })}
+        configuredMode="assisted"
+      />,
+    );
+    expect(confirmingMarkup).toContain("Проверка доступа");
+    expect(confirmingMarkup).toContain("Шаг 4 из 4");
+    expect(confirmingMarkup).toContain("HTTPS и данные наблюдения");
+
+    const rollbackMarkup = renderToStaticMarkup(
+      <LegacyReliabilityPanelView
+        status={status({
+          mode: "assisted",
+          activeAttempt: {
+            ...PROPOSAL,
+            phase: "rolling_back",
+            phaseStartedAtMonotonicMs: 72_000,
+          },
+        })}
+        configuredMode="assisted"
+      />,
+    );
+    expect(rollbackMarkup).toContain("Возврат прежней конфигурации");
+    expect(rollbackMarkup).toContain("выполняется безопасный откат");
+  });
+
+  it.each([
+    ["candidate_applied", "Замена завершена", "youtube_twitch_2.conf"],
+    [
+      "previous_preserved",
+      "Прежняя конфигурация сохранена",
+      "youtube_twitch_1.conf",
+    ],
+    ["rolled_back", "Выполнен откат", "youtube_twitch_1.conf"],
+    ["process_failed", "Нужно ручное вмешательство", "Перезапустите обход вручную"],
+  ] as const)(
+    "renders a distinct %s completion state",
+    (disposition, label, detail) => {
+      const markup = renderToStaticMarkup(
+        <LegacyReliabilityPanelView
+          status={status({
+            mode: "assisted",
+            lastCompletion: {
+              ...PROPOSAL,
+              phase: disposition === "candidate_applied" ? "applied" : "rolling_back",
+              disposition,
+              finishedAtMonotonicMs: 81_000,
+            },
+          })}
+          configuredMode="assisted"
+        />,
+      );
+      expect(markup).toContain(label);
+      expect(markup).toContain(detail);
+    },
+  );
+
+  it("reports candidates in negative cooldown without exposing timers", () => {
+    const markup = renderToStaticMarkup(
+      <LegacyReliabilityPanelView
+        status={status({ negativeCooldownCount: 2 })}
+      />,
+    );
+    expect(markup).toContain("Кандидаты на паузе после неудачной проверки: 2");
   });
 });

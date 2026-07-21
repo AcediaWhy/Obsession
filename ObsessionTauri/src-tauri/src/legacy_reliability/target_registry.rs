@@ -14,6 +14,10 @@ use super::contracts::RegistryVersion;
 
 const CONTENT_HASH_DOMAIN: &[u8] = b"obsession/legacy-target-registry-content/v1";
 const VERSION_HASH_DOMAIN: &[u8] = b"obsession/legacy-target-registry-version/v1";
+const CONFIG_FINGERPRINT_DOMAIN: &[u8] = b"obsession/legacy-target-registry-config-fingerprint/v1";
+const CONFIG_RESOURCE_DOMAIN: &[u8] = b"obsession/legacy-config-resource/v1";
+const HOSTLIST_RESOURCE_DOMAIN: &[u8] = b"obsession/legacy-hostlist-resource/v1";
+const HOSTLIST_CONTENT_DOMAIN: &[u8] = b"obsession/legacy-hostlist-content/v1";
 const MAX_PORT_TERMS_PER_CONFIG: usize = 4_096;
 
 /// One independent Legacy `.conf` and the contents of lists it references.
@@ -344,6 +348,30 @@ impl fmt::Display for CapturePlanError {
 
 impl Error for CapturePlanError {}
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ConfigLookupError {
+    UnknownConfig {
+        category: String,
+        config_name: String,
+    },
+}
+
+impl fmt::Display for ConfigLookupError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnknownConfig {
+                category,
+                config_name,
+            } => write!(
+                f,
+                "Legacy config {config_name:?} is not present in category {category:?}"
+            ),
+        }
+    }
+}
+
+impl Error for ConfigLookupError {}
+
 impl fmt::Display for RegistryBuildError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -461,6 +489,24 @@ pub enum Attribution {
     Unmatched,
 }
 
+/// Domain-separated digest of one config and only the hostlist resources it
+/// references. It is stable across registry ordering and active selections.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConfigFingerprint {
+    digest: [u8; 32],
+    digest_hex: String,
+}
+
+impl ConfigFingerprint {
+    pub fn as_bytes(&self) -> &[u8; 32] {
+        &self.digest
+    }
+
+    pub fn as_hex(&self) -> &str {
+        &self.digest_hex
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct OwnerKey {
     category: String,
@@ -485,8 +531,98 @@ pub struct TargetRegistry {
     targets: BTreeMap<String, BTreeSet<OwnerKey>>,
     exclusions: BTreeMap<String, BTreeSet<OwnerKey>>,
     config_port_plans: BTreeMap<OwnerKey, PortPlan>,
+    config_fingerprints: BTreeMap<OwnerKey, ConfigFingerprint>,
     active_selections: BTreeMap<String, String>,
     port_plan: PortPlan,
+}
+
+/// Read-only candidate selection used to prepare a fenced Phase 3 attempt.
+///
+/// It replaces one category in a private selection map and retains every
+/// active neighboring category. Constructing or querying this view never
+/// changes the registry snapshot or a running Legacy process.
+#[derive(Debug)]
+pub struct TentativeSelection<'a> {
+    registry: &'a TargetRegistry,
+    category: String,
+    config_name: String,
+    selections: BTreeMap<String, String>,
+    capture_plan: PortPlan,
+}
+
+impl<'a> TentativeSelection<'a> {
+    pub fn category(&self) -> &str {
+        &self.category
+    }
+
+    pub fn config_name(&self) -> &str {
+        &self.config_name
+    }
+
+    /// Deterministic candidate-plus-neighbor selection set.
+    pub fn selections(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.selections
+            .iter()
+            .map(|(category, config_name)| (category.as_str(), config_name.as_str()))
+    }
+
+    pub fn capture_plan(&self) -> &PortPlan {
+        &self.capture_plan
+    }
+
+    pub fn content_hash(&self) -> &[u8; 32] {
+        self.registry.content_hash()
+    }
+
+    pub fn content_hash_hex(&self) -> &str {
+        self.registry.content_hash_hex()
+    }
+
+    pub fn candidate_fingerprint(&self) -> &ConfigFingerprint {
+        self.registry
+            .config_fingerprint_by_key(&OwnerKey {
+                category: self.category.clone(),
+                config_name: self.config_name.clone(),
+            })
+            .expect("tentative candidate is validated at construction")
+    }
+
+    /// Fingerprints for the complete candidate-plus-neighbor selection fence.
+    pub fn selected_fingerprints(&self) -> impl Iterator<Item = (&str, &str, &ConfigFingerprint)> {
+        self.selections
+            .iter()
+            .filter_map(|(category, config_name)| {
+                let key = OwnerKey {
+                    category: category.clone(),
+                    config_name: config_name.clone(),
+                };
+                self.registry
+                    .config_fingerprint_by_key(&key)
+                    .map(|fingerprint| (category.as_str(), config_name.as_str(), fingerprint))
+            })
+    }
+
+    /// Non-excluded suffixes owned unambiguously by the candidate category.
+    /// Sharing between configs of that same category remains eligible.
+    pub fn candidate_target_suffixes(&self) -> Vec<&str> {
+        self.registry.exclusive_target_suffixes_for_key(&OwnerKey {
+            category: self.category.clone(),
+            config_name: self.config_name.clone(),
+        })
+    }
+
+    /// Non-excluded suffixes unambiguous across candidate plus neighbor categories.
+    pub fn target_suffixes(&self) -> Vec<&str> {
+        self.registry
+            .exclusive_target_suffixes_for_selections(&self.selections)
+    }
+
+    /// Preflight attribution across the tentative selected categories. A
+    /// suffix shared by configs of one category still belongs to that category;
+    /// candidate confirmation separately uses the category-unambiguous whitelist.
+    pub fn attribute(&self, domain: &str) -> Attribution {
+        self.registry.attribute_tentative(domain, &self.selections)
+    }
 }
 
 impl TargetRegistry {
@@ -532,6 +668,7 @@ impl TargetRegistry {
         let mut targets: BTreeMap<String, BTreeSet<OwnerKey>> = BTreeMap::new();
         let mut exclusions: BTreeMap<String, BTreeSet<OwnerKey>> = BTreeMap::new();
         let mut config_port_plans: BTreeMap<OwnerKey, PortPlan> = BTreeMap::new();
+        let mut config_fingerprints: BTreeMap<OwnerKey, ConfigFingerprint> = BTreeMap::new();
         let mut port_plan = PortPlan::default();
         let mut hasher = Sha256::new();
         hash_field(&mut hasher, CONTENT_HASH_DOMAIN);
@@ -552,6 +689,7 @@ impl TargetRegistry {
                 config_name: record.config_name.clone(),
             };
             config_port_plans.insert(owner.clone(), record.parsed.tcp_ports.clone());
+            config_fingerprints.insert(owner.clone(), fingerprint_record(record));
 
             for reference in &record.parsed.hostlists {
                 hash_field(&mut hasher, &[hostlist_kind_tag(reference.kind)]);
@@ -638,6 +776,7 @@ impl TargetRegistry {
             targets,
             exclusions,
             config_port_plans,
+            config_fingerprints,
             active_selections,
             port_plan,
         })
@@ -653,6 +792,59 @@ impl TargetRegistry {
 
     pub fn content_hash_hex(&self) -> &str {
         &self.content_hash_hex
+    }
+
+    /// Looks up a content fingerprint without resolving or accepting a path.
+    /// Category matching is normalized and config matching is ASCII
+    /// case-insensitive, mirroring the duplicate identity rules at build time.
+    pub fn config_fingerprint(
+        &self,
+        category: &str,
+        config_name: &str,
+    ) -> Result<&ConfigFingerprint, ConfigLookupError> {
+        let key = self.resolve_config_key(category, config_name)?;
+        Ok(self
+            .config_fingerprint_by_key(key)
+            .expect("every registered config has a fingerprint"))
+    }
+
+    /// Deterministic suffixes owned only by this exact config. Shared targets,
+    /// ambiguous targets, and targets excluded for the config are omitted.
+    pub fn config_target_suffixes(
+        &self,
+        category: &str,
+        config_name: &str,
+    ) -> Result<Vec<&str>, ConfigLookupError> {
+        let key = self.resolve_config_key(category, config_name)?;
+        Ok(self.exclusive_target_suffixes_for_key(key))
+    }
+
+    /// Creates a private candidate selection while retaining every active
+    /// neighboring category. The returned plan and attribution view do not
+    /// mutate active registry state.
+    pub fn tentative_selection(
+        &self,
+        category: &str,
+        config_name: &str,
+    ) -> Result<TentativeSelection<'_>, ConfigLookupError> {
+        let key = self.resolve_config_key(category, config_name)?.clone();
+        let mut selections = self.active_selections.clone();
+        selections.insert(key.category.clone(), key.config_name.clone());
+        let capture_plan = self
+            .capture_plan_for(
+                selections
+                    .iter()
+                    .map(|(category, config_name)| (category.as_str(), config_name.as_str())),
+            )
+            .expect("tentative selection contains only validated configs");
+
+        Ok(TentativeSelection {
+            registry: self,
+            category: key.category,
+            config_name: key.config_name,
+            selections,
+            capture_plan,
+        })
     }
 
     /// Returns the config bound as active for a category in this snapshot.
@@ -785,6 +977,67 @@ impl TargetRegistry {
             .collect()
     }
 
+    fn resolve_config_key(
+        &self,
+        category: &str,
+        config_name: &str,
+    ) -> Result<&OwnerKey, ConfigLookupError> {
+        let category = category.trim().to_ascii_lowercase();
+        let config_name = config_name.trim();
+        self.config_port_plans
+            .keys()
+            .find(|owner| {
+                owner.category == category && owner.config_name.eq_ignore_ascii_case(config_name)
+            })
+            .ok_or_else(|| ConfigLookupError::UnknownConfig {
+                category,
+                config_name: config_name.to_string(),
+            })
+    }
+
+    fn config_fingerprint_by_key(&self, key: &OwnerKey) -> Option<&ConfigFingerprint> {
+        self.config_fingerprints.get(key)
+    }
+
+    fn exclusive_target_suffixes_for_key(&self, key: &OwnerKey) -> Vec<&str> {
+        self.targets
+            .iter()
+            .filter_map(|(target, owners)| {
+                (owners.contains(key)
+                    && owners.iter().all(|owner| owner.category == key.category)
+                    && !self.owner_is_excluded(target, key))
+                .then_some(target.as_str())
+            })
+            .collect()
+    }
+
+    fn exclusive_target_suffixes_for_selections(
+        &self,
+        selections: &BTreeMap<String, String>,
+    ) -> Vec<&str> {
+        self.targets
+            .iter()
+            .filter_map(|(target, owners)| {
+                let owner = owners
+                    .iter()
+                    .find(|owner| owner_in_selections(owner, selections))?;
+                (owners
+                    .iter()
+                    .all(|candidate| candidate.category == owner.category)
+                    && !self.owner_is_excluded(target, owner))
+                .then_some(target.as_str())
+            })
+            .collect()
+    }
+
+    fn owner_is_excluded(&self, domain: &str, owner: &OwnerKey) -> bool {
+        suffixes(domain).into_iter().any(|suffix| {
+            self.exclusions
+                .get(suffix)
+                .is_some_and(|owners| owners.contains(owner))
+        })
+    }
+
     pub fn attribute(&self, domain: &str) -> Attribution {
         self.attribute_scoped(domain, false)
     }
@@ -795,6 +1048,73 @@ impl TargetRegistry {
     /// cannot steal a flow from an active lane through a longer suffix.
     pub fn attribute_active(&self, domain: &str) -> Attribution {
         self.attribute_scoped(domain, true)
+    }
+
+    fn attribute_tentative(
+        &self,
+        domain: &str,
+        selections: &BTreeMap<String, String>,
+    ) -> Attribution {
+        let Some(domain) = normalize_domain(domain) else {
+            return Attribution::Unmatched;
+        };
+
+        let suffixes = suffixes(&domain);
+        let mut excluded_owners = BTreeSet::new();
+        for suffix in &suffixes {
+            if let Some(owners) = self.exclusions.get(*suffix) {
+                excluded_owners.extend(
+                    owners
+                        .iter()
+                        .filter(|owner| owner_in_selections(owner, selections))
+                        .cloned(),
+                );
+            }
+        }
+
+        for suffix in suffixes {
+            let Some(owners) = self.targets.get(suffix) else {
+                continue;
+            };
+            let selected = owners
+                .iter()
+                .filter(|owner| owner_in_selections(owner, selections))
+                .collect::<Vec<_>>();
+
+            // A globally known target belonging to an inactive candidate is a
+            // boundary: do not fall through and attribute it to a broader
+            // selected suffix.
+            if selected.is_empty() {
+                return Attribution::Unmatched;
+            }
+
+            let eligible = selected
+                .iter()
+                .copied()
+                .filter(|owner| !excluded_owners.contains(*owner))
+                .collect::<Vec<_>>();
+            if eligible.is_empty() {
+                return Attribution::Excluded {
+                    target: suffix.to_string(),
+                    owners: group_owners(selected, selections),
+                };
+            }
+
+            let grouped = group_owners(eligible, selections);
+            return if grouped.len() == 1 {
+                Attribution::Matched {
+                    target: suffix.to_string(),
+                    owner: grouped.into_iter().next().expect("one selected category"),
+                }
+            } else {
+                Attribution::Ambiguous {
+                    target: suffix.to_string(),
+                    owners: grouped,
+                }
+            };
+        }
+
+        Attribution::Unmatched
     }
 
     fn attribute_scoped(&self, domain: &str, active_only: bool) -> Attribution {
@@ -1251,6 +1571,12 @@ fn group_owners<'a>(
         .collect()
 }
 
+fn owner_in_selections(owner: &OwnerKey, selections: &BTreeMap<String, String>) -> bool {
+    selections
+        .get(&owner.category)
+        .is_some_and(|selected| selected == &owner.config_name)
+}
+
 fn render_port_terms(ranges: &[PortRange], field: &str) -> String {
     ranges
         .iter()
@@ -1270,6 +1596,37 @@ fn hostlist_kind_tag(kind: HostlistKind) -> u8 {
         HostlistKind::Include => 1,
         HostlistKind::AutoInclude => 2,
         HostlistKind::Exclude => 3,
+    }
+}
+
+fn fingerprint_record(record: &PreparedRecord) -> ConfigFingerprint {
+    let mut hasher = Sha256::new();
+    hash_field(&mut hasher, CONFIG_FINGERPRINT_DOMAIN);
+    hash_field(&mut hasher, CONFIG_RESOURCE_DOMAIN);
+    hash_field(&mut hasher, record.config_content.as_bytes());
+    hash_field(
+        &mut hasher,
+        &(record.parsed.hostlists.len() as u64).to_be_bytes(),
+    );
+
+    // Parsed references are already normalized and sorted. Unreferenced
+    // supplied resources intentionally do not enter this per-config fence.
+    for reference in &record.parsed.hostlists {
+        hash_field(&mut hasher, HOSTLIST_RESOURCE_DOMAIN);
+        hash_field(&mut hasher, &[hostlist_kind_tag(reference.kind)]);
+        hash_field(&mut hasher, reference.reference.as_bytes());
+        let content = record.hostlists.get(&reference.reference);
+        hash_field(&mut hasher, &[u8::from(content.is_some())]);
+        if let Some(content) = content {
+            hash_field(&mut hasher, HOSTLIST_CONTENT_DOMAIN);
+            hash_field(&mut hasher, content.as_bytes());
+        }
+    }
+
+    let digest: [u8; 32] = hasher.finalize().into();
+    ConfigFingerprint {
+        digest,
+        digest_hex: hex_digest(&digest),
     }
 }
 
@@ -1671,6 +2028,226 @@ mod tests {
         );
         assert_eq!(owner.config_names, ["video_1.conf", "video_2.conf"]);
         assert_eq!(owner.active_config.as_deref(), Some("video_1.conf"));
+    }
+
+    #[test]
+    fn per_config_fingerprint_is_deterministic_and_fences_referenced_bytes() {
+        let base = record(
+            "video",
+            "video.conf",
+            "--wf-tcp=443 --hostlist=lists/video.txt",
+            &[("lists/video.txt", "video.example\n")],
+        );
+        let sibling = record(
+            "gaming",
+            "gaming.conf",
+            "--wf-tcp=2053 --hostlist=lists/gaming.txt",
+            &[("lists/gaming.txt", "gaming.example\n")],
+        );
+        let forward = TargetRegistry::from_records([base.clone(), sibling.clone()]).unwrap();
+        let reverse = TargetRegistry::from_records([sibling, base.clone()]).unwrap();
+
+        let forward_fingerprint = forward.config_fingerprint(" VIDEO ", "VIDEO.CONF").unwrap();
+        let reverse_fingerprint = reverse.config_fingerprint("video", "video.conf").unwrap();
+        assert_eq!(forward_fingerprint, reverse_fingerprint);
+        assert_eq!(forward_fingerprint.as_hex().len(), 64);
+
+        let config_changed = record(
+            "video",
+            "video.conf",
+            "--wf-tcp=8443 --hostlist=lists/video.txt",
+            &[("lists/video.txt", "video.example\n")],
+        );
+        let config_changed = TargetRegistry::from_records([config_changed]).unwrap();
+        assert_ne!(
+            forward_fingerprint,
+            config_changed
+                .config_fingerprint("video", "video.conf")
+                .unwrap()
+        );
+
+        let hostlist_changed =
+            base.with_hostlist("lists/video.txt", "video.example\ncdn.video.example\n");
+        let hostlist_changed = TargetRegistry::from_records([hostlist_changed]).unwrap();
+        assert_ne!(
+            forward_fingerprint,
+            hostlist_changed
+                .config_fingerprint("video", "video.conf")
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn candidate_targets_allow_same_category_shared_but_exclude_cross_category_and_excluded() {
+        let active = record(
+            "video",
+            "video_1.conf",
+            "--wf-tcp=443 --hostlist=lists/active.txt",
+            &[("lists/active.txt", "active.example\nshared.example\n")],
+        );
+        let candidate = record(
+            "video",
+            "video_2.conf",
+            "--wf-tcp=8443 --hostlist=lists/candidate.txt \
+             --hostlist-exclude=lists/excluded.txt",
+            &[
+                (
+                    "lists/candidate.txt",
+                    "candidate.example\nshared.example\ncross.example\nblocked.example\n",
+                ),
+                ("lists/excluded.txt", "blocked.example\n"),
+            ],
+        );
+        let other = record(
+            "other",
+            "other.conf",
+            "--wf-tcp=443 --hostlist=lists/other.txt",
+            &[("lists/other.txt", "cross.example\n")],
+        );
+        let registry = TargetRegistry::from_records_with_active_selections(
+            [active, candidate, other],
+            [("video", "video_1.conf"), ("other", "other.conf")],
+        )
+        .unwrap();
+
+        assert_eq!(
+            registry
+                .config_target_suffixes("video", "video_2.conf")
+                .unwrap(),
+            ["candidate.example", "shared.example"]
+        );
+        let tentative = registry
+            .tentative_selection("video", "video_2.conf")
+            .unwrap();
+        assert_eq!(
+            tentative.candidate_target_suffixes(),
+            ["candidate.example", "shared.example"]
+        );
+        assert_match(
+            tentative.attribute("shared.example"),
+            "video",
+            "shared.example",
+        );
+        assert!(matches!(
+            tentative.attribute("blocked.example"),
+            Attribution::Excluded { .. }
+        ));
+        assert!(matches!(
+            tentative.attribute("cross.example"),
+            Attribution::Ambiguous { .. }
+        ));
+    }
+
+    #[test]
+    fn tentative_selection_preserves_neighbors_without_mutating_active_state() {
+        let active_video = record(
+            "video",
+            "video_1.conf",
+            "--wf-tcp=443 --hostlist=lists/video-active.txt",
+            &[("lists/video-active.txt", "active.example\nshared.example\n")],
+        );
+        let candidate_video = record(
+            "video",
+            "video_2.conf",
+            "--wf-tcp=8443 --hostlist=lists/video-candidate.txt",
+            &[(
+                "lists/video-candidate.txt",
+                "candidate.example\nshared.example\ncross.example\n",
+            )],
+        );
+        let active_gaming = record(
+            "gaming",
+            "gaming.conf",
+            "--wf-tcp=2053 --hostlist=lists/gaming.txt",
+            &[("lists/gaming.txt", "game.example\ncross.example\n")],
+        );
+        let registry = TargetRegistry::from_records_with_active_selections(
+            [candidate_video, active_gaming, active_video],
+            [("video", "video_1.conf"), ("gaming", "gaming.conf")],
+        )
+        .unwrap();
+        let active_hash = *registry.content_hash();
+
+        let tentative = registry
+            .tentative_selection(" VIDEO ", "VIDEO_2.CONF")
+            .unwrap();
+        assert_eq!(tentative.category(), "video");
+        assert_eq!(tentative.config_name(), "video_2.conf");
+        assert_eq!(
+            tentative.selections().collect::<Vec<_>>(),
+            [("gaming", "gaming.conf"), ("video", "video_2.conf")]
+        );
+        assert!(tentative.capture_plan().contains(2053));
+        assert!(tentative.capture_plan().contains(8443));
+        assert!(!tentative.capture_plan().contains(443));
+        assert_eq!(
+            tentative.target_suffixes(),
+            ["candidate.example", "game.example", "shared.example"]
+        );
+        assert_eq!(tentative.content_hash(), &active_hash);
+        assert_eq!(tentative.selected_fingerprints().count(), 2);
+        assert_eq!(
+            tentative.candidate_fingerprint(),
+            registry
+                .config_fingerprint("video", "video_2.conf")
+                .unwrap()
+        );
+        assert_match(
+            tentative.attribute("cdn.candidate.example"),
+            "video",
+            "candidate.example",
+        );
+        assert_match(
+            tentative.attribute("cdn.game.example"),
+            "gaming",
+            "game.example",
+        );
+        assert_match(
+            tentative.attribute("shared.example"),
+            "video",
+            "shared.example",
+        );
+        assert!(matches!(
+            tentative.attribute("cross.example"),
+            Attribution::Ambiguous { .. }
+        ));
+
+        assert_eq!(registry.active_config("video"), Some("video_1.conf"));
+        let active_plan = registry.active_capture_plan().unwrap();
+        assert!(active_plan.contains(443));
+        assert!(active_plan.contains(2053));
+        assert!(!active_plan.contains(8443));
+    }
+
+    #[test]
+    fn preflight_lookup_reports_a_missing_config_without_partial_view() {
+        let registry = TargetRegistry::from_records([record(
+            "video",
+            "video.conf",
+            "--wf-tcp=443 --hostlist=lists/video.txt",
+            &[("lists/video.txt", "video.example\n")],
+        )])
+        .unwrap();
+
+        for result in [
+            registry
+                .config_fingerprint("video", "missing.conf")
+                .map(|_| ()),
+            registry
+                .config_target_suffixes("video", "missing.conf")
+                .map(|_| ()),
+            registry
+                .tentative_selection("video", "missing.conf")
+                .map(|_| ()),
+        ] {
+            assert!(matches!(
+                result,
+                Err(ConfigLookupError::UnknownConfig {
+                    category,
+                    config_name
+                }) if category == "video" && config_name == "missing.conf"
+            ));
+        }
     }
 
     #[test]

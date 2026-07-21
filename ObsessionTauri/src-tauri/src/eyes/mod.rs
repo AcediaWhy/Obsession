@@ -38,4 +38,4 @@ pub use quic::{classify_udp, UdpKind};
 pub use signal::{Diagnosis, Observation, Verdict};
 
 #[cfg(windows)]
-pub use capture::{start, start_legacy, EyesHandle};
+pub use capture::{start, start_legacy, EyesHandle, EyesStartError};

@@ -1,6 +1,12 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { LegacyReliabilityStatus } from "../lib/tauri";
+vi.mock("../lib/tauri", () => ({
+  api: {
+    legacyReliabilityApprove: vi.fn(),
+  },
+}));
+
+import { api, type LegacyReliabilityStatus } from "../lib/tauri";
 import {
   INITIAL_LEGACY_RELIABILITY_STATUS,
   useLegacyReliabilityStore,
@@ -42,6 +48,10 @@ function status(
       kind: "wait",
       reason: "awaiting_evidence",
     },
+    proposal: null,
+    activeAttempt: null,
+    lastCompletion: null,
+    negativeCooldownCount: 0,
   };
 }
 
@@ -50,7 +60,10 @@ describe("legacyReliabilityStore", () => {
     useLegacyReliabilityStore.setState({
       revision: -1,
       status: INITIAL_LEGACY_RELIABILITY_STATUS,
+      approvalPending: false,
+      approvalError: "",
     });
+    vi.mocked(api.legacyReliabilityApprove).mockReset();
   });
 
   it("starts with an empty journal and a safe wait intent", () => {
@@ -65,6 +78,10 @@ describe("legacyReliabilityStore", () => {
         kind: "wait",
         reason: "awaiting_evidence",
       },
+      proposal: null,
+      activeAttempt: null,
+      lastCompletion: null,
+      negativeCooldownCount: 0,
     });
   });
 
@@ -126,5 +143,76 @@ describe("legacyReliabilityStore", () => {
       useLegacyReliabilityStore.getState().status.lanes[0]
         .workingConfirmedRecently,
     ).toBe(true);
+  });
+
+  it("submits only the opaque proposal and attempt identifiers", async () => {
+    vi.mocked(api.legacyReliabilityApprove).mockResolvedValue(undefined);
+
+    const approved = await useLegacyReliabilityStore
+      .getState()
+      .approveProposal({ proposalId: 31, attemptId: 47 });
+
+    expect(approved).toBe(true);
+    expect(api.legacyReliabilityApprove).toHaveBeenCalledWith(31, 47);
+    expect(useLegacyReliabilityStore.getState()).toMatchObject({
+      approvalPending: false,
+      approvalError: "",
+    });
+  });
+
+  it("blocks duplicate approval while a request is in flight", async () => {
+    let finish!: () => void;
+    vi.mocked(api.legacyReliabilityApprove).mockImplementation(
+      () => new Promise<void>((resolve) => (finish = resolve)),
+    );
+
+    const first = useLegacyReliabilityStore
+      .getState()
+      .approveProposal({ proposalId: 31, attemptId: 47 });
+    expect(useLegacyReliabilityStore.getState().approvalPending).toBe(true);
+
+    await expect(
+      useLegacyReliabilityStore
+        .getState()
+        .approveProposal({ proposalId: 31, attemptId: 47 }),
+    ).resolves.toBe(false);
+    expect(api.legacyReliabilityApprove).toHaveBeenCalledTimes(1);
+
+    finish();
+    await expect(first).resolves.toBe(true);
+    expect(useLegacyReliabilityStore.getState().approvalPending).toBe(false);
+  });
+
+  it("exposes an approval error and clears it for a new proposal", async () => {
+    vi.mocked(api.legacyReliabilityApprove).mockRejectedValue(
+      new Error("approval expired"),
+    );
+
+    await expect(
+      useLegacyReliabilityStore
+        .getState()
+        .approveProposal({ proposalId: 31, attemptId: 47 }),
+    ).resolves.toBe(false);
+    expect(useLegacyReliabilityStore.getState().approvalError).toContain(
+      "approval expired",
+    );
+
+    const next = status("observing");
+    next.mode = "assisted";
+    next.proposal = {
+      proposalId: 32,
+      attemptId: 48,
+      incidentId: 9,
+      category: "discord",
+      previousConfigId: "discord_1.conf",
+      candidateConfigId: "discord_2.conf",
+      expiresAtMonotonicMs: 30_000,
+    };
+    useLegacyReliabilityStore.getState().applyVersionedStatus({
+      revision: 1,
+      value: next,
+    });
+
+    expect(useLegacyReliabilityStore.getState().approvalError).toBe("");
   });
 });

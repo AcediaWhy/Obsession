@@ -655,7 +655,7 @@ pub fn runtime_get_snapshot(app: AppHandle) -> RuntimeSnapshot {
 }
 
 /// Версия wire-контракта единого startup/resume snapshot.
-pub const BOOTSTRAP_SCHEMA_VERSION: u32 = 3;
+pub const BOOTSTRAP_SCHEMA_VERSION: u32 = 4;
 
 #[derive(Serialize)]
 pub struct BootstrapSettings {
@@ -760,8 +760,12 @@ pub fn bootstrap_get_snapshot(app: AppHandle) -> BootstrapSnapshot {
     };
 
     let legacy_reliability = {
+        // Publisher updates value then revision while holding this status
+        // guard. Read both under the same guard so bootstrap cannot pair an old
+        // revision with a newer value.
+        let status = state.legacy_reliability_status.lock_recover();
+        let value = status.clone();
         let revision = state.legacy_reliability_revision.current();
-        let value = state.legacy_reliability_status.lock_recover().clone();
         VersionedSection::new(revision, value)
     };
 
@@ -812,7 +816,9 @@ where
 
 #[tauri::command]
 pub fn update_settings(app: AppHandle, patch: SettingsPatch) -> Result<Settings, String> {
-    mutate_settings(&app, |settings| settings.apply_patch(patch))
+    let settings = mutate_settings(&app, |settings| settings.apply_patch(patch))?;
+    crate::legacy_reliability::status::refresh_recovery_overlay(&app);
+    Ok(settings)
 }
 
 /// Меняет глобальный хоткей вкл/выкл защиты: снимает прежнюю комбинацию, ставит
@@ -916,6 +922,40 @@ pub fn brain_get_status(app: AppHandle) -> Option<crate::brain::BrainStatus> {
     let bh = guard.as_ref()?;
     let status = bh.status.borrow().clone();
     Some(status)
+}
+
+/// Accepts only the opaque proposal/attempt token. All category, config,
+/// process, registry and network fences are reconstructed by the backend.
+#[tauri::command]
+pub async fn legacy_reliability_approve(
+    app: AppHandle,
+    approval: crate::legacy_reliability::recovery::AssistedApproval,
+) -> Result<(), String> {
+    let initial = crate::legacy_reliability::status::approve_pending(&app, approval)?;
+    let terminal =
+        match crate::legacy_reliability::executor::run_scoped_recovery(&app, initial).await {
+            Ok(terminal) => terminal,
+            Err(error) => {
+                crate::util::emit_log(
+                    &app,
+                    "error",
+                    "legacy-reliability",
+                    &format!("Assisted recovery failed: {error}"),
+                );
+                crate::legacy_reliability::status::refresh_recovery_overlay(&app);
+                return Err(error.to_string());
+            }
+        };
+    crate::legacy_reliability::status::refresh_recovery_overlay(&app);
+    match terminal {
+        crate::legacy_reliability::recovery::RecoveryAction::Complete { .. } => Ok(()),
+        crate::legacy_reliability::recovery::RecoveryAction::ManualIntervention { .. } => {
+            // The command itself completed deterministically; the typed public
+            // status tells the UI that a manual restart is required.
+            Ok(())
+        }
+        _ => Err("Legacy recovery завершился без terminal результата".into()),
+    }
 }
 
 // ─── Adaptive Zapret2 Strategy Brain ───────────────────────────────────────

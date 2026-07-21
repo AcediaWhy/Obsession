@@ -43,6 +43,7 @@ const settings: Settings = {
   ai_provider: "malw",
   has_completed_onboarding: true,
   auto_recovery: false,
+  legacy_reliability_mode: "observe_only",
   reduce_motion: false,
   hotkey_toggle: "Ctrl+Shift+KeyO",
   lan_publish_secs: 0,
@@ -96,12 +97,16 @@ function legacyStatus(
       reason:
         phase === "blind" ? "sensor_unreliable" : "awaiting_evidence",
     },
+    proposal: null,
+    activeAttempt: null,
+    lastCompletion: null,
+    negativeCooldownCount: 0,
   };
 }
 
 function makeSnapshot(revisions: Partial<Record<string, number>> = {}) {
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     settings: {
       revision: revisions.settings ?? 1,
       value: { settings, elevated: true, autostart: false },

@@ -44,6 +44,8 @@ u64_newtype!(SessionId);
 u64_newtype!(LaneGeneration);
 u64_newtype!(SensorGeneration);
 u64_newtype!(RegistryVersion);
+u64_newtype!(AttemptId);
+u64_newtype!(ProcessStartIdentity);
 
 /// Network identity captured at session start.
 ///
@@ -68,6 +70,219 @@ impl NetworkFingerprint {
             Self::Unstable { .. } | Self::Unknown => None,
         }
     }
+}
+
+/// Content-derived identity of one immutable Legacy configuration snapshot.
+///
+/// The value is deliberately opaque to the reliability model. Production code
+/// computes it from the config and referenced bundled resources; recovery only
+/// compares it for exact equality.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ConfigFingerprint(String);
+
+impl ConfigFingerprint {
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn into_inner(self) -> String {
+        self.0
+    }
+}
+
+impl From<String> for ConfigFingerprint {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
+
+impl From<&str> for ConfigFingerprint {
+    fn from(value: &str) -> Self {
+        Self(value.to_owned())
+    }
+}
+
+impl fmt::Display for ConfigFingerprint {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+/// Live values captured by the backend immediately before a recovery side
+/// effect. UI approval never supplies this structure.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IntentFence {
+    pub session_id: SessionId,
+    pub category: String,
+    pub lane_generation: LaneGeneration,
+    pub sensor_generation: SensorGeneration,
+    pub registry_version: RegistryVersion,
+    pub network_fingerprint: NetworkFingerprint,
+}
+
+/// Exact fence attached to every executor command and result.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IntentEnvelope {
+    pub session_id: SessionId,
+    pub attempt_id: AttemptId,
+    pub category: String,
+    pub expected_lane_generation: LaneGeneration,
+    pub expected_sensor_generation: SensorGeneration,
+    pub expected_registry_version: RegistryVersion,
+    pub expected_network_fingerprint: NetworkFingerprint,
+}
+
+impl IntentEnvelope {
+    pub fn from_fence(attempt_id: AttemptId, fence: &IntentFence) -> Self {
+        Self {
+            session_id: fence.session_id,
+            attempt_id,
+            category: fence.category.clone(),
+            expected_lane_generation: fence.lane_generation,
+            expected_sensor_generation: fence.sensor_generation,
+            expected_registry_version: fence.registry_version,
+            expected_network_fingerprint: fence.network_fingerprint.clone(),
+        }
+    }
+
+    /// Exact comparison used immediately before stop, start, commit and cache
+    /// writes. A generation increase is not interchangeable with equality.
+    pub fn matches_fence(&self, current: &IntentFence) -> bool {
+        self.session_id == current.session_id
+            && self.category == current.category
+            && self.expected_lane_generation == current.lane_generation
+            && self.expected_sensor_generation == current.sensor_generation
+            && self.expected_registry_version == current.registry_version
+            && self.expected_network_fingerprint == current.network_fingerprint
+    }
+}
+
+/// Unambiguous owner of a Windows process. A PID by itself is insufficient
+/// because Windows can reuse it after process exit.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProcessOwner {
+    pub pid: u32,
+    pub process_start_identity: ProcessStartIdentity,
+    pub config_fingerprint: ConfigFingerprint,
+    pub lane_generation: LaneGeneration,
+}
+
+impl ProcessOwner {
+    pub fn owns(
+        &self,
+        config_fingerprint: &ConfigFingerprint,
+        lane_generation: LaneGeneration,
+    ) -> bool {
+        &self.config_fingerprint == config_fingerprint && self.lane_generation == lane_generation
+    }
+}
+
+/// Why candidate confirmation failed. Only failures that actually test the
+/// candidate strategy are eligible for a negative cooldown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfirmationFailure {
+    Strategy,
+    Environment,
+    Target,
+    Sensor,
+    MissingWorkingEvidence,
+}
+
+/// Executor phase at which a fresh fence invalidated a pending side effect.
+/// This is distinct from a strategy/readiness failure: an environmental or
+/// ownership change must abort or roll back without blaming the candidate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutorStage {
+    Preflight,
+    Stop,
+    Start,
+    Confirmation,
+    Commit,
+    Rollback,
+}
+
+impl ConfirmationFailure {
+    pub const fn penalizes_candidate(self) -> bool {
+        matches!(self, Self::Strategy)
+    }
+}
+
+/// Typed completion emitted by the scoped executor or process supervisor.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum ExecutorOutcome {
+    /// Preflight installs the tentative Eyes/Manager plan before stopping the
+    /// lane. The result is correlated with the old envelope, while subsequent
+    /// actions use this exact refreshed sensor/registry/lane fence.
+    PreflightPassed {
+        refreshed_fence: IntentFence,
+    },
+    PreflightRejected,
+    PreviousProcessMissing {
+        previous_fingerprint: ConfigFingerprint,
+    },
+    ExecutionAborted {
+        stage: ExecutorStage,
+        reason: ConfirmationFailure,
+    },
+    Stopped {
+        previous: ProcessOwner,
+    },
+    StopTimedOut {
+        previous: ProcessOwner,
+    },
+    Ready {
+        candidate: ProcessOwner,
+    },
+    StartFailed {
+        candidate_fingerprint: ConfigFingerprint,
+    },
+    ConfirmationSucceeded {
+        candidate: ProcessOwner,
+    },
+    ConfirmationFailed {
+        candidate: ProcessOwner,
+        reason: ConfirmationFailure,
+    },
+    CandidateCommitted {
+        candidate: ProcessOwner,
+    },
+    CommitFailed {
+        candidate: ProcessOwner,
+    },
+    RolledBack {
+        previous: ProcessOwner,
+    },
+    RollbackFailed {
+        previous_fingerprint: ConfigFingerprint,
+    },
+    Exited {
+        process: ProcessOwner,
+        intentional: bool,
+    },
+}
+
+/// Every asynchronous executor result carries the original exact envelope.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecutorResult {
+    pub envelope: IntentEnvelope,
+    pub outcome: ExecutorOutcome,
+    pub completed_at_monotonic_ms: u64,
 }
 
 /// Immutable identity and starting conditions of one Legacy lifecycle.
@@ -539,6 +754,71 @@ mod tests {
         assert_eq!(LaneGeneration::new(5).get(), 5);
         assert_eq!(SensorGeneration::new(5).get(), 5);
         assert_eq!(RegistryVersion::new(5).get(), 5);
+        assert_eq!(AttemptId::new(5).get(), 5);
+        assert_ne!(TypeId::of::<AttemptId>(), TypeId::of::<SessionId>());
+    }
+
+    #[test]
+    fn recovery_envelope_requires_every_fence_to_match_exactly() {
+        let fence = IntentFence {
+            session_id: SessionId::new(41),
+            category: "discord".into(),
+            lane_generation: LaneGeneration::new(9),
+            sensor_generation: SensorGeneration::new(3),
+            registry_version: RegistryVersion::new(7),
+            network_fingerprint: NetworkFingerprint::Stable {
+                key: "network-a".into(),
+            },
+        };
+        let intent = IntentEnvelope::from_fence(AttemptId::new(12), &fence);
+        assert!(intent.matches_fence(&fence));
+
+        let mut stale = fence.clone();
+        stale.sensor_generation = SensorGeneration::new(4);
+        assert!(!intent.matches_fence(&stale));
+        stale = fence.clone();
+        stale.network_fingerprint = NetworkFingerprint::Stable {
+            key: "network-b".into(),
+        };
+        assert!(!intent.matches_fence(&stale));
+
+        assert_eq!(
+            serde_json::to_value(&intent).unwrap(),
+            json!({
+                "sessionId": 41,
+                "attemptId": 12,
+                "category": "discord",
+                "expectedLaneGeneration": 9,
+                "expectedSensorGeneration": 3,
+                "expectedRegistryVersion": 7,
+                "expectedNetworkFingerprint": {
+                    "state": "stable",
+                    "key": "network-a"
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn process_owner_includes_start_identity_and_config_generation() {
+        let owner = ProcessOwner {
+            pid: 9001,
+            process_start_identity: ProcessStartIdentity::new(77),
+            config_fingerprint: ConfigFingerprint::new("candidate-sha256"),
+            lane_generation: LaneGeneration::new(10),
+        };
+        assert!(owner.owns(
+            &ConfigFingerprint::new("candidate-sha256"),
+            LaneGeneration::new(10)
+        ));
+        assert!(!owner.owns(
+            &ConfigFingerprint::new("candidate-sha256"),
+            LaneGeneration::new(9)
+        ));
+        assert!(!owner.owns(
+            &ConfigFingerprint::new("other-sha256"),
+            LaneGeneration::new(10)
+        ));
     }
 
     #[test]

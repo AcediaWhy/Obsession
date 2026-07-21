@@ -1,9 +1,13 @@
 //! Глобальное состояние приложения, управляемое Tauri (`app.state`).
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::error::Error;
+use std::fmt;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::time::Instant;
 
+use crate::legacy_reliability::contracts::LaneGeneration;
 use crate::paths::Paths;
 use crate::settings::Settings;
 
@@ -58,14 +62,126 @@ pub struct DpiRuntimeSnapshot {
 }
 
 /// Отслеживаемый DPI-процесс winws.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DpiProc {
     pub pid: u32,
     pub category: String,
     pub config_file: String,
     pub generation: u64,
+    /// Per-category epoch. `None` is reserved for compatibility/Zapret2
+    /// processes and is never accepted by the scoped Legacy executor.
+    pub lane_generation: Option<LaneGeneration>,
+    /// Fingerprint of the exact config plus referenced resources. A missing or
+    /// empty value makes the process ineligible for scoped replacement.
+    pub config_fingerprint: Option<String>,
     pub engine: String,
     pub process_identity: Option<crate::dpi_supervisor::ProcessIdentity>,
 }
+
+/// Unforgeable-enough in-memory ownership token for one exact Legacy process.
+/// PID alone is intentionally insufficient because Windows can reuse it.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct LegacyProcessOwner {
+    pub pid: u32,
+    pub process_identity: crate::dpi_supervisor::ProcessIdentity,
+    pub runtime_generation: u64,
+    pub lane_generation: LaneGeneration,
+    pub category: String,
+    pub config_file: String,
+    pub config_fingerprint: String,
+}
+
+impl LegacyProcessOwner {
+    pub fn matches(&self, process: &DpiProc) -> bool {
+        process.engine == "legacy"
+            && process.pid == self.pid
+            && process.process_identity == Some(self.process_identity)
+            && process.generation == self.runtime_generation
+            && process.lane_generation == Some(self.lane_generation)
+            && process.category == self.category
+            && process.config_file == self.config_file
+            && process.config_fingerprint.as_deref() == Some(self.config_fingerprint.as_str())
+    }
+}
+
+impl DpiProc {
+    /// Builds an exact owner only for fully-fenced Legacy processes. Old
+    /// compatibility launches fail closed instead of silently falling back to
+    /// PID-only ownership.
+    pub fn exact_legacy_owner(&self) -> Option<LegacyProcessOwner> {
+        if self.engine != "legacy"
+            || self.generation == 0
+            || self.category.trim().is_empty()
+            || self.config_file.trim().is_empty()
+        {
+            return None;
+        }
+        let process_identity = self.process_identity?;
+        let lane_generation = self.lane_generation?;
+        let config_fingerprint = self.config_fingerprint.as_ref()?;
+        if lane_generation.get() == 0 || config_fingerprint.trim().is_empty() {
+            return None;
+        }
+        Some(LegacyProcessOwner {
+            pid: self.pid,
+            process_identity,
+            runtime_generation: self.generation,
+            lane_generation,
+            category: self.category.clone(),
+            config_file: self.config_file.clone(),
+            config_fingerprint: config_fingerprint.clone(),
+        })
+    }
+}
+
+/// Exact rollback anchor for a category. `selection_index` preserves stable UI
+/// ordering while removal/reinstall touches no neighboring selection.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LegacyCategoryRuntimeSnapshot {
+    pub owner: LegacyProcessOwner,
+    pub selection_index: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LegacyCategoryRemoval {
+    /// `None` means an exact monitor already finalized the same removal.
+    pub process: Option<DpiProc>,
+    pub intentional: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LegacyCategoryStateError {
+    NotLegacyRuntime,
+    RuntimeInconsistent,
+    CategoryNotFound,
+    DuplicateCategory,
+    MissingExactOwnership,
+    StaleOwner,
+    AlreadyStopping,
+    CategoryOccupied,
+    InvalidReplacement,
+}
+
+impl fmt::Display for LegacyCategoryStateError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let message = match self {
+            Self::NotLegacyRuntime => "DPI runtime is not Legacy",
+            Self::RuntimeInconsistent => "Legacy process ownership and active launch disagree",
+            Self::CategoryNotFound => "Legacy category is not active",
+            Self::DuplicateCategory => "more than one process or selection owns the category",
+            Self::MissingExactOwnership => {
+                "Legacy process is missing identity, lane generation, or config fingerprint"
+            }
+            Self::StaleOwner => "Legacy category owner is stale",
+            Self::AlreadyStopping => "Legacy category owner is already stopping",
+            Self::CategoryOccupied => "Legacy category already has a process or selection",
+            Self::InvalidReplacement => "replacement process does not satisfy the exact snapshot",
+        };
+        formatter.write_str(message)
+    }
+}
+
+impl Error for LegacyCategoryStateError {}
 
 #[derive(Default)]
 pub struct DpiState {
@@ -77,6 +193,9 @@ pub struct DpiState {
     pub procs: HashMap<u32, DpiProc>,
     /// PID, которые останавливаем намеренно — чтобы монитор не считал это крахом.
     pub stopping: HashSet<u32>,
+    /// Scoped Legacy stops use the complete owner token. Kept alongside the
+    /// PID-only compatibility set until all global start/stop call sites migrate.
+    pub legacy_stopping: HashSet<LegacyProcessOwner>,
     /// Последний реально запущенный Legacy-набор для аварийного возврата из Beta.
     pub last_legacy_selection: Vec<(String, String)>,
     /// Точный активный запуск текущего generation. `None` означает stopped или
@@ -102,6 +221,7 @@ impl DpiState {
         if self.generation == 0 {
             self.generation = 1;
         }
+        self.legacy_stopping.clear();
         self.generation
     }
 
@@ -114,6 +234,291 @@ impl DpiState {
             generation: self.generation,
             launch: self.active_launch.clone(),
         }
+    }
+
+    /// Checks the stable-state invariant used by scoped Legacy mutations:
+    /// every live Legacy category has exactly one selection with the same
+    /// config and no Zapret2 process is mixed into that launch.
+    fn validate_legacy_runtime(&self) -> Result<(), LegacyCategoryStateError> {
+        let legacy_processes = self
+            .procs
+            .values()
+            .filter(|process| process.engine == "legacy")
+            .collect::<Vec<_>>();
+
+        let selections = match self.active_launch.as_ref() {
+            Some(DpiLaunchSpec::Legacy { selections }) => selections,
+            Some(DpiLaunchSpec::Zapret2 { .. }) => {
+                return Err(LegacyCategoryStateError::NotLegacyRuntime);
+            }
+            None if legacy_processes.is_empty() && self.procs.is_empty() => return Ok(()),
+            None => return Err(LegacyCategoryStateError::RuntimeInconsistent),
+        };
+
+        if self.procs.len() != legacy_processes.len() {
+            return Err(LegacyCategoryStateError::RuntimeInconsistent);
+        }
+
+        let mut selected = BTreeMap::new();
+        for (category, config_file) in selections {
+            if selected
+                .insert(category.as_str(), config_file.as_str())
+                .is_some()
+            {
+                return Err(LegacyCategoryStateError::DuplicateCategory);
+            }
+        }
+        let mut running = BTreeMap::new();
+        for process in legacy_processes {
+            if running.insert(process.category.as_str(), process).is_some() {
+                return Err(LegacyCategoryStateError::DuplicateCategory);
+            }
+        }
+        if selected.len() != running.len()
+            || selected.iter().any(|(category, config_file)| {
+                running
+                    .get(category)
+                    .is_none_or(|process| process.config_file != *config_file)
+            })
+        {
+            return Err(LegacyCategoryStateError::RuntimeInconsistent);
+        }
+        Ok(())
+    }
+
+    /// Captures the exact process/config/generations that own one category.
+    /// Any incomplete compatibility process fails closed.
+    pub fn snapshot_legacy_category(
+        &self,
+        category: &str,
+    ) -> Result<LegacyCategoryRuntimeSnapshot, LegacyCategoryStateError> {
+        self.validate_legacy_runtime()?;
+        let selections = match self.active_launch.as_ref() {
+            Some(DpiLaunchSpec::Legacy { selections }) => selections,
+            _ => return Err(LegacyCategoryStateError::NotLegacyRuntime),
+        };
+
+        let matching_selections = selections
+            .iter()
+            .enumerate()
+            .filter(|(_, (selected_category, _))| selected_category == category)
+            .collect::<Vec<_>>();
+        let [(selection_index, (_, selected_config))] = matching_selections.as_slice() else {
+            return Err(if matching_selections.is_empty() {
+                LegacyCategoryStateError::CategoryNotFound
+            } else {
+                LegacyCategoryStateError::DuplicateCategory
+            });
+        };
+
+        let matching_processes = self
+            .procs
+            .values()
+            .filter(|process| process.engine == "legacy" && process.category == category)
+            .collect::<Vec<_>>();
+        let [process] = matching_processes.as_slice() else {
+            return Err(if matching_processes.is_empty() {
+                LegacyCategoryStateError::CategoryNotFound
+            } else {
+                LegacyCategoryStateError::DuplicateCategory
+            });
+        };
+        if process.config_file != *selected_config {
+            return Err(LegacyCategoryStateError::RuntimeInconsistent);
+        }
+        let owner = process
+            .exact_legacy_owner()
+            .ok_or(LegacyCategoryStateError::MissingExactOwnership)?;
+        if owner.runtime_generation != self.generation {
+            return Err(LegacyCategoryStateError::StaleOwner);
+        }
+        Ok(LegacyCategoryRuntimeSnapshot {
+            owner,
+            selection_index: *selection_index,
+        })
+    }
+
+    /// Marks only the exact owner intentional. A reused PID or a restarted lane
+    /// cannot consume this marker.
+    pub fn mark_legacy_category_stopping(
+        &mut self,
+        snapshot: &LegacyCategoryRuntimeSnapshot,
+    ) -> Result<(), LegacyCategoryStateError> {
+        let current = self.snapshot_legacy_category(&snapshot.owner.category)?;
+        if current != *snapshot {
+            return Err(LegacyCategoryStateError::StaleOwner);
+        }
+        if !self.legacy_stopping.insert(snapshot.owner.clone()) {
+            return Err(LegacyCategoryStateError::AlreadyStopping);
+        }
+        Ok(())
+    }
+
+    /// Finalizes one exact process exit and creates the provisional selection
+    /// absence used by candidate start. It is idempotent for the same snapshot,
+    /// but rejects a new owner that appeared under the same category or PID.
+    pub fn remove_exact_legacy_category(
+        &mut self,
+        snapshot: &LegacyCategoryRuntimeSnapshot,
+    ) -> Result<LegacyCategoryRemoval, LegacyCategoryStateError> {
+        if !self.is_current_generation(snapshot.owner.runtime_generation) {
+            return Err(LegacyCategoryStateError::StaleOwner);
+        }
+        self.validate_legacy_runtime()?;
+
+        let category_processes = self
+            .procs
+            .values()
+            .filter(|process| {
+                process.engine == "legacy" && process.category == snapshot.owner.category
+            })
+            .collect::<Vec<_>>();
+        if category_processes.len() > 1 {
+            return Err(LegacyCategoryStateError::DuplicateCategory);
+        }
+        if let Some(process) = category_processes.first() {
+            if !snapshot.owner.matches(process) {
+                return Err(LegacyCategoryStateError::StaleOwner);
+            }
+        }
+
+        let mut selection_index = None;
+        match self.active_launch.as_ref() {
+            Some(DpiLaunchSpec::Legacy { selections }) => {
+                for (index, (category, config_file)) in selections.iter().enumerate() {
+                    if category == &snapshot.owner.category {
+                        if selection_index.is_some() {
+                            return Err(LegacyCategoryStateError::DuplicateCategory);
+                        }
+                        if config_file != &snapshot.owner.config_file {
+                            return Err(LegacyCategoryStateError::StaleOwner);
+                        }
+                        selection_index = Some(index);
+                    }
+                }
+            }
+            Some(DpiLaunchSpec::Zapret2 { .. }) => {
+                return Err(LegacyCategoryStateError::NotLegacyRuntime);
+            }
+            None if self.procs.is_empty() => {}
+            None => return Err(LegacyCategoryStateError::RuntimeInconsistent),
+        }
+        if category_processes.is_empty() != selection_index.is_none() {
+            return Err(LegacyCategoryStateError::RuntimeInconsistent);
+        }
+
+        let process = self.procs.remove(&snapshot.owner.pid);
+        let mut launch_became_empty = false;
+        if let Some(index) = selection_index {
+            let Some(DpiLaunchSpec::Legacy { selections }) = self.active_launch.as_mut() else {
+                return Err(LegacyCategoryStateError::RuntimeInconsistent);
+            };
+            selections.remove(index);
+            launch_became_empty = selections.is_empty();
+        }
+        if launch_became_empty {
+            self.active_launch = None;
+        }
+        let intentional = self.legacy_stopping.remove(&snapshot.owner);
+        Ok(LegacyCategoryRemoval {
+            process,
+            intentional,
+        })
+    }
+
+    fn install_legacy_category(
+        &mut self,
+        anchor: &LegacyCategoryRuntimeSnapshot,
+        process: DpiProc,
+        exact_previous_config: bool,
+        superseded_lane: Option<LaneGeneration>,
+    ) -> Result<LegacyProcessOwner, LegacyCategoryStateError> {
+        if !self.is_current_generation(anchor.owner.runtime_generation) {
+            return Err(LegacyCategoryStateError::StaleOwner);
+        }
+        self.validate_legacy_runtime()?;
+        let owner = process
+            .exact_legacy_owner()
+            .ok_or(LegacyCategoryStateError::MissingExactOwnership)?;
+        if owner.runtime_generation != self.generation
+            || owner.category != anchor.owner.category
+            || owner.lane_generation == anchor.owner.lane_generation
+            || superseded_lane.is_some_and(|generation| generation == owner.lane_generation)
+            || (exact_previous_config
+                && (owner.config_file != anchor.owner.config_file
+                    || owner.config_fingerprint != anchor.owner.config_fingerprint))
+        {
+            return Err(LegacyCategoryStateError::InvalidReplacement);
+        }
+        if self.procs.contains_key(&owner.pid)
+            || self.procs.values().any(|running| {
+                running.engine == "legacy" && running.category == anchor.owner.category
+            })
+        {
+            return Err(LegacyCategoryStateError::CategoryOccupied);
+        }
+        match self.active_launch.as_ref() {
+            Some(DpiLaunchSpec::Legacy { selections })
+                if selections
+                    .iter()
+                    .all(|(category, _)| category != &anchor.owner.category) => {}
+            Some(DpiLaunchSpec::Legacy { .. }) => {
+                return Err(LegacyCategoryStateError::CategoryOccupied);
+            }
+            Some(DpiLaunchSpec::Zapret2 { .. }) => {
+                return Err(LegacyCategoryStateError::NotLegacyRuntime);
+            }
+            None if self.procs.is_empty() => {}
+            None => return Err(LegacyCategoryStateError::RuntimeInconsistent),
+        }
+
+        let selection = (owner.category.clone(), owner.config_file.clone());
+        match self.active_launch.as_mut() {
+            Some(DpiLaunchSpec::Legacy { selections }) => {
+                selections.insert(anchor.selection_index.min(selections.len()), selection);
+            }
+            None => {
+                self.active_launch = Some(DpiLaunchSpec::Legacy {
+                    selections: vec![selection],
+                });
+            }
+            Some(DpiLaunchSpec::Zapret2 { .. }) => unreachable!("validated above"),
+        }
+        self.procs.insert(owner.pid, process);
+        self.legacy_stopping.remove(&anchor.owner);
+        Ok(owner)
+    }
+
+    /// Installs a candidate (or same-config retry) into the exact provisional
+    /// absence created from `previous`.
+    pub fn commit_legacy_category_replacement(
+        &mut self,
+        previous: &LegacyCategoryRuntimeSnapshot,
+        replacement: DpiProc,
+    ) -> Result<LegacyProcessOwner, LegacyCategoryStateError> {
+        self.install_legacy_category(previous, replacement, false, None)
+    }
+
+    /// Restores the exact previous config/fingerprint after a failed candidate.
+    /// The restored process must have a fresh lane generation relative to both
+    /// the previous and failed candidate owners.
+    pub fn rollback_legacy_category_replacement(
+        &mut self,
+        previous: &LegacyCategoryRuntimeSnapshot,
+        failed_candidate: &LegacyCategoryRuntimeSnapshot,
+        restored: DpiProc,
+    ) -> Result<LegacyProcessOwner, LegacyCategoryStateError> {
+        if failed_candidate.owner.category != previous.owner.category
+            || failed_candidate.owner.runtime_generation != previous.owner.runtime_generation
+        {
+            return Err(LegacyCategoryStateError::InvalidReplacement);
+        }
+        self.install_legacy_category(
+            previous,
+            restored,
+            true,
+            Some(failed_candidate.owner.lane_generation),
+        )
     }
 
     /// Verifies that a delayed Legacy startup continuation still refers to
@@ -267,6 +672,17 @@ pub struct AppState {
     pub legacy_reliability_status:
         Mutex<crate::legacy_reliability::status::LegacyReliabilityStatus>,
     pub legacy_reliability_revision: RevisionClock,
+    /// Pure Phase 3 recovery coordinator. It is process-owned so UI approval
+    /// can only refer to the backend proposal kept in this exact instance.
+    pub legacy_recovery: Mutex<crate::legacy_reliability::recovery_runtime::LegacyRecoveryRuntime>,
+    /// Exact owners installed by the one-shot same-config crash retry. If one
+    /// of these owners exits unexpectedly, the incident is exhausted and must
+    /// not recursively start another retry.
+    pub legacy_crash_retry_owners: Mutex<HashSet<LegacyProcessOwner>>,
+    /// One process-wide monotonic epoch shared by assessment reconciliation,
+    /// proposal TTLs and executor results. It deliberately survives Legacy
+    /// session and Eyes generation restarts.
+    legacy_monotonic_origin: Instant,
     /// Monotonic session/sensor clocks. Они не используют Observation.ts_ms:
     /// часы Eyes сбрасываются при каждом restart.
     pub legacy_session_revision: RevisionClock,
@@ -275,6 +691,11 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(paths: Paths, settings: Settings) -> Self {
+        let recovery_mode = if settings.legacy_reliability_mode == "assisted" {
+            crate::legacy_reliability::recovery::RecoveryMode::Assisted
+        } else {
+            crate::legacy_reliability::recovery::RecoveryMode::ObserveOnly
+        };
         Self {
             paths,
             shutting_down: AtomicBool::new(false),
@@ -299,9 +720,25 @@ impl AppState {
                 crate::legacy_reliability::status::LegacyReliabilityStatus::inactive(),
             ),
             legacy_reliability_revision: RevisionClock::default(),
+            legacy_recovery: Mutex::new(
+                crate::legacy_reliability::recovery_runtime::LegacyRecoveryRuntime::new(
+                    recovery_mode,
+                ),
+            ),
+            legacy_crash_retry_owners: Mutex::new(HashSet::new()),
+            legacy_monotonic_origin: Instant::now(),
             legacy_session_revision: RevisionClock::default(),
             legacy_sensor_revision: RevisionClock::default(),
         }
+    }
+
+    /// Milliseconds since the process-wide recovery epoch. Saturation keeps
+    /// the clock monotonic even on an unrealistically long-running process.
+    pub fn legacy_monotonic_ms(&self) -> u64 {
+        self.legacy_monotonic_origin
+            .elapsed()
+            .as_millis()
+            .min(u128::from(u64::MAX)) as u64
     }
 }
 
@@ -418,6 +855,8 @@ mod tests {
                 category: "zapret2".into(),
                 config_file: "beta".into(),
                 generation,
+                lane_generation: None,
+                config_fingerprint: None,
                 engine: "zapret2".into(),
                 process_identity: None,
             },
@@ -435,6 +874,8 @@ mod tests {
                 category: "zapret2".into(),
                 config_file: "beta".into(),
                 generation: next,
+                lane_generation: None,
+                config_fingerprint: None,
                 engine: "zapret2".into(),
                 process_identity: None,
             },
@@ -459,10 +900,268 @@ mod tests {
                 category: "discord".into(),
                 config_file: "discord_1.conf".into(),
                 generation,
+                lane_generation: None,
+                config_fingerprint: None,
                 engine: "legacy".into(),
                 process_identity: None,
             },
         );
+    }
+
+    fn exact_legacy_proc(
+        pid: u32,
+        identity: u64,
+        generation: u64,
+        lane_generation: u64,
+        category: &str,
+        config_file: &str,
+        config_fingerprint: &str,
+    ) -> DpiProc {
+        DpiProc {
+            pid,
+            category: category.into(),
+            config_file: config_file.into(),
+            generation,
+            lane_generation: Some(LaneGeneration::new(lane_generation)),
+            config_fingerprint: Some(config_fingerprint.into()),
+            engine: "legacy".into(),
+            process_identity: Some(crate::dpi_supervisor::ProcessIdentity::from_raw(identity)),
+        }
+    }
+
+    fn two_category_legacy_state() -> DpiState {
+        let generation = 7;
+        let discord = exact_legacy_proc(
+            10,
+            110,
+            generation,
+            1,
+            "discord",
+            "discord_1.conf",
+            "discord-fingerprint-1",
+        );
+        let youtube = exact_legacy_proc(
+            20,
+            120,
+            generation,
+            4,
+            "youtube",
+            "youtube_1.conf",
+            "youtube-fingerprint-1",
+        );
+        DpiState {
+            generation,
+            procs: HashMap::from([(discord.pid, discord), (youtube.pid, youtube)]),
+            active_launch: Some(DpiLaunchSpec::Legacy {
+                selections: vec![
+                    ("discord".into(), "discord_1.conf".into()),
+                    ("youtube".into(), "youtube_1.conf".into()),
+                ],
+            }),
+            ..DpiState::default()
+        }
+    }
+
+    #[test]
+    fn scoped_replacement_preserves_neighbor_pid_identity_and_generations() {
+        let mut state = two_category_legacy_state();
+        let neighbor_before = state.procs.get(&20).unwrap().clone();
+        let previous = state.snapshot_legacy_category("discord").unwrap();
+
+        state.mark_legacy_category_stopping(&previous).unwrap();
+        let removal = state.remove_exact_legacy_category(&previous).unwrap();
+        assert!(removal.intentional);
+        assert_eq!(removal.process.unwrap().pid, 10);
+        assert_eq!(state.procs.get(&20), Some(&neighbor_before));
+        assert_eq!(
+            state.active_launch,
+            Some(DpiLaunchSpec::Legacy {
+                selections: vec![("youtube".into(), "youtube_1.conf".into())],
+            })
+        );
+
+        let candidate = exact_legacy_proc(
+            11,
+            111,
+            state.generation,
+            2,
+            "discord",
+            "discord_2.conf",
+            "discord-fingerprint-2",
+        );
+        state
+            .commit_legacy_category_replacement(&previous, candidate)
+            .unwrap();
+
+        assert_eq!(state.procs.get(&20), Some(&neighbor_before));
+        assert_eq!(
+            state.active_launch,
+            Some(DpiLaunchSpec::Legacy {
+                selections: vec![
+                    ("discord".into(), "discord_2.conf".into()),
+                    ("youtube".into(), "youtube_1.conf".into()),
+                ],
+            })
+        );
+    }
+
+    #[test]
+    fn exact_selection_replacement_keeps_neighbor_order() {
+        let mut state = two_category_legacy_state();
+        let previous = state.snapshot_legacy_category("youtube").unwrap();
+        state.mark_legacy_category_stopping(&previous).unwrap();
+        state.remove_exact_legacy_category(&previous).unwrap();
+        state
+            .commit_legacy_category_replacement(
+                &previous,
+                exact_legacy_proc(
+                    21,
+                    121,
+                    state.generation,
+                    5,
+                    "youtube",
+                    "youtube_2.conf",
+                    "youtube-fingerprint-2",
+                ),
+            )
+            .unwrap();
+
+        assert_eq!(
+            state.active_launch,
+            Some(DpiLaunchSpec::Legacy {
+                selections: vec![
+                    ("discord".into(), "discord_1.conf".into()),
+                    ("youtube".into(), "youtube_2.conf".into()),
+                ],
+            })
+        );
+    }
+
+    #[test]
+    fn stale_owner_cannot_mark_or_remove_reused_pid() {
+        let mut state = two_category_legacy_state();
+        let stale = state.snapshot_legacy_category("discord").unwrap();
+        let reused = exact_legacy_proc(
+            stale.owner.pid,
+            999,
+            state.generation,
+            2,
+            "discord",
+            "discord_1.conf",
+            "discord-fingerprint-1",
+        );
+        state.procs.insert(reused.pid, reused.clone());
+
+        assert_eq!(
+            state.mark_legacy_category_stopping(&stale),
+            Err(LegacyCategoryStateError::StaleOwner)
+        );
+        assert_eq!(
+            state.remove_exact_legacy_category(&stale),
+            Err(LegacyCategoryStateError::StaleOwner)
+        );
+        assert_eq!(state.procs.get(&stale.owner.pid), Some(&reused));
+        assert!(state.legacy_stopping.is_empty());
+    }
+
+    #[test]
+    fn rollback_restores_exact_previous_config_without_touching_neighbor() {
+        let mut state = two_category_legacy_state();
+        let neighbor_before = state.procs.get(&20).unwrap().clone();
+        let previous = state.snapshot_legacy_category("discord").unwrap();
+        state.mark_legacy_category_stopping(&previous).unwrap();
+        state.remove_exact_legacy_category(&previous).unwrap();
+        state
+            .commit_legacy_category_replacement(
+                &previous,
+                exact_legacy_proc(
+                    11,
+                    111,
+                    state.generation,
+                    2,
+                    "discord",
+                    "discord_2.conf",
+                    "discord-fingerprint-2",
+                ),
+            )
+            .unwrap();
+
+        let failed_candidate = state.snapshot_legacy_category("discord").unwrap();
+        state
+            .mark_legacy_category_stopping(&failed_candidate)
+            .unwrap();
+        state
+            .remove_exact_legacy_category(&failed_candidate)
+            .unwrap();
+        state
+            .rollback_legacy_category_replacement(
+                &previous,
+                &failed_candidate,
+                exact_legacy_proc(
+                    12,
+                    112,
+                    state.generation,
+                    3,
+                    "discord",
+                    "discord_1.conf",
+                    "discord-fingerprint-1",
+                ),
+            )
+            .unwrap();
+
+        let restored = state.snapshot_legacy_category("discord").unwrap();
+        assert_eq!(restored.owner.config_file, previous.owner.config_file);
+        assert_eq!(
+            restored.owner.config_fingerprint,
+            previous.owner.config_fingerprint
+        );
+        assert_eq!(restored.owner.lane_generation, LaneGeneration::new(3));
+        assert_eq!(state.procs.get(&20), Some(&neighbor_before));
+    }
+
+    #[test]
+    fn rollback_rejects_different_previous_fingerprint() {
+        let mut state = two_category_legacy_state();
+        let previous = state.snapshot_legacy_category("discord").unwrap();
+        state.mark_legacy_category_stopping(&previous).unwrap();
+        state.remove_exact_legacy_category(&previous).unwrap();
+        state
+            .commit_legacy_category_replacement(
+                &previous,
+                exact_legacy_proc(
+                    11,
+                    111,
+                    state.generation,
+                    2,
+                    "discord",
+                    "discord_2.conf",
+                    "discord-fingerprint-2",
+                ),
+            )
+            .unwrap();
+        let failed_candidate = state.snapshot_legacy_category("discord").unwrap();
+        state
+            .mark_legacy_category_stopping(&failed_candidate)
+            .unwrap();
+        state
+            .remove_exact_legacy_category(&failed_candidate)
+            .unwrap();
+
+        let result = state.rollback_legacy_category_replacement(
+            &previous,
+            &failed_candidate,
+            exact_legacy_proc(
+                12,
+                112,
+                state.generation,
+                3,
+                "discord",
+                "discord_1.conf",
+                "changed-fingerprint",
+            ),
+        );
+        assert_eq!(result, Err(LegacyCategoryStateError::InvalidReplacement));
+        assert_eq!(state.procs.get(&20).unwrap().category, "youtube");
     }
 
     #[test]

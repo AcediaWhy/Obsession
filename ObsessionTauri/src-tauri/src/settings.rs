@@ -27,6 +27,9 @@ pub struct Settings {
     pub has_completed_onboarding: bool,
     /// Авто-восстановление обхода (Мозг L3). Default false — пока не обкатано.
     pub auto_recovery: bool,
+    /// Legacy Reliability rollout mode. Phase 3 supports only explicit
+    /// observe-only and user-confirmed assisted replacement.
+    pub legacy_reliability_mode: String,
     /// Меньше анимаций: гасит canvas/WebGL-фон и Framer-циклы.
     pub reduce_motion: bool,
     /// Глобальный хоткей вкл/выкл защиты. Пустая строка = выключен.
@@ -63,6 +66,7 @@ pub struct SettingsPatch {
     pub ai_provider: Option<String>,
     pub has_completed_onboarding: Option<bool>,
     pub auto_recovery: Option<bool>,
+    pub legacy_reliability_mode: Option<String>,
     pub reduce_motion: Option<bool>,
     pub hotkey_toggle: Option<String>,
     pub lan_publish_secs: Option<u16>,
@@ -85,6 +89,7 @@ impl Default for Settings {
             ai_provider: "malw".to_string(),
             has_completed_onboarding: false,
             auto_recovery: false,
+            legacy_reliability_mode: "observe_only".to_string(),
             reduce_motion: false,
             hotkey_toggle: "Ctrl+Shift+KeyO".to_string(),
             lan_publish_secs: 0,
@@ -102,10 +107,23 @@ impl Settings {
     }
 
     pub fn load(base_dir: &Path) -> Self {
-        match std::fs::read_to_string(Self::file(base_dir)) {
+        let mut settings = match std::fs::read_to_string(Self::file(base_dir)) {
             Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
             Err(_) => Self::default(),
+        };
+        // The retired global Brain flag must never silently become an
+        // automatic Legacy executor. Existing installations migrate to the
+        // conservative observe-only mode and persist on the next settings save.
+        if settings.auto_recovery {
+            settings.auto_recovery = false;
+            settings.legacy_reliability_mode = "observe_only".to_string();
+        } else if !matches!(
+            settings.legacy_reliability_mode.as_str(),
+            "observe_only" | "assisted"
+        ) {
+            settings.legacy_reliability_mode = "observe_only".to_string();
         }
+        settings
     }
 
     pub fn apply_patch(&mut self, patch: SettingsPatch) {
@@ -125,7 +143,15 @@ impl Settings {
         apply!(fake_tls_domain);
         apply!(ai_provider);
         apply!(has_completed_onboarding);
-        apply!(auto_recovery);
+        if patch.auto_recovery.is_some() {
+            self.auto_recovery = false;
+        }
+        if let Some(mode) = patch.legacy_reliability_mode {
+            self.legacy_reliability_mode = match mode.as_str() {
+                "assisted" => mode,
+                _ => "observe_only".to_string(),
+            };
+        }
         apply!(reduce_motion);
         apply!(hotkey_toggle);
         apply!(lan_publish_secs);
@@ -270,6 +296,38 @@ mod tests {
         });
         assert_eq!(settings.adaptive_search_mode, "balanced");
     }
+
+    #[test]
+    fn legacy_reliability_mode_is_explicit_and_old_automatic_flag_migrates_safe() {
+        let mut settings = Settings::default();
+        assert_eq!(settings.legacy_reliability_mode, "observe_only");
+        settings.apply_patch(SettingsPatch {
+            legacy_reliability_mode: Some("assisted".into()),
+            ..Default::default()
+        });
+        assert_eq!(settings.legacy_reliability_mode, "assisted");
+        settings.apply_patch(SettingsPatch {
+            legacy_reliability_mode: Some("automatic".into()),
+            auto_recovery: Some(true),
+            ..Default::default()
+        });
+        assert_eq!(settings.legacy_reliability_mode, "observe_only");
+        assert!(!settings.auto_recovery);
+
+        let dir = test_dir("legacy-mode-migration");
+        std::fs::create_dir_all(&dir).unwrap();
+        let legacy = Settings {
+            auto_recovery: true,
+            legacy_reliability_mode: "assisted".into(),
+            ..Default::default()
+        };
+        legacy.save(&dir).unwrap();
+        let migrated = Settings::load(&dir);
+        assert!(!migrated.auto_recovery);
+        assert_eq!(migrated.legacy_reliability_mode, "observe_only");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn atomic_save_never_leaves_partial_json_under_concurrency() {
         let dir = test_dir("atomic");

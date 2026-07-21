@@ -1,7 +1,7 @@
 //! Управление DPI-процессами winws.
 //! Порт из `process_local_datasource.dart` + `dpi_provider.dart` + `dpi_usecases.dart`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::atomic::Ordering;
@@ -12,7 +12,10 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command as TokioCommand;
 
 use crate::adaptive_strategy::dsl::{override_key, StrategyCandidate, StrategyTransport};
-use crate::state::{AppState, DpiLaunchSpec, DpiProc, DpiRuntimeSnapshot};
+use crate::state::{
+    AppState, DpiLaunchSpec, DpiProc, DpiRuntimeSnapshot, LegacyCategoryRuntimeSnapshot,
+    LegacyProcessOwner,
+};
 use crate::util::{self, DpiProcPublic, DpiStatusPayload, LockExt, VersionedSection};
 
 /// Регэкспы разбора legacy-моста/вывода команд — компилируются один раз на процесс.
@@ -178,41 +181,369 @@ pub fn emit_status(app: &AppHandle) {
     );
 }
 
-/// An unexpected Legacy process exit invalidates the exact Manager snapshot.
-/// Process monitors remove the PID immediately, then serialize this teardown
-/// with start/stop before touching the public owner. A later session has a new
-/// DPI generation and is therefore left untouched.
-async fn invalidate_legacy_reliability_after_unexpected_exit(app: &AppHandle, generation: u64) {
-    let state = app.state::<AppState>();
-    let _gate = state.dpi_gate.lock().await;
-    let legacy_processes_remain = {
-        let dpi = state.dpi.lock_recover();
-        if !dpi.is_current_generation(generation) {
+pub(crate) const LEGACY_PROCESS_EXIT_EVENT: &str = "legacy-reliability-process-exit";
+
+/// Exact process-supervisor event. The complete owner token makes it safe to
+/// correlate a delayed exit even after Windows has reused the numeric PID.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct LegacyProcessExit {
+    pub owner: LegacyProcessOwner,
+    pub selection_index: usize,
+    pub intentional: bool,
+    pub exit_code: Option<i32>,
+    pub lived_ms: u64,
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LegacyProcessExitPayload<'a> {
+    category: &'a str,
+    config_file: &'a str,
+    config_fingerprint: &'a str,
+    pid: u32,
+    process_start_identity: u64,
+    runtime_generation: u64,
+    lane_generation: u64,
+    intentional: bool,
+    exit_code: Option<i32>,
+    lived_ms: u64,
+}
+
+pub(crate) fn recovery_process_owner(
+    owner: &LegacyProcessOwner,
+) -> crate::legacy_reliability::contracts::ProcessOwner {
+    use crate::legacy_reliability::contracts::{ConfigFingerprint, ProcessStartIdentity};
+
+    crate::legacy_reliability::contracts::ProcessOwner {
+        pid: owner.pid,
+        process_start_identity: ProcessStartIdentity::new(owner.process_identity.get()),
+        config_fingerprint: ConfigFingerprint::new(owner.config_fingerprint.clone()),
+        lane_generation: owner.lane_generation,
+    }
+}
+
+fn emit_legacy_process_exit(app: &AppHandle, event: &LegacyProcessExit) {
+    let owner = &event.owner;
+    let _ = app.emit(
+        LEGACY_PROCESS_EXIT_EVENT,
+        LegacyProcessExitPayload {
+            category: &owner.category,
+            config_file: &owner.config_file,
+            config_fingerprint: &owner.config_fingerprint,
+            pid: owner.pid,
+            process_start_identity: owner.process_identity.get(),
+            runtime_generation: owner.runtime_generation,
+            lane_generation: owner.lane_generation.get(),
+            intentional: event.intentional,
+            exit_code: event.exit_code,
+            lived_ms: event.lived_ms,
+        },
+    );
+
+    if event.intentional {
+        util::emit_log(
+            app,
+            "debug",
+            "dpi",
+            &format!(
+                "[{}] exact Legacy process stopped: pid={}, lane_generation={}, config={}",
+                owner.category,
+                owner.pid,
+                owner.lane_generation.get(),
+                owner.config_file
+            ),
+        );
+        return;
+    }
+
+    let message = if event.lived_ms < 2000 {
+        format!(
+            "[{}] winws умер через {}мс (код {:?}); pid={}, lane_generation={}, config={}",
+            owner.category,
+            event.lived_ms,
+            event.exit_code,
+            owner.pid,
+            owner.lane_generation.get(),
+            owner.config_file
+        )
+    } else {
+        format!(
+            "[{}] winws неожиданно завершился (код {:?}); pid={}, lane_generation={}, config={}",
+            owner.category,
+            event.exit_code,
+            owner.pid,
+            owner.lane_generation.get(),
+            owner.config_file
+        )
+    };
+    util::emit_log(app, "error", "dpi", &message);
+    util::notify_throttled(
+        app,
+        "down",
+        "Obsession — обход прерван",
+        &format!(
+            "Процесс обхода «{}» неожиданно завершился. Остальные категории продолжают работу.",
+            owner.category
+        ),
+    );
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CrashRetryDecision {
+    IgnoreIntentional,
+    Exhausted,
+    Schedule,
+}
+
+fn crash_retry_decision(
+    intentional: bool,
+    was_retry: bool,
+    retry_rearmed_by_health: bool,
+) -> CrashRetryDecision {
+    if intentional {
+        CrashRetryDecision::IgnoreIntentional
+    } else if was_retry && !retry_rearmed_by_health {
+        CrashRetryDecision::Exhausted
+    } else {
+        CrashRetryDecision::Schedule
+    }
+}
+
+fn schedule_legacy_crash_retry(app: &AppHandle, event: &LegacyProcessExit) {
+    let was_retry = app
+        .state::<AppState>()
+        .legacy_crash_retry_owners
+        .lock_recover()
+        .remove(&event.owner);
+    let retry_rearmed_by_health = was_retry
+        && app
+            .state::<AppState>()
+            .legacy_manager
+            .lock_recover()
+            .as_ref()
+            .is_some_and(|manager| {
+                manager.snapshot().lanes.iter().any(|lane| {
+                    lane.category == event.owner.category
+                        && lane.phase == crate::legacy_reliability::assessment::LanePhase::Healthy
+                })
+            });
+    match crash_retry_decision(event.intentional, was_retry, retry_rearmed_by_health) {
+        CrashRetryDecision::IgnoreIntentional => return,
+        CrashRetryDecision::Exhausted => {}
+        CrashRetryDecision::Schedule => {
+            let app_retry = app.clone();
+            let event = event.clone();
+            tauri::async_runtime::spawn(async move {
+                let mut deferrals = 0u8;
+                let outcome = loop {
+                    match crate::legacy_reliability::executor::retry_crashed_legacy_lane(
+                        &app_retry, &event,
+                    )
+                    .await
+                    {
+                        Ok(crate::legacy_reliability::executor::CrashRetryRunOutcome::Deferred)
+                            if deferrals < 3 =>
+                        {
+                            deferrals += 1;
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                        }
+                        Ok(crate::legacy_reliability::executor::CrashRetryRunOutcome::Deferred) => {
+                            break Err(
+                                "same-config crash retry remained blocked by recovery".to_owned()
+                            );
+                        }
+                        outcome => break outcome,
+                    }
+                };
+                match outcome {
+                    Ok(crate::legacy_reliability::executor::CrashRetryRunOutcome::Restarted(
+                        owner,
+                    )) => {
+                        util::emit_log(
+                            &app_retry,
+                            "success",
+                            "legacy-reliability",
+                            &format!(
+                                "[{}] same-config crash retry started: pid={}, lane_generation={}",
+                                event.owner.category,
+                                owner.pid,
+                                owner.lane_generation.get()
+                            ),
+                        );
+                        util::notify_throttled(
+                            &app_retry,
+                            "up",
+                            "Obsession — обход восстановлен",
+                            &format!(
+                                "Категория «{}» перезапущена с тем же конфигом.",
+                                event.owner.category
+                            ),
+                        );
+                    }
+                    Ok(
+                        crate::legacy_reliability::executor::CrashRetryRunOutcome::AlreadyHandled,
+                    ) => {
+                        return;
+                    }
+                    Ok(crate::legacy_reliability::executor::CrashRetryRunOutcome::Deferred) => {
+                        unreachable!("deferred crash retry is consumed by the bounded loop")
+                    }
+                    Err(error) => {
+                        util::emit_log(
+                            &app_retry,
+                            "error",
+                            "legacy-reliability",
+                            &format!(
+                                "[{}] same-config crash retry failed: {error}",
+                                event.owner.category
+                            ),
+                        );
+                        crate::legacy_reliability::status::publish_current_blind(&app_retry);
+                    }
+                }
+                emit_status(&app_retry);
+            });
             return;
         }
-        dpi.procs
-            .values()
-            .any(|process| process.generation == generation && process.engine == "legacy")
+    }
+
+    util::emit_log(
+        app,
+        "error",
+        "legacy-reliability",
+        &format!(
+            "[{}] same-config crash retry exhausted for {}",
+            event.owner.category, event.owner.config_file
+        ),
+    );
+    crate::legacy_reliability::status::publish_current_blind(app);
+}
+
+#[derive(Clone, Debug)]
+struct LegacyCompatibilityFence {
+    pid: u32,
+    process_identity: Option<crate::dpi_supervisor::ProcessIdentity>,
+    runtime_generation: u64,
+    category: String,
+    config_file: String,
+}
+
+impl LegacyCompatibilityFence {
+    fn from_process(process: &DpiProc) -> Self {
+        Self {
+            pid: process.pid,
+            process_identity: process.process_identity,
+            runtime_generation: process.generation,
+            category: process.category.clone(),
+            config_file: process.config_file.clone(),
+        }
+    }
+
+    fn matches(&self, process: &DpiProc) -> bool {
+        self.process_identity.is_some()
+            && process.pid == self.pid
+            && process.process_identity == self.process_identity
+            && process.generation == self.runtime_generation
+            && process.engine == "legacy"
+            && process.category == self.category
+            && process.config_file == self.config_file
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum LegacyExitFinalization {
+    Ignored,
+    Exact(LegacyProcessExit),
+    Compatibility { intentional: bool },
+}
+
+fn finalize_exact_legacy_exit(
+    dpi: &mut crate::state::DpiState,
+    snapshot: &LegacyCategoryRuntimeSnapshot,
+    exit_code: Option<i32>,
+    lived_ms: u64,
+) -> Option<LegacyProcessExit> {
+    let removal = dpi.remove_exact_legacy_category(snapshot).ok()?;
+    let removed = removal.process?;
+    let owner = removed.exact_legacy_owner()?;
+    if owner != snapshot.owner {
+        return None;
+    }
+    let compatibility_intentional = dpi.stopping.remove(&owner.pid);
+    Some(LegacyProcessExit {
+        owner,
+        selection_index: snapshot.selection_index,
+        intentional: removal.intentional || compatibility_intentional,
+        exit_code,
+        lived_ms,
+    })
+}
+
+/// Finalizes the process represented by this monitor and nothing else. Exact
+/// Phase 3 owners go through the scoped DpiState API. The compatibility arm is
+/// retained only for the short startup window before the initial registry has
+/// attached lane/fingerprint metadata; it still fences PID start identity and
+/// removes at most the matching category selection.
+fn finalize_legacy_exit(
+    dpi: &mut crate::state::DpiState,
+    fence: &LegacyCompatibilityFence,
+    exit_code: Option<i32>,
+    lived_ms: u64,
+) -> LegacyExitFinalization {
+    if !dpi.is_current_generation(fence.runtime_generation) {
+        return LegacyExitFinalization::Ignored;
+    }
+    let Some(process) = dpi
+        .procs
+        .get(&fence.pid)
+        .filter(|process| fence.matches(process))
+    else {
+        return LegacyExitFinalization::Ignored;
     };
 
-    if legacy_processes_remain {
-        crate::legacy_reliability::status::publish_current_blind(app);
-    } else {
-        crate::legacy_reliability::status::publish(
-            app,
-            crate::legacy_reliability::status::LegacyReliabilityStatus::inactive(),
-        );
+    if let Some(owner) = process.exact_legacy_owner() {
+        let Ok(snapshot) = dpi.snapshot_legacy_category(&fence.category) else {
+            return LegacyExitFinalization::Ignored;
+        };
+        if snapshot.owner != owner {
+            return LegacyExitFinalization::Ignored;
+        }
+        return finalize_exact_legacy_exit(dpi, &snapshot, exit_code, lived_ms)
+            .map(LegacyExitFinalization::Exact)
+            .unwrap_or(LegacyExitFinalization::Ignored);
     }
 
-    let manager = state.legacy_manager.lock_recover().take();
-    if let Some(manager) = manager {
-        manager.shutdown().await;
-    }
+    let selection_index = match dpi.active_launch.as_ref() {
+        Some(DpiLaunchSpec::Legacy { selections }) => {
+            let matches = selections
+                .iter()
+                .enumerate()
+                .filter(|(_, (category, config_file))| {
+                    category == &fence.category && config_file == &fence.config_file
+                })
+                .map(|(index, _)| index)
+                .collect::<Vec<_>>();
+            let [index] = matches.as_slice() else {
+                return LegacyExitFinalization::Ignored;
+            };
+            Some(*index)
+        }
+        None => None,
+        Some(DpiLaunchSpec::Zapret2 { .. }) => return LegacyExitFinalization::Ignored,
+    };
 
-    #[cfg(windows)]
-    {
-        let app = app.clone();
-        let _ = tauri::async_runtime::spawn_blocking(move || stop_eyes(&app)).await;
+    dpi.procs.remove(&fence.pid);
+    if let Some(index) = selection_index {
+        let Some(DpiLaunchSpec::Legacy { selections }) = dpi.active_launch.as_mut() else {
+            return LegacyExitFinalization::Ignored;
+        };
+        selections.remove(index);
+        if selections.is_empty() {
+            dpi.active_launch = None;
+        }
+    }
+    LegacyExitFinalization::Compatibility {
+        intentional: dpi.stopping.remove(&fence.pid),
     }
 }
 
@@ -270,22 +601,23 @@ pub async fn start(app: &AppHandle, category: &str, config_file: &str) -> Result
 
     // Регистрируем СРАЗУ после spawn. Раньше PID появлялся в AppState только
     // после 500мс ожидания, и shutdown в этом окне оставлял orphan winws.
-    let generation = {
+    let monitor_fence = {
         let state = app.state::<AppState>();
         let mut d = state.dpi.lock_recover();
         let generation = d.generation;
-        d.procs.insert(
+        let process = DpiProc {
             pid,
-            DpiProc {
-                pid,
-                category: category.to_string(),
-                config_file: config_file.to_string(),
-                generation,
-                engine: "legacy".to_string(),
-                process_identity,
-            },
-        );
-        generation
+            category: category.to_string(),
+            config_file: config_file.to_string(),
+            generation,
+            engine: "legacy".to_string(),
+            process_identity,
+            lane_generation: None,
+            config_fingerprint: None,
+        };
+        let monitor_fence = LegacyCompatibilityFence::from_process(&process);
+        d.procs.insert(pid, process);
+        monitor_fence
     };
     emit_status(app);
 
@@ -381,70 +713,566 @@ pub async fn start(app: &AppHandle, category: &str, config_file: &str) -> Result
     let cat_mon = category.to_string();
     tokio::spawn(async move {
         let status = child.wait().await;
-        let code = status.ok().and_then(|s| s.code()).unwrap_or(-1);
-        let lived = started.elapsed().as_millis();
+        let code = status.ok().and_then(|s| s.code());
+        let lived = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
 
-        let (intentional, unexpected_owned_exit, reliability_owner) = {
+        let finalization = {
             let state = app_mon.state::<AppState>();
             let mut d = state.dpi.lock_recover();
-            let owned = d
-                .procs
-                .get(&pid)
-                .is_some_and(|proc| proc.generation == generation);
-            if owned {
-                d.procs.remove(&pid);
-            }
-            let intentional = d.stopping.remove(&pid);
-            if owned && !intentional {
-                // The exact launch snapshot is no longer true once any Legacy
-                // process exits unexpectedly. Remaining processes stay owned,
-                // but generation-aware operations must re-read their state.
-                d.active_launch = None;
-            }
-            let unexpected_owned_exit = owned && !intentional;
-            let reliability_owner = unexpected_owned_exit
-                .then(|| crate::legacy_reliability::status::current_owner(&app_mon))
-                .flatten();
-            (intentional, unexpected_owned_exit, reliability_owner)
+            finalize_legacy_exit(&mut d, &monitor_fence, code, lived)
         };
 
-        if let Some(owner) = reliability_owner {
-            crate::legacy_reliability::status::publish_blind_if_owner(&app_mon, owner);
-        }
-
-        if !intentional {
-            if lived < 2000 {
+        match finalization {
+            LegacyExitFinalization::Ignored => return,
+            LegacyExitFinalization::Exact(event) => {
+                emit_legacy_process_exit(&app_mon, &event);
+                schedule_legacy_crash_retry(&app_mon, &event);
+            }
+            LegacyExitFinalization::Compatibility { intentional: false } => {
                 util::emit_log(
                     &app_mon,
                     "error",
                     "dpi",
                     &format!(
-                        "[{cat_mon}] winws умер через {lived}мс (код {code}). Обход НЕ работает."
+                        "[{cat_mon}] unfenced startup process завершился через {lived}мс (код {code:?})"
                     ),
                 );
-            } else {
-                util::emit_log(
+                util::notify_throttled(
                     &app_mon,
-                    "info",
-                    "dpi",
-                    &format!("Процесс {cat_mon} завершился (код {code})"),
+                    "down",
+                    "Obsession — обход прерван",
+                    &format!(
+                        "Процесс обхода «{cat_mon}» неожиданно завершился. Остальные категории продолжают работу."
+                    ),
                 );
             }
-            // Нативное уведомление: обход отвалился без нашего участия.
-            util::notify_throttled(
-                &app_mon,
-                "down",
-                "Obsession — обход прерван",
-                &format!("Процесс обхода «{cat_mon}» неожиданно завершился. Возможно, защита не работает."),
-            );
+            LegacyExitFinalization::Compatibility { intentional: true } => {}
         }
         emit_status(&app_mon);
-        if unexpected_owned_exit {
-            invalidate_legacy_reliability_after_unexpected_exit(&app_mon, generation).await;
-        }
     });
 
     Ok(pid)
+}
+
+/// A scoped process that passed readiness but is not yet visible in DpiState.
+/// The caller must either install it through one of the methods below or abort
+/// it. Dropping the guard is fail-safe and requests termination.
+pub(crate) struct PendingLegacyLane {
+    app: AppHandle,
+    process: DpiProc,
+    child: Option<tokio::process::Child>,
+    started: Instant,
+}
+
+pub(crate) struct InstalledLegacyLane {
+    pub owner: LegacyProcessOwner,
+    pub exit: tokio::sync::oneshot::Receiver<LegacyProcessExit>,
+}
+
+pub(crate) struct PendingLegacyInstallFailure {
+    pending: Box<PendingLegacyLane>,
+    message: String,
+}
+
+impl PendingLegacyInstallFailure {
+    pub(crate) fn into_parts(self) -> (PendingLegacyLane, String) {
+        (*self.pending, self.message)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PendingLegacyStopError {
+    MissingExactOwner,
+    MissingChild,
+    MissingOutcome,
+    Process(crate::dpi_supervisor::ProcessStopState),
+}
+
+impl std::fmt::Display for PendingLegacyStopError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingExactOwner => {
+                formatter.write_str("pending Legacy lane has no exact owner token")
+            }
+            Self::MissingChild => formatter.write_str("pending Legacy lane lost its child handle"),
+            Self::MissingOutcome => {
+                formatter.write_str("pending Legacy stop returned no process outcome")
+            }
+            Self::Process(state) => {
+                write!(
+                    formatter,
+                    "pending Legacy process stop is unverified: {state:?}"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for PendingLegacyStopError {}
+
+impl PendingLegacyLane {
+    pub(crate) fn process(&self) -> &DpiProc {
+        &self.process
+    }
+
+    pub(crate) fn install_candidate(
+        mut self,
+        previous: &LegacyCategoryRuntimeSnapshot,
+    ) -> Result<InstalledLegacyLane, PendingLegacyInstallFailure> {
+        let install = {
+            let state = self.app.state::<AppState>();
+            let mut dpi = state.dpi.lock_recover();
+            dpi.commit_legacy_category_replacement(previous, self.process.clone())
+        };
+        match install {
+            Ok(owner) => Ok(self.finish_install(owner, previous.selection_index, false)),
+            Err(error) => Err(PendingLegacyInstallFailure {
+                pending: Box::new(self),
+                message: format!("candidate lane install rejected: {error}"),
+            }),
+        }
+    }
+
+    pub(crate) fn install_crash_retry(
+        mut self,
+        previous: &LegacyCategoryRuntimeSnapshot,
+    ) -> Result<InstalledLegacyLane, PendingLegacyInstallFailure> {
+        let install = {
+            let state = self.app.state::<AppState>();
+            let mut dpi = state.dpi.lock_recover();
+            dpi.commit_legacy_category_replacement(previous, self.process.clone())
+        };
+        match install {
+            Ok(owner) => Ok(self.finish_install(owner, previous.selection_index, true)),
+            Err(error) => Err(PendingLegacyInstallFailure {
+                pending: Box::new(self),
+                message: format!("crash-retry lane install rejected: {error}"),
+            }),
+        }
+    }
+
+    pub(crate) fn install_rollback(
+        mut self,
+        previous: &LegacyCategoryRuntimeSnapshot,
+        failed_candidate: &LegacyCategoryRuntimeSnapshot,
+    ) -> Result<InstalledLegacyLane, PendingLegacyInstallFailure> {
+        let install = {
+            let state = self.app.state::<AppState>();
+            let mut dpi = state.dpi.lock_recover();
+            dpi.rollback_legacy_category_replacement(
+                previous,
+                failed_candidate,
+                self.process.clone(),
+            )
+        };
+        match install {
+            Ok(owner) => Ok(self.finish_install(owner, previous.selection_index, false)),
+            Err(error) => Err(PendingLegacyInstallFailure {
+                pending: Box::new(self),
+                message: format!("rollback lane install rejected: {error}"),
+            }),
+        }
+    }
+
+    fn finish_install(
+        &mut self,
+        owner: LegacyProcessOwner,
+        selection_index: usize,
+        crash_retry: bool,
+    ) -> InstalledLegacyLane {
+        let child = self
+            .child
+            .take()
+            .expect("pending Legacy lane must own its child until install");
+        if crash_retry {
+            let state = self.app.state::<AppState>();
+            let mut retry_owners = state.legacy_crash_retry_owners.lock_recover();
+            retry_owners.retain(|existing| {
+                existing.runtime_generation == owner.runtime_generation
+                    && existing.category != owner.category
+            });
+            retry_owners.insert(owner.clone());
+        }
+        let exit = arm_exact_legacy_monitor(
+            self.app.clone(),
+            child,
+            LegacyCategoryRuntimeSnapshot {
+                owner: owner.clone(),
+                selection_index,
+            },
+            self.started,
+        );
+        emit_status(&self.app);
+        InstalledLegacyLane { owner, exit }
+    }
+
+    pub(crate) async fn abort(mut self) -> Result<(), PendingLegacyStopError> {
+        let owner = self
+            .process
+            .exact_legacy_owner()
+            .ok_or(PendingLegacyStopError::MissingExactOwner)?;
+        let mut child = self
+            .child
+            .take()
+            .ok_or(PendingLegacyStopError::MissingChild)?;
+        let stopped = stop_uninstalled_legacy_owner_bounded(&owner).await;
+        if stopped.is_ok() {
+            // The PID + creation identity check above is authoritative. This
+            // short wait only reaps Tokio's child handle after OS-confirmed exit.
+            let _ = tokio::time::timeout(Duration::from_millis(500), child.wait()).await;
+        }
+        stopped
+    }
+}
+
+impl Drop for PendingLegacyLane {
+    fn drop(&mut self) {
+        let Some(mut child) = self.child.take() else {
+            return;
+        };
+        let owner = self.process.exact_legacy_owner();
+        let app = self.app.clone();
+        tauri::async_runtime::spawn(async move {
+            let result = match owner {
+                Some(owner) => stop_uninstalled_legacy_owner_bounded(&owner).await,
+                None => {
+                    let _ = child.start_kill();
+                    Err(PendingLegacyStopError::MissingExactOwner)
+                }
+            };
+            let _ = tokio::time::timeout(Duration::from_millis(500), child.wait()).await;
+            if let Err(error) = result {
+                util::emit_log(
+                    &app,
+                    "error",
+                    "dpi",
+                    &format!("Pending Legacy lane cleanup failed: {error}"),
+                );
+            }
+        });
+    }
+}
+
+fn arm_exact_legacy_monitor(
+    app: AppHandle,
+    mut child: tokio::process::Child,
+    snapshot: LegacyCategoryRuntimeSnapshot,
+    started: Instant,
+) -> tokio::sync::oneshot::Receiver<LegacyProcessExit> {
+    let (exit_tx, exit_rx) = tokio::sync::oneshot::channel();
+    tokio::spawn(async move {
+        let exit_code = match child.wait().await {
+            Ok(status) => status.code(),
+            Err(error) => {
+                util::emit_log(
+                    &app,
+                    "error",
+                    "dpi",
+                    &format!(
+                        "[{}] exact Legacy wait failed for pid={}: {error}",
+                        snapshot.owner.category, snapshot.owner.pid
+                    ),
+                );
+                None
+            }
+        };
+        let lived_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
+        let event = {
+            let state = app.state::<AppState>();
+            let mut dpi = state.dpi.lock_recover();
+            finalize_exact_legacy_exit(&mut dpi, &snapshot, exit_code, lived_ms)
+        };
+        let Some(event) = event else {
+            // Another exact owner, a later runtime generation, or an executor
+            // that already finalized this stop makes the monitor stale.
+            return;
+        };
+        let _ = exit_tx.send(event.clone());
+        emit_legacy_process_exit(&app, &event);
+        schedule_legacy_crash_retry(&app, &event);
+        emit_status(&app);
+    });
+    exit_rx
+}
+
+/// Spawns and checks one Legacy lane without mutating the aggregate launch or
+/// any neighboring process. The caller holds `dpi_gate` across the assisted
+/// transaction and installs the returned guard only after rechecking fences.
+pub(crate) async fn spawn_scoped_legacy_lane_locked(
+    app: &AppHandle,
+    category: &str,
+    config_file: &str,
+    runtime_generation: u64,
+    lane_generation: crate::legacy_reliability::contracts::LaneGeneration,
+    config_fingerprint: &crate::legacy_reliability::contracts::ConfigFingerprint,
+) -> Result<PendingLegacyLane, String> {
+    if runtime_shutting_down(app) {
+        return Err("Приложение завершает работу".into());
+    }
+    if runtime_generation == 0
+        || lane_generation.get() == 0
+        || config_fingerprint.as_str().trim().is_empty()
+    {
+        return Err("scoped Legacy start requires complete generation/fingerprint fences".into());
+    }
+
+    let (winws, conf, base) = {
+        let state = app.state::<AppState>();
+        let dpi = state.dpi.lock_recover();
+        if !dpi.is_current_generation(runtime_generation) {
+            return Err("Legacy runtime generation changed before scoped start".into());
+        }
+        if dpi
+            .procs
+            .values()
+            .any(|process| process.engine == "legacy" && process.category == category)
+            || matches!(
+                dpi.active_launch.as_ref(),
+                Some(DpiLaunchSpec::Legacy { selections })
+                    if selections.iter().any(|(selected, _)| selected == category)
+            )
+        {
+            return Err(format!("Legacy lane {category} is still occupied"));
+        }
+        if matches!(
+            dpi.active_launch.as_ref(),
+            Some(DpiLaunchSpec::Zapret2 { .. })
+        ) {
+            return Err("DPI runtime switched to Zapret2".into());
+        }
+        (
+            state.paths.winws_path(),
+            state.paths.config_path(category, config_file),
+            state.paths.base_dir.clone(),
+        )
+    };
+
+    crate::dpi_engine::resources::validate_engine_resources(&base, "zapret1")
+        .map_err(|error| format!("Zapret Legacy resource validation failed: {error}"))?;
+    if !winws.exists() {
+        return Err(format!("Ядро winws.exe не найдено: {}", winws.display()));
+    }
+    if !conf.exists() {
+        return Err(format!("Конфиг не найден: {}", conf.display()));
+    }
+
+    let mut std_cmd = util::std_command(&winws);
+    std_cmd
+        .arg(format!("@{}", conf.display()))
+        .current_dir(&base)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut command = TokioCommand::from(std_cmd);
+    command.kill_on_drop(true);
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("Не удалось запустить scoped winws: {error}"))?;
+    let pid = child
+        .id()
+        .ok_or_else(|| "Scoped winws не вернул PID".to_string())?;
+
+    let identity_deadline = Instant::now() + Duration::from_millis(100);
+    let process_identity = loop {
+        if let Some(identity) = crate::dpi_supervisor::capture_process_identity(pid) {
+            break identity;
+        }
+        if Instant::now() >= identity_deadline {
+            let _ = child.start_kill();
+            let _ = child.wait().await;
+            return Err(format!(
+                "Не удалось получить process start identity для scoped pid={pid}"
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    };
+
+    let process = DpiProc {
+        pid,
+        category: category.to_owned(),
+        config_file: config_file.to_owned(),
+        generation: runtime_generation,
+        lane_generation: Some(lane_generation),
+        config_fingerprint: Some(config_fingerprint.as_str().to_owned()),
+        engine: "legacy".into(),
+        process_identity: Some(process_identity),
+    };
+    if process.exact_legacy_owner().is_none() {
+        let _ = child.start_kill();
+        let _ = child.wait().await;
+        return Err("Scoped winws owner is incomplete".into());
+    }
+
+    let (readiness_tx, readiness_rx) = tokio::sync::mpsc::unbounded_channel();
+    if let Some(stdout) = child.stdout.take() {
+        spawn_reader(
+            app.clone(),
+            stdout,
+            category.to_owned(),
+            "info",
+            Some(readiness_tx.clone()),
+        );
+    }
+    if let Some(stderr) = child.stderr.take() {
+        spawn_reader(
+            app.clone(),
+            stderr,
+            category.to_owned(),
+            "error",
+            Some(readiness_tx.clone()),
+        );
+    }
+    drop(readiness_tx);
+
+    let started = Instant::now();
+    match crate::dpi_supervisor::wait_for_readiness(
+        async { child.wait().await.map(|status| status.code()) },
+        readiness_rx,
+        Duration::from_millis(500),
+    )
+    .await
+    {
+        Ok(crate::dpi_supervisor::ReadinessState::Marker) => {}
+        Ok(crate::dpi_supervisor::ReadinessState::BoundedFallback) => util::emit_log(
+            app,
+            "debug",
+            "dpi",
+            &format!("[{category}] scoped startup marker missing; bounded fallback accepted"),
+        ),
+        Err(crate::dpi_supervisor::ReadinessFailure::Exited(code)) => {
+            return Err(format!(
+                "Scoped winws ({category}) exited before readiness with code {code:?}"
+            ));
+        }
+        Err(crate::dpi_supervisor::ReadinessFailure::WaitFailed(error)) => {
+            let _ = child.start_kill();
+            let _ = child.wait().await;
+            return Err(format!("Scoped winws readiness wait failed: {error}"));
+        }
+    }
+
+    let state_is_current = {
+        let state = app.state::<AppState>();
+        let dpi = state.dpi.lock_recover();
+        dpi.is_current_generation(runtime_generation)
+            && !dpi
+                .procs
+                .values()
+                .any(|running| running.engine == "legacy" && running.category == category)
+            && !matches!(
+                dpi.active_launch.as_ref(),
+                Some(DpiLaunchSpec::Legacy { selections })
+                    if selections.iter().any(|(selected, _)| selected == category)
+            )
+            && !matches!(
+                dpi.active_launch.as_ref(),
+                Some(DpiLaunchSpec::Zapret2 { .. })
+            )
+    };
+    if runtime_shutting_down(app) || !state_is_current {
+        let _ = child.start_kill();
+        let _ = child.wait().await;
+        return Err("Legacy runtime changed during scoped readiness".into());
+    }
+
+    Ok(PendingLegacyLane {
+        app: app.clone(),
+        process,
+        child: Some(child),
+        started,
+    })
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ScopedLegacyStopError {
+    State(crate::state::LegacyCategoryStateError),
+    Process(crate::dpi_supervisor::ProcessStopState),
+    MissingOutcome,
+}
+
+impl std::fmt::Display for ScopedLegacyStopError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::State(error) => write!(formatter, "scoped Legacy state rejected stop: {error}"),
+            Self::Process(state) => write!(formatter, "scoped Legacy stop failed: {state:?}"),
+            Self::MissingOutcome => formatter.write_str("scoped Legacy stop returned no outcome"),
+        }
+    }
+}
+
+impl std::error::Error for ScopedLegacyStopError {}
+
+/// Stops a staged process that was never installed in `DpiState`. The exact
+/// Windows creation identity makes PID reuse a successful retirement of the
+/// original owner rather than a reason to kill an unrelated process.
+pub(crate) async fn stop_uninstalled_legacy_owner_bounded(
+    owner: &LegacyProcessOwner,
+) -> Result<(), PendingLegacyStopError> {
+    let mut outcomes = stop_owned_processes_async(vec![crate::dpi_supervisor::OwnedProcess {
+        pid: owner.pid,
+        identity: Some(owner.process_identity),
+    }])
+    .await;
+    let outcome = outcomes
+        .pop()
+        .ok_or(PendingLegacyStopError::MissingOutcome)?;
+    if outcome.original_exited() {
+        Ok(())
+    } else {
+        Err(PendingLegacyStopError::Process(outcome.state))
+    }
+}
+
+/// Stops and finalizes one exact owner. The monitor and this helper may race;
+/// `remove_exact_legacy_category` makes the race idempotent, so exactly one side
+/// consumes the intentional marker and neither can remove a reused PID.
+pub(crate) async fn stop_scoped_legacy_lane_locked(
+    app: &AppHandle,
+    snapshot: &LegacyCategoryRuntimeSnapshot,
+) -> Result<LegacyProcessOwner, ScopedLegacyStopError> {
+    {
+        let state = app.state::<AppState>();
+        let mut dpi = state.dpi.lock_recover();
+        dpi.mark_legacy_category_stopping(snapshot)
+            .map_err(ScopedLegacyStopError::State)?;
+    }
+
+    let mut outcomes = stop_owned_processes_async(vec![crate::dpi_supervisor::OwnedProcess {
+        pid: snapshot.owner.pid,
+        identity: Some(snapshot.owner.process_identity),
+    }])
+    .await;
+    let outcome = outcomes
+        .pop()
+        .ok_or(ScopedLegacyStopError::MissingOutcome)?;
+    if !outcome.original_exited() {
+        let state = app.state::<AppState>();
+        let mut dpi = state.dpi.lock_recover();
+        dpi.legacy_stopping.remove(&snapshot.owner);
+        return Err(ScopedLegacyStopError::Process(outcome.state));
+    }
+
+    let event = {
+        let state = app.state::<AppState>();
+        let mut dpi = state.dpi.lock_recover();
+        match dpi.remove_exact_legacy_category(snapshot) {
+            Ok(removal) => removal.process.and_then(|removed| {
+                let owner = removed.exact_legacy_owner()?;
+                (owner == snapshot.owner).then_some(LegacyProcessExit {
+                    owner,
+                    selection_index: snapshot.selection_index,
+                    intentional: removal.intentional,
+                    exit_code: None,
+                    lived_ms: 0,
+                })
+            }),
+            Err(error) => return Err(ScopedLegacyStopError::State(error)),
+        }
+    };
+    if let Some(event) = event {
+        emit_legacy_process_exit(app, &event);
+        emit_status(app);
+    }
+    Ok(snapshot.owner.clone())
 }
 
 /// Старый мост `домен → категория` для совместимости Legacy Brain. Новый
@@ -598,7 +1426,23 @@ fn start_zapret2_eyes(app: &AppHandle, hostlist: Vec<String>) {
 }
 
 #[cfg(windows)]
-fn start_legacy_eyes(
+struct LegacyEyesStartFailure {
+    message: String,
+    safe_to_restore: bool,
+}
+
+#[cfg(windows)]
+impl LegacyEyesStartFailure {
+    fn clean(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            safe_to_restore: true,
+        }
+    }
+}
+
+#[cfg(windows)]
+fn create_legacy_eyes(
     app: &AppHandle,
     registry: std::sync::Arc<crate::legacy_reliability::target_registry::TargetRegistry>,
     envelope: crate::legacy_reliability::contracts::EventEnvelope,
@@ -606,27 +1450,29 @@ fn start_legacy_eyes(
         std::collections::BTreeMap<String, crate::legacy_reliability::contracts::LaneGeneration>,
     >,
     ingress: crate::legacy_reliability::ingress::LegacyIngress,
-) -> Result<(), String> {
+) -> Result<crate::eyes::EyesHandle, LegacyEyesStartFailure> {
     let dll = app
         .state::<AppState>()
         .paths
         .bin_dir()
         .join("WinDivert.dll");
     if !dll.exists() {
-        return Err("WinDivert.dll не найдена — Legacy Eyes не стартуют".to_string());
+        return Err(LegacyEyesStartFailure::clean(
+            "WinDivert.dll не найдена — Legacy Eyes не стартуют",
+        ));
     }
 
     let hostlist = registry
         .active_target_suffixes()
         .map(str::to_string)
         .collect::<Vec<_>>();
-    let capture_plan = registry
-        .active_capture_plan()
-        .map_err(|error| format!("Legacy active capture plan недоступен: {error}"))?;
+    let capture_plan = registry.active_capture_plan().map_err(|error| {
+        LegacyEyesStartFailure::clean(format!("Legacy active capture plan недоступен: {error}"))
+    })?;
     if hostlist.is_empty() || capture_plan.is_empty() {
-        return Err(
-            "Legacy TargetRegistry не содержит активных доменов или TCP capture plan".to_string(),
-        );
+        return Err(LegacyEyesStartFailure::clean(
+            "Legacy TargetRegistry не содержит активных доменов или TCP capture plan",
+        ));
     }
     let target_count = hostlist.len();
     let cfg = crate::eyes::Config {
@@ -648,8 +1494,11 @@ fn start_legacy_eyes(
             ) {
                 let _ = ingress_cb.try_flow(adapted.event);
             }
+        })
+        .map_err(|error| LegacyEyesStartFailure {
+            message: error.to_string(),
+            safe_to_restore: error.safe_to_retry(),
         })?;
-    *app.state::<AppState>().eyes.lock_recover() = Some(handle);
     util::emit_log(
         app,
         "info",
@@ -659,6 +1508,34 @@ fn start_legacy_eyes(
             capture_plan.tcp_ranges().len()
         ),
     );
+    Ok(handle)
+}
+
+#[cfg(windows)]
+fn start_legacy_eyes(
+    app: &AppHandle,
+    registry: std::sync::Arc<crate::legacy_reliability::target_registry::TargetRegistry>,
+    envelope: crate::legacy_reliability::contracts::EventEnvelope,
+    lane_generations: std::sync::Arc<
+        std::collections::BTreeMap<String, crate::legacy_reliability::contracts::LaneGeneration>,
+    >,
+    ingress: crate::legacy_reliability::ingress::LegacyIngress,
+) -> Result<(), String> {
+    if app.state::<AppState>().eyes.lock_recover().is_some() {
+        return Err("Legacy Eyes slot is already occupied".into());
+    }
+    let handle = create_legacy_eyes(app, registry, envelope, lane_generations, ingress)
+        .map_err(|error| error.message)?;
+    let state = app.state::<AppState>();
+    let mut slot = state.eyes.lock_recover();
+    if slot.is_some() {
+        drop(slot);
+        let outcomes = handle.stop_bounded(EYES_STOP_TIMEOUT);
+        return Err(format!(
+            "Legacy Eyes slot was claimed during start; staged cleanup: {outcomes:?}"
+        ));
+    }
+    *slot = Some(handle);
     Ok(())
 }
 
@@ -688,6 +1565,1183 @@ fn stop_eyes(app: &AppHandle) -> Vec<crate::dpi_supervisor::WorkerStopOutcome> {
     } else {
         Vec::new()
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ExactLegacyRuntimeSnapshot {
+    runtime: DpiRuntimeSnapshot,
+    owners: BTreeMap<String, LegacyProcessOwner>,
+}
+
+/// Exact target-lane shape expected by the observer transaction. Forward
+/// preflight and restore-before-stop require the same live owner the executor
+/// fenced; rollback-after-stop requires a complete target absence.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum LegacyObserverTargetExpectation {
+    Present(crate::legacy_reliability::contracts::ProcessOwner),
+    Absent,
+}
+
+/// Captures every live Legacy owner, not merely the global generation. This is
+/// intentionally pure so observer restarts can re-check the same snapshot after
+/// each await without holding `DpiState`'s std::Mutex across the await.
+fn capture_exact_legacy_runtime(
+    dpi: &crate::state::DpiState,
+    expected_generation: u64,
+) -> Result<ExactLegacyRuntimeSnapshot, String> {
+    if expected_generation == 0 || dpi.generation != expected_generation {
+        return Err(format!(
+            "DPI runtime generation changed: expected {expected_generation}, current {}",
+            dpi.generation
+        ));
+    }
+
+    let mut owners = BTreeMap::new();
+    for process in dpi.procs.values() {
+        if process.engine != "legacy" {
+            return Err("Legacy observer cannot share a runtime with a non-Legacy process".into());
+        }
+        let owner = process.exact_legacy_owner().ok_or_else(|| {
+            format!(
+                "Legacy process {} ({}) is missing an exact owner token",
+                process.pid, process.category
+            )
+        })?;
+        if owner.runtime_generation != expected_generation {
+            return Err(format!(
+                "Legacy process {} belongs to stale runtime generation {}",
+                owner.pid, owner.runtime_generation
+            ));
+        }
+        if dpi.stopping.contains(&owner.pid) || dpi.legacy_stopping.contains(&owner) {
+            return Err(format!(
+                "Legacy process {} ({}) is already stopping",
+                owner.pid, owner.category
+            ));
+        }
+        let category = owner.category.clone();
+        if owners.insert(category.clone(), owner).is_some() {
+            return Err(format!(
+                "Legacy category {category} has more than one exact process owner"
+            ));
+        }
+    }
+
+    let mut selections = BTreeMap::new();
+    match dpi.active_launch.as_ref() {
+        Some(DpiLaunchSpec::Legacy { selections: active }) => {
+            for (category, config_file) in active {
+                if selections
+                    .insert(category.clone(), config_file.clone())
+                    .is_some()
+                {
+                    return Err(format!(
+                        "Legacy category {category} appears more than once in active launch"
+                    ));
+                }
+            }
+        }
+        Some(DpiLaunchSpec::Zapret2 { .. }) => {
+            return Err("Legacy observer cannot replace a Zapret2 runtime".into())
+        }
+        None if owners.is_empty() => {}
+        None => return Err("Legacy processes exist without an active Legacy launch".into()),
+    }
+
+    if selections.len() != owners.len()
+        || selections.iter().any(|(category, config_file)| {
+            owners
+                .get(category)
+                .is_none_or(|owner| owner.config_file != *config_file)
+        })
+    {
+        return Err("Legacy launch selections do not match exact process owners".into());
+    }
+
+    Ok(ExactLegacyRuntimeSnapshot {
+        runtime: dpi.runtime_snapshot(),
+        owners,
+    })
+}
+
+fn validate_captured_legacy_runtime(
+    dpi: &crate::state::DpiState,
+    expected: &ExactLegacyRuntimeSnapshot,
+) -> Result<(), String> {
+    let current = capture_exact_legacy_runtime(dpi, expected.runtime.generation)?;
+    if current != *expected {
+        return Err(format!(
+            "exact Legacy runtime owners changed: expected {:?}, current {:?}",
+            expected.owners.keys().collect::<Vec<_>>(),
+            current.owners.keys().collect::<Vec<_>>()
+        ));
+    }
+    Ok(())
+}
+
+fn validate_exact_legacy_runtime(
+    app: &AppHandle,
+    expected: &ExactLegacyRuntimeSnapshot,
+) -> Result<(), String> {
+    validate_captured_legacy_runtime(&app.state::<AppState>().dpi.lock_recover(), expected)
+}
+
+fn registry_owner_matches(
+    registry: &crate::legacy_reliability::target_registry::TargetRegistry,
+    owner: &LegacyProcessOwner,
+    lane_generation: crate::legacy_reliability::contracts::LaneGeneration,
+) -> bool {
+    owner.lane_generation == lane_generation
+        && registry.active_config(&owner.category) == Some(owner.config_file.as_str())
+        && registry
+            .config_fingerprint(&owner.category, &owner.config_file)
+            .is_ok_and(|fingerprint| fingerprint.as_hex() == owner.config_fingerprint)
+}
+
+/// Validates an immutable candidate/rollback observer plan against the current
+/// Manager session and all neighboring process-owner tokens. The one changed
+/// lane may still own the old process (pre-stop) or be absent (post-stop), but
+/// every neighboring winws must match both registry snapshots exactly.
+#[allow(clippy::too_many_arguments)]
+fn validate_observer_transition(
+    previous: &crate::legacy_reliability::manager::ObserveOnlySnapshot,
+    previous_registry: &crate::legacy_reliability::target_registry::TargetRegistry,
+    session_id: crate::legacy_reliability::contracts::SessionId,
+    network_fingerprint: &crate::legacy_reliability::contracts::NetworkFingerprint,
+    registry: &crate::legacy_reliability::target_registry::TargetRegistry,
+    lane_generations: &BTreeMap<String, crate::legacy_reliability::contracts::LaneGeneration>,
+    runtime: &ExactLegacyRuntimeSnapshot,
+    target_expectation: &LegacyObserverTargetExpectation,
+) -> Result<String, String> {
+    use crate::dpi_engine::EngineKind;
+
+    let session = &previous.session;
+    if session.closed || session.engine != EngineKind::Legacy {
+        return Err("Legacy observer plan refers to a closed or non-Legacy session".into());
+    }
+    if session.session_id != session_id {
+        return Err("Legacy observer plan changed the session id".into());
+    }
+    if &session.network_fingerprint_at_start != network_fingerprint {
+        return Err("Legacy observer plan changed the network fingerprint".into());
+    }
+    if session.sensor_generation.get() == 0
+        || session.target_registry_version.get() == 0
+        || session.target_registry_version != previous_registry.version()
+    {
+        return Err("Current Legacy observer has an invalid sensor/registry fence".into());
+    }
+    if previous_registry.content_hash() != registry.content_hash() {
+        return Err("Legacy observer plan changed immutable registry content".into());
+    }
+
+    let active_categories = session
+        .active_categories
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    if active_categories.is_empty()
+        || active_categories.len() != session.active_categories.len()
+        || session
+            .lane_generations
+            .keys()
+            .cloned()
+            .collect::<BTreeSet<_>>()
+            != active_categories
+        || lane_generations.keys().cloned().collect::<BTreeSet<_>>() != active_categories
+    {
+        return Err("Legacy observer plan changed the active category set".into());
+    }
+    if session
+        .lane_generations
+        .values()
+        .chain(lane_generations.values())
+        .any(|generation| generation.get() == 0)
+    {
+        return Err("Legacy observer plan contains a zero lane generation".into());
+    }
+
+    let previous_selections = previous_registry
+        .active_selections()
+        .map(|(category, config)| (category.to_owned(), config.to_owned()))
+        .collect::<BTreeMap<_, _>>();
+    let next_selections = registry
+        .active_selections()
+        .map(|(category, config)| (category.to_owned(), config.to_owned()))
+        .collect::<BTreeMap<_, _>>();
+    if previous_selections.keys().cloned().collect::<BTreeSet<_>>() != active_categories
+        || next_selections.keys().cloned().collect::<BTreeSet<_>>() != active_categories
+    {
+        return Err("Legacy observer registry selections do not match active categories".into());
+    }
+
+    let changed_lanes = lane_generations
+        .iter()
+        .filter_map(|(category, next)| {
+            (session.lane_generations.get(category) != Some(next)).then_some(category.clone())
+        })
+        .collect::<Vec<_>>();
+    let [changed_category] = changed_lanes.as_slice() else {
+        return Err("Legacy observer plan must change exactly one lane generation".into());
+    };
+
+    match target_expectation {
+        LegacyObserverTargetExpectation::Present(expected) => {
+            let current = runtime.owners.get(changed_category).ok_or_else(|| {
+                format!("target Legacy category {changed_category} exited before observer teardown")
+            })?;
+            if recovery_process_owner(current) != *expected {
+                return Err(format!(
+                    "target Legacy category {changed_category} changed its exact process owner"
+                ));
+            }
+        }
+        LegacyObserverTargetExpectation::Absent => {
+            if runtime.owners.contains_key(changed_category) {
+                return Err(format!(
+                    "target Legacy category {changed_category} is still present after exact stop"
+                ));
+            }
+        }
+    }
+
+    if runtime
+        .owners
+        .keys()
+        .any(|category| !active_categories.contains(category))
+    {
+        return Err("DPI runtime contains an owner outside the Manager session".into());
+    }
+
+    for category in active_categories
+        .iter()
+        .filter(|category| *category != changed_category)
+    {
+        let owner = runtime.owners.get(category).ok_or_else(|| {
+            format!("neighboring Legacy category {category} lost its exact process owner")
+        })?;
+        let previous_lane = session.lane_generations[category];
+        if lane_generations.get(category) != Some(&previous_lane)
+            || !registry_owner_matches(previous_registry, owner, previous_lane)
+            || !registry_owner_matches(registry, owner, previous_lane)
+        {
+            return Err(format!(
+                "neighboring Legacy category {category} no longer matches its exact owner token"
+            ));
+        }
+    }
+
+    if let Some(owner) = runtime.owners.get(changed_category) {
+        let matches_previous = registry_owner_matches(
+            previous_registry,
+            owner,
+            session.lane_generations[changed_category],
+        );
+        let matches_next =
+            registry_owner_matches(registry, owner, lane_generations[changed_category]);
+        if !matches_previous && !matches_next {
+            return Err(format!(
+                "target Legacy category {changed_category} matches neither observer plan"
+            ));
+        }
+    }
+
+    Ok(changed_category.clone())
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ObserverRestorationState {
+    Untouched,
+    Restored(crate::legacy_reliability::contracts::SensorGeneration),
+    Skipped(String),
+    Failed(String),
+}
+
+impl std::fmt::Display for ObserverRestorationState {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Untouched => formatter.write_str("старый наблюдатель не был остановлен"),
+            Self::Restored(generation) => write!(
+                formatter,
+                "старый план восстановлен на свежем sensor generation {}",
+                generation.get()
+            ),
+            Self::Skipped(reason) => write!(formatter, "восстановление пропущено: {reason}"),
+            Self::Failed(reason) => write!(formatter, "восстановление не удалось: {reason}"),
+        }
+    }
+}
+
+fn observer_transaction_error(
+    original_error: impl AsRef<str>,
+    restoration: ObserverRestorationState,
+) -> String {
+    format!(
+        "{}; состояние восстановления: {restoration}",
+        original_error.as_ref()
+    )
+}
+
+#[cfg(windows)]
+struct CapturedLegacyObserver {
+    snapshot: crate::legacy_reliability::manager::ObserveOnlySnapshot,
+    registry: std::sync::Arc<crate::legacy_reliability::target_registry::TargetRegistry>,
+    environment_gate: std::sync::Arc<
+        tokio::sync::Mutex<crate::legacy_reliability::environment_gate::EnvironmentGate>,
+    >,
+}
+
+#[cfg(windows)]
+fn capture_legacy_observer(app: &AppHandle) -> Result<CapturedLegacyObserver, String> {
+    let state = app.state::<AppState>();
+    let manager_slot = state.legacy_manager.lock_recover();
+    let manager = manager_slot
+        .as_ref()
+        .ok_or_else(|| "Legacy Manager is not running".to_owned())?;
+    let snapshot = manager.snapshot();
+    let registry = manager.registry();
+    let environment_gate = manager
+        .environment_gate()
+        .ok_or_else(|| "Legacy Environment Gate baseline is unavailable".to_owned())?;
+    if snapshot.session.closed
+        || snapshot.session.target_registry_version != registry.version()
+        || snapshot.session.sensor_generation.get() == 0
+    {
+        return Err("Legacy Manager snapshot is already closed or inconsistent".into());
+    }
+    Ok(CapturedLegacyObserver {
+        snapshot,
+        registry,
+        environment_gate,
+    })
+}
+
+#[cfg(windows)]
+fn manager_matches_capture(
+    manager: &crate::legacy_reliability::runtime::LegacyReliabilityHandle,
+    captured: &CapturedLegacyObserver,
+) -> bool {
+    let current = manager.snapshot();
+    let current_registry = manager.registry();
+    let current_gate = manager.environment_gate();
+    current.session == captured.snapshot.session
+        && std::sync::Arc::ptr_eq(&current_registry, &captured.registry)
+        && current_gate
+            .is_some_and(|gate| std::sync::Arc::ptr_eq(&gate, &captured.environment_gate))
+}
+
+#[cfg(windows)]
+fn take_captured_manager(
+    app: &AppHandle,
+    captured: &CapturedLegacyObserver,
+) -> Result<crate::legacy_reliability::runtime::LegacyReliabilityHandle, String> {
+    let state = app.state::<AppState>();
+    let mut slot = state.legacy_manager.lock_recover();
+    if slot
+        .as_ref()
+        .is_none_or(|manager| !manager_matches_capture(manager, captured))
+    {
+        return Err("Legacy Manager changed before observer teardown".into());
+    }
+    Ok(slot
+        .take()
+        .expect("validated Legacy Manager slot must remain populated"))
+}
+
+#[cfg(windows)]
+fn allocate_fresh_sensor_generation(
+    app: &AppHandle,
+    closed: &[crate::legacy_reliability::contracts::SensorGeneration],
+) -> Result<crate::legacy_reliability::contracts::SensorGeneration, String> {
+    use crate::legacy_reliability::contracts::SensorGeneration;
+
+    for _ in 0..=closed.len() {
+        let generation =
+            SensorGeneration::new(app.state::<AppState>().legacy_sensor_revision.bump());
+        if generation.get() != 0 && !closed.contains(&generation) {
+            return Ok(generation);
+        }
+    }
+    Err("sensor generation allocator attempted to reuse a closed generation".into())
+}
+
+#[cfg(windows)]
+struct ObserverStartFailure {
+    message: String,
+    sensor_generation: Option<crate::legacy_reliability::contracts::SensorGeneration>,
+    safe_to_restore: bool,
+}
+
+#[cfg(windows)]
+impl ObserverStartFailure {
+    fn before_generation(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            sensor_generation: None,
+            safe_to_restore: true,
+        }
+    }
+
+    fn after_generation(
+        message: impl Into<String>,
+        sensor_generation: crate::legacy_reliability::contracts::SensorGeneration,
+    ) -> Self {
+        Self {
+            message: message.into(),
+            sensor_generation: Some(sensor_generation),
+            safe_to_restore: true,
+        }
+    }
+
+    fn append_cleanup(&mut self, cleanup: ObserverCleanupReport) {
+        self.safe_to_restore &= cleanup.safe_to_restore;
+        if !cleanup.failures.is_empty() {
+            self.message.push_str("; observer cleanup: ");
+            self.message.push_str(&cleanup.failures.join("; "));
+        }
+    }
+}
+
+#[cfg(windows)]
+struct ObserverCleanupReport {
+    failures: Vec<String>,
+    safe_to_restore: bool,
+}
+
+#[cfg(windows)]
+async fn cleanup_uninstalled_observer(
+    app: &AppHandle,
+    manager: crate::legacy_reliability::runtime::LegacyReliabilityHandle,
+    eyes: Option<crate::eyes::EyesHandle>,
+    expected_runtime: &ExactLegacyRuntimeSnapshot,
+) -> ObserverCleanupReport {
+    let mut report = ObserverCleanupReport {
+        failures: Vec::new(),
+        safe_to_restore: true,
+    };
+
+    // Retire the Manager fence before stopping capture so late callbacks from
+    // the old Eyes generation can only hit a closed ingress.
+    manager.shutdown().await;
+    if let Err(error) = validate_exact_legacy_runtime(app, expected_runtime) {
+        report
+            .failures
+            .push(format!("runtime changed after Manager cleanup: {error}"));
+    }
+
+    if let Some(eyes) = eyes {
+        match tauri::async_runtime::spawn_blocking(move || eyes.stop_bounded(EYES_STOP_TIMEOUT))
+            .await
+        {
+            Ok(outcomes)
+                if !outcomes.is_empty() && outcomes.iter().all(|outcome| outcome.is_clean()) => {}
+            Ok(outcomes) => {
+                report.safe_to_restore = false;
+                report
+                    .failures
+                    .push(format!("Eyes bounded stop failed: {outcomes:?}"));
+            }
+            Err(error) => {
+                report.safe_to_restore = false;
+                report
+                    .failures
+                    .push(format!("Eyes stop worker failed: {error}"));
+            }
+        }
+        if let Err(error) = validate_exact_legacy_runtime(app, expected_runtime) {
+            report
+                .failures
+                .push(format!("runtime changed after Eyes cleanup: {error}"));
+        }
+    }
+    report
+}
+
+#[cfg(windows)]
+async fn cleanup_installed_observer_generation(
+    app: &AppHandle,
+    snapshot: &crate::legacy_reliability::manager::ObserveOnlySnapshot,
+) -> ObserverCleanupReport {
+    let (manager, eyes) = {
+        let state = app.state::<AppState>();
+        let mut manager_slot = state.legacy_manager.lock_recover();
+        let mut eyes_slot = state.eyes.lock_recover();
+        let owned = manager_slot.as_ref().is_some_and(|manager| {
+            let current = manager.snapshot();
+            current.session.session_id == snapshot.session.session_id
+                && current.session.sensor_generation == snapshot.session.sensor_generation
+        });
+        if owned {
+            (manager_slot.take(), eyes_slot.take())
+        } else {
+            (None, None)
+        }
+    };
+    let Some(manager) = manager else {
+        return ObserverCleanupReport {
+            failures: vec!["installed observer generation no longer owns the Manager slot".into()],
+            safe_to_restore: false,
+        };
+    };
+
+    let mut report = ObserverCleanupReport {
+        failures: Vec::new(),
+        safe_to_restore: true,
+    };
+    manager.shutdown().await;
+    match eyes {
+        Some(eyes) => {
+            match tauri::async_runtime::spawn_blocking(move || eyes.stop_bounded(EYES_STOP_TIMEOUT))
+                .await
+            {
+                Ok(outcomes)
+                    if !outcomes.is_empty()
+                        && outcomes.iter().all(|outcome| outcome.is_clean()) => {}
+                Ok(outcomes) => {
+                    report.safe_to_restore = false;
+                    report
+                        .failures
+                        .push(format!("installed Eyes bounded stop failed: {outcomes:?}"));
+                }
+                Err(error) => {
+                    report.safe_to_restore = false;
+                    report
+                        .failures
+                        .push(format!("installed Eyes stop worker failed: {error}"));
+                }
+            }
+        }
+        None => {
+            report.safe_to_restore = false;
+            report
+                .failures
+                .push("installed observer generation lost its Eyes handle".into());
+        }
+    }
+    report
+}
+
+#[cfg(windows)]
+async fn record_observer_restart_gap(
+    app: &AppHandle,
+    manager: &crate::legacy_reliability::runtime::LegacyReliabilityHandle,
+    envelope: crate::legacy_reliability::contracts::EventEnvelope,
+    expected_runtime: &ExactLegacyRuntimeSnapshot,
+) -> Result<(), String> {
+    use crate::legacy_reliability::contracts::GapEvent;
+    use crate::legacy_reliability::ingress::ControlIngressResult;
+
+    let accepted = manager.ingress.try_gap(GapEvent {
+        envelope,
+        // Sensor clocks restart at zero. This is a generation-boundary Gap,
+        // not producer queue loss, so it intentionally reports zero drops.
+        from_ts: 0,
+        to_ts: 0,
+        dropped_events: 0,
+    });
+    if accepted != ControlIngressResult::Accepted {
+        return Err(format!(
+            "Legacy Manager rejected the observer restart Gap: {accepted:?}"
+        ));
+    }
+
+    let deadline = Instant::now() + Duration::from_secs(1);
+    loop {
+        if manager.snapshot().last_gap_sequence.is_some() {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err("Legacy Manager did not acknowledge the observer restart Gap".into());
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        validate_exact_legacy_runtime(app, expected_runtime)?;
+        if runtime_shutting_down(app) {
+            return Err("observer restart Gap wait cancelled during app shutdown".into());
+        }
+    }
+}
+
+#[cfg(windows)]
+async fn wait_for_observer_clean_ready(
+    app: &AppHandle,
+    manager: &crate::legacy_reliability::runtime::LegacyReliabilityHandle,
+    expected_runtime: &ExactLegacyRuntimeSnapshot,
+    capture_started_at: Instant,
+) -> Result<crate::legacy_reliability::manager::ObserveOnlySnapshot, String> {
+    use crate::legacy_reliability::assessment::LanePhase;
+    use crate::legacy_reliability::contracts::EyeHealthState;
+
+    const CLEAN_READY_TIMEOUT: Duration = Duration::from_secs(13);
+    const CLEAN_READY_WINDOW: Duration = Duration::from_secs(10);
+    let deadline = capture_started_at + CLEAN_READY_TIMEOUT;
+    loop {
+        let snapshot = manager.snapshot();
+        if snapshot.session.closed {
+            return Err("Legacy Manager closed while waiting for restart clean window".into());
+        }
+        if snapshot.last_gap_sequence.is_some()
+            && snapshot.health.state == EyeHealthState::Ready
+            && capture_started_at.elapsed() >= CLEAN_READY_WINDOW
+            && snapshot
+                .lanes
+                .iter()
+                .all(|lane| lane.phase != LanePhase::SensorUnreliable)
+        {
+            return Ok(snapshot);
+        }
+        if matches!(
+            snapshot.health.state,
+            EyeHealthState::Blind | EyeHealthState::Stopped
+        ) {
+            return Err(format!(
+                "Legacy Eyes became {:?} during restart clean window",
+                snapshot.health.state
+            ));
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "Legacy observer did not become clean Ready within {} seconds",
+                CLEAN_READY_TIMEOUT.as_secs()
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        validate_exact_legacy_runtime(app, expected_runtime)?;
+        if runtime_shutting_down(app) {
+            return Err("observer clean-window wait cancelled during app shutdown".into());
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+#[cfg(windows)]
+async fn start_legacy_observer_generation(
+    app: &AppHandle,
+    expected_runtime: &ExactLegacyRuntimeSnapshot,
+    session_id: crate::legacy_reliability::contracts::SessionId,
+    network_fingerprint: crate::legacy_reliability::contracts::NetworkFingerprint,
+    active_categories: Vec<String>,
+    registry: std::sync::Arc<crate::legacy_reliability::target_registry::TargetRegistry>,
+    lane_generations: BTreeMap<String, crate::legacy_reliability::contracts::LaneGeneration>,
+    environment_gate: std::sync::Arc<
+        tokio::sync::Mutex<crate::legacy_reliability::environment_gate::EnvironmentGate>,
+    >,
+    closed_generations: &[crate::legacy_reliability::contracts::SensorGeneration],
+) -> Result<crate::legacy_reliability::manager::ObserveOnlySnapshot, ObserverStartFailure> {
+    use crate::legacy_reliability::contracts::{EventEnvelope, LegacySessionContext};
+    use crate::legacy_reliability::status::{self, LegacyReliabilityStatus};
+
+    if runtime_shutting_down(app) {
+        return Err(ObserverStartFailure::before_generation(
+            "Legacy observer start cancelled while the app is shutting down",
+        ));
+    }
+    validate_exact_legacy_runtime(app, expected_runtime)
+        .map_err(ObserverStartFailure::before_generation)?;
+    if app
+        .state::<AppState>()
+        .legacy_manager
+        .lock_recover()
+        .is_some()
+    {
+        return Err(ObserverStartFailure::before_generation(
+            "another Legacy Manager already owns the observer slot",
+        ));
+    }
+    if app.state::<AppState>().eyes.lock_recover().is_some() {
+        return Err(ObserverStartFailure::before_generation(
+            "another Eyes handle already owns the observer slot",
+        ));
+    }
+
+    let sensor_generation = allocate_fresh_sensor_generation(app, closed_generations)
+        .map_err(ObserverStartFailure::before_generation)?;
+    status::publish(
+        app,
+        LegacyReliabilityStatus::starting(active_categories.clone(), session_id, sensor_generation),
+    );
+
+    let context =
+        LegacySessionContext::new(session_id, active_categories.clone(), network_fingerprint);
+    let (log_root, gate_clock_ms) = {
+        let state = app.state::<AppState>();
+        // This process clock is retained only for the shared Environment Gate
+        // baseline. Manager health/evidence starts at zero for each sensor.
+        (
+            state.paths.legacy_reliability_logs_dir(),
+            state.legacy_monotonic_ms(),
+        )
+    };
+    let manager = crate::legacy_reliability::runtime::spawn_with_environment_gate(
+        context,
+        sensor_generation,
+        std::sync::Arc::clone(&registry),
+        lane_generations.clone(),
+        log_root,
+        Some(environment_gate),
+        gate_clock_ms,
+    )
+    .map_err(|error| {
+        ObserverStartFailure::after_generation(
+            format!("Legacy Manager restart rejected: {error:?}"),
+            sensor_generation,
+        )
+    })?;
+
+    if let Err(error) = validate_exact_legacy_runtime(app, expected_runtime) {
+        let mut failure = ObserverStartFailure::after_generation(error, sensor_generation);
+        failure.append_cleanup(
+            cleanup_uninstalled_observer(app, manager, None, expected_runtime).await,
+        );
+        return Err(failure);
+    }
+
+    let envelope = EventEnvelope::new(session_id, sensor_generation, registry.version());
+    if let Err(error) = record_observer_restart_gap(app, &manager, envelope, expected_runtime).await
+    {
+        let mut failure = ObserverStartFailure::after_generation(error, sensor_generation);
+        failure.append_cleanup(
+            cleanup_uninstalled_observer(app, manager, None, expected_runtime).await,
+        );
+        return Err(failure);
+    }
+    if let Err(error) = validate_exact_legacy_runtime(app, expected_runtime) {
+        let mut failure = ObserverStartFailure::after_generation(error, sensor_generation);
+        failure.append_cleanup(
+            cleanup_uninstalled_observer(app, manager, None, expected_runtime).await,
+        );
+        return Err(failure);
+    }
+
+    let eyes = match create_legacy_eyes(
+        app,
+        std::sync::Arc::clone(&registry),
+        envelope,
+        std::sync::Arc::new(lane_generations),
+        manager.ingress.clone(),
+    ) {
+        Ok(eyes) => eyes,
+        Err(error) => {
+            let mut failure =
+                ObserverStartFailure::after_generation(error.message, sensor_generation);
+            failure.safe_to_restore &= error.safe_to_restore;
+            failure.append_cleanup(
+                cleanup_uninstalled_observer(app, manager, None, expected_runtime).await,
+            );
+            return Err(failure);
+        }
+    };
+    let capture_started_at = Instant::now();
+
+    let ready_snapshot =
+        match wait_for_observer_clean_ready(app, &manager, expected_runtime, capture_started_at)
+            .await
+        {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                let mut failure = ObserverStartFailure::after_generation(error, sensor_generation);
+                failure.append_cleanup(
+                    cleanup_uninstalled_observer(app, manager, Some(eyes), expected_runtime).await,
+                );
+                return Err(failure);
+            }
+        };
+    if let Err(error) = validate_exact_legacy_runtime(app, expected_runtime) {
+        let mut failure = ObserverStartFailure::after_generation(error, sensor_generation);
+        failure.append_cleanup(
+            cleanup_uninstalled_observer(app, manager, Some(eyes), expected_runtime).await,
+        );
+        return Err(failure);
+    }
+
+    let final_validation = validate_exact_legacy_runtime(app, expected_runtime).and_then(|()| {
+        if runtime_shutting_down(app) {
+            Err("Legacy observer start cancelled while the app is shutting down".into())
+        } else if app
+            .state::<AppState>()
+            .legacy_manager
+            .lock_recover()
+            .is_some()
+        {
+            Err("another Legacy Manager claimed the observer slot".into())
+        } else if app.state::<AppState>().eyes.lock_recover().is_some() {
+            Err("another Eyes handle claimed the observer slot".into())
+        } else {
+            Ok(())
+        }
+    });
+    if let Err(error) = final_validation {
+        let mut failure = ObserverStartFailure::after_generation(error, sensor_generation);
+        failure.append_cleanup(
+            cleanup_uninstalled_observer(app, manager, Some(eyes), expected_runtime).await,
+        );
+        return Err(failure);
+    }
+
+    let snapshot = ready_snapshot;
+    let mut pending_manager = Some(manager);
+    let mut pending_eyes = Some(eyes);
+    let installed = {
+        let state = app.state::<AppState>();
+        let mut manager_slot = state.legacy_manager.lock_recover();
+        let mut eyes_slot = state.eyes.lock_recover();
+        if manager_slot.is_none() && eyes_slot.is_none() {
+            let manager = pending_manager
+                .take()
+                .expect("pending observer Manager must be available once");
+            manager.forward_public_status(app.clone());
+            *eyes_slot = pending_eyes.take();
+            *manager_slot = Some(manager);
+            true
+        } else {
+            false
+        }
+    };
+    if !installed {
+        let mut failure = ObserverStartFailure::after_generation(
+            "another Legacy Manager claimed the observer slot during install",
+            sensor_generation,
+        );
+        failure.append_cleanup(
+            cleanup_uninstalled_observer(
+                app,
+                pending_manager.expect("failed install retains pending Manager"),
+                pending_eyes,
+                expected_runtime,
+            )
+            .await,
+        );
+        return Err(failure);
+    }
+
+    status::publish_snapshot_if_owned(app, &snapshot);
+    Ok(snapshot)
+}
+
+#[cfg(windows)]
+struct CapturedObserverStopFailure {
+    message: String,
+    eyes_stopped_cleanly: bool,
+}
+
+#[cfg(windows)]
+async fn stop_captured_observer(
+    app: &AppHandle,
+    manager: crate::legacy_reliability::runtime::LegacyReliabilityHandle,
+    expected_runtime: &ExactLegacyRuntimeSnapshot,
+) -> Result<(), CapturedObserverStopFailure> {
+    let mut failures = Vec::new();
+
+    // Close the old session fence first. Any callback racing with the bounded
+    // Eyes stop can no longer mutate the retired Manager generation.
+    manager.shutdown().await;
+    if let Err(error) = validate_exact_legacy_runtime(app, expected_runtime) {
+        failures.push(format!("runtime changed after old Manager stop: {error}"));
+    }
+
+    let app_for_eyes = app.clone();
+    let eyes_stopped_cleanly =
+        match tauri::async_runtime::spawn_blocking(move || stop_eyes(&app_for_eyes)).await {
+            Ok(outcomes)
+                if !outcomes.is_empty() && outcomes.iter().all(|outcome| outcome.is_clean()) =>
+            {
+                true
+            }
+            Ok(outcomes) => {
+                failures.push(format!("Legacy Eyes bounded stop failed: {outcomes:?}"));
+                false
+            }
+            Err(error) => {
+                failures.push(format!("Legacy Eyes stop worker failed: {error}"));
+                false
+            }
+        };
+    if let Err(error) = validate_exact_legacy_runtime(app, expected_runtime) {
+        failures.push(format!("runtime changed after old Eyes stop: {error}"));
+    }
+
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(CapturedObserverStopFailure {
+            message: failures.join("; "),
+            eyes_stopped_cleanly,
+        })
+    }
+}
+
+#[cfg(windows)]
+fn publish_failed_observer_blind(
+    app: &AppHandle,
+    captured: &CapturedLegacyObserver,
+    sensor_generation: crate::legacy_reliability::contracts::SensorGeneration,
+) {
+    use crate::legacy_reliability::status::{self, LegacyReliabilityStatus};
+
+    status::publish_if_owned(
+        app,
+        captured.snapshot.session.session_id,
+        sensor_generation,
+        LegacyReliabilityStatus::blind(
+            captured.snapshot.session.active_categories.clone(),
+            captured.snapshot.session.session_id,
+            sensor_generation,
+        ),
+    );
+}
+
+#[cfg(windows)]
+async fn restore_captured_observer(
+    app: &AppHandle,
+    expected_runtime: &ExactLegacyRuntimeSnapshot,
+    captured: &CapturedLegacyObserver,
+    closed_generations: &[crate::legacy_reliability::contracts::SensorGeneration],
+) -> ObserverRestorationState {
+    if runtime_shutting_down(app) {
+        return ObserverRestorationState::Skipped("application is shutting down".into());
+    }
+    if let Err(error) = validate_exact_legacy_runtime(app, expected_runtime) {
+        return ObserverRestorationState::Skipped(format!("DPI runtime changed: {error}"));
+    }
+    if app
+        .state::<AppState>()
+        .legacy_manager
+        .lock_recover()
+        .is_some()
+        || app.state::<AppState>().eyes.lock_recover().is_some()
+    {
+        return ObserverRestorationState::Skipped(
+            "another observer already owns Manager or Eyes".into(),
+        );
+    }
+
+    let restored = start_legacy_observer_generation(
+        app,
+        expected_runtime,
+        captured.snapshot.session.session_id,
+        captured
+            .snapshot
+            .session
+            .network_fingerprint_at_start
+            .clone(),
+        captured.snapshot.session.active_categories.clone(),
+        std::sync::Arc::clone(&captured.registry),
+        captured.snapshot.session.lane_generations.clone(),
+        std::sync::Arc::clone(&captured.environment_gate),
+        closed_generations,
+    )
+    .await;
+    if let Err(error) = validate_exact_legacy_runtime(app, expected_runtime) {
+        let mut cleanup_note = String::new();
+        match &restored {
+            Ok(snapshot) => {
+                let cleanup = cleanup_installed_observer_generation(app, snapshot).await;
+                if !cleanup.failures.is_empty() {
+                    cleanup_note = format!(
+                        "; installed observer cleanup: {}",
+                        cleanup.failures.join("; ")
+                    );
+                }
+                publish_failed_observer_blind(app, captured, snapshot.session.sensor_generation)
+            }
+            Err(failure) => {
+                if let Some(generation) = failure.sensor_generation {
+                    publish_failed_observer_blind(app, captured, generation);
+                }
+            }
+        }
+        return ObserverRestorationState::Failed(format!(
+            "DPI runtime changed while restoring observer: {error}{cleanup_note}"
+        ));
+    }
+
+    match restored {
+        Ok(snapshot) => ObserverRestorationState::Restored(snapshot.session.sensor_generation),
+        Err(failure) => {
+            if let Some(generation) = failure.sensor_generation {
+                publish_failed_observer_blind(app, captured, generation);
+            } else {
+                crate::legacy_reliability::status::publish_current_blind(app);
+            }
+            ObserverRestorationState::Failed(failure.message)
+        }
+    }
+}
+
+/// Transactionally installs a new immutable Legacy sensor/Manager generation
+/// without touching a winws process. The caller must hold `dpi_gate` for the
+/// entire assisted transaction. Any failure after teardown attempts to restore
+/// the captured observer plan on another fresh sensor generation.
+#[cfg(windows)]
+pub(crate) async fn replace_legacy_observer_locked(
+    app: &AppHandle,
+    expected_dpi_generation: u64,
+    session_id: crate::legacy_reliability::contracts::SessionId,
+    network_fingerprint: crate::legacy_reliability::contracts::NetworkFingerprint,
+    registry: std::sync::Arc<crate::legacy_reliability::target_registry::TargetRegistry>,
+    lane_generations: std::collections::BTreeMap<
+        String,
+        crate::legacy_reliability::contracts::LaneGeneration,
+    >,
+    target_expectation: LegacyObserverTargetExpectation,
+) -> Result<crate::legacy_reliability::manager::ObserveOnlySnapshot, String> {
+    let untouched_error =
+        |error: String| observer_transaction_error(error, ObserverRestorationState::Untouched);
+
+    if runtime_shutting_down(app) {
+        return Err(untouched_error(
+            "Legacy observer restart cancelled while the app is shutting down".into(),
+        ));
+    }
+    let captured = capture_legacy_observer(app).map_err(&untouched_error)?;
+    if app.state::<AppState>().eyes.lock_recover().is_none() {
+        return Err(untouched_error(
+            "Legacy Eyes handle is absent before observer restart".into(),
+        ));
+    }
+    let expected_runtime = capture_exact_legacy_runtime(
+        &app.state::<AppState>().dpi.lock_recover(),
+        expected_dpi_generation,
+    )
+    .map_err(&untouched_error)?;
+    validate_observer_transition(
+        &captured.snapshot,
+        &captured.registry,
+        session_id,
+        &network_fingerprint,
+        &registry,
+        &lane_generations,
+        &expected_runtime,
+        &target_expectation,
+    )
+    .map_err(&untouched_error)?;
+
+    let previous = take_captured_manager(app, &captured).map_err(&untouched_error)?;
+    if let Err(error) = validate_exact_legacy_runtime(app, &expected_runtime) {
+        let mut detached = Some(previous);
+        let reinserted = {
+            let state = app.state::<AppState>();
+            let mut slot = state.legacy_manager.lock_recover();
+            if slot.is_none() {
+                *slot = detached.take();
+                true
+            } else {
+                false
+            }
+        };
+        if reinserted {
+            return Err(untouched_error(error));
+        }
+        detached
+            .expect("failed reinsert retains detached Legacy Manager")
+            .shutdown()
+            .await;
+        let runtime_after_shutdown = validate_exact_legacy_runtime(app, &expected_runtime)
+            .err()
+            .map(|reason| format!("; runtime after detached Manager shutdown: {reason}"))
+            .unwrap_or_default();
+        publish_failed_observer_blind(app, &captured, captured.snapshot.session.sensor_generation);
+        let restoration = ObserverRestorationState::Skipped(
+            "another Manager claimed the slot while the captured Manager was detached".into(),
+        );
+        return Err(observer_transaction_error(
+            format!("{error}{runtime_after_shutdown}"),
+            restoration,
+        ));
+    }
+
+    let old_sensor_generation = captured.snapshot.session.sensor_generation;
+    if let Err(failure) = stop_captured_observer(app, previous, &expected_runtime).await {
+        publish_failed_observer_blind(app, &captured, old_sensor_generation);
+        let restoration = if failure.eyes_stopped_cleanly {
+            restore_captured_observer(app, &expected_runtime, &captured, &[old_sensor_generation])
+                .await
+        } else {
+            crate::legacy_reliability::status::publish_current_blind(app);
+            ObserverRestorationState::Skipped(
+                "the retired Eyes generation did not stop cleanly; opening a second WinDivert observer is unsafe"
+                    .into(),
+            )
+        };
+        return Err(observer_transaction_error(failure.message, restoration));
+    }
+
+    let candidate = start_legacy_observer_generation(
+        app,
+        &expected_runtime,
+        session_id,
+        network_fingerprint,
+        captured.snapshot.session.active_categories.clone(),
+        registry,
+        lane_generations,
+        std::sync::Arc::clone(&captured.environment_gate),
+        &[old_sensor_generation],
+    )
+    .await;
+    if let Err(error) = validate_exact_legacy_runtime(app, &expected_runtime) {
+        let mut cleanup_note = String::new();
+        match &candidate {
+            Ok(snapshot) => {
+                let cleanup = cleanup_installed_observer_generation(app, snapshot).await;
+                if !cleanup.failures.is_empty() {
+                    cleanup_note = format!(
+                        "; installed observer cleanup: {}",
+                        cleanup.failures.join("; ")
+                    );
+                }
+                publish_failed_observer_blind(app, &captured, snapshot.session.sensor_generation)
+            }
+            Err(failure) => {
+                if let Some(generation) = failure.sensor_generation {
+                    publish_failed_observer_blind(app, &captured, generation);
+                }
+            }
+        }
+        return Err(observer_transaction_error(
+            format!("DPI runtime changed while starting candidate observer: {error}{cleanup_note}"),
+            ObserverRestorationState::Skipped("exact winws owners no longer match".into()),
+        ));
+    }
+    match candidate {
+        Ok(snapshot) => Ok(snapshot),
+        Err(failure) => {
+            if let Some(generation) = failure.sensor_generation {
+                publish_failed_observer_blind(app, &captured, generation);
+            } else {
+                crate::legacy_reliability::status::publish_current_blind(app);
+            }
+            let mut closed_generations = vec![old_sensor_generation];
+            if let Some(generation) = failure.sensor_generation {
+                closed_generations.push(generation);
+            }
+            let restoration = if failure.safe_to_restore {
+                restore_captured_observer(app, &expected_runtime, &captured, &closed_generations)
+                    .await
+            } else {
+                crate::legacy_reliability::status::publish_current_blind(app);
+                ObserverRestorationState::Skipped(
+                    "the failed Eyes generation did not stop cleanly; opening a second WinDivert observer is unsafe"
+                        .into(),
+                )
+            };
+            Err(observer_transaction_error(failure.message, restoration))
+        }
+    }
+}
+
+#[cfg(not(windows))]
+pub(crate) async fn replace_legacy_observer_locked(
+    _app: &AppHandle,
+    _expected_dpi_generation: u64,
+    _session_id: crate::legacy_reliability::contracts::SessionId,
+    _network_fingerprint: crate::legacy_reliability::contracts::NetworkFingerprint,
+    _registry: std::sync::Arc<crate::legacy_reliability::target_registry::TargetRegistry>,
+    _lane_generations: std::collections::BTreeMap<
+        String,
+        crate::legacy_reliability::contracts::LaneGeneration,
+    >,
+    _target_expectation: LegacyObserverTargetExpectation,
+) -> Result<crate::legacy_reliability::manager::ObserveOnlySnapshot, String> {
+    Err("Scoped Legacy observer restart поддерживается только на Windows".into())
 }
 
 /// Останавливает все свои DPI-процессы и ждёт подтверждения teardown.
@@ -759,6 +2813,13 @@ pub async fn stop_all(app: &AppHandle) {
                     outcome.pid, outcome.state
                 ),
             );
+        }
+    }
+    {
+        let state = app.state::<AppState>();
+        let mut dpi = state.dpi.lock_recover();
+        for outcome in &process_outcomes {
+            dpi.stopping.remove(&outcome.pid);
         }
     }
     emit_status(app);
@@ -1181,6 +3242,8 @@ pub(crate) async fn start_zapret2_with_overrides(
                 generation,
                 engine: "zapret2".to_string(),
                 process_identity,
+                lane_generation: None,
+                config_fingerprint: None,
             },
         );
         d.active_launch = Some(DpiLaunchSpec::Zapret2 {
@@ -1448,7 +3511,7 @@ pub async fn start_many(app: &AppHandle, configs: &[(String, String)]) -> Result
     };
 
     #[cfg(windows)]
-    let (start_generation, exact_runtime) = {
+    let (start_generation, exact_runtime, initial_reliability_status) = {
         let state = app.state::<AppState>();
         let mut dpi = state.dpi.lock_recover();
         dpi.last_legacy_selection = started_pairs.clone();
@@ -1460,36 +3523,31 @@ pub async fn start_many(app: &AppHandle, configs: &[(String, String)]) -> Result
         if !exact_runtime {
             dpi.active_launch = None;
         }
-        if exact_runtime {
-            crate::legacy_reliability::status::publish(
-                app,
-                crate::legacy_reliability::status::LegacyReliabilityStatus::starting(
-                    active_categories.clone(),
-                    session_id,
-                    sensor_generation,
-                ),
-            );
+        let initial_reliability_status = if exact_runtime {
+            crate::legacy_reliability::status::LegacyReliabilityStatus::starting(
+                active_categories.clone(),
+                session_id,
+                sensor_generation,
+            )
         } else if dpi
             .procs
             .values()
             .any(|process| process.generation == generation && process.engine == "legacy")
         {
-            crate::legacy_reliability::status::publish(
-                app,
-                crate::legacy_reliability::status::LegacyReliabilityStatus::blind(
-                    active_categories.clone(),
-                    session_id,
-                    sensor_generation,
-                ),
-            );
+            crate::legacy_reliability::status::LegacyReliabilityStatus::blind(
+                active_categories.clone(),
+                session_id,
+                sensor_generation,
+            )
         } else {
-            crate::legacy_reliability::status::publish(
-                app,
-                crate::legacy_reliability::status::LegacyReliabilityStatus::inactive(),
-            );
-        }
-        (generation, exact_runtime)
+            crate::legacy_reliability::status::LegacyReliabilityStatus::inactive()
+        };
+        (generation, exact_runtime, initial_reliability_status)
     };
+    // The publisher reads the process-backed launch spec from `state.dpi`.
+    // Publish only after dropping the commit guard; std::Mutex is not reentrant.
+    #[cfg(windows)]
+    crate::legacy_reliability::status::publish(app, initial_reliability_status);
 
     #[cfg(not(windows))]
     let start_generation = {
@@ -1606,12 +3664,26 @@ pub async fn start_many(app: &AppHandle, configs: &[(String, String)]) -> Result
                     local_network.fingerprint,
                 );
                 let registry = std::sync::Arc::new(registry);
+                {
+                    let state = app.state::<AppState>();
+                    let mut dpi = state.dpi.lock_recover();
+                    for process in dpi.procs.values_mut().filter(|process| {
+                        process.generation == start_generation && process.engine == "legacy"
+                    }) {
+                        process.lane_generation = lane_generations.get(&process.category).copied();
+                        process.config_fingerprint = registry
+                            .config_fingerprint(&process.category, &process.config_file)
+                            .ok()
+                            .map(|fingerprint| fingerprint.as_hex().to_owned());
+                    }
+                }
                 match crate::legacy_reliability::runtime::spawn(
                     context,
                     sensor_generation,
                     std::sync::Arc::clone(&registry),
                     lane_generations.clone(),
                     reliability_log_root,
+                    app.state::<AppState>().legacy_monotonic_ms(),
                 ) {
                     Ok(manager) => {
                         if !app
@@ -2144,6 +4216,436 @@ fn spawn_reader<R>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn crash_retry_is_one_shot_until_the_lane_is_healthy_again() {
+        assert_eq!(
+            crash_retry_decision(false, false, false),
+            CrashRetryDecision::Schedule
+        );
+        assert_eq!(
+            crash_retry_decision(false, true, false),
+            CrashRetryDecision::Exhausted
+        );
+        assert_eq!(
+            crash_retry_decision(true, false, false),
+            CrashRetryDecision::IgnoreIntentional
+        );
+        assert_eq!(
+            crash_retry_decision(false, true, true),
+            CrashRetryDecision::Schedule
+        );
+    }
+
+    fn exact_legacy_process(
+        pid: u32,
+        identity: u64,
+        runtime_generation: u64,
+        lane_generation: u64,
+        category: &str,
+        config_file: &str,
+        fingerprint: &str,
+    ) -> DpiProc {
+        DpiProc {
+            pid,
+            category: category.into(),
+            config_file: config_file.into(),
+            generation: runtime_generation,
+            lane_generation: Some(crate::legacy_reliability::contracts::LaneGeneration::new(
+                lane_generation,
+            )),
+            config_fingerprint: Some(fingerprint.into()),
+            engine: "legacy".into(),
+            process_identity: Some(crate::dpi_supervisor::ProcessIdentity::from_raw(identity)),
+        }
+    }
+
+    fn two_lane_runtime() -> crate::state::DpiState {
+        let discord = exact_legacy_process(
+            10,
+            110,
+            7,
+            1,
+            "discord",
+            "discord_1.conf",
+            "discord-fingerprint-1",
+        );
+        let youtube = exact_legacy_process(
+            20,
+            120,
+            7,
+            4,
+            "youtube_twitch",
+            "youtube_1.conf",
+            "youtube-fingerprint-1",
+        );
+        crate::state::DpiState {
+            generation: 7,
+            procs: std::collections::HashMap::from([
+                (discord.pid, discord),
+                (youtube.pid, youtube),
+            ]),
+            active_launch: Some(DpiLaunchSpec::Legacy {
+                selections: vec![
+                    ("discord".into(), "discord_1.conf".into()),
+                    ("youtube_twitch".into(), "youtube_1.conf".into()),
+                ],
+            }),
+            ..crate::state::DpiState::default()
+        }
+    }
+
+    fn observer_registries() -> (
+        std::sync::Arc<crate::legacy_reliability::target_registry::TargetRegistry>,
+        std::sync::Arc<crate::legacy_reliability::target_registry::TargetRegistry>,
+    ) {
+        use crate::legacy_reliability::target_registry::{LegacyConfigRecord, TargetRegistry};
+
+        let records = vec![
+            LegacyConfigRecord::new(
+                "discord",
+                "discord_1.conf",
+                "--wf-tcp=443 --hostlist=lists/discord-1.txt",
+            )
+            .with_hostlist("lists/discord-1.txt", "discord.example\n"),
+            LegacyConfigRecord::new(
+                "discord",
+                "discord_2.conf",
+                "--wf-tcp=443 --hostlist=lists/discord-2.txt",
+            )
+            .with_hostlist("lists/discord-2.txt", "candidate.discord.example\n"),
+            LegacyConfigRecord::new(
+                "youtube_twitch",
+                "youtube_1.conf",
+                "--wf-tcp=443 --hostlist=lists/youtube-1.txt",
+            )
+            .with_hostlist("lists/youtube-1.txt", "youtube.example\n"),
+        ];
+        let previous = TargetRegistry::from_records_with_active_selections(
+            records.clone(),
+            [
+                ("discord", "discord_1.conf"),
+                ("youtube_twitch", "youtube_1.conf"),
+            ],
+        )
+        .unwrap();
+        let candidate = TargetRegistry::from_records_with_active_selections(
+            records,
+            [
+                ("discord", "discord_2.conf"),
+                ("youtube_twitch", "youtube_1.conf"),
+            ],
+        )
+        .unwrap();
+        (
+            std::sync::Arc::new(previous),
+            std::sync::Arc::new(candidate),
+        )
+    }
+
+    fn runtime_for_registry(
+        registry: &crate::legacy_reliability::target_registry::TargetRegistry,
+    ) -> crate::state::DpiState {
+        let mut dpi = two_lane_runtime();
+        for process in dpi.procs.values_mut() {
+            process.config_fingerprint = Some(
+                registry
+                    .config_fingerprint(&process.category, &process.config_file)
+                    .unwrap()
+                    .as_hex()
+                    .to_owned(),
+            );
+        }
+        dpi
+    }
+
+    fn observer_snapshot(
+        registry: std::sync::Arc<crate::legacy_reliability::target_registry::TargetRegistry>,
+        lane_generations: BTreeMap<String, crate::legacy_reliability::contracts::LaneGeneration>,
+    ) -> crate::legacy_reliability::manager::ObserveOnlySnapshot {
+        use crate::legacy_reliability::contracts::{
+            LegacySessionContext, NetworkFingerprint, SensorGeneration, SessionId,
+        };
+
+        let (ingress, receiver) = crate::legacy_reliability::ingress::channel();
+        let manager = crate::legacy_reliability::manager::ObserveOnlyManager::new_with_registry(
+            LegacySessionContext::new(
+                SessionId::new(31),
+                vec!["discord".into(), "youtube_twitch".into()],
+                NetworkFingerprint::Stable {
+                    key: "observer-transaction-test".into(),
+                },
+            ),
+            SensorGeneration::new(9),
+            registry,
+            lane_generations,
+            ingress.counters(),
+            receiver,
+        )
+        .unwrap();
+        manager.snapshot()
+    }
+
+    fn lanes(
+        discord: u64,
+        youtube: u64,
+    ) -> BTreeMap<String, crate::legacy_reliability::contracts::LaneGeneration> {
+        use crate::legacy_reliability::contracts::LaneGeneration;
+        BTreeMap::from([
+            ("discord".into(), LaneGeneration::new(discord)),
+            ("youtube_twitch".into(), LaneGeneration::new(youtube)),
+        ])
+    }
+
+    #[test]
+    fn observer_transition_accepts_one_armed_target_and_exact_neighbors() {
+        let (previous_registry, candidate_registry) = observer_registries();
+        let dpi = runtime_for_registry(&previous_registry);
+        let runtime = capture_exact_legacy_runtime(&dpi, 7).unwrap();
+        let previous = observer_snapshot(std::sync::Arc::clone(&previous_registry), lanes(1, 4));
+        let target = LegacyObserverTargetExpectation::Present(recovery_process_owner(
+            &runtime.owners["discord"],
+        ));
+
+        let changed = validate_observer_transition(
+            &previous,
+            &previous_registry,
+            previous.session.session_id,
+            &previous.session.network_fingerprint_at_start,
+            &candidate_registry,
+            &lanes(2, 4),
+            &runtime,
+            &target,
+        )
+        .unwrap();
+
+        assert_eq!(changed, "discord");
+        assert_eq!(runtime.owners["youtube_twitch"].pid, 20);
+    }
+
+    #[test]
+    fn observer_transition_accepts_rollback_after_target_lane_is_absent() {
+        let (previous_registry, candidate_registry) = observer_registries();
+        let mut dpi = runtime_for_registry(&previous_registry);
+        dpi.procs.remove(&10);
+        dpi.active_launch = Some(DpiLaunchSpec::Legacy {
+            selections: vec![("youtube_twitch".into(), "youtube_1.conf".into())],
+        });
+        let runtime = capture_exact_legacy_runtime(&dpi, 7).unwrap();
+        let previous = observer_snapshot(std::sync::Arc::clone(&candidate_registry), lanes(2, 4));
+
+        let changed = validate_observer_transition(
+            &previous,
+            &candidate_registry,
+            previous.session.session_id,
+            &previous.session.network_fingerprint_at_start,
+            &previous_registry,
+            &lanes(3, 4),
+            &runtime,
+            &LegacyObserverTargetExpectation::Absent,
+        )
+        .unwrap();
+
+        assert_eq!(changed, "discord");
+        assert!(!runtime.owners.contains_key("discord"));
+        assert_eq!(runtime.owners["youtube_twitch"].pid, 20);
+    }
+
+    #[test]
+    fn observer_transition_rejects_forward_swap_after_target_exit() {
+        let (previous_registry, candidate_registry) = observer_registries();
+        let mut dpi = runtime_for_registry(&previous_registry);
+        let expected_target = LegacyObserverTargetExpectation::Present(recovery_process_owner(
+            &dpi.procs.get(&10).unwrap().exact_legacy_owner().unwrap(),
+        ));
+        dpi.procs.remove(&10);
+        dpi.active_launch = Some(DpiLaunchSpec::Legacy {
+            selections: vec![("youtube_twitch".into(), "youtube_1.conf".into())],
+        });
+        let runtime = capture_exact_legacy_runtime(&dpi, 7).unwrap();
+        let previous = observer_snapshot(std::sync::Arc::clone(&previous_registry), lanes(1, 4));
+
+        let error = validate_observer_transition(
+            &previous,
+            &previous_registry,
+            previous.session.session_id,
+            &previous.session.network_fingerprint_at_start,
+            &candidate_registry,
+            &lanes(2, 4),
+            &runtime,
+            &expected_target,
+        )
+        .unwrap_err();
+
+        assert!(error.contains("exited before observer teardown"));
+    }
+
+    #[test]
+    fn observer_transition_rejects_neighbor_fingerprint_drift() {
+        let (previous_registry, candidate_registry) = observer_registries();
+        let mut dpi = runtime_for_registry(&previous_registry);
+        dpi.procs.get_mut(&20).unwrap().config_fingerprint = Some("drifted".into());
+        let runtime = capture_exact_legacy_runtime(&dpi, 7).unwrap();
+        let previous = observer_snapshot(std::sync::Arc::clone(&previous_registry), lanes(1, 4));
+        let target = LegacyObserverTargetExpectation::Present(recovery_process_owner(
+            &runtime.owners["discord"],
+        ));
+
+        let error = validate_observer_transition(
+            &previous,
+            &previous_registry,
+            previous.session.session_id,
+            &previous.session.network_fingerprint_at_start,
+            &candidate_registry,
+            &lanes(2, 4),
+            &runtime,
+            &target,
+        )
+        .unwrap_err();
+
+        assert!(error.contains("neighboring Legacy category youtube_twitch"));
+    }
+
+    #[test]
+    fn observer_transition_rejects_more_than_one_changed_lane() {
+        let (previous_registry, candidate_registry) = observer_registries();
+        let dpi = runtime_for_registry(&previous_registry);
+        let runtime = capture_exact_legacy_runtime(&dpi, 7).unwrap();
+        let previous = observer_snapshot(std::sync::Arc::clone(&previous_registry), lanes(1, 4));
+        let target = LegacyObserverTargetExpectation::Present(recovery_process_owner(
+            &runtime.owners["discord"],
+        ));
+
+        let error = validate_observer_transition(
+            &previous,
+            &previous_registry,
+            previous.session.session_id,
+            &previous.session.network_fingerprint_at_start,
+            &candidate_registry,
+            &lanes(2, 5),
+            &runtime,
+            &target,
+        )
+        .unwrap_err();
+
+        assert!(error.contains("exactly one lane generation"));
+    }
+
+    #[test]
+    fn captured_runtime_rejects_neighbor_pid_identity_reuse() {
+        let dpi = two_lane_runtime();
+        let captured = capture_exact_legacy_runtime(&dpi, 7).unwrap();
+        let mut reused = dpi;
+        reused.procs.get_mut(&20).unwrap().process_identity =
+            Some(crate::dpi_supervisor::ProcessIdentity::from_raw(999));
+
+        let error = validate_captured_legacy_runtime(&reused, &captured).unwrap_err();
+
+        assert!(error.contains("exact Legacy runtime owners changed"));
+    }
+
+    #[test]
+    fn observer_transaction_error_keeps_original_and_restoration_state() {
+        use crate::legacy_reliability::contracts::SensorGeneration;
+
+        let error = observer_transaction_error(
+            "candidate Eyes failed",
+            ObserverRestorationState::Restored(SensorGeneration::new(12)),
+        );
+
+        assert!(error.starts_with("candidate Eyes failed;"));
+        assert!(error.contains("sensor generation 12"));
+    }
+
+    #[test]
+    fn exact_legacy_exit_preserves_neighbor_and_aggregate_launch() {
+        let mut dpi = two_lane_runtime();
+        let neighbor = dpi.procs.get(&20).unwrap().clone();
+        let fence = LegacyCompatibilityFence::from_process(dpi.procs.get(&10).unwrap());
+
+        let result = finalize_legacy_exit(&mut dpi, &fence, Some(17), 2_500);
+
+        let LegacyExitFinalization::Exact(event) = result else {
+            panic!("expected exact process event, got {result:?}");
+        };
+        assert_eq!(event.owner.pid, 10);
+        assert!(!event.intentional);
+        assert_eq!(event.exit_code, Some(17));
+        assert_eq!(dpi.procs.get(&20), Some(&neighbor));
+        assert_eq!(
+            dpi.active_launch,
+            Some(DpiLaunchSpec::Legacy {
+                selections: vec![("youtube_twitch".into(), "youtube_1.conf".into())],
+            })
+        );
+    }
+
+    #[test]
+    fn intentional_exact_stop_consumes_only_exact_owner_marker() {
+        let mut dpi = two_lane_runtime();
+        let snapshot = dpi.snapshot_legacy_category("discord").unwrap();
+        let fence = LegacyCompatibilityFence::from_process(dpi.procs.get(&10).unwrap());
+        dpi.mark_legacy_category_stopping(&snapshot).unwrap();
+
+        let result = finalize_legacy_exit(&mut dpi, &fence, Some(0), 100);
+
+        let LegacyExitFinalization::Exact(event) = result else {
+            panic!("expected exact process event, got {result:?}");
+        };
+        assert!(event.intentional);
+        assert!(dpi.legacy_stopping.is_empty());
+        assert!(dpi.procs.contains_key(&20));
+    }
+
+    #[test]
+    fn stale_pid_reuse_exit_does_not_touch_new_owner_or_marker() {
+        let mut dpi = two_lane_runtime();
+        let stale_fence = LegacyCompatibilityFence::from_process(dpi.procs.get(&10).unwrap());
+        let replacement = exact_legacy_process(
+            10,
+            999,
+            7,
+            2,
+            "discord",
+            "discord_1.conf",
+            "discord-fingerprint-1",
+        );
+        let replacement_owner = replacement.exact_legacy_owner().unwrap();
+        dpi.procs.insert(10, replacement.clone());
+        dpi.legacy_stopping.insert(replacement_owner.clone());
+        let launch_before = dpi.active_launch.clone();
+
+        let result = finalize_legacy_exit(&mut dpi, &stale_fence, Some(0), 500);
+
+        assert_eq!(result, LegacyExitFinalization::Ignored);
+        assert_eq!(dpi.procs.get(&10), Some(&replacement));
+        assert_eq!(dpi.active_launch, launch_before);
+        assert!(dpi.legacy_stopping.contains(&replacement_owner));
+    }
+
+    #[test]
+    fn unfenced_startup_exit_still_preserves_neighbor_selection() {
+        let mut dpi = two_lane_runtime();
+        let process = dpi.procs.get_mut(&10).unwrap();
+        process.lane_generation = None;
+        process.config_fingerprint = None;
+        let fence = LegacyCompatibilityFence::from_process(process);
+        let neighbor = dpi.procs.get(&20).unwrap().clone();
+
+        let result = finalize_legacy_exit(&mut dpi, &fence, Some(1), 300);
+
+        assert_eq!(
+            result,
+            LegacyExitFinalization::Compatibility { intentional: false }
+        );
+        assert_eq!(dpi.procs.get(&20), Some(&neighbor));
+        assert_eq!(
+            dpi.active_launch,
+            Some(DpiLaunchSpec::Legacy {
+                selections: vec![("youtube_twitch".into(), "youtube_1.conf".into())],
+            })
+        );
+    }
 
     fn temp_lists_dir() -> std::path::PathBuf {
         let nonce = std::time::SystemTime::now()

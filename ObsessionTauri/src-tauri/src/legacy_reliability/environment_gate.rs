@@ -690,11 +690,24 @@ where
     }
 
     pub async fn evaluate(&mut self, request: GateRequest) -> Result<GateReport, GateRequestError> {
+        let baseline_clock_ms = request.requested_at_monotonic_ms;
+        self.evaluate_with_baseline_clock(request, baseline_clock_ms)
+            .await
+    }
+
+    /// Production observer restarts reset Eyes/Manager timestamps. Baseline
+    /// retention uses the process-wide recovery clock supplied here, while the
+    /// returned report keeps the Manager-local clock used by evidence fences.
+    pub async fn evaluate_with_baseline_clock(
+        &mut self,
+        request: GateRequest,
+        baseline_clock_ms: u64,
+    ) -> Result<GateReport, GateRequestError> {
         request.validate()?;
         let started = Instant::now();
         let preexisting_baseline = self.baselines.median_ms(
             &request.local_network.network_fingerprint,
-            request.requested_at_monotonic_ms,
+            baseline_clock_ms,
         );
 
         let (controls, category_targets) = probe_round(
@@ -727,7 +740,7 @@ where
             self.baselines.record_control_round(
                 &request.local_network.network_fingerprint,
                 successful_control_latencies,
-                generated_at_monotonic_ms,
+                baseline_clock_ms.saturating_add(elapsed_ms(started)),
                 request.passive_evidence.is_suspect_round(),
             );
         }
@@ -1453,6 +1466,31 @@ mod tests {
             .unwrap();
         assert_eq!(second.baseline_latency_ms, Some(110));
         assert_eq!(second.slow_threshold_ms, Some(1_610));
+    }
+
+    #[tokio::test]
+    async fn process_baseline_clock_survives_manager_clock_restart() {
+        let mut gate = EnvironmentGate::with_backend(fake_backend());
+        let first = gate
+            .evaluate_with_baseline_clock(
+                gate_request(PassiveEvidenceSummary::default(), 8_000),
+                NOW,
+            )
+            .await
+            .unwrap();
+        assert_eq!(first.baseline_latency_ms, None);
+
+        // A new Eyes/Manager generation starts its report clock near zero,
+        // while the retained Gate continues on the process-wide epoch.
+        let second = gate
+            .evaluate_with_baseline_clock(
+                gate_request(PassiveEvidenceSummary::default(), 5),
+                NOW + 1_000,
+            )
+            .await
+            .unwrap();
+        assert_eq!(second.baseline_latency_ms, Some(110));
+        assert!(second.generated_at_monotonic_ms < 1_000);
     }
 
     #[tokio::test]

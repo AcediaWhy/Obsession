@@ -130,8 +130,19 @@ pub(crate) fn join_workers_bounded(
         .collect()
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct ProcessIdentity(u64);
+
+impl ProcessIdentity {
+    pub(crate) const fn get(self) -> u64 {
+        self.0
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn from_raw(value: u64) -> Self {
+        Self(value)
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct OwnedProcess {
@@ -170,7 +181,18 @@ impl ProcessStopOutcome {
 
 pub(crate) trait ProcessControl: Send + Sync + 'static {
     fn identity(&self, pid: u32) -> Result<Option<ProcessIdentity>, String>;
-    fn kill(&self, pid: u32) -> Result<(), String>;
+    /// Stops `pid` without outliving `deadline`.
+    ///
+    /// Implementations own any helper process they spawn and must reap it before
+    /// returning. This contract lets `stop_processes_bounded` join every worker
+    /// instead of leaving a blocking `taskkill.output()` thread detached.
+    fn kill(&self, pid: u32, deadline: Instant) -> Result<(), ProcessKillError>;
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ProcessKillError {
+    Failed(String),
+    TimedOut,
 }
 
 fn stop_process<C: ProcessControl>(
@@ -190,7 +212,14 @@ fn stop_process<C: ProcessControl>(
         Err(_) => {}
     }
 
-    let kill_error = control.kill(process.pid).err();
+    if Instant::now() >= deadline {
+        return ProcessStopState::TimedOut;
+    }
+    let kill_error = match control.kill(process.pid, deadline) {
+        Ok(()) => None,
+        Err(ProcessKillError::TimedOut) => return ProcessStopState::TimedOut,
+        Err(ProcessKillError::Failed(error)) => Some(error),
+    };
     let mut verification_failed = false;
     loop {
         match control.identity(process.pid) {
@@ -231,10 +260,13 @@ pub(crate) fn stop_processes_bounded<C: ProcessControl>(
     let mut states = vec![None; processes.len()];
     let (tx, rx) = mpsc::channel();
     let deadline = Instant::now() + timeout;
-    let worker_deadline = deadline
-        .checked_sub(Duration::from_millis(5))
-        .unwrap_or(deadline);
+    // Keep a small outer margin for reaping and joining a bounded taskkill
+    // helper after its own deadline expires.
+    let budget = deadline.saturating_duration_since(Instant::now());
+    let reap_margin = (budget / 4).min(Duration::from_millis(50));
+    let worker_deadline = deadline.checked_sub(reap_margin).unwrap_or(deadline);
     let mut pending = 0usize;
+    let mut workers = Vec::with_capacity(processes.len());
 
     for (index, process) in processes.into_iter().enumerate() {
         let tx = tx.clone();
@@ -244,11 +276,14 @@ pub(crate) fn stop_processes_bounded<C: ProcessControl>(
             .spawn(move || {
                 let state = stop_process(process, worker_deadline, control.as_ref());
                 let _ = tx.send((index, state));
+                state
             });
-        if reaper.is_ok() {
-            pending += 1;
-        } else {
-            states[index] = Some(ProcessStopState::ReaperFailed);
+        match reaper {
+            Ok(worker) => {
+                pending += 1;
+                workers.push((index, worker));
+            }
+            Err(_) => states[index] = Some(ProcessStopState::ReaperFailed),
         }
     }
     drop(tx);
@@ -265,6 +300,20 @@ pub(crate) fn stop_processes_bounded<C: ProcessControl>(
                 }
             }
             Err(mpsc::RecvTimeoutError::Timeout | mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+
+    // `ProcessControl::kill` is deadline-bounded, so every worker is now
+    // joinable. Joining is intentional: returning with a live worker would
+    // detach its taskkill child and make the advertised stop bound untrue.
+    for (index, worker) in workers {
+        match worker.join() {
+            Ok(state) => {
+                states[index].get_or_insert(state);
+            }
+            Err(_) => {
+                states[index].get_or_insert(ProcessStopState::ReaperFailed);
+            }
         }
     }
 
@@ -312,19 +361,59 @@ impl ProcessControl for WindowsProcessControl {
         windows_process_identity(pid)
     }
 
-    fn kill(&self, pid: u32) -> Result<(), String> {
-        let output = crate::util::std_command("taskkill")
+    fn kill(&self, pid: u32, deadline: Instant) -> Result<(), ProcessKillError> {
+        use std::process::Stdio;
+
+        let mut child = crate::util::std_command("taskkill")
             .args(["/F", "/T", "/PID", &pid.to_string()])
-            .output()
-            .map_err(|error| format!("taskkill({pid}) failed to start: {error}"))?;
-        if output.status.success() {
-            Ok(())
-        } else {
-            Err(format!(
-                "taskkill({pid}) exited with {:?}: {}",
-                output.status.code(),
-                String::from_utf8_lossy(&output.stderr).trim()
-            ))
+            // taskkill emits only diagnostics here. Avoid pipe back-pressure:
+            // the exit status and subsequent identity check are authoritative.
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|error| {
+                ProcessKillError::Failed(format!("taskkill({pid}) failed to start: {error}"))
+            })?;
+
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) if status.success() => return Ok(()),
+                Ok(Some(status)) => {
+                    return Err(ProcessKillError::Failed(format!(
+                        "taskkill({pid}) exited with {:?}",
+                        status.code()
+                    )));
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    // Best effort termination followed by wait prevents a
+                    // started helper from being detached on the error path.
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(ProcessKillError::Failed(format!(
+                        "taskkill({pid}) wait failed: {error}"
+                    )));
+                }
+            }
+
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                let kill_result = child.kill();
+                let wait_result = child.wait();
+                if let Err(error) = wait_result {
+                    return Err(ProcessKillError::Failed(format!(
+                        "taskkill({pid}) timed out and could not be reaped: {error}"
+                    )));
+                }
+                if let Err(error) = kill_result {
+                    // A race where taskkill exited between try_wait and kill is
+                    // harmless once wait reaped it; the stop itself still used
+                    // the full budget and is reported as timed out.
+                    let _ = error;
+                }
+                return Err(ProcessKillError::TimedOut);
+            }
+            std::thread::sleep(remaining.min(Duration::from_millis(10)));
         }
     }
 }
@@ -448,10 +537,10 @@ mod tests {
             }
         }
 
-        fn kill(&self, _pid: u32) -> Result<(), String> {
+        fn kill(&self, _pid: u32, _deadline: Instant) -> Result<(), ProcessKillError> {
             self.killed.store(true, Ordering::SeqCst);
             if self.kill_fails {
-                Err("fixture kill failure".into())
+                Err(ProcessKillError::Failed("fixture kill failure".into()))
             } else {
                 Ok(())
             }
@@ -491,7 +580,7 @@ mod tests {
                 }
             }
 
-            fn kill(&self, pid: u32) -> Result<(), String> {
+            fn kill(&self, pid: u32, _deadline: Instant) -> Result<(), ProcessKillError> {
                 self.barrier.wait();
                 self.killed.lock().unwrap().insert(pid);
                 Ok(())
@@ -560,7 +649,7 @@ mod tests {
                 Err("fixture identity failure".into())
             }
 
-            fn kill(&self, _pid: u32) -> Result<(), String> {
+            fn kill(&self, _pid: u32, _deadline: Instant) -> Result<(), ProcessKillError> {
                 self.killed.store(true, Ordering::SeqCst);
                 Ok(())
             }
@@ -596,5 +685,46 @@ mod tests {
 
         assert!(started.elapsed() < Duration::from_millis(100));
         assert_eq!(outcomes[0].state, ProcessStopState::TimedOut);
+    }
+
+    #[test]
+    fn blocking_kill_is_timed_out_and_joined_before_return() {
+        struct DeadlineBlockingControl {
+            kill_returned: AtomicBool,
+        }
+
+        impl ProcessControl for DeadlineBlockingControl {
+            fn identity(&self, _pid: u32) -> Result<Option<ProcessIdentity>, String> {
+                Ok(Some(ProcessIdentity(11)))
+            }
+
+            fn kill(&self, _pid: u32, deadline: Instant) -> Result<(), ProcessKillError> {
+                while Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                self.kill_returned.store(true, Ordering::SeqCst);
+                Err(ProcessKillError::TimedOut)
+            }
+        }
+
+        let control = Arc::new(DeadlineBlockingControl {
+            kill_returned: AtomicBool::new(false),
+        });
+        let started = Instant::now();
+        let outcomes = stop_processes_bounded(
+            vec![OwnedProcess {
+                pid: 7,
+                identity: Some(ProcessIdentity(11)),
+            }],
+            Duration::from_millis(40),
+            control.clone(),
+        );
+
+        assert!(started.elapsed() < Duration::from_millis(150));
+        assert_eq!(outcomes[0].state, ProcessStopState::TimedOut);
+        assert!(
+            control.kill_returned.load(Ordering::SeqCst),
+            "stop returned while its kill worker was still detached"
+        );
     }
 }

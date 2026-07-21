@@ -38,6 +38,8 @@ const BASELINE_REFRESH_INTERVAL: Duration = Duration::from_secs(12 * 60 * 60);
 pub struct LegacyReliabilityHandle {
     pub ingress: LegacyIngress,
     status: watch::Receiver<ObserveOnlySnapshot>,
+    registry: Arc<TargetRegistry>,
+    gate: Option<Arc<Mutex<EnvironmentGate>>>,
     stop: watch::Sender<bool>,
     wake: Arc<Notify>,
     join: JoinHandle<()>,
@@ -46,6 +48,19 @@ pub struct LegacyReliabilityHandle {
 impl LegacyReliabilityHandle {
     pub fn snapshot(&self) -> ObserveOnlySnapshot {
         self.status.borrow().clone()
+    }
+
+    /// Immutable registry used by both Eyes and this exact Manager generation.
+    /// Assisted preflight may inspect it, but cannot mutate active ownership.
+    pub fn registry(&self) -> Arc<TargetRegistry> {
+        Arc::clone(&self.registry)
+    }
+
+    /// Shared Environment Gate preserves the process-local latency baseline
+    /// learned by the observe-only runtime. The scoped executor must re-run
+    /// this exact gate before its first process side effect.
+    pub fn environment_gate(&self) -> Option<Arc<Mutex<EnvironmentGate>>> {
+        self.gate.as_ref().map(Arc::clone)
     }
 
     /// Forwards health/lifecycle snapshots into the app-owned public status.
@@ -107,13 +122,37 @@ pub fn spawn(
     registry: Arc<TargetRegistry>,
     lane_generations: BTreeMap<String, LaneGeneration>,
     log_root: PathBuf,
+    started_at_monotonic_ms: u64,
+) -> Result<LegacyReliabilityHandle, super::ingress::FenceBuildError> {
+    spawn_with_environment_gate(
+        context,
+        sensor_generation,
+        registry,
+        lane_generations,
+        log_root,
+        None,
+        started_at_monotonic_ms,
+    )
+}
+
+/// Rebuilds a Manager/Eyes generation while retaining the already learned
+/// process-local Environment Gate baseline. This is used only by the scoped
+/// assisted executor when it installs a tentative candidate sensor plan.
+pub fn spawn_with_environment_gate(
+    context: LegacySessionContext,
+    sensor_generation: SensorGeneration,
+    registry: Arc<TargetRegistry>,
+    lane_generations: BTreeMap<String, LaneGeneration>,
+    log_root: PathBuf,
+    existing_gate: Option<Arc<Mutex<EnvironmentGate>>>,
+    started_at_monotonic_ms: u64,
 ) -> Result<LegacyReliabilityHandle, super::ingress::FenceBuildError> {
     let (ingress, receiver) = channel();
     let counters: Arc<AtomicHealthCounters> = ingress.counters();
     let manager = ObserveOnlyManager::new_with_registry(
         context,
         sensor_generation,
-        registry,
+        Arc::clone(&registry),
         lane_generations,
         counters,
         receiver,
@@ -123,13 +162,31 @@ pub fn spawn(
     let (stop, mut stop_rx) = watch::channel(false);
     let wake = Arc::new(Notify::new());
     let wake_task = Arc::clone(&wake);
+    let gate = existing_gate.or_else(|| {
+        EnvironmentGate::production()
+            .ok()
+            .map(|gate| Arc::new(Mutex::new(gate)))
+    });
+    let gate_task = gate.as_ref().map(Arc::clone);
+    let handle_registry = registry;
     let join = tokio::spawn(async move {
-        run_manager(manager, status_tx, &mut stop_rx, wake_task, log_root).await;
+        run_manager(
+            manager,
+            status_tx,
+            &mut stop_rx,
+            wake_task,
+            log_root,
+            gate_task,
+            started_at_monotonic_ms,
+        )
+        .await;
     });
 
     Ok(LegacyReliabilityHandle {
         ingress,
         status: status_rx,
+        registry: handle_registry,
+        gate,
         stop,
         wake,
         join,
@@ -142,6 +199,8 @@ async fn run_manager(
     stop_rx: &mut watch::Receiver<bool>,
     wake: Arc<Notify>,
     log_root: PathBuf,
+    gate: Option<Arc<Mutex<EnvironmentGate>>>,
+    started_at_monotonic_ms: u64,
 ) {
     let started = Instant::now();
     let mut reliability_log = ReliabilityLog::open(log_root, Utc::now()).ok();
@@ -152,9 +211,6 @@ async fn run_manager(
         ReliabilityEventKind::SessionStarted,
     );
 
-    let gate = EnvironmentGate::production()
-        .ok()
-        .map(|gate| Arc::new(Mutex::new(gate)));
     let baseline_request = gate
         .as_ref()
         .and_then(|_| manager.baseline_gate_request(placeholder_local_network(&manager)));
@@ -162,6 +218,7 @@ async fn run_manager(
         (Some(gate), Some(request)) => Some(spawn_gate_task(
             Arc::clone(gate),
             GatePurpose::Baseline(request),
+            process_monotonic_ms(started_at_monotonic_ms, started),
         )),
         _ => None,
     };
@@ -173,7 +230,7 @@ async fn run_manager(
         };
 
     loop {
-        let now_ms = started.elapsed().as_millis() as u64;
+        let now_ms = manager_monotonic_ms(started);
         tokio::select! {
             biased;
             changed = stop_rx.changed() => {
@@ -181,7 +238,7 @@ async fn run_manager(
                     if let Some(task) = gate_task.take() {
                         task.join.abort();
                     }
-                    let snapshot = manager.shutdown(started.elapsed().as_millis() as u64);
+                    let snapshot = manager.shutdown(manager_monotonic_ms(started));
                     append_snapshot_logs(
                         reliability_log.as_mut(),
                         &previous_snapshot,
@@ -225,7 +282,7 @@ async fn run_manager(
                                     let _ = manager.apply_environment_gate_report(
                                         &prepared,
                                         &report,
-                                        started.elapsed().as_millis() as u64,
+                                        manager_monotonic_ms(started),
                                     );
                                     append_gate_log(
                                         reliability_log.as_mut(),
@@ -238,14 +295,14 @@ async fn run_manager(
                                     let _ = manager.apply_environment_gate_failure(
                                         &prepared,
                                         AssessmentClassification::SensorUnreliable,
-                                        started.elapsed().as_millis() as u64,
+                                        manager_monotonic_ms(started),
                                     );
                                 }
                                 Some(Ok(Err(_))) | Some(Err(_)) | None => {
                                     let _ = manager.apply_environment_gate_failure(
                                         &prepared,
                                         AssessmentClassification::UpstreamDegraded,
-                                        started.elapsed().as_millis() as u64,
+                                        manager_monotonic_ms(started),
                                     );
                                 }
                             }
@@ -292,7 +349,7 @@ async fn run_manager(
                         break;
                     }
                     Err(_) => {
-                        let now_ms = started.elapsed().as_millis() as u64;
+                        let now_ms = manager_monotonic_ms(started);
                         let snapshot = manager.poll(now_ms);
                         append_snapshot_logs(
                             reliability_log.as_mut(),
@@ -305,7 +362,7 @@ async fn run_manager(
                 }
             }
             _ = wake.notified() => {
-                let now_ms = started.elapsed().as_millis() as u64;
+                let now_ms = manager_monotonic_ms(started);
                 let snapshot = manager.poll(now_ms);
                 append_snapshot_logs(
                     reliability_log.as_mut(),
@@ -324,6 +381,7 @@ async fn run_manager(
                     gate_task = Some(spawn_gate_task(
                         Arc::clone(gate),
                         GatePurpose::Assessment(prepared),
+                        process_monotonic_ms(started_at_monotonic_ms, started),
                     ));
                     let snapshot = manager.snapshot();
                     append_snapshot_logs(reliability_log.as_mut(), &previous_snapshot, &snapshot);
@@ -335,6 +393,7 @@ async fn run_manager(
                         gate_task = Some(spawn_gate_task(
                             Arc::clone(gate),
                             GatePurpose::Baseline(request),
+                            process_monotonic_ms(started_at_monotonic_ms, started),
                         ));
                         next_baseline_at = Instant::now() + BASELINE_REFRESH_INTERVAL;
                     } else {
@@ -347,7 +406,7 @@ async fn run_manager(
                     let applied = manager.apply_environment_gate_failure(
                         &prepared,
                         AssessmentClassification::UpstreamDegraded,
-                        started.elapsed().as_millis() as u64,
+                        manager_monotonic_ms(started),
                     );
                     if applied {
                         let snapshot = manager.snapshot();
@@ -365,6 +424,14 @@ async fn run_manager(
     }
 }
 
+fn manager_monotonic_ms(started: Instant) -> u64 {
+    started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
+}
+
+fn process_monotonic_ms(base_ms: u64, started: Instant) -> u64 {
+    base_ms.saturating_add(started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64)
+}
+
 enum GatePurpose {
     Baseline(GateRequest),
     Assessment(PreparedEnvironmentGate),
@@ -375,7 +442,11 @@ struct ActiveGateTask {
     join: JoinHandle<Result<GateReport, GateRequestError>>,
 }
 
-fn spawn_gate_task(gate: Arc<Mutex<EnvironmentGate>>, purpose: GatePurpose) -> ActiveGateTask {
+fn spawn_gate_task(
+    gate: Arc<Mutex<EnvironmentGate>>,
+    purpose: GatePurpose,
+    baseline_clock_ms: u64,
+) -> ActiveGateTask {
     let mut request = match &purpose {
         GatePurpose::Baseline(request) => request.clone(),
         GatePurpose::Assessment(prepared) => prepared.request.clone(),
@@ -398,7 +469,10 @@ fn spawn_gate_task(gate: Arc<Mutex<EnvironmentGate>>, purpose: GatePurpose) -> A
                 request.fence.network_fingerprint.clone()
             },
         };
-        gate.lock().await.evaluate(request).await
+        gate.lock()
+            .await
+            .evaluate_with_baseline_clock(request, baseline_clock_ms)
+            .await
     });
     ActiveGateTask { purpose, join }
 }

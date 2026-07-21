@@ -248,6 +248,40 @@ pub struct EyesHandle {
     divert: Arc<WinDivert>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EyesStartError {
+    message: String,
+    safe_to_retry: bool,
+}
+
+impl EyesStartError {
+    fn clean(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            safe_to_retry: true,
+        }
+    }
+
+    fn partial(message: impl Into<String>, safe_to_retry: bool) -> Self {
+        Self {
+            message: message.into(),
+            safe_to_retry,
+        }
+    }
+
+    pub fn safe_to_retry(&self) -> bool {
+        self.safe_to_retry
+    }
+}
+
+impl std::fmt::Display for EyesStartError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for EyesStartError {}
+
 impl EyesHandle {
     pub fn stop_bounded(mut self, timeout: Duration) -> Vec<WorkerStopOutcome> {
         self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -315,7 +349,7 @@ pub fn start<F>(dll_path: &Path, cfg: Config, on_observation: F) -> Result<EyesH
 where
     F: Fn(Observation) + Send + 'static,
 {
-    start_inner(dll_path, cfg, FILTER, None, on_observation)
+    start_inner(dll_path, cfg, FILTER, None, on_observation).map_err(|error| error.to_string())
 }
 
 /// Legacy-only entry point with a registry-derived TCP capture plan and
@@ -327,7 +361,7 @@ pub fn start_legacy<F>(
     port_plan: &PortPlan,
     health: Arc<AtomicHealthCounters>,
     on_observation: F,
-) -> Result<EyesHandle, String>
+) -> Result<EyesHandle, EyesStartError>
 where
     F: Fn(Observation) + Send + 'static,
 {
@@ -337,7 +371,7 @@ where
     cfg.working_signal_mode = WorkingSignalMode::StrictTls;
     let filter = port_plan
         .to_windivert_filter()
-        .ok_or_else(|| "Legacy Eyes capture plan is empty".to_string())?;
+        .ok_or_else(|| EyesStartError::clean("Legacy Eyes capture plan is empty"))?;
     start_inner(dll_path, cfg, &filter, Some(health), on_observation)
 }
 
@@ -347,11 +381,12 @@ fn start_inner<F>(
     filter: &str,
     health: Option<Arc<AtomicHealthCounters>>,
     on_observation: F,
-) -> Result<EyesHandle, String>
+) -> Result<EyesHandle, EyesStartError>
 where
     F: Fn(Observation) + Send + 'static,
 {
-    let divert = Arc::new(unsafe { WinDivert::open(dll_path, filter)? });
+    let divert =
+        Arc::new(unsafe { WinDivert::open(dll_path, filter) }.map_err(EyesStartError::clean)?);
     let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     // Bounded канал: поток захвата -> поток трекинга. Capture не блокируется
@@ -435,7 +470,7 @@ where
                     }
                 }
             })
-            .map_err(|e| format!("не удалось создать поток захвата: {e}"))?
+            .map_err(|e| EyesStartError::clean(format!("не удалось создать поток захвата: {e}")))?
     };
 
     // Поток трекинга: единоличный владелец FlowTable. Пакеты + тики времени.
@@ -518,8 +553,12 @@ where
                     vec![("eyes-capture-partial-start", capture)],
                     PARTIAL_START_CLEANUP_TIMEOUT,
                 );
-                return Err(format!(
-                    "не удалось создать поток трекинга: {error}; capture cleanup: {cleanup:?}"
+                let safe_to_retry = cleanup.iter().all(|outcome| outcome.is_clean());
+                return Err(EyesStartError::partial(
+                    format!(
+                        "не удалось создать поток трекинга: {error}; capture cleanup: {cleanup:?}"
+                    ),
+                    safe_to_retry,
                 ));
             }
         }
@@ -536,6 +575,12 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn partial_start_error_preserves_cleanup_safety() {
+        assert!(EyesStartError::clean("before open").safe_to_retry());
+        assert!(!EyesStartError::partial("worker leaked", false).safe_to_retry());
+    }
 
     #[test]
     fn tick_deadline_is_time_driven_and_skips_missed_intervals() {

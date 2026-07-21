@@ -11,9 +11,17 @@ use crate::util::VersionedSection;
 use super::assessment::{
     AssessmentClassification, AssessmentConfidence, EvidenceSummary, LanePhase,
 };
-use super::contracts::{EyeHealthState, SensorGeneration, SessionId};
+use super::contracts::{
+    ConfigFingerprint, EyeHealthState, IntentFence, ProcessOwner, ProcessStartIdentity,
+    SensorGeneration, SessionId,
+};
 use super::manager::ObserveOnlySnapshot;
 use super::policy::PresumedIntent;
+use super::recovery::{
+    AssistedApproval, AssistedProposalView, RecoveryAction, RecoveryAttemptView,
+    RecoveryCompletion, RecoveryConfig, RecoveryMode, RecoveryStatus,
+};
+use super::recovery_runtime::IncidentObservation;
 
 pub const STATUS_EVENT: &str = "legacy-reliability://status";
 
@@ -21,6 +29,7 @@ pub const STATUS_EVENT: &str = "legacy-reliability://status";
 #[serde(rename_all = "snake_case")]
 pub enum LegacyReliabilityMode {
     ObserveOnly,
+    Assisted,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -44,6 +53,10 @@ pub struct LegacyReliabilityStatus {
     pub sensor_generation: Option<u64>,
     pub lanes: Vec<LegacyLaneStatus>,
     pub presumed_intent: PresumedIntent,
+    pub proposal: Option<AssistedProposalView>,
+    pub active_attempt: Option<RecoveryAttemptView>,
+    pub last_completion: Option<RecoveryCompletion>,
+    pub negative_cooldown_count: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -78,6 +91,10 @@ impl LegacyReliabilityStatus {
             presumed_intent: PresumedIntent::Wait {
                 reason: AssessmentClassification::AwaitingEvidence,
             },
+            proposal: None,
+            active_attempt: None,
+            last_completion: None,
+            negative_cooldown_count: 0,
         }
     }
 
@@ -159,7 +176,22 @@ impl LegacyReliabilityStatus {
             presumed_intent: PresumedIntent::Wait {
                 reason: AssessmentClassification::AwaitingEvidence,
             },
+            proposal: None,
+            active_attempt: None,
+            last_completion: None,
+            negative_cooldown_count: 0,
         }
+    }
+
+    fn apply_recovery(&mut self, recovery: RecoveryStatus) {
+        self.mode = match recovery.mode {
+            RecoveryMode::ObserveOnly => LegacyReliabilityMode::ObserveOnly,
+            RecoveryMode::Assisted => LegacyReliabilityMode::Assisted,
+        };
+        self.proposal = recovery.proposal;
+        self.active_attempt = recovery.active_attempt;
+        self.last_completion = recovery.last_completion;
+        self.negative_cooldown_count = recovery.negative_cooldown_count;
     }
 
     fn owner(&self) -> Option<StatusOwner> {
@@ -243,10 +275,28 @@ impl StatusOwner {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StatusFence {
+    /// Lifecycle code intentionally replaces whichever session is currently
+    /// public (`inactive` and `starting` use this path).
+    ReplaceAny,
+    /// A Manager callback may update only the exact session + Eyes generation
+    /// that still owns the public projection.
+    ExactOwner(StatusOwner),
+    /// Overlay-only updates must derive their base payload from the status held
+    /// under the same lock; they are never allowed to replace lifecycle state.
+    PreserveCurrent,
+}
+
 /// Publishes a lifecycle transition that intentionally replaces any prior
 /// Legacy session (currently `inactive` and `starting`).
 pub fn publish(app: &AppHandle, next: LegacyReliabilityStatus) -> bool {
-    publish_inner(app, None, next)
+    publish_inner(
+        app,
+        StatusFence::ReplaceAny,
+        RecoveryUpdate::Lifecycle,
+        move |_| next,
+    )
 }
 
 /// Publishes a manager/startup update only while its exact session and sensor
@@ -259,18 +309,219 @@ pub fn publish_if_owned(
 ) -> bool {
     publish_inner(
         app,
-        Some(StatusOwner::new(session_id, sensor_generation)),
-        next,
+        StatusFence::ExactOwner(StatusOwner::new(session_id, sensor_generation)),
+        RecoveryUpdate::Lifecycle,
+        move |_| next,
     )
 }
 
 pub fn publish_snapshot_if_owned(app: &AppHandle, snapshot: &ObserveOnlySnapshot) -> bool {
-    publish_if_owned(
-        app,
+    let state = app.state::<AppState>();
+    let owner = StatusOwner::new(
         snapshot.session.session_id,
         snapshot.session.sensor_generation,
-        LegacyReliabilityStatus::from_snapshot(snapshot),
+    );
+    let prepared = prepare_recovery(&state, snapshot);
+    let update = RecoveryUpdate::Snapshot {
+        session_id: snapshot.session.session_id,
+        prepared: prepared.map(Box::new),
+        now_ms: state.legacy_monotonic_ms(),
+    };
+    let next = LegacyReliabilityStatus::from_snapshot(snapshot);
+    publish_inner(app, StatusFence::ExactOwner(owner), update, move |_| next)
+}
+
+struct PreparedRecovery {
+    observation: IncidentObservation,
+    fence: IntentFence,
+    previous: RecoveryConfig,
+    previous_owner: ProcessOwner,
+    candidates: Vec<RecoveryConfig>,
+}
+
+enum RecoveryUpdate {
+    Lifecycle,
+    OverlayOnly,
+    Snapshot {
+        session_id: SessionId,
+        prepared: Option<Box<PreparedRecovery>>,
+        now_ms: u64,
+    },
+}
+
+fn prepare_recovery(state: &AppState, snapshot: &ObserveOnlySnapshot) -> Option<PreparedRecovery> {
+    if snapshot.session.closed || snapshot.health.state != EyeHealthState::Ready {
+        return None;
+    }
+    let PresumedIntent::SwitchLane {
+        category,
+        candidate_config,
+        ..
+    } = &snapshot.presumed_intent
+    else {
+        return None;
+    };
+    let lane = snapshot
+        .lanes
+        .iter()
+        .find(|lane| lane.category == *category)?;
+    let active_config = snapshot.active_configs.get(category)?;
+    let registry = state
+        .legacy_manager
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .as_ref()?
+        .registry();
+    if registry.version() != snapshot.session.target_registry_version {
+        return None;
+    }
+
+    let runtime = state
+        .dpi
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .snapshot_legacy_category(category)
+        .ok()?;
+    if runtime.owner.config_file != *active_config
+        || runtime.owner.lane_generation != lane.lane_generation
+    {
+        return None;
+    }
+    let active_fingerprint = registry
+        .config_fingerprint(category, active_config)
+        .ok()?
+        .as_hex()
+        .to_owned();
+    if runtime.owner.config_fingerprint != active_fingerprint {
+        return None;
+    }
+
+    let mut candidate_ids = Vec::new();
+    for candidate in std::iter::once(candidate_config).chain(
+        snapshot
+            .candidate_configs
+            .get(category)
+            .into_iter()
+            .flatten(),
+    ) {
+        if candidate != active_config && !candidate_ids.contains(candidate) {
+            candidate_ids.push(candidate.clone());
+        }
+    }
+    let candidates = candidate_ids
+        .into_iter()
+        .filter_map(|candidate| {
+            let fingerprint = registry
+                .config_fingerprint(category, &candidate)
+                .ok()?
+                .as_hex()
+                .to_owned();
+            Some(RecoveryConfig::new(candidate, fingerprint))
+        })
+        .collect::<Vec<_>>();
+    if candidates.is_empty() {
+        return None;
+    }
+
+    Some(PreparedRecovery {
+        observation: IncidentObservation {
+            session_id: snapshot.session.session_id,
+            sensor_generation: snapshot.session.sensor_generation,
+            category: category.clone(),
+            lane_generation: lane.lane_generation,
+            evidence_epoch: lane.evidence_epoch,
+            classification: lane.classification,
+        },
+        fence: IntentFence {
+            session_id: snapshot.session.session_id,
+            category: category.clone(),
+            lane_generation: lane.lane_generation,
+            sensor_generation: snapshot.session.sensor_generation,
+            registry_version: snapshot.session.target_registry_version,
+            network_fingerprint: snapshot.session.network_fingerprint_at_start.clone(),
+        },
+        previous: RecoveryConfig::new(active_config.clone(), active_fingerprint.clone()),
+        previous_owner: ProcessOwner {
+            pid: runtime.owner.pid,
+            process_start_identity: ProcessStartIdentity::new(runtime.owner.process_identity.get()),
+            config_fingerprint: ConfigFingerprint::new(active_fingerprint),
+            lane_generation: runtime.owner.lane_generation,
+        },
+        candidates,
+    })
+}
+
+fn recovery_mode_from_settings(settings: &crate::settings::Settings) -> RecoveryMode {
+    if settings.legacy_reliability_mode == "assisted" {
+        RecoveryMode::Assisted
+    } else {
+        RecoveryMode::ObserveOnly
+    }
+}
+
+pub fn refresh_recovery_overlay(app: &AppHandle) -> bool {
+    publish_inner(
+        app,
+        StatusFence::PreserveCurrent,
+        RecoveryUpdate::OverlayOnly,
+        LegacyReliabilityStatus::clone,
     )
+}
+
+/// Consumes only the opaque UI token and reconstructs every safety-sensitive
+/// field from the current backend Manager snapshot.
+pub fn approve_pending(
+    app: &AppHandle,
+    approval: AssistedApproval,
+) -> Result<RecoveryAction, String> {
+    let state = app.state::<AppState>();
+    if state
+        .shutting_down
+        .load(std::sync::atomic::Ordering::SeqCst)
+    {
+        return Err("Приложение завершает работу".into());
+    }
+    let proposal = state
+        .legacy_recovery
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .status()
+        .proposal
+        .ok_or_else(|| "Предложение уже недоступно".to_owned())?;
+    let snapshot = state
+        .legacy_manager
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .as_ref()
+        .map(super::runtime::LegacyReliabilityHandle::snapshot)
+        .ok_or_else(|| "Legacy Manager не запущен".to_owned())?;
+    if snapshot.session.closed || snapshot.health.state != EyeHealthState::Ready {
+        return Err("Наблюдение сейчас ненадёжно; предложение отменено".into());
+    }
+    let current_fence = super::executor::intent_fence_from_snapshot(&snapshot, &proposal.category)
+        .ok_or_else(|| "Категория предложения больше не активна".to_owned())?;
+    let now_ms = state.legacy_monotonic_ms();
+    // Settings -> recovery is the canonical mode/approval order. A concurrent
+    // downgrade therefore either revokes this proposal first or linearizes
+    // after approval (an already active attempt still finishes safely).
+    let settings = state
+        .settings
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mode = recovery_mode_from_settings(&settings);
+    let action = {
+        let mut recovery = state
+            .legacy_recovery
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        recovery.set_mode(mode);
+        recovery
+            .approve(approval, &current_fence, now_ms)
+            .map_err(|error| format!("Предложение отклонено: {error:?}"))?
+    };
+    drop(settings);
+    refresh_recovery_overlay(app);
+    Ok(action)
 }
 
 pub(crate) fn current_owner(app: &AppHandle) -> Option<StatusOwner> {
@@ -282,20 +533,16 @@ pub(crate) fn current_owner(app: &AppHandle) -> Option<StatusOwner> {
 }
 
 pub(crate) fn publish_blind_if_owner(app: &AppHandle, owner: StatusOwner) -> bool {
-    let state = app.state::<AppState>();
-    let next = {
-        let guard = state
-            .legacy_reliability_status
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if guard.owner() != Some(owner) {
-            return false;
-        }
-        let mut next = guard.clone();
-        next.normalize_blind();
-        next
-    };
-    publish_inner(app, Some(owner), next)
+    publish_inner(
+        app,
+        StatusFence::ExactOwner(owner),
+        RecoveryUpdate::Lifecycle,
+        |current| {
+            let mut next = current.clone();
+            next.normalize_blind();
+            next
+        },
+    )
 }
 
 /// Marks the currently owned session terminally unavailable without allowing a
@@ -305,39 +552,144 @@ pub fn publish_current_blind(app: &AppHandle) -> bool {
     current_owner(app).is_some_and(|owner| publish_blind_if_owner(app, owner))
 }
 
-fn publish_inner(
+fn publish_inner<BuildNext>(
     app: &AppHandle,
-    expected_owner: Option<StatusOwner>,
-    next: LegacyReliabilityStatus,
-) -> bool {
+    fence: StatusFence,
+    recovery_update: RecoveryUpdate,
+    build_next: BuildNext,
+) -> bool
+where
+    BuildNext: FnOnce(&LegacyReliabilityStatus) -> LegacyReliabilityStatus,
+{
     let state = app.state::<AppState>();
-    let Some(section) = transition(
+    // A tentative observer registry points at the candidate before the old
+    // process is stopped. Public "active config" must instead reflect the
+    // exact process-backed DpiState at every recovery phase.
+    let live_configs =
+        {
+            let dpi = state
+                .dpi
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            match dpi.active_launch.as_ref() {
+                Some(crate::state::DpiLaunchSpec::Legacy { selections }) => selections
+                    .iter()
+                    .cloned()
+                    .collect::<std::collections::BTreeMap<_, _>>(),
+                _ => std::collections::BTreeMap::new(),
+            }
+        };
+    // Keep the settings snapshot locked through status -> recovery commit so
+    // an older Assisted read cannot overwrite a concurrent ObserveOnly
+    // downgrade after that downgrade has already refreshed the coordinator.
+    let settings = state
+        .settings
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mode = recovery_mode_from_settings(&settings);
+
+    let Some(section) = transition_with(
         &state.legacy_reliability_status,
         &state.legacy_reliability_revision,
-        expected_owner,
-        next,
+        fence,
+        build_next,
+        |next| {
+            for lane in &mut next.lanes {
+                lane.active_config = live_configs.get(&lane.category).cloned();
+            }
+
+            // `transition_with` holds the status guard and has already checked
+            // the owner/revision fence. This status -> recovery lock order is
+            // process-wide; recovery callers release their guard before asking
+            // for an overlay refresh.
+            let recovery_status = {
+                let mut recovery = state
+                    .legacy_recovery
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                match recovery_update {
+                    RecoveryUpdate::Lifecycle => {
+                        recovery.set_mode(mode);
+                        if matches!(
+                            next.phase,
+                            LegacyReliabilityPhase::Inactive
+                                | LegacyReliabilityPhase::Degraded
+                                | LegacyReliabilityPhase::Blind
+                        ) {
+                            recovery.cancel_pending();
+                        }
+                    }
+                    RecoveryUpdate::OverlayOnly => recovery.set_mode(mode),
+                    RecoveryUpdate::Snapshot {
+                        session_id,
+                        prepared,
+                        now_ms,
+                    } => {
+                        recovery.observe_session(session_id);
+                        recovery.set_mode(mode);
+                        if let Some(prepared) = prepared {
+                            let prepared = *prepared;
+                            let _ = recovery.consider(
+                                prepared.observation,
+                                prepared.fence,
+                                prepared.previous,
+                                prepared.previous_owner,
+                                prepared.candidates,
+                                now_ms,
+                            );
+                        } else {
+                            // A proposal is useful only while the exact adverse
+                            // assessment still owns the lane. Active attempts
+                            // are intentionally unaffected.
+                            recovery.cancel_pending();
+                        }
+                    }
+                }
+                recovery.status()
+            };
+            next.apply_recovery(recovery_status);
+        },
     ) else {
         return false;
     };
+    drop(settings);
     let _ = app.emit(STATUS_EVENT, section);
     true
 }
 
+#[cfg(test)]
 fn transition(
     current: &Mutex<LegacyReliabilityStatus>,
     revision: &RevisionClock,
-    expected_owner: Option<StatusOwner>,
+    fence: StatusFence,
     next: LegacyReliabilityStatus,
 ) -> Option<VersionedSection<LegacyReliabilityStatus>> {
+    transition_with(current, revision, fence, move |_| next, |_| {})
+}
+
+fn transition_with<BuildNext, PrepareNext>(
+    current: &Mutex<LegacyReliabilityStatus>,
+    revision: &RevisionClock,
+    fence: StatusFence,
+    build_next: BuildNext,
+    prepare_next: PrepareNext,
+) -> Option<VersionedSection<LegacyReliabilityStatus>>
+where
+    BuildNext: FnOnce(&LegacyReliabilityStatus) -> LegacyReliabilityStatus,
+    PrepareNext: FnOnce(&mut LegacyReliabilityStatus),
+{
     let mut guard = current
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if expected_owner.is_some_and(|owner| guard.owner() != Some(owner))
-        || (expected_owner.is_some()
-            && guard.phase == LegacyReliabilityPhase::Blind
-            && next.phase != LegacyReliabilityPhase::Blind)
-        || *guard == next
-    {
+    let mut next = build_next(&guard);
+    if !fence.allows(&guard, &next) {
+        return None;
+    }
+    // Safety-sensitive side effects (proposal reconciliation/cancellation)
+    // happen only after the exact fence succeeds and while the same status
+    // guard prevents lifecycle replacement.
+    prepare_next(&mut next);
+    if *guard == next {
         return None;
     }
     *guard = next.clone();
@@ -345,8 +697,25 @@ fn transition(
     Some(VersionedSection::new(revision, next))
 }
 
+impl StatusFence {
+    fn allows(self, current: &LegacyReliabilityStatus, next: &LegacyReliabilityStatus) -> bool {
+        let exact_owner_is_allowed = |owner| {
+            current.owner() == Some(owner)
+                && next.owner() == Some(owner)
+                && !(current.phase == LegacyReliabilityPhase::Blind
+                    && next.phase != LegacyReliabilityPhase::Blind)
+        };
+        match self {
+            Self::ReplaceAny => true,
+            Self::ExactOwner(owner) => exact_owner_is_allowed(owner),
+            Self::PreserveCurrent => current == next,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
     use std::collections::BTreeMap;
 
     use serde_json::json;
@@ -393,6 +762,9 @@ mod tests {
             lanes: Vec::new(),
             presumed_intent: PresumedIntent::default(),
             active_configs: BTreeMap::new(),
+            candidate_configs: BTreeMap::new(),
+            gate_probe_hosts: BTreeMap::new(),
+            confirmation_flows: Vec::new(),
         }
     }
 
@@ -416,7 +788,11 @@ mod tests {
                 "presumedIntent": {
                     "kind": "wait",
                     "reason": "awaiting_evidence"
-                }
+                },
+                "proposal": null,
+                "activeAttempt": null,
+                "lastCompletion": null,
+                "negativeCooldownCount": 0
             })
         );
 
@@ -543,9 +919,15 @@ mod tests {
         let sensor = SensorGeneration::new(5);
         let starting = LegacyReliabilityStatus::starting(vec!["discord".into()], session, sensor);
 
-        let first = transition(&current, &revision, None, starting.clone()).unwrap();
+        let first = transition(
+            &current,
+            &revision,
+            StatusFence::ReplaceAny,
+            starting.clone(),
+        )
+        .unwrap();
         assert_eq!(first.revision, 1);
-        assert!(transition(&current, &revision, None, starting).is_none());
+        assert!(transition(&current, &revision, StatusFence::ReplaceAny, starting,).is_none());
         assert_eq!(revision.current(), 1);
 
         let stale = LegacyReliabilityStatus::blind(
@@ -556,7 +938,7 @@ mod tests {
         assert!(transition(
             &current,
             &revision,
-            Some(StatusOwner::new(
+            StatusFence::ExactOwner(StatusOwner::new(
                 SessionId::new(4),
                 SensorGeneration::new(6)
             )),
@@ -569,7 +951,7 @@ mod tests {
         let second = transition(
             &current,
             &revision,
-            Some(StatusOwner::new(session, sensor)),
+            StatusFence::ExactOwner(StatusOwner::new(session, sensor)),
             blind,
         )
         .unwrap();
@@ -584,7 +966,7 @@ mod tests {
         assert!(transition(
             &current,
             &revision,
-            Some(StatusOwner::new(session, sensor)),
+            StatusFence::ExactOwner(StatusOwner::new(session, sensor)),
             stale_ready,
         )
         .is_none());
@@ -593,7 +975,7 @@ mod tests {
         let inactive = transition(
             &current,
             &revision,
-            None,
+            StatusFence::ReplaceAny,
             LegacyReliabilityStatus::inactive(),
         )
         .unwrap();
@@ -604,7 +986,7 @@ mod tests {
         assert!(transition(
             &current,
             &revision,
-            Some(StatusOwner::new(
+            StatusFence::ExactOwner(StatusOwner::new(
                 SessionId::new(11),
                 SensorGeneration::new(17)
             )),
@@ -612,5 +994,82 @@ mod tests {
         )
         .is_none());
         assert_eq!(revision.current(), 3);
+    }
+
+    #[test]
+    fn rejected_owned_transition_does_not_run_recovery_mutator() {
+        let session = SessionId::new(3);
+        let sensor = SensorGeneration::new(5);
+        let current = Mutex::new(LegacyReliabilityStatus::starting(
+            vec!["discord".into()],
+            session,
+            sensor,
+        ));
+        let revision = RevisionClock::default();
+        revision.bump();
+        let mutated = Cell::new(false);
+
+        let stale = LegacyReliabilityStatus::blind(
+            vec!["discord".into()],
+            SessionId::new(4),
+            SensorGeneration::new(6),
+        );
+        assert!(transition_with(
+            &current,
+            &revision,
+            StatusFence::ExactOwner(StatusOwner::new(
+                SessionId::new(4),
+                SensorGeneration::new(6),
+            )),
+            move |_| stale,
+            |_| mutated.set(true),
+        )
+        .is_none());
+
+        assert!(!mutated.get());
+        assert_eq!(revision.current(), 1);
+        assert_eq!(
+            current.lock().unwrap().owner(),
+            Some(StatusOwner::new(session, sensor))
+        );
+    }
+
+    #[test]
+    fn preserve_current_refresh_cannot_replace_ownerless_or_newer_lifecycle_state() {
+        let session = SessionId::new(3);
+        let sensor = SensorGeneration::new(5);
+        let current = Mutex::new(LegacyReliabilityStatus::starting(
+            vec!["discord".into()],
+            session,
+            sensor,
+        ));
+        let revision = RevisionClock::default();
+        let mutated = Cell::new(false);
+
+        assert!(transition_with(
+            &current,
+            &revision,
+            StatusFence::PreserveCurrent,
+            |_| LegacyReliabilityStatus::inactive(),
+            |_| mutated.set(true),
+        )
+        .is_none());
+        assert!(!mutated.get());
+
+        let section = transition_with(
+            &current,
+            &revision,
+            StatusFence::PreserveCurrent,
+            LegacyReliabilityStatus::clone,
+            |next| next.mode = LegacyReliabilityMode::Assisted,
+        )
+        .unwrap();
+        assert_eq!(section.value.phase, LegacyReliabilityPhase::Starting);
+        assert_eq!(
+            section.value.owner(),
+            Some(StatusOwner::new(session, sensor))
+        );
+        assert_eq!(section.value.mode, LegacyReliabilityMode::Assisted);
+        assert_eq!(revision.current(), 1);
     }
 }

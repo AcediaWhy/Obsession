@@ -4,7 +4,7 @@
 //! reports. It cannot mutate cache state, manage processes, or execute the
 //! presumed intents returned by the pure Phase 2 policy.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 
 use serde::Serialize;
@@ -162,6 +162,32 @@ pub struct ObserveOnlySnapshot {
     pub lanes: Vec<LaneAssessment>,
     pub presumed_intent: PresumedIntent,
     pub active_configs: BTreeMap<String, String>,
+    /// Backend-only candidate order used by Assisted proposal reconciliation.
+    /// It is intentionally omitted from JSON diagnostics and public status.
+    #[serde(skip_serializing)]
+    pub candidate_configs: BTreeMap<String, Vec<String>>,
+    /// Exact recently observed SNI hosts for a fresh Gate retry. Raw hosts must
+    /// never cross the backend boundary or enter the reliability log.
+    #[serde(skip_serializing)]
+    pub gate_probe_hosts: BTreeMap<String, Vec<String>>,
+    /// Backend-only bounded journal used to arm confirmation after candidate
+    /// readiness. Sequence fencing prevents Working emitted by the previous
+    /// process during observer preflight from confirming the candidate.
+    #[serde(skip_serializing)]
+    pub confirmation_flows: Vec<ConfirmationFlow>,
+}
+
+pub const MAX_CONFIRMATION_FLOWS: usize = 512;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConfirmationFlow {
+    pub sequence: u64,
+    pub category: String,
+    pub lane_generation: LaneGeneration,
+    pub flow_id: u64,
+    pub target: String,
+    pub diagnosis: crate::eyes::Diagnosis,
+    pub monotonic_ts: u64,
 }
 
 /// Immutable, fully fenced request paired with the assessor token that must be
@@ -228,6 +254,7 @@ pub struct ObserveOnlyManager {
     observation_sequence: u64,
     last_gap_sequence: Option<u64>,
     last_accepted_flow_sequence: Option<u64>,
+    confirmation_flows: VecDeque<ConfirmationFlow>,
     receiver_failed: bool,
     registry: Option<Arc<TargetRegistry>>,
     assessor: LaneAssessor,
@@ -364,6 +391,7 @@ impl ObserveOnlyManager {
             observation_sequence: 0,
             last_gap_sequence: None,
             last_accepted_flow_sequence: None,
+            confirmation_flows: VecDeque::new(),
             receiver_failed: false,
             registry,
             assessor,
@@ -457,6 +485,25 @@ impl ObserveOnlyManager {
                     .map(|active| (category.clone(), active.clone()))
             })
             .collect();
+        let candidate_configs = self
+            .lane_config_options
+            .iter()
+            .map(|(category, options)| (category.clone(), options.candidates.clone()))
+            .collect();
+        let gate_probe_hosts = self
+            .lane_generations
+            .keys()
+            .map(|category| {
+                (
+                    category.clone(),
+                    self.assessor.adverse_probe_hosts(
+                        category,
+                        self.logical_now_ms,
+                        super::environment_gate::MAX_CATEGORY_TARGETS,
+                    ),
+                )
+            })
+            .collect();
         ObserveOnlySnapshot {
             session: ObserveOnlySessionStatus {
                 session_id: self.context.session_id(),
@@ -484,6 +531,9 @@ impl ObserveOnlyManager {
             lanes,
             presumed_intent,
             active_configs,
+            candidate_configs,
+            gate_probe_hosts,
+            confirmation_flows: self.confirmation_flows.iter().cloned().collect(),
         }
     }
 
@@ -647,8 +697,18 @@ impl ObserveOnlyManager {
                 EyeEvent::Flow(flow),
             ) => {
                 self.logical_now_ms = self.logical_now_ms.max(flow.monotonic_ts);
-                self.observe_attributed_flow(&category, lane_generation, &flow);
+                let confirmation_target =
+                    self.observe_attributed_flow(&category, lane_generation, &flow);
                 let sequence = self.next_sequence();
+                if let Some(target) = confirmation_target {
+                    self.record_confirmation_flow(
+                        sequence,
+                        &category,
+                        lane_generation,
+                        target,
+                        &flow,
+                    );
+                }
                 self.accepted.total_events = self.accepted.total_events.saturating_add(1);
                 self.accepted.attributed_flows = self.accepted.attributed_flows.saturating_add(1);
                 self.last_accepted_flow_sequence = Some(sequence);
@@ -850,18 +910,16 @@ impl ObserveOnlyManager {
         category: &str,
         lane_generation: LaneGeneration,
         flow: &FlowEvent,
-    ) {
+    ) -> Option<String> {
         if !self.assessor.sensor_reliable() || flow.lane_generation != Some(lane_generation) {
-            return;
+            return None;
         }
-        let Some(registry) = self.registry.as_ref() else {
-            return;
-        };
+        let registry = self.registry.as_ref()?;
         let Attribution::Matched { target, owner } = registry.attribute_active(&flow.domain) else {
-            return;
+            return None;
         };
         if owner.category != category {
-            return;
+            return None;
         }
         let _ = self
             .assessor
@@ -869,6 +927,32 @@ impl ObserveOnlyManager {
         if !self.assessor.sensor_reliable() {
             self.last_assessment_unreliable_at_ms = Some(self.logical_now_ms);
         }
+        Some(target)
+    }
+
+    fn record_confirmation_flow(
+        &mut self,
+        sequence: u64,
+        category: &str,
+        lane_generation: LaneGeneration,
+        target: String,
+        flow: &FlowEvent,
+    ) {
+        if flow.transport != super::contracts::Transport::Tls {
+            return;
+        }
+        if self.confirmation_flows.len() == MAX_CONFIRMATION_FLOWS {
+            self.confirmation_flows.pop_front();
+        }
+        self.confirmation_flows.push_back(ConfirmationFlow {
+            sequence,
+            category: category.to_owned(),
+            lane_generation,
+            flow_id: flow.flow_id,
+            target,
+            diagnosis: flow.diagnosis,
+            monotonic_ts: flow.monotonic_ts,
+        });
     }
 
     fn sync_assessment_health(&mut self) {
@@ -901,6 +985,7 @@ impl ObserveOnlyManager {
         ) {
             self.last_assessment_unreliable_at_ms = Some(self.logical_now_ms);
         }
+        self.confirmation_flows.clear();
     }
 
     fn next_sequence(&mut self) -> u64 {
@@ -1212,6 +1297,45 @@ mod tests {
             snapshot.last_gap_sequence.unwrap() < snapshot.last_accepted_flow_sequence.unwrap()
         );
         assert_eq!(snapshot.health.state, EyeHealthState::Degraded);
+    }
+
+    #[test]
+    fn confirmation_journal_is_sequence_fenced_and_cleared_by_gap() {
+        let (mut manager, registry) = production_fixture();
+        assert!(manager.snapshot().confirmation_flows.is_empty());
+
+        let disposition = manager.process_event(
+            10,
+            EyeEvent::Flow(flow_for(
+                registry.version(),
+                "one.example",
+                77,
+                Diagnosis::Working,
+                10,
+            )),
+        );
+        let sequence = match disposition {
+            EventDisposition::Accepted {
+                event: AcceptedEvent::AttributedFlow { sequence, .. },
+            } => sequence,
+            other => panic!("unexpected flow disposition: {other:?}"),
+        };
+        let snapshot = manager.snapshot();
+        assert_eq!(snapshot.confirmation_flows.len(), 1);
+        assert_eq!(snapshot.confirmation_flows[0].sequence, sequence);
+        assert_eq!(snapshot.confirmation_flows[0].flow_id, 77);
+        assert_eq!(snapshot.confirmation_flows[0].target, "one.example");
+
+        manager.process_event(
+            11,
+            EyeEvent::Gap(GapEvent {
+                envelope: EventEnvelope::new(SESSION.into(), SENSOR.into(), registry.version()),
+                from_ts: 10,
+                to_ts: 11,
+                dropped_events: 1,
+            }),
+        );
+        assert!(manager.snapshot().confirmation_flows.is_empty());
     }
 
     #[test]

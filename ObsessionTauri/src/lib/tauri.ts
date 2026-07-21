@@ -115,6 +115,8 @@ export interface Settings {
   ai_provider: string;
   has_completed_onboarding: boolean;
   auto_recovery: boolean;
+  /** Legacy reliability rollout; automatic mode is intentionally unavailable. */
+  legacy_reliability_mode: "observe_only" | "assisted";
   reduce_motion: boolean;
   /** Глобальный хоткей вкл/выкл защиты (Tauri-акселератор, напр. "Ctrl+Shift+KeyO"). */
   hotkey_toggle: string;
@@ -223,6 +225,55 @@ export type LegacyReliabilityClassification =
 
 export type LegacyReliabilityConfidence = "none" | "low" | "medium" | "high";
 
+export type LegacyReliabilityMode = "observe_only" | "assisted";
+
+export type LegacyRecoveryPhase =
+  | "preflight"
+  | "stopping"
+  | "starting"
+  | "confirming"
+  | "rolling_back"
+  | "applied"
+  | "process_failed";
+
+export type LegacyRecoveryDisposition =
+  | "candidate_applied"
+  | "previous_preserved"
+  | "rolled_back"
+  | "process_failed";
+
+export interface LegacyReliabilityProposal {
+  proposalId: number;
+  attemptId: number;
+  incidentId: number;
+  category: string;
+  previousConfigId: string;
+  candidateConfigId: string;
+  /** Backend monotonic time; intentionally not comparable with Date.now(). */
+  expiresAtMonotonicMs: number;
+}
+
+export interface LegacyRecoveryAttempt {
+  attemptId: number;
+  incidentId: number;
+  category: string;
+  previousConfigId: string;
+  candidateConfigId: string;
+  phase: LegacyRecoveryPhase;
+  phaseStartedAtMonotonicMs: number;
+}
+
+export interface LegacyRecoveryCompletion {
+  attemptId: number;
+  incidentId: number;
+  category: string;
+  previousConfigId: string;
+  candidateConfigId: string;
+  phase: LegacyRecoveryPhase;
+  disposition: LegacyRecoveryDisposition;
+  finishedAtMonotonicMs: number;
+}
+
 export interface LegacyReliabilityEvidence {
   workingFlows: number;
   workingTargets: number;
@@ -269,13 +320,17 @@ export type LegacyReliabilityPresumedIntent =
  * mode and never means that a configuration change was executed.
  */
 export interface LegacyReliabilityStatus {
-  mode: "observe_only";
+  mode: LegacyReliabilityMode;
   phase: LegacyReliabilityPhase;
   activeCategories: string[];
   sessionId: number | null;
   sensorGeneration: number | null;
   lanes: LegacyReliabilityLaneAssessment[];
   presumedIntent: LegacyReliabilityPresumedIntent;
+  proposal: LegacyReliabilityProposal | null;
+  activeAttempt: LegacyRecoveryAttempt | null;
+  lastCompletion: LegacyRecoveryCompletion | null;
+  negativeCooldownCount: number;
 }
 
 export type AdaptiveCategory = "discord" | "youtube_twitch" | "gaming";
@@ -457,6 +512,10 @@ export const api = {
   brainSetEnabled: (enabled: boolean) =>
     invoke<void>("brain_set_enabled", { enabled }),
   brainGetStatus: () => invoke<BrainStatus | null>("brain_get_status"),
+  legacyReliabilityApprove: (proposalId: number, attemptId: number) =>
+    invoke<void>("legacy_reliability_approve", {
+      approval: { proposalId, attemptId },
+    }),
   adaptiveGetStatus: () =>
     invoke<AdaptiveStatus | null>("adaptive_get_status"),
   adaptiveStartSearch: (category: AdaptiveCategory, transport: AdaptiveTransport) =>
