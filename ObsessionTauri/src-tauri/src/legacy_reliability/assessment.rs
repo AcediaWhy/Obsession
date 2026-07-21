@@ -89,8 +89,9 @@ pub struct LaneAssessment {
     pub confidence: AssessmentConfidence,
     pub evidence: EvidenceSummary,
     /// UX-only last-known-good memory for this exact lane generation. Despite
-    /// the legacy wire name, it is intentionally sticky until contrary
-    /// evidence or sensor invalidation and never authorizes a policy action.
+    /// the legacy wire name, it is intentionally sticky until a contrary
+    /// evidence quorum or sensor invalidation and never authorizes a policy
+    /// action.
     pub working_confirmed_recently: bool,
     pub evidence_epoch: u64,
     pub assessed_at_ms: u64,
@@ -286,9 +287,6 @@ impl LaneAssessor {
             return true;
         }
 
-        if matches!(kind, EvidenceKind::Reset | EvidenceKind::TlsBlackhole) {
-            lane.unrefuted_working_confirmation = false;
-        }
         let before = summarize(&lane.evidence);
         lane.evidence.push_back(EvidencePoint {
             ts_ms: flow.monotonic_ts,
@@ -306,6 +304,12 @@ impl LaneAssessor {
             lane.gate_in_flight = false;
             lane.applied_gate = None;
             after = summarize(&lane.evidence);
+        } else if after.reset_quorum() || after.blackhole_quorum() {
+            // A single endpoint can timeout or reset transiently while the
+            // category remains usable. Only the same cross-target quorum that
+            // arms the Environment Gate is strong enough to refute the
+            // display-only session confirmation.
+            lane.unrefuted_working_confirmation = false;
         }
         let changed = before != after;
         self.arm_gate_if_needed(category, now_ms);
@@ -880,21 +884,77 @@ mod tests {
     }
 
     #[test]
-    fn adverse_incident_and_sensor_invalidation_clear_working_confirmation() {
-        for diagnosis in [Diagnosis::TcpReset, Diagnosis::TlsBlackhole] {
-            let mut assessor = assessor(2);
-            observe(&mut assessor, 1, "one.test", 1, Diagnosis::Working);
-            observe(&mut assessor, 2, "two.test", 2, Diagnosis::Working);
-            assert!(assessor.snapshots(2)[0].working_confirmed_recently);
+    fn subquorum_adverse_evidence_keeps_working_confirmation() {
+        let mut blackhole = assessor(2);
+        observe(&mut blackhole, 1, "one.test", 1, Diagnosis::Working);
+        observe(&mut blackhole, 2, "two.test", 2, Diagnosis::Working);
+        observe(&mut blackhole, 3, "one.test", 3, Diagnosis::TlsBlackhole);
+        observe(&mut blackhole, 4, "one.test", 4, Diagnosis::TlsBlackhole);
+        let same_target_timeouts = blackhole.snapshots(4).remove(0);
+        assert_eq!(same_target_timeouts.confidence, AssessmentConfidence::Low);
+        assert_eq!(same_target_timeouts.evidence.blackhole_flows, 2);
+        assert_eq!(same_target_timeouts.evidence.blackhole_targets, 1);
+        assert!(same_target_timeouts.working_confirmed_recently);
+        assert!(blackhole.take_gate_request().is_none());
 
-            observe(&mut assessor, 3, "one.test", 3, diagnosis);
-            assert!(!assessor.snapshots(3)[0].working_confirmed_recently);
+        let mut reset = assessor(2);
+        observe(&mut reset, 1, "one.test", 1, Diagnosis::Working);
+        observe(&mut reset, 2, "two.test", 2, Diagnosis::Working);
+        observe(&mut reset, 3, "one.test", 3, Diagnosis::TcpReset);
+        observe(&mut reset, 4, "two.test", 4, Diagnosis::TcpReset);
+        let two_target_resets = reset.snapshots(4).remove(0);
+        assert_eq!(two_target_resets.evidence.reset_flows, 2);
+        assert_eq!(two_target_resets.evidence.reset_targets, 2);
+        assert!(two_target_resets.working_confirmed_recently);
+        assert!(reset.take_gate_request().is_none());
+    }
 
-            observe(&mut assessor, 4, "one.test", 4, Diagnosis::Working);
-            observe(&mut assessor, 5, "two.test", 5, Diagnosis::Working);
-            assert!(assessor.snapshots(5)[0].working_confirmed_recently);
-        }
+    #[test]
+    fn adverse_quorum_clears_working_confirmation_until_working_recovers() {
+        let mut blackhole = assessor(2);
+        observe(&mut blackhole, 1, "one.test", 1, Diagnosis::Working);
+        observe(&mut blackhole, 2, "two.test", 2, Diagnosis::Working);
+        observe(&mut blackhole, 3, "one.test", 3, Diagnosis::TlsBlackhole);
+        observe(&mut blackhole, 4, "two.test", 4, Diagnosis::TlsBlackhole);
+        assert!(!blackhole.snapshots(4)[0].working_confirmed_recently);
+        assert_eq!(
+            blackhole.take_gate_request().unwrap().trigger,
+            GateTrigger::BlackholeQuorum
+        );
+        blackhole.poll(EVIDENCE_WINDOW_MS + 5);
+        assert!(!blackhole.snapshots(EVIDENCE_WINDOW_MS + 5)[0].working_confirmed_recently);
 
+        observe(
+            &mut blackhole,
+            5,
+            "one.test",
+            EVIDENCE_WINDOW_MS + 6,
+            Diagnosis::Working,
+        );
+        observe(
+            &mut blackhole,
+            6,
+            "two.test",
+            EVIDENCE_WINDOW_MS + 7,
+            Diagnosis::Working,
+        );
+        assert!(blackhole.snapshots(EVIDENCE_WINDOW_MS + 7)[0].working_confirmed_recently);
+
+        let mut reset = assessor(2);
+        observe(&mut reset, 1, "one.test", 1, Diagnosis::Working);
+        observe(&mut reset, 2, "two.test", 2, Diagnosis::Working);
+        observe(&mut reset, 3, "one.test", 3, Diagnosis::TcpReset);
+        observe(&mut reset, 4, "two.test", 4, Diagnosis::TcpReset);
+        observe(&mut reset, 5, "one.test", 5, Diagnosis::TcpReset);
+        assert!(!reset.snapshots(5)[0].working_confirmed_recently);
+        assert_eq!(
+            reset.take_gate_request().unwrap().trigger,
+            GateTrigger::ResetQuorum
+        );
+    }
+
+    #[test]
+    fn sensor_invalidation_clears_working_confirmation() {
         for reason in [
             SensorInvalidationReason::Gap,
             SensorInvalidationReason::Health,

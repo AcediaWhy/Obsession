@@ -176,12 +176,16 @@ export function getLegacyLaneDisplayModel(
 export function getLegacyEvidenceLabel(
   lane: Pick<
     LegacyReliabilityLaneAssessment,
-    "confidence" | "evidence" | "workingConfirmedRecently"
+    | "classification"
+    | "confidence"
+    | "evidence"
+    | "workingConfirmedRecently"
   >,
 ): string {
   const evidence = lane.evidence;
   const parts = [
-    lane.workingConfirmedRecently && lane.confidence === "none"
+    lane.workingConfirmedRecently &&
+    lane.classification === "awaiting_evidence"
       ? "подтверждено в текущей сессии"
       : CONFIDENCE_LABEL[lane.confidence],
   ];

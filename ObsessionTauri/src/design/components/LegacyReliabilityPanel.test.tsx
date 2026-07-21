@@ -139,13 +139,57 @@ describe("LegacyReliabilityPanel", () => {
       "подтверждено в текущей сессии · успехи 1/1",
     );
 
+    const transientTimeouts = lane({
+      phase: "suspect",
+      workingConfirmedRecently: true,
+      confidence: "low",
+      evidence: {
+        ...confirmed.evidence,
+        blackholeFlows: 2,
+        blackholeTargets: 1,
+      },
+    });
+    expect(getLegacyLaneDisplayModel(transientTimeouts)).toEqual({
+      label: "Доступ подтверждён",
+      tone: "ok",
+    });
+    expect(getLegacyEvidenceLabel(transientTimeouts)).toBe(
+      "подтверждено в текущей сессии · таймауты ≥2/1",
+    );
+
     const markup = renderToStaticMarkup(
-      <LegacyReliabilityPanelView status={status({ lanes: [partial] })} />,
+      <LegacyReliabilityPanelView
+        status={status({ lanes: [transientTimeouts] })}
+      />,
     );
     expect(markup).toContain("Доступ подтверждён");
     expect(markup).toContain("подтверждено в текущей сессии");
+    expect(markup).toContain("таймауты ≥2/1");
     expect(markup).not.toContain("Сбор данных");
     expect(markup).not.toContain("оценка не сформирована");
+    expect(markup).not.toContain("уверенность: низкая");
+  });
+
+  it("keeps a fresh Working quorum at high confidence", () => {
+    const working = lane({
+      phase: "healthy",
+      classification: "working",
+      confidence: "high",
+      workingConfirmedRecently: true,
+      evidence: {
+        ...EMPTY_EVIDENCE,
+        workingFlows: 2,
+        workingTargets: 2,
+      },
+    });
+
+    expect(getLegacyLaneDisplayModel(working)).toEqual({
+      label: "Работает",
+      tone: "ok",
+    });
+    expect(getLegacyEvidenceLabel(working)).toBe(
+      "уверенность: высокая · успехи ≥2/≥2",
+    );
   });
 
   it("summarizes confidence and bounded evidence without target details", () => {
