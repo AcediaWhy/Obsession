@@ -176,39 +176,13 @@ export function getLegacyLaneDisplayModel(
 export function getLegacyEvidenceLabel(
   lane: Pick<
     LegacyReliabilityLaneAssessment,
-    | "classification"
-    | "confidence"
-    | "evidence"
-    | "workingConfirmedRecently"
+    "classification" | "confidence" | "workingConfirmedRecently"
   >,
 ): string {
-  const evidence = lane.evidence;
-  const parts = [
-    lane.workingConfirmedRecently &&
+  return lane.workingConfirmedRecently &&
     lane.classification === "awaiting_evidence"
-      ? "подтверждено в текущей сессии"
-      : CONFIDENCE_LABEL[lane.confidence],
-  ];
-  if (evidence.workingFlows > 0) {
-    parts.push(
-      `успехи ${boundedCount(evidence.workingFlows, 2)}/${boundedCount(evidence.workingTargets, 2)}`,
-    );
-  }
-  if (evidence.resetFlows > 0) {
-    parts.push(
-      `сбросы ${boundedCount(evidence.resetFlows, 3)}/${boundedCount(evidence.resetTargets, 2)}`,
-    );
-  }
-  if (evidence.blackholeFlows > 0) {
-    parts.push(
-      `таймауты ${boundedCount(evidence.blackholeFlows, 2)}/${boundedCount(evidence.blackholeTargets, 2)}`,
-    );
-  }
-  return parts.join(" · ");
-}
-
-function boundedCount(value: number, cap: number): string {
-  return value >= cap ? `≥${cap}` : String(value);
+    ? "подтверждено в текущей сессии"
+    : CONFIDENCE_LABEL[lane.confidence];
 }
 
 function categoryLabel(category: string): string {
@@ -297,7 +271,9 @@ function LegacyIntentCallout({
 
 function LegacyLaneRow({ lane }: { lane: LegacyReliabilityLaneAssessment }) {
   const display = getLegacyLaneDisplayModel(lane);
-  const evidence = getLegacyEvidenceLabel(lane);
+  const assessment = `${
+    lane.phase === "blocked_cooldown" ? "пауза · " : ""
+  }${getLegacyEvidenceLabel(lane)}`;
 
   return (
     <li className="rounded-lg bg-white/5 px-3 py-2">
@@ -312,12 +288,17 @@ function LegacyLaneRow({ lane }: { lane: LegacyReliabilityLaneAssessment }) {
         </span>
       </div>
       <div className="mt-1 flex items-center justify-between gap-3 text-3xs text-ink-muted">
-        <span className="min-w-0 truncate" title={lane.activeConfig ?? undefined}>
+        <span
+          className="min-w-0 flex-1 truncate"
+          title={lane.activeConfig ?? undefined}
+        >
           {lane.activeConfig ?? "Конфигурация не определена"}
         </span>
-        <span className="shrink-0 text-right">
-          {lane.phase === "blocked_cooldown" ? "пауза · " : ""}
-          {evidence}
+        <span
+          className="min-w-0 max-w-[70%] truncate text-right"
+          title={assessment}
+        >
+          {assessment}
         </span>
       </div>
     </li>

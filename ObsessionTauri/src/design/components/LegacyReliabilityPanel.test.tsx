@@ -136,7 +136,7 @@ describe("LegacyReliabilityPanel", () => {
       },
     });
     expect(getLegacyEvidenceLabel(partial)).toBe(
-      "подтверждено в текущей сессии · успехи 1/1",
+      "подтверждено в текущей сессии",
     );
 
     const transientTimeouts = lane({
@@ -154,7 +154,7 @@ describe("LegacyReliabilityPanel", () => {
       tone: "ok",
     });
     expect(getLegacyEvidenceLabel(transientTimeouts)).toBe(
-      "подтверждено в текущей сессии · таймауты ≥2/1",
+      "подтверждено в текущей сессии",
     );
 
     const markup = renderToStaticMarkup(
@@ -164,7 +164,9 @@ describe("LegacyReliabilityPanel", () => {
     );
     expect(markup).toContain("Доступ подтверждён");
     expect(markup).toContain("подтверждено в текущей сессии");
-    expect(markup).toContain("таймауты ≥2/1");
+    expect(markup).not.toContain("таймауты");
+    expect(markup).not.toContain("успехи");
+    expect(markup).not.toContain("сбросы");
     expect(markup).not.toContain("Сбор данных");
     expect(markup).not.toContain("оценка не сформирована");
     expect(markup).not.toContain("уверенность: низкая");
@@ -187,12 +189,10 @@ describe("LegacyReliabilityPanel", () => {
       label: "Работает",
       tone: "ok",
     });
-    expect(getLegacyEvidenceLabel(working)).toBe(
-      "уверенность: высокая · успехи ≥2/≥2",
-    );
+    expect(getLegacyEvidenceLabel(working)).toBe("уверенность: высокая");
   });
 
-  it("summarizes confidence and bounded evidence without target details", () => {
+  it("keeps raw evidence counters out of the compact status label", () => {
     expect(
       getLegacyEvidenceLabel(
         lane({
@@ -207,9 +207,7 @@ describe("LegacyReliabilityPanel", () => {
           },
         }),
       ),
-    ).toBe(
-      "уверенность: высокая · успехи 1/1 · сбросы ≥3/≥2 · таймауты ≥2/≥2",
-    );
+    ).toBe("уверенность: высокая");
   });
 
   it("renders a compact lane journal and an explicitly unexecuted switch intent", () => {
@@ -244,7 +242,7 @@ describe("LegacyReliabilityPanel", () => {
     expect(markup).toContain("YouTube / Twitch");
     expect(markup).toContain("youtube_twitch_1.conf");
     expect(markup).toContain("Вероятна блокировка");
-    expect(markup).toContain("сбросы ≥3/≥2");
+    expect(markup).not.toContain("сбросы");
     expect(markup).toContain("Сменить конфигурацию · YouTube / Twitch");
     expect(markup).toContain("Кандидат: youtube_twitch_2.conf");
     expect(markup).toContain(
