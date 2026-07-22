@@ -27,9 +27,9 @@ use super::contracts::{
     LaneGeneration, NetworkFingerprint, ProcessOwner, SessionId, Transport,
 };
 use super::environment_gate::{
-    EndpointProbeBackend, EnvironmentGate, GateClassification, GateFence, GateReport, GateRequest,
-    GateRequestError, LocalNetworkSnapshot, PassiveEvidenceSummary, SensorSnapshot,
-    GATE_REPORT_TTL,
+    EndpointProbeBackend, EndpointProbeOutcome, EnvironmentGate, GateClassification, GateFence,
+    GateReport, GateRequest, GateRequestError, LocalNetworkSnapshot, PassiveEvidenceSummary,
+    SensorSnapshot, GATE_REPORT_TTL,
 };
 use super::manager::{ConfirmationFlow, ObserveOnlySnapshot};
 use super::recovery::{RecoveryAction, RecoveryConfig, RecoveryOrigin};
@@ -38,6 +38,7 @@ use super::target_registry::{ConfigLookupError, TargetRegistry};
 pub const CONFIRMATION_DEADLINE_MS: u64 = 20_000;
 pub const CONFIRMATION_CLEAN_WINDOW_MS: u64 = 5_000;
 pub const CONFIRMATION_DELIVERY_MARGIN_MS: u64 = 2_000;
+const RETAINED_INCIDENT_TTL_MS: u64 = 30_000;
 
 type BackendFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
@@ -368,19 +369,38 @@ fn authorize_current_passive_quorum(
     if current_evidence_epoch != expected_evidence_epoch {
         return Err(PreflightGateError::StaleFence);
     }
+    authorize_passive_quorum(report, current_evidence)
+}
+
+fn authorize_passive_quorum(
+    report: &GateReport,
+    evidence: PassiveEvidenceSummary,
+) -> Result<(), PreflightGateError> {
     match report.classification {
         GateClassification::DpiSuspected
-            if current_evidence.has_reset_quorum()
-                || current_evidence.has_blackhole_gate_quorum() =>
+            if evidence.has_reset_quorum() || evidence.has_blackhole_gate_quorum() =>
         {
             Ok(())
         }
-        GateClassification::DpiBlocked if current_evidence.has_blackhole_quorum() => Ok(()),
+        GateClassification::DpiBlocked if evidence.has_blackhole_quorum() => Ok(()),
         GateClassification::DpiSuspected | GateClassification::DpiBlocked => {
             Err(PreflightGateError::IncidentNotActionable)
         }
         _ => Err(PreflightGateError::IncidentNotActionable),
     }
+}
+
+fn normalized_targets<'a>(targets: impl IntoIterator<Item = &'a str>) -> Option<BTreeSet<String>> {
+    targets.into_iter().map(normalize_domain).collect()
+}
+
+fn report_targets_match(report: &GateReport, expected: &[String]) -> bool {
+    normalized_targets(
+        report
+            .category_targets
+            .iter()
+            .map(|outcome| outcome.endpoint.as_str()),
+    ) == normalized_targets(expected.iter().map(String::as_str))
 }
 
 fn lane_passive_evidence(lane: &super::assessment::LaneAssessment) -> PassiveEvidenceSummary {
@@ -988,6 +1008,98 @@ pub enum ObserverTargetState {
     Absent,
 }
 
+/// Passive incident proof retained only across an executor-owned observer
+/// restart. It is not injected into the new Manager session or candidate
+/// confirmation evidence.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IncidentGateAnchor {
+    origin: IntentEnvelope,
+    category_targets: Vec<String>,
+    passive_evidence: PassiveEvidenceSummary,
+    captured_at_monotonic_ms: u64,
+    valid_until_monotonic_ms: u64,
+}
+
+impl IncidentGateAnchor {
+    fn is_fresh_at(&self, now_ms: u64) -> bool {
+        now_ms >= self.captured_at_monotonic_ms && now_ms <= self.valid_until_monotonic_ms
+    }
+
+    fn matches_origin(&self, envelope: &IntentEnvelope) -> bool {
+        self.origin == *envelope
+    }
+
+    fn retained_scope_matches(&self, envelope: &IntentEnvelope) -> bool {
+        self.origin.session_id == envelope.session_id
+            && self.origin.attempt_id == envelope.attempt_id
+            && self.origin.category == envelope.category
+            && self.origin.expected_network_fingerprint == envelope.expected_network_fingerprint
+            && self.origin.expected_lane_generation != envelope.expected_lane_generation
+            && self.origin.expected_sensor_generation != envelope.expected_sensor_generation
+            && self.origin.expected_registry_version != envelope.expected_registry_version
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct FreshGateAuthorization {
+    report: GateReport,
+    incident: IncidentGateAnchor,
+}
+
+fn validate_initial_gate_authorization(
+    authorization: &FreshGateAuthorization,
+    envelope: &IntentEnvelope,
+    now_ms: u64,
+) -> Result<(), PreflightGateError> {
+    let incident = &authorization.incident;
+    if !incident.matches_origin(envelope)
+        || authorization.report.category != envelope.category
+        || !report_targets_match(&authorization.report, &incident.category_targets)
+    {
+        return Err(PreflightGateError::StaleFence);
+    }
+    if !incident.is_fresh_at(now_ms) {
+        return Err(PreflightGateError::StaleReport);
+    }
+    authorize_passive_quorum(&authorization.report, incident.passive_evidence)
+}
+
+fn authorize_retained_gate(
+    authorization: &FreshGateAuthorization,
+    expected_incident: &IncidentGateAnchor,
+    envelope: &IntentEnvelope,
+    now_ms: u64,
+) -> Result<(), PreflightGateError> {
+    if authorization.incident != *expected_incident
+        || !expected_incident.retained_scope_matches(envelope)
+        || authorization.report.category != envelope.category
+        || !report_targets_match(&authorization.report, &expected_incident.category_targets)
+    {
+        return Err(PreflightGateError::StaleFence);
+    }
+    if !expected_incident.is_fresh_at(now_ms) {
+        return Err(PreflightGateError::StaleReport);
+    }
+    authorize_passive_quorum(&authorization.report, expected_incident.passive_evidence)?;
+    if authorization
+        .report
+        .category_targets
+        .iter()
+        .any(|outcome| !outcome.dns_succeeded())
+    {
+        return Err(PreflightGateError::Target);
+    }
+    if authorization
+        .report
+        .category_targets
+        .iter()
+        .all(EndpointProbeOutcome::category_target_reachable)
+    {
+        return Err(PreflightGateError::IncidentNotActionable);
+    }
+    Ok(())
+}
+
 #[derive(Clone, Debug)]
 pub struct StartLaneRequest {
     pub envelope: IntentEnvelope,
@@ -1076,7 +1188,8 @@ pub trait ScopedExecutorBackend: Send {
     fn fresh_environment_gate<'a>(
         &'a mut self,
         envelope: &'a IntentEnvelope,
-    ) -> BackendFuture<'a, Result<GateReport, BackendFailure>>;
+        retained_incident: Option<&'a IncidentGateAnchor>,
+    ) -> BackendFuture<'a, Result<FreshGateAuthorization, BackendFailure>>;
 
     fn replace_observer<'a>(
         &'a mut self,
@@ -1121,6 +1234,7 @@ struct ActiveExecution {
     origin: RecoveryOrigin,
     candidate_owner: Option<ProcessOwner>,
     confirmation_arm: Option<ConfirmationArm>,
+    incident_gate_anchor: IncidentGateAnchor,
     gate_valid_until_process_ms: u64,
     manual_after_rollback: bool,
 }
@@ -1908,15 +2022,23 @@ where
             }
         }
 
-        let report = match self.backend.fresh_environment_gate(&envelope).await {
-            Ok(report) => report,
+        let gate_authorization = match self.backend.fresh_environment_gate(&envelope, None).await {
+            Ok(authorization) => authorization,
             Err(failure) => return Ok(self.preflight_rejected(envelope, failure)),
         };
-        if let Err(error) = authorize_gate_report(
-            &report,
+        let initial_gate_result = authorize_gate_report(
+            &gate_authorization.report,
             &gate_fence(&envelope),
-            report.generated_at_monotonic_ms,
-        ) {
+            gate_authorization.report.generated_at_monotonic_ms,
+        )
+        .and_then(|()| {
+            validate_initial_gate_authorization(
+                &gate_authorization,
+                &envelope,
+                self.backend.monotonic_ms(),
+            )
+        });
+        if let Err(error) = initial_gate_result {
             return Ok(self.preflight_rejected(
                 envelope,
                 BackendFailure::new(error.failure_reason(), format!("gate rejected: {error:?}")),
@@ -2009,6 +2131,7 @@ where
             origin,
             candidate_owner: None,
             confirmation_arm: None,
+            incident_gate_anchor: gate_authorization.incident,
             gate_valid_until_process_ms: 0,
             manual_after_rollback: false,
         };
@@ -2053,18 +2176,30 @@ where
         // The transactional observer restart intentionally waits through its
         // degrading Gap/clean window, so the old Gate report has expired. A
         // second Gate on the new sensor/registry/lane fence is mandatory.
-        let refreshed_gate = self.backend.fresh_environment_gate(&current_envelope).await;
+        let refreshed_gate = self
+            .backend
+            .fresh_environment_gate(&current_envelope, Some(&temporary.incident_gate_anchor))
+            .await;
         let refreshed_gate_failure = match refreshed_gate {
-            Ok(report) => match authorize_gate_report(
-                &report,
+            Ok(authorization) => match authorize_gate_report(
+                &authorization.report,
                 &gate_fence(&current_envelope),
-                report.generated_at_monotonic_ms,
-            ) {
+                authorization.report.generated_at_monotonic_ms,
+            )
+            .and_then(|()| {
+                authorize_retained_gate(
+                    &authorization,
+                    &temporary.incident_gate_anchor,
+                    &current_envelope,
+                    self.backend.monotonic_ms(),
+                )
+            }) {
                 Ok(()) => {
                     temporary.gate_valid_until_process_ms = self
                         .backend
                         .monotonic_ms()
-                        .saturating_add(duration_millis(GATE_REPORT_TTL));
+                        .saturating_add(duration_millis(GATE_REPORT_TTL))
+                        .min(temporary.incident_gate_anchor.valid_until_monotonic_ms);
                     None
                 }
                 Err(error) => Some(BackendFailure::new(
@@ -2198,12 +2333,16 @@ where
         let stop_authorization = async {
             let mut gate_deadline = active.gate_valid_until_process_ms;
             if self.backend.monotonic_ms() > gate_deadline {
-                gate_deadline = self.refresh_stop_gate_deadline(&envelope).await?;
+                gate_deadline = self
+                    .refresh_stop_gate_deadline(&envelope, &active.incident_gate_anchor)
+                    .await?;
             }
             self.verify_candidate_effect(&active, &envelope, Some(&previous_owner))
                 .await?;
             if self.backend.monotonic_ms() > gate_deadline {
-                gate_deadline = self.refresh_stop_gate_deadline(&envelope).await?;
+                gate_deadline = self
+                    .refresh_stop_gate_deadline(&envelope, &active.incident_gate_anchor)
+                    .await?;
                 self.verify_candidate_effect(&active, &envelope, Some(&previous_owner))
                     .await?;
             }
@@ -2892,13 +3031,25 @@ where
     async fn refresh_stop_gate_deadline(
         &mut self,
         envelope: &IntentEnvelope,
+        incident: &IncidentGateAnchor,
     ) -> Result<u64, BackendFailure> {
-        let report = self.backend.fresh_environment_gate(envelope).await?;
+        let authorization = self
+            .backend
+            .fresh_environment_gate(envelope, Some(incident))
+            .await?;
         authorize_gate_report(
-            &report,
+            &authorization.report,
             &gate_fence(envelope),
-            report.generated_at_monotonic_ms,
+            authorization.report.generated_at_monotonic_ms,
         )
+        .and_then(|()| {
+            authorize_retained_gate(
+                &authorization,
+                incident,
+                envelope,
+                self.backend.monotonic_ms(),
+            )
+        })
         .map_err(|error| {
             BackendFailure::new(
                 error.failure_reason(),
@@ -2908,7 +3059,8 @@ where
         Ok(self
             .backend
             .monotonic_ms()
-            .saturating_add(duration_millis(GATE_REPORT_TTL)))
+            .saturating_add(duration_millis(GATE_REPORT_TTL))
+            .min(incident.valid_until_monotonic_ms))
     }
 
     async fn exact_current_cleanup_fence(
@@ -3626,7 +3778,8 @@ impl ScopedExecutorBackend for AppScopedExecutorBackend {
     fn fresh_environment_gate<'a>(
         &'a mut self,
         envelope: &'a IntentEnvelope,
-    ) -> BackendFuture<'a, Result<GateReport, BackendFailure>> {
+        retained_incident: Option<&'a IncidentGateAnchor>,
+    ) -> BackendFuture<'a, Result<FreshGateAuthorization, BackendFailure>> {
         Box::pin(async move {
             let snapshot = self.manager_snapshot()?;
             let lane = snapshot
@@ -3639,20 +3792,33 @@ impl ScopedExecutorBackend for AppScopedExecutorBackend {
                         "Gate lane is absent from Manager snapshot",
                     )
                 })?;
-            let observed_targets = snapshot
-                .gate_probe_hosts
-                .get(&envelope.category)
-                .cloned()
-                .unwrap_or_default();
-            let targets = if !observed_targets.is_empty() {
-                observed_targets
+            let (targets, passive_evidence) = if let Some(incident) = retained_incident {
+                if !incident.retained_scope_matches(envelope)
+                    || !incident.is_fresh_at(self.monotonic_ms())
+                {
+                    return Err(BackendFailure::new(
+                        ConfirmationFailure::Sensor,
+                        "retained Gate incident is stale or belongs to another fence",
+                    ));
+                }
+                (incident.category_targets.clone(), incident.passive_evidence)
             } else {
-                self.current_registry()?
-                    .active_targets_for_category(&envelope.category)
-                    .into_iter()
-                    .take(super::environment_gate::MAX_CATEGORY_TARGETS)
-                    .map(str::to_owned)
-                    .collect::<Vec<_>>()
+                let observed_targets = snapshot
+                    .gate_probe_hosts
+                    .get(&envelope.category)
+                    .cloned()
+                    .unwrap_or_default();
+                let targets = if !observed_targets.is_empty() {
+                    observed_targets
+                } else {
+                    self.current_registry()?
+                        .active_targets_for_category(&envelope.category)
+                        .into_iter()
+                        .take(super::environment_gate::MAX_CATEGORY_TARGETS)
+                        .map(str::to_owned)
+                        .collect::<Vec<_>>()
+                };
+                (targets, lane_passive_evidence(lane))
             };
             if targets.is_empty() {
                 return Err(BackendFailure::new(
@@ -3660,6 +3826,7 @@ impl ScopedExecutorBackend for AppScopedExecutorBackend {
                     "fresh Environment Gate has no exact incident targets",
                 ));
             }
+            let requested_targets = targets.clone();
             let gate_session = snapshot.session.session_id;
             let gate_sensor = snapshot.session.sensor_generation;
             let gate_registry = snapshot.session.target_registry_version;
@@ -3690,7 +3857,7 @@ impl ScopedExecutorBackend for AppScopedExecutorBackend {
                         super::assessment::AssessmentClassification::SensorUnreliable
                     ),
                 },
-                passive_evidence: lane_passive_evidence(lane),
+                passive_evidence,
                 requested_at_monotonic_ms: snapshot.logical_now_ms,
             };
             let gate = self.manager_gate()?;
@@ -3739,19 +3906,62 @@ impl ScopedExecutorBackend for AppScopedExecutorBackend {
                     "sensor/evidence fence changed during fresh Environment Gate",
                 ));
             }
-            authorize_current_passive_quorum(
-                &report,
-                gate_evidence_epoch,
-                current_lane.evidence_epoch,
-                lane_passive_evidence(current_lane),
-            )
-            .map_err(|error| {
+            let incident = if let Some(retained) = retained_incident {
+                retained.clone()
+            } else {
+                let current_targets = current
+                    .gate_probe_hosts
+                    .get(&envelope.category)
+                    .cloned()
+                    .unwrap_or_default();
+                if normalized_targets(current_targets.iter().map(String::as_str))
+                    != normalized_targets(requested_targets.iter().map(String::as_str))
+                {
+                    return Err(BackendFailure::new(
+                        ConfirmationFailure::Sensor,
+                        "exact adverse Gate targets changed while probes were running",
+                    ));
+                }
+                authorize_current_passive_quorum(
+                    &report,
+                    gate_evidence_epoch,
+                    current_lane.evidence_epoch,
+                    lane_passive_evidence(current_lane),
+                )
+                .map_err(|error| {
+                    BackendFailure::new(
+                        error.failure_reason(),
+                        format!("fresh Environment Gate passive evidence rejected: {error:?}"),
+                    )
+                })?;
+                let captured_at_monotonic_ms = self.monotonic_ms();
+                IncidentGateAnchor {
+                    origin: envelope.clone(),
+                    category_targets: requested_targets,
+                    passive_evidence,
+                    captured_at_monotonic_ms,
+                    valid_until_monotonic_ms: captured_at_monotonic_ms
+                        .saturating_add(RETAINED_INCIDENT_TTL_MS),
+                }
+            };
+            let authorization = FreshGateAuthorization { report, incident };
+            let authorization_result = if let Some(retained_incident) = retained_incident {
+                authorize_retained_gate(
+                    &authorization,
+                    retained_incident,
+                    envelope,
+                    self.monotonic_ms(),
+                )
+            } else {
+                validate_initial_gate_authorization(&authorization, envelope, self.monotonic_ms())
+            };
+            authorization_result.map_err(|error| {
                 BackendFailure::new(
                     error.failure_reason(),
-                    format!("fresh Environment Gate passive evidence rejected: {error:?}"),
+                    format!("fresh Environment Gate incident authorization failed: {error:?}"),
                 )
             })?;
-            Ok(report)
+            Ok(authorization)
         })
     }
 
@@ -4314,6 +4524,68 @@ mod tests {
     }
 
     #[test]
+    fn incident_authorization_rejects_cross_category_gate_reports() {
+        let origin = confirmation_envelope();
+        let incident = IncidentGateAnchor {
+            origin: origin.clone(),
+            category_targets: vec!["one.video.example".into()],
+            passive_evidence: PassiveEvidenceSummary {
+                confirmed_tls_blackhole_flows: 2,
+                blackhole_targets: 1,
+                ..PassiveEvidenceSummary::default()
+            },
+            captured_at_monotonic_ms: 100,
+            valid_until_monotonic_ms: 30_100,
+        };
+        let target = EndpointProbeOutcome::timed_out(
+            "one.video.example",
+            super::super::environment_gate::EndpointProbeStage::Transport,
+            5_000,
+        );
+        let initial = FreshGateAuthorization {
+            report: GateReport {
+                fence: gate_fence(&origin),
+                category: "chat".into(),
+                classification: GateClassification::DpiSuspected,
+                controls: Vec::new(),
+                category_targets: vec![target.clone()],
+                baseline_latency_ms: None,
+                slow_threshold_ms: None,
+                generated_at_monotonic_ms: 100,
+                valid_until_monotonic_ms: 10_100,
+            },
+            incident: incident.clone(),
+        };
+        assert_eq!(
+            validate_initial_gate_authorization(&initial, &origin, 100),
+            Err(PreflightGateError::StaleFence)
+        );
+
+        let mut refreshed = origin.clone();
+        refreshed.expected_lane_generation = LaneGeneration::new(9);
+        refreshed.expected_sensor_generation = SensorGeneration::new(5);
+        refreshed.expected_registry_version = RegistryVersion::new(7);
+        let retained = FreshGateAuthorization {
+            report: GateReport {
+                fence: gate_fence(&refreshed),
+                category: "chat".into(),
+                classification: GateClassification::DpiSuspected,
+                controls: Vec::new(),
+                category_targets: vec![target],
+                baseline_latency_ms: None,
+                slow_threshold_ms: None,
+                generated_at_monotonic_ms: 100,
+                valid_until_monotonic_ms: 10_100,
+            },
+            incident: incident.clone(),
+        };
+        assert_eq!(
+            authorize_retained_gate(&retained, &incident, &refreshed, 100),
+            Err(PreflightGateError::StaleFence)
+        );
+    }
+
+    #[test]
     fn preflight_keeps_a_confirmed_single_target_blackhole_actionable() {
         let epoch = 17;
         let report =
@@ -4707,6 +4979,10 @@ mod tests {
                 ]),
                 next_pid: 100,
                 gate_classification: GateClassification::DpiSuspected,
+                drop_live_incident_after_observer: false,
+                observer_replaced: false,
+                reachable_target_after_observer: false,
+                observer_restart_delay_ms: 0,
                 fail_isolation_preflight_for: None,
                 confirmation: ConfirmationDecision::Succeeded,
                 change_network_on_confirmation: false,
@@ -4780,6 +5056,10 @@ mod tests {
         processes: BTreeMap<String, ProcessOwner>,
         next_pid: u32,
         gate_classification: GateClassification,
+        drop_live_incident_after_observer: bool,
+        observer_replaced: bool,
+        reachable_target_after_observer: bool,
+        observer_restart_delay_ms: u64,
         fail_isolation_preflight_for: Option<String>,
         confirmation: ConfirmationDecision,
         change_network_on_confirmation: bool,
@@ -4923,22 +5203,59 @@ mod tests {
         fn fresh_environment_gate<'a>(
             &'a mut self,
             envelope: &'a IntentEnvelope,
-        ) -> BackendFuture<'a, Result<GateReport, BackendFailure>> {
+            retained_incident: Option<&'a IncidentGateAnchor>,
+        ) -> BackendFuture<'a, Result<FreshGateAuthorization, BackendFailure>> {
             self.calls.push("gate".into());
             let now = self.now_ms;
             let gate = gate_fence(envelope);
-            let classification = self.gate_classification;
+            let classification = if self.drop_live_incident_after_observer
+                && self.observer_replaced
+                && retained_incident.is_none()
+            {
+                GateClassification::TargetUnavailable
+            } else {
+                self.gate_classification
+            };
+            let incident = retained_incident
+                .cloned()
+                .unwrap_or_else(|| IncidentGateAnchor {
+                    origin: envelope.clone(),
+                    category_targets: vec!["one.video.example".into()],
+                    passive_evidence: PassiveEvidenceSummary {
+                        confirmed_tls_blackhole_flows: 2,
+                        blackhole_targets: 1,
+                        ..PassiveEvidenceSummary::default()
+                    },
+                    captured_at_monotonic_ms: now,
+                    valid_until_monotonic_ms: now.saturating_add(RETAINED_INCIDENT_TTL_MS),
+                });
+            let target = if self.reachable_target_after_observer && self.observer_replaced {
+                super::super::environment_gate::EndpointProbeOutcome::http(
+                    "one.video.example",
+                    20,
+                    204,
+                )
+            } else {
+                super::super::environment_gate::EndpointProbeOutcome::timed_out(
+                    "one.video.example",
+                    super::super::environment_gate::EndpointProbeStage::Transport,
+                    5_000,
+                )
+            };
             Box::pin(async move {
-                Ok(GateReport {
-                    fence: gate,
-                    category: envelope.category.clone(),
-                    classification,
-                    controls: Vec::new(),
-                    category_targets: Vec::new(),
-                    baseline_latency_ms: None,
-                    slow_threshold_ms: None,
-                    generated_at_monotonic_ms: now,
-                    valid_until_monotonic_ms: now + 10_000,
+                Ok(FreshGateAuthorization {
+                    report: GateReport {
+                        fence: gate,
+                        category: envelope.category.clone(),
+                        classification,
+                        controls: Vec::new(),
+                        category_targets: vec![target],
+                        baseline_latency_ms: None,
+                        slow_threshold_ms: None,
+                        generated_at_monotonic_ms: now,
+                        valid_until_monotonic_ms: now + 10_000,
+                    },
+                    incident,
                 })
             })
         }
@@ -4969,6 +5286,8 @@ mod tests {
             self.calls.push(format!("observer:{candidate}"));
             self.registry = plan.registry;
             self.lanes = plan.lane_generations;
+            self.observer_replaced = true;
+            self.now_ms = self.now_ms.saturating_add(self.observer_restart_delay_ms);
             self.fence.sensor_generation = next_sensor(self.fence.sensor_generation);
             self.fence.registry_version = self.registry.version();
             self.fence.lane_generation = self.lanes[&plan.category];
@@ -5378,6 +5697,71 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn intentional_observer_restart_retains_the_authorized_incident() {
+        let fixture = ExecutorFixture::new();
+        let (mut coordinator, action) = fixture.coordinator();
+        let mut backend = fixture.backend();
+        backend.drop_live_incident_after_observer = true;
+        let mut executor = ScopedExecutor::new(backend);
+
+        let terminal = drive(&mut executor, &mut coordinator, action).await;
+
+        assert_eq!(
+            disposition(&terminal),
+            RecoveryDisposition::CandidateApplied
+        );
+        assert!(executor
+            .backend()
+            .calls
+            .iter()
+            .any(|call| call == "stop:video"));
+    }
+
+    #[tokio::test]
+    async fn retained_incident_cannot_override_a_fresh_reachable_target() {
+        let fixture = ExecutorFixture::new();
+        let (mut coordinator, action) = fixture.coordinator();
+        let mut backend = fixture.backend();
+        backend.drop_live_incident_after_observer = true;
+        backend.reachable_target_after_observer = true;
+        let mut executor = ScopedExecutor::new(backend);
+
+        let terminal = drive(&mut executor, &mut coordinator, action).await;
+
+        assert_eq!(
+            disposition(&terminal),
+            RecoveryDisposition::PreviousPreserved
+        );
+        assert!(!executor
+            .backend()
+            .calls
+            .iter()
+            .any(|call| call == "stop:video"));
+    }
+
+    #[tokio::test]
+    async fn retained_incident_expires_before_it_can_authorize_a_stop() {
+        let fixture = ExecutorFixture::new();
+        let (mut coordinator, action) = fixture.coordinator();
+        let mut backend = fixture.backend();
+        backend.drop_live_incident_after_observer = true;
+        backend.observer_restart_delay_ms = 30_001;
+        let mut executor = ScopedExecutor::new(backend);
+
+        let terminal = drive(&mut executor, &mut coordinator, action).await;
+
+        assert_eq!(
+            disposition(&terminal),
+            RecoveryDisposition::PreviousPreserved
+        );
+        assert!(!executor
+            .backend()
+            .calls
+            .iter()
+            .any(|call| call == "stop:video"));
+    }
+
+    #[tokio::test]
     async fn sensor_confirmation_failure_rolls_back_without_negative_cooldown() {
         let fixture = ExecutorFixture::new();
         let (mut coordinator, action) = fixture.coordinator();
@@ -5611,6 +5995,34 @@ mod tests {
                 .count(),
             3
         );
+    }
+
+    #[tokio::test]
+    async fn cached_gate_deadline_cannot_outlive_the_retained_incident() {
+        let fixture = ExecutorFixture::new();
+        let (mut coordinator, action) = fixture.coordinator();
+        let mut backend = fixture.backend();
+        backend.drop_live_incident_after_observer = true;
+        backend.observer_restart_delay_ms = RETAINED_INCIDENT_TTL_MS - 1;
+        let mut executor = ScopedExecutor::new(backend);
+
+        let preflight = executor.execute(action).await.unwrap();
+        let stop_action = coordinator.apply_result(preflight).unwrap();
+        executor.backend_mut().now_ms += 2;
+        let stopped = executor.execute(stop_action).await.unwrap();
+
+        assert!(matches!(
+            stopped.outcome,
+            ExecutorOutcome::ExecutionAborted {
+                stage: ExecutorStage::Stop,
+                ..
+            }
+        ));
+        assert!(!executor
+            .backend()
+            .calls
+            .iter()
+            .any(|call| call == "stop:video"));
     }
 
     #[test]
