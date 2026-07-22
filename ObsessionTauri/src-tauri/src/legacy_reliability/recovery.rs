@@ -722,8 +722,6 @@ impl RecoveryCoordinator {
         let attempt_id = AttemptId::new(self.take_attempt_id());
         let envelope = IntentEnvelope::from_fence(attempt_id, &request.fence);
         if self.mode == RecoveryMode::Automatic {
-            self.latest_handled_incident
-                .insert(incident_lane, request.incident_id);
             let action = self.begin_attempt(
                 request.incident_id,
                 envelope,
@@ -834,6 +832,17 @@ impl RecoveryCoordinator {
         );
         match transition {
             Ok(Transition::Continue(action)) => {
+                if matches!(active.origin, RecoveryOrigin::Automatic { .. })
+                    && matches!(&action, RecoveryAction::StartCandidate { .. })
+                {
+                    self.latest_handled_incident.insert(
+                        IncidentLane {
+                            session_id: active.envelope.session_id,
+                            category: active.envelope.category.clone(),
+                        },
+                        active.incident_id,
+                    );
+                }
                 self.active = Some(active);
                 Ok(action)
             }
@@ -1715,6 +1724,99 @@ mod tests {
             coordinator.consider(request_with_control(2, &["candidate-b"], 1), clock.now()),
             Ok(RecoveryDecision::Automatic { .. })
         ));
+    }
+
+    #[test]
+    fn automatic_preflight_rejection_does_not_consume_the_incident() {
+        let mut clock = FakeClock::default();
+        let mut coordinator = RecoveryCoordinator::new(RecoveryMode::Automatic);
+        let decision = coordinator
+            .consider(request_with_control(7, &["candidate-a"], 1), clock.now())
+            .unwrap();
+        let RecoveryDecision::Automatic { action } = decision else {
+            panic!("automatic fixture");
+        };
+        let RecoveryAction::Preflight { envelope, .. } = action else {
+            panic!("preflight fixture");
+        };
+        let _ = coordinator
+            .apply_result(result(
+                &envelope,
+                ExecutorOutcome::PreflightRejected,
+                &clock,
+            ))
+            .unwrap();
+
+        clock.advance(AUTOMATIC_PACING_MS);
+        assert!(matches!(
+            coordinator.consider(request_with_control(7, &["candidate-a"], 1), clock.now()),
+            Ok(RecoveryDecision::Automatic { .. })
+        ));
+    }
+
+    #[test]
+    fn automatic_stop_timeout_does_not_consume_the_incident() {
+        let mut clock = FakeClock::default();
+        let mut coordinator = RecoveryCoordinator::new(RecoveryMode::Automatic);
+        let decision = coordinator
+            .consider(request_with_control(8, &["candidate-a"], 1), clock.now())
+            .unwrap();
+        let RecoveryDecision::Automatic { action } = decision else {
+            panic!("automatic fixture");
+        };
+        let RecoveryAction::Preflight { envelope, .. } = action else {
+            panic!("preflight fixture");
+        };
+        let stop_envelope = pass_preflight(&mut coordinator, &envelope, &clock);
+        let _ = coordinator
+            .apply_result(result(
+                &stop_envelope,
+                ExecutorOutcome::StopTimedOut {
+                    previous: owner("active", 7, 1),
+                },
+                &clock,
+            ))
+            .unwrap();
+
+        clock.advance(AUTOMATIC_PACING_MS);
+        assert!(matches!(
+            coordinator.consider(request_with_control(8, &["candidate-a"], 1), clock.now()),
+            Ok(RecoveryDecision::Automatic { .. })
+        ));
+    }
+
+    #[test]
+    fn automatic_consumes_the_incident_after_the_previous_process_stops() {
+        let mut clock = FakeClock::default();
+        let mut coordinator = RecoveryCoordinator::new(RecoveryMode::Automatic);
+        let decision = coordinator
+            .consider(request_with_control(9, &["candidate-a"], 1), clock.now())
+            .unwrap();
+        let RecoveryDecision::Automatic { action } = decision else {
+            panic!("automatic fixture");
+        };
+        let RecoveryAction::Preflight { envelope, .. } = action else {
+            panic!("preflight fixture");
+        };
+        let stop_envelope = pass_preflight(&mut coordinator, &envelope, &clock);
+        let start = coordinator
+            .apply_result(result(
+                &stop_envelope,
+                ExecutorOutcome::Stopped {
+                    previous: owner("active", 7, 1),
+                },
+                &clock,
+            ))
+            .unwrap();
+        assert!(matches!(start, RecoveryAction::StartCandidate { .. }));
+
+        let _ = coordinator.force_manual_failure(clock.now()).unwrap();
+        assert!(coordinator.clear_halt("video"));
+        clock.advance(AUTOMATIC_PACING_MS);
+        assert_eq!(
+            coordinator.consider(request_with_control(9, &["candidate-a"], 1), clock.now()),
+            Err(ConsiderError::IncidentAlreadyHandled)
+        );
     }
 
     #[test]

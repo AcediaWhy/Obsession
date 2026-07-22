@@ -29,11 +29,12 @@ use super::contracts::{
 use super::environment_gate::{
     EndpointProbeBackend, EndpointProbeOutcome, EnvironmentGate, GateClassification, GateFence,
     GateReport, GateRequest, GateRequestError, LocalNetworkSnapshot, PassiveEvidenceSummary,
-    SensorSnapshot, GATE_REPORT_TTL,
+    SensorSnapshot, BLACKHOLE_REQUIRED_FLOWS, GATE_REPORT_TTL, RESET_REQUIRED_FLOWS,
+    RESET_REQUIRED_TARGETS,
 };
 use super::manager::{ConfirmationFlow, ObserveOnlySnapshot};
 use super::recovery::{RecoveryAction, RecoveryConfig, RecoveryOrigin};
-use super::target_registry::{ConfigLookupError, TargetRegistry};
+use super::target_registry::{Attribution, ConfigLookupError, TargetRegistry};
 
 pub const CONFIRMATION_DEADLINE_MS: u64 = 20_000;
 pub const CONFIRMATION_CLEAN_WINDOW_MS: u64 = 5_000;
@@ -372,6 +373,78 @@ fn authorize_current_passive_quorum(
     authorize_passive_quorum(report, current_evidence)
 }
 
+struct LiveGateIncidentSnapshot<'a> {
+    registry: &'a TargetRegistry,
+    category: &'a str,
+    requested_targets: &'a [String],
+    current_targets: &'a [String],
+    expected_evidence_epoch: u64,
+    current_evidence_epoch: u64,
+    current_evidence: PassiveEvidenceSummary,
+}
+
+fn authorize_live_gate_incident(
+    report: &GateReport,
+    snapshot: LiveGateIncidentSnapshot<'_>,
+) -> Result<(), PreflightGateError> {
+    // Exact SNI probe hosts are intentionally ephemeral: another connection
+    // for the same registry target may replace `www.youtube.com` with
+    // `music.youtube.com` while the bounded Gate probes are running. The Gate
+    // report is already bound to `requested_targets`. Attribute both exact-host
+    // snapshots through the unchanged active registry so SNI rotation and
+    // bounded evidence-window churn are allowed only while at least one
+    // canonical target family still connects the two snapshots.
+    let Some(requested_targets) = canonical_active_gate_targets(
+        snapshot.registry,
+        snapshot.category,
+        snapshot.requested_targets,
+    ) else {
+        return Err(PreflightGateError::StaleFence);
+    };
+    let Some(current_targets) = canonical_active_gate_targets(
+        snapshot.registry,
+        snapshot.category,
+        snapshot.current_targets,
+    ) else {
+        return Err(PreflightGateError::StaleFence);
+    };
+    if requested_targets.is_disjoint(&current_targets) {
+        return Err(PreflightGateError::StaleFence);
+    }
+    authorize_current_passive_quorum(
+        report,
+        snapshot.expected_evidence_epoch,
+        snapshot.current_evidence_epoch,
+        snapshot.current_evidence,
+    )
+}
+
+fn canonical_active_gate_targets(
+    registry: &TargetRegistry,
+    category: &str,
+    targets: &[String],
+) -> Option<BTreeSet<String>> {
+    let category = category.trim().to_ascii_lowercase();
+    let targets = normalized_targets(targets.iter().map(String::as_str))?;
+    if targets.is_empty() {
+        return None;
+    }
+    targets
+        .into_iter()
+        .map(|domain| match registry.attribute_active(&domain) {
+            Attribution::Matched { target, owner }
+                if owner.category == category && owner.active_config.is_some() =>
+            {
+                Some(target)
+            }
+            Attribution::Matched { .. }
+            | Attribution::Ambiguous { .. }
+            | Attribution::Excluded { .. }
+            | Attribution::Unmatched => None,
+        })
+        .collect()
+}
+
 fn authorize_passive_quorum(
     report: &GateReport,
     evidence: PassiveEvidenceSummary,
@@ -588,6 +661,10 @@ pub struct ConfirmationEvaluator {
     after_flow_sequence: u64,
     successful_probes: Vec<SuccessfulProbe>,
     working_flows: Vec<WorkingFlow>,
+    tls_blackhole_flows: BTreeSet<u64>,
+    reset_flows: BTreeSet<u64>,
+    reset_targets: BTreeSet<String>,
+    last_weak_adverse_at_ms: Option<u64>,
     quorum_reached_at_ms: Option<u64>,
     failure: Option<ConfirmationFailure>,
 }
@@ -650,6 +727,10 @@ impl ConfirmationEvaluator {
             after_flow_sequence: arm.after_flow_sequence,
             successful_probes: Vec::new(),
             working_flows: Vec::new(),
+            tls_blackhole_flows: BTreeSet::new(),
+            reset_flows: BTreeSet::new(),
+            reset_targets: BTreeSet::new(),
+            last_weak_adverse_at_ms: None,
             quorum_reached_at_ms: None,
             failure: (!matches!(arm.health, EyeHealthState::Ready))
                 .then_some(ConfirmationFailure::Sensor),
@@ -798,7 +879,32 @@ impl ConfirmationEvaluator {
                     });
                 }
             }
-            Diagnosis::TcpReset | Diagnosis::TlsBlackhole | Diagnosis::HttpBlockPage => {
+            Diagnosis::TlsBlackhole => {
+                if self.tls_blackhole_flows.insert(flow_id) {
+                    self.last_weak_adverse_at_ms = Some(
+                        self.last_weak_adverse_at_ms
+                            .map_or(monotonic_ts, |current| current.max(monotonic_ts)),
+                    );
+                }
+                if self.tls_blackhole_flows.len() >= BLACKHOLE_REQUIRED_FLOWS as usize {
+                    self.failure = Some(ConfirmationFailure::Strategy);
+                }
+            }
+            Diagnosis::TcpReset => {
+                if self.reset_flows.insert(flow_id) {
+                    self.reset_targets.insert(target);
+                    self.last_weak_adverse_at_ms = Some(
+                        self.last_weak_adverse_at_ms
+                            .map_or(monotonic_ts, |current| current.max(monotonic_ts)),
+                    );
+                }
+                if self.reset_flows.len() >= RESET_REQUIRED_FLOWS as usize
+                    && self.reset_targets.len() >= RESET_REQUIRED_TARGETS as usize
+                {
+                    self.failure = Some(ConfirmationFailure::Strategy);
+                }
+            }
+            Diagnosis::HttpBlockPage => {
                 self.failure = Some(ConfirmationFailure::Strategy);
             }
             Diagnosis::DnsFailure | Diagnosis::IpUnreachable => {
@@ -901,11 +1007,14 @@ impl ConfirmationEvaluator {
         if let Some(failure) = self.failure {
             return ConfirmationDecision::Failed(failure);
         }
+        let clean_anchor = self.quorum_reached_at_ms.map(|reached_at| {
+            self.last_weak_adverse_at_ms
+                .map_or(reached_at, |adverse_at| reached_at.max(adverse_at))
+        });
         if matches!(self.health_state, EyeHealthState::Ready)
-            && self.quorum_reached_at_ms.is_some_and(|reached_at| {
-                now_ms >= reached_at.saturating_add(CONFIRMATION_CLEAN_WINDOW_MS)
-                    && reached_at.saturating_add(CONFIRMATION_CLEAN_WINDOW_MS)
-                        <= self.deadline_at_ms
+            && clean_anchor.is_some_and(|anchor| {
+                now_ms >= anchor.saturating_add(CONFIRMATION_CLEAN_WINDOW_MS)
+                    && anchor.saturating_add(CONFIRMATION_CLEAN_WINDOW_MS) <= self.deadline_at_ms
             })
         {
             return ConfirmationDecision::Succeeded;
@@ -916,6 +1025,27 @@ impl ConfirmationEvaluator {
             ConfirmationDecision::Pending
         }
     }
+}
+
+fn observe_confirmation_snapshot(
+    evaluator: &mut ConfirmationEvaluator,
+    flows: &[ConfirmationFlow],
+    flow_cursor: u64,
+    now_ms: u64,
+) -> (u64, ConfirmationDecision) {
+    let mut last_flow_sequence = flow_cursor;
+    for flow in flows.iter().filter(|flow| flow.sequence > flow_cursor) {
+        last_flow_sequence = last_flow_sequence.max(flow.sequence);
+        let decision = evaluator.observe_confirmation_flow(flow, now_ms);
+        if matches!(
+            decision,
+            ConfirmationDecision::Failed(failure)
+                if failure != ConfirmationFailure::MissingWorkingEvidence
+        ) {
+            return (last_flow_sequence, decision);
+        }
+    }
+    (last_flow_sequence, evaluator.poll(now_ms))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1316,24 +1446,13 @@ impl AppScopedExecutorBackend {
                 probes.abort_all();
                 return Ok(ConfirmationDecision::Failed(ConfirmationFailure::Sensor));
             }
-            let flow_cursor = last_flow_sequence;
-            for flow in snapshot
-                .confirmation_flows
-                .iter()
-                .filter(|flow| flow.sequence > flow_cursor)
-            {
-                last_flow_sequence = last_flow_sequence.max(flow.sequence);
-                let decision = evaluator.observe_confirmation_flow(flow, now_ms);
-                if decision != ConfirmationDecision::Pending {
-                    if let Some(exit) = candidate_exit.take() {
-                        self.candidate_exit = Some(exit);
-                    }
-                    probes.abort_all();
-                    return Ok(decision);
-                }
-            }
-
-            let decision = evaluator.poll(now_ms);
+            let (next_flow_sequence, decision) = observe_confirmation_snapshot(
+                &mut evaluator,
+                &snapshot.confirmation_flows,
+                last_flow_sequence,
+                now_ms,
+            );
+            last_flow_sequence = next_flow_sequence;
             if decision != ConfirmationDecision::Pending {
                 let decision = if decision
                     == ConfirmationDecision::Failed(ConfirmationFailure::MissingWorkingEvidence)
@@ -1502,7 +1621,13 @@ pub async fn run_scoped_recovery(
     let _dpi_gate = state.dpi_gate.lock().await;
     let backend = match AppScopedExecutorBackend::new(app.clone()) {
         Ok(backend) => backend,
-        Err(_) => {
+        Err(failure) => {
+            crate::util::emit_log(
+                app,
+                "warn",
+                "legacy-reliability",
+                &format!("Legacy recovery backend initialization failed: {failure}"),
+            );
             let rejected = runner_failure_result(&initial_action, state.legacy_monotonic_ms())
                 .ok_or(ScopedRecoveryRunError::Executor(
                     ExecutorRunError::ActionMismatch,
@@ -1539,6 +1664,17 @@ pub async fn run_scoped_recovery(
                 return Ok(terminal);
             }
         };
+        if let Some(failure) = executor.last_failure.take() {
+            crate::util::emit_log(
+                app,
+                "warn",
+                "legacy-reliability",
+                &format!(
+                    "Legacy recovery {:?} produced {:?}: {}",
+                    result.envelope.attempt_id, result.outcome, failure
+                ),
+            );
+        }
         if let Some(failure) = candidate_cache_failure(&executed_action, &result) {
             pending_cache_failure = Some(failure);
         }
@@ -3914,19 +4050,24 @@ impl ScopedExecutorBackend for AppScopedExecutorBackend {
                     .get(&envelope.category)
                     .cloned()
                     .unwrap_or_default();
-                if normalized_targets(current_targets.iter().map(String::as_str))
-                    != normalized_targets(requested_targets.iter().map(String::as_str))
-                {
+                let live_registry = self.current_registry()?;
+                if live_registry.version() != gate_registry {
                     return Err(BackendFailure::new(
                         ConfirmationFailure::Sensor,
-                        "exact adverse Gate targets changed while probes were running",
+                        "target registry changed while validating Gate targets",
                     ));
                 }
-                authorize_current_passive_quorum(
+                authorize_live_gate_incident(
                     &report,
-                    gate_evidence_epoch,
-                    current_lane.evidence_epoch,
-                    lane_passive_evidence(current_lane),
+                    LiveGateIncidentSnapshot {
+                        registry: live_registry.as_ref(),
+                        category: &envelope.category,
+                        requested_targets: &requested_targets,
+                        current_targets: &current_targets,
+                        expected_evidence_epoch: gate_evidence_epoch,
+                        current_evidence_epoch: current_lane.evidence_epoch,
+                        current_evidence: lane_passive_evidence(current_lane),
+                    },
                 )
                 .map_err(|error| {
                     BackendFailure::new(
@@ -4603,6 +4744,123 @@ mod tests {
     }
 
     #[test]
+    fn fresh_gate_keeps_actionable_quorum_when_probe_hosts_rotate() {
+        let epoch = 17;
+        let report = preflight_gate_report(GateClassification::DpiBlocked, preflight_gate_fence());
+        let records = vec![record(
+            "video",
+            "video.conf",
+            "video.txt",
+            "youtube.com\ngooglevideo.com\ntwitch.tv\n",
+        )];
+        let registry = registry(&records, vec![("video".into(), "video.conf".into())]);
+        let requested_targets = vec![
+            "www.youtube.com".to_owned(),
+            "rr1---sn-a5mekn6z.googlevideo.com".to_owned(),
+        ];
+        let current_targets = vec![
+            "music.youtube.com".to_owned(),
+            "rr2---sn-a5mekn6z.googlevideo.com".to_owned(),
+        ];
+        let current = PassiveEvidenceSummary {
+            confirmed_tls_blackhole_flows: 2,
+            blackhole_targets: 2,
+            ..PassiveEvidenceSummary::default()
+        };
+
+        assert_eq!(
+            authorize_live_gate_incident(
+                &report,
+                LiveGateIncidentSnapshot {
+                    registry: registry.as_ref(),
+                    category: "video",
+                    requested_targets: &requested_targets,
+                    current_targets: &current_targets,
+                    expected_evidence_epoch: epoch,
+                    current_evidence_epoch: epoch,
+                    current_evidence: current,
+                },
+            ),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn fresh_gate_keeps_actionable_quorum_when_related_target_families_churn() {
+        let epoch = 17;
+        let report = preflight_gate_report(GateClassification::DpiBlocked, preflight_gate_fence());
+        let records = vec![record(
+            "video",
+            "video.conf",
+            "video.txt",
+            "youtube.com\ngooglevideo.com\ntwitch.tv\n",
+        )];
+        let registry = registry(&records, vec![("video".into(), "video.conf".into())]);
+        let requested_targets = vec![
+            "www.youtube.com".to_owned(),
+            "rr1---sn-a5mekn6z.googlevideo.com".to_owned(),
+        ];
+        let current_targets = vec!["music.youtube.com".to_owned()];
+        let current = PassiveEvidenceSummary {
+            confirmed_tls_blackhole_flows: 2,
+            blackhole_targets: 2,
+            ..PassiveEvidenceSummary::default()
+        };
+
+        assert_eq!(
+            authorize_live_gate_incident(
+                &report,
+                LiveGateIncidentSnapshot {
+                    registry: registry.as_ref(),
+                    category: "video",
+                    requested_targets: &requested_targets,
+                    current_targets: &current_targets,
+                    expected_evidence_epoch: epoch,
+                    current_evidence_epoch: epoch,
+                    current_evidence: current,
+                },
+            ),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn fresh_gate_rejects_disjoint_target_families() {
+        let epoch = 17;
+        let report = preflight_gate_report(GateClassification::DpiBlocked, preflight_gate_fence());
+        let records = vec![record(
+            "video",
+            "video.conf",
+            "video.txt",
+            "youtube.com\ntwitch.tv\n",
+        )];
+        let registry = registry(&records, vec![("video".into(), "video.conf".into())]);
+        let requested_targets = vec!["www.youtube.com".to_owned()];
+        let current_targets = vec!["www.twitch.tv".to_owned()];
+        let current = PassiveEvidenceSummary {
+            confirmed_tls_blackhole_flows: 2,
+            blackhole_targets: 2,
+            ..PassiveEvidenceSummary::default()
+        };
+
+        assert_eq!(
+            authorize_live_gate_incident(
+                &report,
+                LiveGateIncidentSnapshot {
+                    registry: registry.as_ref(),
+                    category: "video",
+                    requested_targets: &requested_targets,
+                    current_targets: &current_targets,
+                    expected_evidence_epoch: epoch,
+                    current_evidence_epoch: epoch,
+                    current_evidence: current,
+                },
+            ),
+            Err(PreflightGateError::StaleFence)
+        );
+    }
+
+    #[test]
     fn fresh_gate_rejects_expired_or_cleared_quorum_without_evidence_epoch_change() {
         let unchanged_epoch = 17;
         let cases = [
@@ -4854,6 +5112,198 @@ mod tests {
     }
 
     #[test]
+    fn single_tls_blackhole_restarts_clean_window_without_rejecting_candidate() {
+        let envelope = confirmation_envelope();
+        let mut evaluator =
+            ConfirmationEvaluator::new_armed(&envelope, ["only.video.example"], 10_000, arm())
+                .unwrap();
+        evaluator.observe_probe(probe(1, "only.video.example", 10_100, 10_300));
+        evaluator.observe_probe(probe(2, "only.video.example", 10_400, 10_600));
+        evaluator.observe_confirmation_flow(
+            &confirmation_flow(101, 1, "only.video.example", Diagnosis::Working, 700),
+            10_300,
+        );
+        evaluator.observe_confirmation_flow(
+            &confirmation_flow(102, 2, "only.video.example", Diagnosis::Working, 1_000),
+            10_600,
+        );
+
+        assert_eq!(
+            evaluator.observe_confirmation_flow(
+                &confirmation_flow(103, 3, "only.video.example", Diagnosis::TlsBlackhole, 5_800,),
+                15_300,
+            ),
+            ConfirmationDecision::Pending
+        );
+        assert_eq!(evaluator.poll(20_299), ConfirmationDecision::Pending);
+        assert_eq!(evaluator.poll(20_300), ConfirmationDecision::Succeeded);
+    }
+
+    #[test]
+    fn second_distinct_tls_blackhole_rejects_the_candidate() {
+        let envelope = confirmation_envelope();
+        let mut evaluator =
+            ConfirmationEvaluator::new_armed(&envelope, ["only.video.example"], 10_000, arm())
+                .unwrap();
+
+        assert_eq!(
+            evaluator.observe_confirmation_flow(
+                &confirmation_flow(101, 1, "only.video.example", Diagnosis::TlsBlackhole, 600,),
+                10_100,
+            ),
+            ConfirmationDecision::Pending
+        );
+        assert_eq!(
+            evaluator.observe_confirmation_flow(
+                &confirmation_flow(102, 1, "only.video.example", Diagnosis::TlsBlackhole, 700,),
+                10_200,
+            ),
+            ConfirmationDecision::Pending,
+            "a duplicate flow id must not create adverse quorum"
+        );
+        assert_eq!(
+            evaluator.observe_confirmation_flow(
+                &confirmation_flow(103, 2, "only.video.example", Diagnosis::TlsBlackhole, 800,),
+                10_300,
+            ),
+            ConfirmationDecision::Failed(ConfirmationFailure::Strategy)
+        );
+    }
+
+    #[test]
+    fn confirmation_snapshot_drains_adverse_batch_before_succeeding() {
+        let envelope = confirmation_envelope();
+        let mut evaluator =
+            ConfirmationEvaluator::new_armed(&envelope, ["only.video.example"], 10_000, arm())
+                .unwrap();
+        evaluator.observe_probe(probe(1, "only.video.example", 10_100, 10_300));
+        evaluator.observe_probe(probe(2, "only.video.example", 10_400, 10_600));
+        evaluator.observe_confirmation_flow(
+            &confirmation_flow(101, 1, "only.video.example", Diagnosis::Working, 700),
+            10_300,
+        );
+        evaluator.observe_confirmation_flow(
+            &confirmation_flow(102, 2, "only.video.example", Diagnosis::Working, 1_000),
+            10_600,
+        );
+        let adverse_batch = [
+            confirmation_flow(
+                103,
+                3,
+                "only.video.example",
+                Diagnosis::TlsBlackhole,
+                20_100,
+            ),
+            confirmation_flow(
+                104,
+                4,
+                "only.video.example",
+                Diagnosis::TlsBlackhole,
+                20_200,
+            ),
+        ];
+
+        assert_eq!(
+            observe_confirmation_snapshot(&mut evaluator, &adverse_batch, 102, 30_000),
+            (
+                104,
+                ConfirmationDecision::Failed(ConfirmationFailure::Strategy)
+            )
+        );
+    }
+
+    #[test]
+    fn tcp_reset_requires_three_flows_across_two_targets() {
+        let envelope = confirmation_envelope();
+        let mut evaluator = ConfirmationEvaluator::new_armed(
+            &envelope,
+            ["one.video.example", "two.video.example"],
+            10_000,
+            arm(),
+        )
+        .unwrap();
+
+        for (sequence, flow_id, target) in
+            [(101, 1, "one.video.example"), (102, 2, "two.video.example")]
+        {
+            assert_eq!(
+                evaluator.observe_confirmation_flow(
+                    &confirmation_flow(sequence, flow_id, target, Diagnosis::TcpReset, 600),
+                    10_100,
+                ),
+                ConfirmationDecision::Pending
+            );
+        }
+        assert_eq!(
+            evaluator.observe_confirmation_flow(
+                &confirmation_flow(103, 3, "one.video.example", Diagnosis::TcpReset, 700),
+                10_200,
+            ),
+            ConfirmationDecision::Failed(ConfirmationFailure::Strategy)
+        );
+    }
+
+    #[test]
+    fn late_single_blackhole_cannot_bypass_clean_window() {
+        let envelope = confirmation_envelope();
+        let mut evaluator =
+            ConfirmationEvaluator::new_armed(&envelope, ["only.video.example"], 10_000, arm())
+                .unwrap();
+        evaluator.observe_probe(probe(1, "only.video.example", 10_100, 10_300));
+        evaluator.observe_probe(probe(2, "only.video.example", 10_400, 10_600));
+        evaluator.observe_confirmation_flow(
+            &confirmation_flow(101, 1, "only.video.example", Diagnosis::Working, 700),
+            10_300,
+        );
+        evaluator.observe_confirmation_flow(
+            &confirmation_flow(102, 2, "only.video.example", Diagnosis::Working, 1_000),
+            10_600,
+        );
+
+        assert_eq!(
+            evaluator.observe_confirmation_flow(
+                &confirmation_flow(
+                    103,
+                    3,
+                    "only.video.example",
+                    Diagnosis::TlsBlackhole,
+                    20_399,
+                ),
+                29_899,
+            ),
+            ConfirmationDecision::Pending
+        );
+        assert_eq!(
+            evaluator.poll(30_000),
+            ConfirmationDecision::Failed(ConfirmationFailure::MissingWorkingEvidence)
+        );
+        assert!(!ConfirmationFailure::MissingWorkingEvidence.penalizes_candidate());
+    }
+
+    #[test]
+    fn late_positive_quorum_cannot_bypass_the_clean_window() {
+        let envelope = confirmation_envelope();
+        let mut evaluator =
+            ConfirmationEvaluator::new_armed(&envelope, ["only.video.example"], 10_000, arm())
+                .unwrap();
+        evaluator.observe_probe(probe(1, "only.video.example", 29_000, 29_100));
+        evaluator.observe_probe(probe(2, "only.video.example", 29_200, 29_300));
+        evaluator.observe_confirmation_flow(
+            &confirmation_flow(101, 1, "only.video.example", Diagnosis::Working, 19_550),
+            29_100,
+        );
+        evaluator.observe_confirmation_flow(
+            &confirmation_flow(102, 2, "only.video.example", Diagnosis::Working, 19_750),
+            29_300,
+        );
+
+        assert_eq!(
+            evaluator.poll(30_000),
+            ConfirmationDecision::Failed(ConfirmationFailure::MissingWorkingEvidence)
+        );
+    }
+
+    #[test]
     fn confirmation_failure_classification_preserves_non_strategy_cases() {
         let envelope = confirmation_envelope();
         let mut adverse =
@@ -4861,7 +5311,7 @@ mod tests {
                 .unwrap();
         assert_eq!(
             adverse.observe_confirmation_flow(
-                &confirmation_flow(101, 1, "one.video.example", Diagnosis::TcpReset, 600),
+                &confirmation_flow(101, 1, "one.video.example", Diagnosis::HttpBlockPage, 600),
                 10_100,
             ),
             ConfirmationDecision::Failed(ConfirmationFailure::Strategy)

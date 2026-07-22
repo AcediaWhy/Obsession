@@ -692,17 +692,13 @@ function LegacyActiveAttemptCard({
 
 function LegacyCompletionCard({
   completion,
+  activeConfig,
 }: {
   completion: LegacyRecoveryCompletion;
+  activeConfig: string | null;
 }) {
   const display = COMPLETION_DISPLAY[completion.disposition];
   const automatic = completion.origin.kind === "automatic";
-  const activeConfig =
-    completion.disposition === "candidate_applied"
-      ? completion.candidateConfigId
-      : completion.disposition === "process_failed"
-        ? null
-        : completion.previousConfigId;
 
   return (
     <div
@@ -786,7 +782,7 @@ export function LegacyReliabilityPanelView({
   const configuredFrozen = new Set(configuredFrozenCategories);
   const haltedCategories = new Set(status.haltedCategories);
 
-  const activity = status.activeAttempt ? (
+  const liveActivity = status.activeAttempt ? (
     <LegacyActiveAttemptCard attempt={status.activeAttempt} />
   ) : status.proposal ? (
     <LegacyProposalCard
@@ -797,11 +793,14 @@ export function LegacyReliabilityPanelView({
       approvalError={approvalError}
       onApprove={onApprove}
     />
-  ) : status.lastCompletion ? (
-    <LegacyCompletionCard completion={status.lastCompletion} />
   ) : sessionActive ? (
     <LegacyIntentCallout intent={safeIntent} mode={status.mode} />
   ) : null;
+  const completionActiveConfig = status.lastCompletion
+    ? (status.lanes.find(
+        (lane) => lane.category === status.lastCompletion?.category,
+      )?.activeConfig ?? null)
+    : null;
 
   return (
     <div className="w-full">
@@ -883,7 +882,19 @@ export function LegacyReliabilityPanelView({
         </div>
       ) : null}
 
-      {activity ? <div className="mt-2">{activity}</div> : null}
+      {liveActivity ? <div className="mt-2">{liveActivity}</div> : null}
+
+      {status.lastCompletion ? (
+        <div className="mt-2">
+          <div className="mb-1.5 px-1 text-2xs font-semibold uppercase tracking-[0.12em] text-ink-muted">
+            Последний результат
+          </div>
+          <LegacyCompletionCard
+            completion={status.lastCompletion}
+            activeConfig={completionActiveConfig}
+          />
+        </div>
+      ) : null}
 
       {status.negativeCooldownCount > 0 ? (
         <p className="mt-1.5 px-1 text-3xs text-ink-muted">

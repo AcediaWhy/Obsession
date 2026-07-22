@@ -648,6 +648,16 @@ describe("LegacyReliabilityPanel", () => {
         <LegacyReliabilityPanelView
           status={status({
             mode: "assisted",
+            lanes: [
+              lane({
+                activeConfig:
+                  disposition === "candidate_applied"
+                    ? "youtube_twitch_2.conf"
+                    : disposition === "process_failed"
+                      ? null
+                      : "youtube_twitch_1.conf",
+              }),
+            ],
             lastCompletion: {
               ...PROPOSAL,
               origin: { kind: "assisted" },
@@ -663,6 +673,42 @@ describe("LegacyReliabilityPanel", () => {
       expect(markup).toContain(detail);
     },
   );
+
+  it("keeps a fresh recovery intent separate from historical completion", () => {
+    const markup = renderToStaticMarkup(
+      <LegacyReliabilityPanelView
+        status={status({
+          mode: "automatic",
+          lanes: [
+            lane({
+              activeConfig: "youtube_twitch_test_broken.conf",
+              classification: "dpi_blocked",
+              confidence: "high",
+            }),
+          ],
+          presumedIntent: {
+            kind: "switch_lane",
+            category: "youtube_twitch",
+            candidateConfig: "youtube_twitch_2.conf",
+            reason: "dpi_blocked",
+          },
+          lastCompletion: {
+            ...PROPOSAL,
+            origin: { kind: "automatic", controlGeneration: 4 },
+            phase: "applied",
+            disposition: "previous_preserved",
+            finishedAtMonotonicMs: 81_000,
+          },
+        })}
+        configuredMode="automatic"
+      />,
+    );
+
+    expect(markup).toContain("Кандидат: youtube_twitch_2.conf");
+    expect(markup).toContain("Последний результат");
+    expect(markup).toContain("Активно: youtube_twitch_test_broken.conf");
+    expect(markup).not.toContain("Активно: youtube_twitch_1.conf");
+  });
 
   it("reports candidates in negative cooldown without exposing timers", () => {
     const markup = renderToStaticMarkup(
