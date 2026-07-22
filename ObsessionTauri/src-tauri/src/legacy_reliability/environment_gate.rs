@@ -126,6 +126,10 @@ impl PassiveEvidenceSummary {
             && self.blackhole_targets >= BLACKHOLE_REQUIRED_TARGETS
     }
 
+    pub const fn has_blackhole_gate_quorum(self) -> bool {
+        self.confirmed_tls_blackhole_flows >= BLACKHOLE_REQUIRED_FLOWS && self.blackhole_targets > 0
+    }
+
     /// Any suspicious evidence prevents the current round from teaching its
     /// own latency baseline, even when it has not reached quorum yet.
     pub const fn is_suspect_round(self) -> bool {
@@ -381,10 +385,17 @@ pub fn classify_gate(
         .filter(|outcome| outcome.category_target_reachable())
         .count();
     // One failed target next to a reachable peer is a site-specific failure,
-    // not DPI. If every independent target fails, passive quorum below is what
-    // distinguishes a shared block from ordinary target unavailability.
+    // not DPI. A single exact incident target may proceed only when passive
+    // Eyes independently confirmed repeated TLS blackholes and the fresh probe
+    // reached DNS before failing. It remains medium-confidence DpiSuspected;
+    // candidate confirmation and exact rollback decide whether mutation sticks.
+    let confirmed_single_target_blackhole = category_targets.len() == 1
+        && category_targets[0].dns_succeeded()
+        && passive_evidence.has_blackhole_gate_quorum();
     if (reachable_target_count > 0 && reachable_target_count < category_targets.len())
-        || (reachable_target_count == 0 && category_targets.len() == 1)
+        || (reachable_target_count == 0
+            && category_targets.len() == 1
+            && !confirmed_single_target_blackhole)
     {
         return GateClassification::TargetUnavailable;
     }
@@ -414,6 +425,17 @@ pub fn classify_gate(
         if passive_evidence.has_reset_quorum() {
             return GateClassification::DpiSuspected;
         }
+
+        if confirmed_single_target_blackhole {
+            return GateClassification::DpiSuspected;
+        }
+    }
+
+    // A current passive blackhole cannot become Stable merely because one
+    // active request got through. Without a trusted latency baseline the Gate
+    // remains diagnostic-only and policy rejects mutation.
+    if confirmed_single_target_blackhole {
+        return GateClassification::TargetUnavailable;
     }
 
     if reachable_target_count == 0 {
@@ -1129,6 +1151,108 @@ mod tests {
                 Some(100),
             ),
             GateClassification::Stable
+        );
+    }
+
+    #[test]
+    fn confirmed_single_target_tls_blackhole_is_dpi_suspected() {
+        let passive = PassiveEvidenceSummary {
+            confirmed_tls_blackhole_flows: 2,
+            blackhole_targets: 1,
+            ..PassiveEvidenceSummary::default()
+        };
+        let target =
+            EndpointProbeOutcome::timed_out("video.example", EndpointProbeStage::Transport, 5_000);
+
+        assert_eq!(
+            classify(
+                &local_network(),
+                ready_sensor(),
+                passive,
+                &healthy_controls(),
+                &[target],
+                Some(100),
+            ),
+            GateClassification::DpiSuspected
+        );
+    }
+
+    #[test]
+    fn reachable_exact_target_cannot_refute_current_passive_blackholes() {
+        let passive = PassiveEvidenceSummary {
+            confirmed_tls_blackhole_flows: 2,
+            blackhole_targets: 1,
+            ..PassiveEvidenceSummary::default()
+        };
+
+        assert_eq!(
+            classify(
+                &local_network(),
+                ready_sensor(),
+                passive,
+                &healthy_controls(),
+                &[EndpointProbeOutcome::http("video.example", 20, 200)],
+                Some(100),
+            ),
+            GateClassification::DpiSuspected
+        );
+    }
+
+    #[test]
+    fn single_target_blackhole_without_a_trusted_baseline_is_not_stable() {
+        let passive = PassiveEvidenceSummary {
+            confirmed_tls_blackhole_flows: 2,
+            blackhole_targets: 1,
+            ..PassiveEvidenceSummary::default()
+        };
+
+        assert_eq!(
+            classify(
+                &local_network(),
+                ready_sensor(),
+                passive,
+                &healthy_controls(),
+                &[EndpointProbeOutcome::http("video.example", 20, 200)],
+                None,
+            ),
+            GateClassification::TargetUnavailable
+        );
+    }
+
+    #[test]
+    fn single_target_blackhole_never_overrides_dns_5xx_or_slow_service() {
+        let passive = PassiveEvidenceSummary {
+            confirmed_tls_blackhole_flows: 2,
+            blackhole_targets: 1,
+            ..PassiveEvidenceSummary::default()
+        };
+        for target in [
+            EndpointProbeOutcome::failed("video.example", EndpointProbeStage::Dns, 20),
+            EndpointProbeOutcome::http("video.example", 20, 500),
+        ] {
+            assert_eq!(
+                classify(
+                    &local_network(),
+                    ready_sensor(),
+                    passive,
+                    &healthy_controls(),
+                    &[target],
+                    Some(100),
+                ),
+                GateClassification::TargetUnavailable
+            );
+        }
+
+        assert_eq!(
+            classify(
+                &local_network(),
+                ready_sensor(),
+                passive,
+                &healthy_controls(),
+                &[EndpointProbeOutcome::http("video.example", 2_000, 200)],
+                Some(500),
+            ),
+            GateClassification::ServiceSlow
         );
     }
 

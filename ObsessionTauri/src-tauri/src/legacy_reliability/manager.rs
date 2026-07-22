@@ -551,7 +551,7 @@ impl ObserveOnlyManager {
             self.logical_now_ms,
             super::environment_gate::MAX_CATEGORY_TARGETS,
         );
-        let category_targets = if observed_hosts.len() >= 2 {
+        let category_targets = if !observed_hosts.is_empty() {
             observed_hosts
         } else {
             registry
@@ -1415,6 +1415,37 @@ mod tests {
             assessed.session.lane_generations["discord"],
             LaneGeneration::new(LANE)
         );
+    }
+
+    #[test]
+    fn single_target_blackhole_gate_probes_the_exact_observed_host() {
+        let (mut manager, registry) = production_fixture();
+        for (flow_id, domain) in [(1, "api.one.example"), (2, "cdn.one.example")] {
+            let event = EyeEvent::Flow(flow_for(
+                registry.version(),
+                domain,
+                flow_id,
+                Diagnosis::TlsBlackhole,
+                flow_id,
+            ));
+            assert!(matches!(
+                manager.process_event(flow_id, event),
+                EventDisposition::Accepted { .. }
+            ));
+        }
+
+        let prepared = manager
+            .take_environment_gate_request(LocalNetworkSnapshot {
+                online: true,
+                interface_up: true,
+                default_route_available: true,
+                gateway_reachable: true,
+                network_fingerprint: NetworkFingerprint::Stable {
+                    key: "test-network".to_owned(),
+                },
+            })
+            .unwrap();
+        assert_eq!(prepared.request.category_targets, ["cdn.one.example"]);
     }
 
     #[test]

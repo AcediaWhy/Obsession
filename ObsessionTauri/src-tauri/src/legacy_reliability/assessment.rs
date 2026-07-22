@@ -78,6 +78,14 @@ impl EvidenceSummary {
         usize::from(self.blackhole_flows) >= BLACKHOLE_FLOW_QUORUM
             && usize::from(self.blackhole_targets) >= BLACKHOLE_TARGET_QUORUM
     }
+
+    fn blackhole_gate_quorum(self) -> bool {
+        usize::from(self.blackhole_flows) >= BLACKHOLE_FLOW_QUORUM && self.blackhole_targets > 0
+    }
+
+    fn has_gate_quorum(self) -> bool {
+        self.reset_quorum() || self.blackhole_gate_quorum()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -242,11 +250,11 @@ impl LaneState {
         // remain latched through silence and expire only after Working
         // hysteresis (and any explicit caller-supplied cooldown).
         let summary = summarize(&self.evidence);
-        if !summary.reset_quorum() && !summary.blackhole_quorum() {
+        if !summary.has_gate_quorum() {
             self.pending_gate = None;
             self.gate_in_flight = false;
         }
-        let gate_quorum_still_valid = summary.reset_quorum() || summary.blackhole_quorum();
+        let gate_quorum_still_valid = summary.has_gate_quorum();
         let recovered_by_working = self
             .applied_gate
             .as_ref()
@@ -394,7 +402,10 @@ impl LaneAssessor {
                 .retain(|point| point.kind != EvidenceKind::Working);
         }
         let mut after = summarize(&lane.evidence);
-        if kind == EvidenceKind::Working && working_quorum(after, lane.eligible_target_count) {
+        if kind == EvidenceKind::Working
+            && working_quorum(after, lane.eligible_target_count)
+            && !has_unrecovered_adverse_target(&lane.evidence)
+        {
             lane.unrefuted_working_confirmation = true;
             lane.pending_gate = None;
             lane.gate_in_flight = false;
@@ -414,11 +425,11 @@ impl LaneAssessor {
                 lane.applied_gate = None;
             }
             after = summarize(&lane.evidence);
-        } else if after.reset_quorum() || after.blackhole_quorum() {
-            // A single endpoint can timeout or reset transiently while the
-            // category remains usable. Only the same cross-target quorum that
-            // arms the Environment Gate is strong enough to refute the
-            // display-only session confirmation.
+        } else if after.reset_quorum() || after.blackhole_gate_quorum() {
+            // Two independent blackhole flows are enough to refute the
+            // display-only session confirmation and ask the active Gate for a
+            // diagnosis. High-confidence DpiBlocked still requires distinct
+            // targets inside the Gate classifier.
             lane.unrefuted_working_confirmation = false;
         }
         let changed = before != after;
@@ -530,7 +541,7 @@ impl LaneAssessor {
         let summary = summarize(&lane.evidence);
         let trigger_still_valid = match request.trigger {
             GateTrigger::ResetQuorum => summary.reset_quorum(),
-            GateTrigger::BlackholeQuorum => summary.blackhole_quorum(),
+            GateTrigger::BlackholeQuorum => summary.blackhole_gate_quorum(),
         };
         if !trigger_still_valid {
             lane.pending_gate = None;
@@ -588,7 +599,7 @@ impl LaneAssessor {
             let evidence = summarize(&lane.evidence);
             let trigger_still_valid = match request.trigger {
                 GateTrigger::ResetQuorum => evidence.reset_quorum(),
-                GateTrigger::BlackholeQuorum => evidence.blackhole_quorum(),
+                GateTrigger::BlackholeQuorum => evidence.blackhole_gate_quorum(),
             };
             if !trigger_still_valid {
                 lane.pending_gate = None;
@@ -635,7 +646,7 @@ impl LaneAssessor {
             return;
         };
         let summary = summarize(&lane.evidence);
-        let trigger = if summary.blackhole_quorum() {
+        let trigger = if summary.blackhole_gate_quorum() {
             Some(GateTrigger::BlackholeQuorum)
         } else if summary.reset_quorum() {
             Some(GateTrigger::ResetQuorum)
@@ -667,7 +678,7 @@ impl LaneAssessor {
                             .is_some_and(|until_ms| now_ms < until_ms))
                     && match trigger {
                         GateTrigger::ResetQuorum => summary.reset_quorum(),
-                        GateTrigger::BlackholeQuorum => summary.blackhole_quorum(),
+                        GateTrigger::BlackholeQuorum => summary.blackhole_gate_quorum(),
                     }
             });
         if already_handled {
@@ -745,6 +756,29 @@ fn summarize_iter<'a>(points: impl IntoIterator<Item = &'a EvidencePoint>) -> Ev
     }
 }
 
+fn has_unrecovered_adverse_target(points: &VecDeque<EvidencePoint>) -> bool {
+    let mut latest_working = BTreeMap::<&str, u64>::new();
+    let mut latest_adverse = BTreeMap::<&str, u64>::new();
+
+    for point in points {
+        let timestamps = if point.kind == EvidenceKind::Working {
+            &mut latest_working
+        } else {
+            &mut latest_adverse
+        };
+        timestamps
+            .entry(point.target.as_str())
+            .and_modify(|timestamp| *timestamp = (*timestamp).max(point.ts_ms))
+            .or_insert(point.ts_ms);
+    }
+
+    latest_adverse.iter().any(|(target, adverse_at_ms)| {
+        latest_working
+            .get(target)
+            .is_none_or(|working_at_ms| working_at_ms <= adverse_at_ms)
+    })
+}
+
 fn assess_lane(
     category: &str,
     lane: &LaneState,
@@ -753,7 +787,7 @@ fn assess_lane(
     now_ms: u64,
 ) -> LaneAssessment {
     let evidence = summarize_at(&lane.evidence, now_ms);
-    let gate_quorum_still_valid = evidence.reset_quorum() || evidence.blackhole_quorum();
+    let gate_quorum_still_valid = evidence.has_gate_quorum();
     let (phase, classification, confidence, cooldown_until_ms) = if !sensor_reliable {
         (
             LanePhase::SensorUnreliable,
@@ -1023,11 +1057,17 @@ mod tests {
         observe(&mut blackhole, 3, "one.test", 3, Diagnosis::TlsBlackhole);
         observe(&mut blackhole, 4, "one.test", 4, Diagnosis::TlsBlackhole);
         let same_target_timeouts = blackhole.snapshots(4).remove(0);
-        assert_eq!(same_target_timeouts.confidence, AssessmentConfidence::Low);
+        assert_eq!(
+            same_target_timeouts.confidence,
+            AssessmentConfidence::Medium
+        );
         assert_eq!(same_target_timeouts.evidence.blackhole_flows, 2);
         assert_eq!(same_target_timeouts.evidence.blackhole_targets, 1);
-        assert!(same_target_timeouts.working_confirmed_recently);
-        assert!(blackhole.take_gate_request().is_none());
+        assert!(!same_target_timeouts.working_confirmed_recently);
+        assert_eq!(
+            blackhole.take_gate_request().unwrap().trigger,
+            GateTrigger::BlackholeQuorum
+        );
 
         let mut reset = assessor(2);
         observe(&mut reset, 1, "one.test", 1, Diagnosis::Working);
@@ -1039,6 +1079,36 @@ mod tests {
         assert_eq!(two_target_resets.evidence.reset_targets, 2);
         assert!(two_target_resets.working_confirmed_recently);
         assert!(reset.take_gate_request().is_none());
+    }
+
+    #[test]
+    fn working_on_peer_targets_cannot_erase_an_unrecovered_blackhole() {
+        let mut assessor = assessor(3);
+        observe(&mut assessor, 1, "broken.test", 1, Diagnosis::TlsBlackhole);
+        observe(&mut assessor, 2, "broken.test", 2, Diagnosis::TlsBlackhole);
+        observe(&mut assessor, 3, "peer-one.test", 3, Diagnosis::Working);
+        observe(&mut assessor, 4, "peer-two.test", 4, Diagnosis::Working);
+
+        let still_broken = assessor.snapshots(4).remove(0);
+        assert_eq!(still_broken.phase, LanePhase::GatePending);
+        assert_eq!(
+            still_broken.classification,
+            AssessmentClassification::AwaitingEvidence
+        );
+        assert_eq!(still_broken.evidence.blackhole_flows, 2);
+        assert_eq!(still_broken.evidence.blackhole_targets, 1);
+        assert_eq!(still_broken.evidence.working_targets, 2);
+        assert_eq!(
+            assessor.take_gate_request().unwrap().trigger,
+            GateTrigger::BlackholeQuorum
+        );
+
+        observe(&mut assessor, 5, "broken.test", 5, Diagnosis::Working);
+        let recovered = assessor.snapshots(5).remove(0);
+        assert_eq!(recovered.phase, LanePhase::Healthy);
+        assert_eq!(recovered.classification, AssessmentClassification::Working);
+        assert_eq!(recovered.evidence.blackhole_flows, 0);
+        assert!(assessor.take_gate_request().is_none());
     }
 
     #[test]

@@ -369,7 +369,12 @@ fn authorize_current_passive_quorum(
         return Err(PreflightGateError::StaleFence);
     }
     match report.classification {
-        GateClassification::DpiSuspected if current_evidence.has_reset_quorum() => Ok(()),
+        GateClassification::DpiSuspected
+            if current_evidence.has_reset_quorum()
+                || current_evidence.has_blackhole_gate_quorum() =>
+        {
+            Ok(())
+        }
         GateClassification::DpiBlocked if current_evidence.has_blackhole_quorum() => Ok(()),
         GateClassification::DpiSuspected | GateClassification::DpiBlocked => {
             Err(PreflightGateError::IncidentNotActionable)
@@ -3639,7 +3644,7 @@ impl ScopedExecutorBackend for AppScopedExecutorBackend {
                 .get(&envelope.category)
                 .cloned()
                 .unwrap_or_default();
-            let targets = if observed_targets.len() >= 2 {
+            let targets = if !observed_targets.is_empty() {
                 observed_targets
             } else {
                 self.current_registry()?
@@ -4306,6 +4311,23 @@ mod tests {
         let fence = preflight_gate_fence();
         let report = preflight_gate_report(GateClassification::DpiBlocked, fence.clone());
         assert_eq!(authorize_gate_report(&report, &fence, 100), Ok(()));
+    }
+
+    #[test]
+    fn preflight_keeps_a_confirmed_single_target_blackhole_actionable() {
+        let epoch = 17;
+        let report =
+            preflight_gate_report(GateClassification::DpiSuspected, preflight_gate_fence());
+        let current = PassiveEvidenceSummary {
+            confirmed_tls_blackhole_flows: 2,
+            blackhole_targets: 1,
+            ..PassiveEvidenceSummary::default()
+        };
+
+        assert_eq!(
+            authorize_current_passive_quorum(&report, epoch, epoch, current),
+            Ok(())
+        );
     }
 
     #[test]
