@@ -28,7 +28,8 @@ use super::health::{
     AtomicHealthCounters, HealthPoll, HealthTracker, PendingGap, HEALTH_CLEAN_WINDOW_MS,
 };
 use super::ingress::{
-    AcceptedScope, FenceBuildError, FenceRejection, LegacyIngressReceiver, SessionFence,
+    AcceptedScope, FenceBuildError, FenceRejection, LegacyIngressReceiver, PendingIngressScope,
+    SessionFence,
 };
 use super::policy::{LaneConfigOptions, ObserveOnlyBrain, PresumedIntent};
 use super::target_registry::{Attribution, TargetRegistry};
@@ -159,6 +160,17 @@ pub struct ObserveOnlySnapshot {
     pub logical_now_ms: u64,
     pub last_gap_sequence: Option<u64>,
     pub last_accepted_flow_sequence: Option<u64>,
+    /// Live ingress items accepted by the bounded channels but not yet included
+    /// in a Manager snapshot published to watch consumers.
+    #[serde(skip_serializing)]
+    pub pending_ingress_control_events: u64,
+    #[serde(skip_serializing)]
+    pub pending_ingress_flow_events: BTreeMap<String, u64>,
+    /// Last confirmation entry evicted from the bounded backend journal. A
+    /// consumer whose cursor is older than this marker must fail closed rather
+    /// than reason over an incomplete event history.
+    #[serde(skip_serializing)]
+    pub last_evicted_confirmation_flow_sequences: BTreeMap<String, u64>,
     pub lanes: Vec<LaneAssessment>,
     pub presumed_intent: PresumedIntent,
     pub active_configs: BTreeMap<String, String>,
@@ -187,6 +199,8 @@ pub struct ConfirmationFlow {
     pub flow_id: u64,
     pub target: String,
     pub diagnosis: crate::eyes::Diagnosis,
+    pub armed_at_sensor_ms: Option<u64>,
+    pub armed_at_capture_timestamp: Option<i64>,
     pub monotonic_ts: u64,
 }
 
@@ -227,7 +241,11 @@ pub enum EventDisposition {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum ReceiveOutcome {
-    Event { disposition: EventDisposition },
+    Event {
+        disposition: EventDisposition,
+        #[serde(skip_serializing)]
+        pending_scope: PendingIngressScope,
+    },
     ReceiverClosed,
     ManagerClosed,
 }
@@ -254,6 +272,7 @@ pub struct ObserveOnlyManager {
     observation_sequence: u64,
     last_gap_sequence: Option<u64>,
     last_accepted_flow_sequence: Option<u64>,
+    last_evicted_confirmation_flow_sequences: BTreeMap<String, u64>,
     confirmation_flows: VecDeque<ConfirmationFlow>,
     receiver_failed: bool,
     registry: Option<Arc<TargetRegistry>>,
@@ -391,6 +410,7 @@ impl ObserveOnlyManager {
             observation_sequence: 0,
             last_gap_sequence: None,
             last_accepted_flow_sequence: None,
+            last_evicted_confirmation_flow_sequences: BTreeMap::new(),
             confirmation_flows: VecDeque::new(),
             receiver_failed: false,
             registry,
@@ -421,7 +441,10 @@ impl ObserveOnlyManager {
             .receiver
             .try_recv_control()
             .or_else(|| self.receiver.try_recv_flow().map(EyeEvent::Flow))?;
-        Some(self.process_event_after_health(event))
+        let pending_scope = PendingIngressScope::for_event(&event);
+        let disposition = self.process_event_after_health(event);
+        self.receiver.acknowledge_published_event(&pending_scope);
+        Some(disposition)
     }
 
     /// Waits for one ingress item. Queue health is sampled both before and
@@ -435,9 +458,13 @@ impl ObserveOnlyManager {
                 .try_recv_control()
                 .or_else(|| self.receiver.try_recv_flow().map(EyeEvent::Flow));
             return match pending {
-                Some(event) => ReceiveOutcome::Event {
-                    disposition: self.process_event_after_health(event),
-                },
+                Some(event) => {
+                    let pending_scope = PendingIngressScope::for_event(&event);
+                    ReceiveOutcome::Event {
+                        disposition: self.process_event_after_health(event),
+                        pending_scope,
+                    }
+                }
                 None => ReceiveOutcome::ManagerClosed,
             };
         }
@@ -445,8 +472,10 @@ impl ObserveOnlyManager {
         match self.receiver.recv().await {
             Some(event) => {
                 self.poll_health(now_ms);
+                let pending_scope = PendingIngressScope::for_event(&event);
                 ReceiveOutcome::Event {
                     disposition: self.process_event_after_health(event),
+                    pending_scope,
                 }
             }
             None => {
@@ -528,6 +557,11 @@ impl ObserveOnlyManager {
             logical_now_ms: self.logical_now_ms,
             last_gap_sequence: self.last_gap_sequence,
             last_accepted_flow_sequence: self.last_accepted_flow_sequence,
+            pending_ingress_control_events: self.receiver.pending_control_event_count(),
+            pending_ingress_flow_events: self.receiver.pending_flow_event_counts(),
+            last_evicted_confirmation_flow_sequences: self
+                .last_evicted_confirmation_flow_sequences
+                .clone(),
             lanes,
             presumed_intent,
             active_configs,
@@ -535,6 +569,10 @@ impl ObserveOnlyManager {
             gate_probe_hosts,
             confirmation_flows: self.confirmation_flows.iter().cloned().collect(),
         }
+    }
+
+    pub(crate) fn acknowledge_published_ingress_event(&self, scope: &PendingIngressScope) {
+        self.receiver.acknowledge_published_event(scope);
     }
 
     /// Builds one asynchronous Environment Gate request after passive quorum.
@@ -943,7 +981,10 @@ impl ObserveOnlyManager {
             return;
         }
         if self.confirmation_flows.len() == MAX_CONFIRMATION_FLOWS {
-            self.confirmation_flows.pop_front();
+            if let Some(evicted) = self.confirmation_flows.pop_front() {
+                self.last_evicted_confirmation_flow_sequences
+                    .insert(evicted.category, evicted.sequence);
+            }
         }
         self.confirmation_flows.push_back(ConfirmationFlow {
             sequence,
@@ -952,6 +993,8 @@ impl ObserveOnlyManager {
             flow_id: flow.flow_id,
             target,
             diagnosis: flow.diagnosis,
+            armed_at_sensor_ms: flow.armed_at_sensor_ms,
+            armed_at_capture_timestamp: flow.armed_at_capture_timestamp,
             monotonic_ts: flow.monotonic_ts,
         });
     }
@@ -1097,6 +1140,8 @@ mod tests {
             ts,
         )
         .unwrap()
+        .with_armed_at_sensor_ms(ts)
+        .with_armed_at_capture_timestamp(ts as i64)
     }
 
     fn flow_for(
@@ -1119,6 +1164,8 @@ mod tests {
             ts,
         )
         .unwrap()
+        .with_armed_at_sensor_ms(ts)
+        .with_armed_at_capture_timestamp(ts as i64)
     }
 
     fn production_fixture() -> (ObserveOnlyManager, Arc<TargetRegistry>) {
@@ -1326,6 +1373,11 @@ mod tests {
         assert_eq!(snapshot.confirmation_flows[0].sequence, sequence);
         assert_eq!(snapshot.confirmation_flows[0].flow_id, 77);
         assert_eq!(snapshot.confirmation_flows[0].target, "one.example");
+        assert_eq!(snapshot.confirmation_flows[0].armed_at_sensor_ms, Some(10));
+        assert_eq!(
+            snapshot.confirmation_flows[0].armed_at_capture_timestamp,
+            Some(10)
+        );
 
         manager.process_event(
             11,
@@ -1337,6 +1389,34 @@ mod tests {
             }),
         );
         assert!(manager.snapshot().confirmation_flows.is_empty());
+    }
+
+    #[test]
+    fn confirmation_journal_reports_the_last_evicted_sequence() {
+        let (mut manager, registry) = production_fixture();
+
+        for flow_id in 1..=MAX_CONFIRMATION_FLOWS as u64 + 1 {
+            manager.process_event(
+                flow_id,
+                EyeEvent::Flow(flow_for(
+                    registry.version(),
+                    "one.example",
+                    flow_id,
+                    Diagnosis::Working,
+                    flow_id,
+                )),
+            );
+        }
+
+        let snapshot = manager.snapshot();
+        assert_eq!(snapshot.confirmation_flows.len(), MAX_CONFIRMATION_FLOWS);
+        assert_eq!(snapshot.confirmation_flows[0].sequence, 2);
+        assert_eq!(
+            snapshot
+                .last_evicted_confirmation_flow_sequences
+                .get("discord"),
+            Some(&1)
+        );
     }
 
     #[test]

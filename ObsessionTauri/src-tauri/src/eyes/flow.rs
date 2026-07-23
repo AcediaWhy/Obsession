@@ -18,6 +18,9 @@ use crate::eyes::fake_filter::{is_winws_fake, FakeContext};
 use crate::eyes::parse::{classify_record, extract_sni, ParsedPacket, TlsHandshake, TlsRecord};
 use crate::eyes::signal::{Observation, Verdict};
 
+pub const ARMED_SILENCE_TIMEOUT_MS: u64 = 8_000;
+pub const BLACKHOLE_DELIVERY_GRACE_MS: u64 = 2_000;
+
 /// How inbound payload proves that an armed flow is working.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum WorkingSignalMode {
@@ -41,6 +44,9 @@ pub struct Config {
     pub syn_synack_timeout_ms: u64,
     /// Armed без входящего ответа дольше этого → blackhole (если были ретрансмиты CH).
     pub armed_silence_timeout_ms: u64,
+    /// Задержка перед публикацией timeout-verdict, чтобы уже захваченный
+    /// входящий пакет успел отменить ложный blackhole.
+    pub blackhole_delivery_grace_ms: u64,
     /// Сколько держать «завершённый» поток, чтобы гасить поздние дубли пакетов.
     pub done_linger_ms: u64,
     /// Мин. число ретрансмитов SYN, чтобы счесть молчание блэкхолом (а не отменой).
@@ -62,7 +68,8 @@ impl Default for Config {
             // Медленная мобильная/загруженная сеть может отдать первый ServerHello
             // не мгновенно — даём запас, чтобы «медленно, но работает» не читалось
             // как blackhole. Ложные заморозки дороже небольшой задержки детекта.
-            armed_silence_timeout_ms: 8000,
+            armed_silence_timeout_ms: ARMED_SILENCE_TIMEOUT_MS,
+            blackhole_delivery_grace_ms: 0,
             done_linger_ms: 2000,
             // Ретрансмиты — главная улика «сервер молчит». Один ретрансмит бывает и
             // на здоровом, но потерянном на линке пакете, поэтому требуем ≥3 (SYN)
@@ -94,9 +101,26 @@ enum Phase {
     /// TCP ещё не установлен: ждём SYN-ACK, копим исходящий ClientHello.
     Handshake,
     /// ClientHello ушёл, SNI распознан и матчит хостлист — ждём вердикт.
-    Armed { domain: String, t0: u64 },
+    Armed {
+        domain: String,
+        t0: u64,
+        capture_timestamp: Option<i64>,
+    },
     /// Вердикт уже вынесен — держим недолго, чтобы гасить поздние дубли.
     Done,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum PendingBlackholeKind {
+    SynNoSynAck,
+    TlsSilence,
+}
+
+#[derive(Clone, Debug)]
+struct PendingBlackhole {
+    kind: PendingBlackholeKind,
+    observation: Observation,
+    publish_at_ms: u64,
 }
 
 /// Пересборка исходящего ClientHello по TCP-seq (устойчива к split/disorder).
@@ -434,7 +458,9 @@ struct Flow {
     syn_ack_seen: bool,
     syn_retx: u8,
     ch_retx: u8,
+    first_payload_capture_timestamp: Option<i64>,
     inbound_data_seen: bool,
+    pending_blackhole: Option<PendingBlackhole>,
     emitted: bool,
 }
 
@@ -455,7 +481,9 @@ impl Flow {
             syn_ack_seen: false,
             syn_retx: 0,
             ch_retx: 0,
+            first_payload_capture_timestamp: None,
             inbound_data_seen: false,
+            pending_blackhole: None,
             emitted: false,
         }
     }
@@ -496,6 +524,24 @@ impl FlowTable {
 
     /// Обрабатывает один пакет. Возвращает вердикт, если он готов.
     pub fn on_packet(&mut self, pkt: &ParsedPacket, ts_ms: u64) -> Option<Observation> {
+        self.on_packet_inner(pkt, ts_ms, None)
+    }
+
+    pub(crate) fn on_captured_packet(
+        &mut self,
+        pkt: &ParsedPacket,
+        ts_ms: u64,
+        capture_timestamp: i64,
+    ) -> Option<Observation> {
+        self.on_packet_inner(pkt, ts_ms, Some(capture_timestamp))
+    }
+
+    fn on_packet_inner(
+        &mut self,
+        pkt: &ParsedPacket,
+        ts_ms: u64,
+        capture_timestamp: Option<i64>,
+    ) -> Option<Observation> {
         // Завершённый поток: гасим дубли, продлеваем linger.
         if let Some(f) = self.flows.get_mut(&pkt.key) {
             if f.emitted {
@@ -517,13 +563,18 @@ impl FlowTable {
         }
 
         if pkt.outbound {
-            self.on_outbound(pkt, ts_ms)
+            self.on_outbound(pkt, ts_ms, capture_timestamp)
         } else {
             self.on_inbound(pkt, ts_ms)
         }
     }
 
-    fn on_outbound(&mut self, pkt: &ParsedPacket, now: u64) -> Option<Observation> {
+    fn on_outbound(
+        &mut self,
+        pkt: &ParsedPacket,
+        now: u64,
+        capture_timestamp: Option<i64>,
+    ) -> Option<Observation> {
         let flags = pkt.flags;
 
         // Исходящий SYN (без ACK) — начало соединения / baseline TTL,seq.
@@ -592,6 +643,9 @@ impl FlowTable {
             }
             let f = self.flows.get_mut(&pkt.key).unwrap();
             f.last_seen_ms = now;
+            if f.first_payload_capture_timestamp.is_none() {
+                f.first_payload_capture_timestamp = capture_timestamp;
+            }
 
             // Уже вооружён? Тогда повтор исходящих данных = ретрансмит CH (признак blackhole).
             if matches!(f.phase, Phase::Armed { .. }) {
@@ -615,6 +669,7 @@ impl FlowTable {
                     f.phase = Phase::Armed {
                         domain: sni,
                         t0: now,
+                        capture_timestamp: f.first_payload_capture_timestamp,
                     };
                 } else {
                     // Домен не из хостлиста — поток нам неинтересен.
@@ -639,6 +694,7 @@ impl FlowTable {
         // Входящий SYN-ACK — TCP встал, это уже не SYN-level blackhole.
         if pkt.flags.syn && pkt.flags.ack {
             f.syn_ack_seen = true;
+            f.pending_blackhole = None;
             if working_signal_mode == WorkingSignalMode::StrictTls {
                 f.inbound_reasm.anchor_after_syn_ack(pkt.seq);
             }
@@ -647,7 +703,12 @@ impl FlowTable {
 
         // Входящий RST: DPI срезал попытку. Вердикт только если знаем домен (Armed).
         if pkt.flags.rst {
-            if let Phase::Armed { domain, .. } = &f.phase {
+            if let Phase::Armed {
+                domain,
+                t0,
+                capture_timestamp,
+            } = &f.phase
+            {
                 let obs = Observation {
                     flow_id: f.id,
                     domain: domain.clone(),
@@ -656,6 +717,8 @@ impl FlowTable {
                     remote_port: f.remote_port,
                     verdict: Verdict::Reset,
                     evidence: "inbound_rst",
+                    armed_at_ms: Some(*t0),
+                    armed_at_capture_timestamp: *capture_timestamp,
                     ts_ms: now,
                 };
                 f.emitted = true;
@@ -670,6 +733,7 @@ impl FlowTable {
         // Входящие данные с полезной нагрузкой — соединение живо.
         if !pkt.payload.is_empty() {
             f.inbound_data_seen = true;
+            f.pending_blackhole = None;
             let evidence = match working_signal_mode {
                 WorkingSignalMode::Compatibility => compatibility_working_evidence(&pkt.payload),
                 WorkingSignalMode::StrictTls => {
@@ -678,7 +742,12 @@ impl FlowTable {
                 }
             };
             if let Some(evidence) = evidence {
-                if let Phase::Armed { domain, .. } = &f.phase {
+                if let Phase::Armed {
+                    domain,
+                    t0,
+                    capture_timestamp,
+                } = &f.phase
+                {
                     let obs = Observation {
                         flow_id: f.id,
                         domain: domain.clone(),
@@ -687,6 +756,8 @@ impl FlowTable {
                         remote_port: f.remote_port,
                         verdict: Verdict::Working,
                         evidence,
+                        armed_at_ms: Some(*t0),
+                        armed_at_capture_timestamp: *capture_timestamp,
                         ts_ms: now,
                     };
                     f.emitted = true;
@@ -707,7 +778,7 @@ impl FlowTable {
         // Собираем ключи заранее, чтобы не держать заём во время мутации.
         let keys: Vec<_> = self.flows.keys().copied().collect();
         for key in keys {
-            let Some(f) = self.flows.get(&key) else {
+            let Some(f) = self.flows.get_mut(&key) else {
                 continue;
             };
 
@@ -719,15 +790,39 @@ impl FlowTable {
                 continue;
             }
 
+            if let Some(pending) = f.pending_blackhole.as_ref() {
+                let still_adverse = match pending.kind {
+                    PendingBlackholeKind::SynNoSynAck => {
+                        !f.syn_ack_seen
+                            && !f.inbound_data_seen
+                            && f.syn_retx >= self.cfg.min_syn_retx
+                    }
+                    PendingBlackholeKind::TlsSilence => {
+                        !f.inbound_data_seen && f.ch_retx >= self.cfg.min_ch_retx
+                    }
+                };
+                if still_adverse {
+                    if now >= pending.publish_at_ms {
+                        out.push(pending.observation.clone());
+                        to_remove.push(key);
+                    }
+                    continue;
+                }
+                f.pending_blackhole = None;
+            }
+
             match &f.phase {
                 Phase::Handshake => {
                     let age = now.saturating_sub(f.created_ms);
                     if age >= self.cfg.syn_synack_timeout_ms {
                         // SYN-level blackhole: нет SYN-ACK + ретрансмиты SYN.
-                        if !f.syn_ack_seen && f.syn_retx >= self.cfg.min_syn_retx {
+                        if !f.syn_ack_seen
+                            && !f.inbound_data_seen
+                            && f.syn_retx >= self.cfg.min_syn_retx
+                        {
                             // Домен неизвестен (SNI не видели) — берём из learned IP→domain.
                             if let Some(domain) = self.ip_domain.get(&f.key_ip).cloned() {
-                                out.push(Observation {
+                                let observation = Observation {
                                     flow_id: f.id,
                                     domain,
                                     dst_ip: f.key_ip,
@@ -735,18 +830,38 @@ impl FlowTable {
                                     remote_port: f.remote_port,
                                     verdict: Verdict::Blackhole,
                                     evidence: "syn_no_synack",
+                                    armed_at_ms: None,
+                                    armed_at_capture_timestamp: None,
                                     ts_ms: now,
-                                });
+                                };
+                                if self.cfg.blackhole_delivery_grace_ms == 0 {
+                                    out.push(observation);
+                                    to_remove.push(key);
+                                } else {
+                                    f.pending_blackhole = Some(PendingBlackhole {
+                                        kind: PendingBlackholeKind::SynNoSynAck,
+                                        observation,
+                                        publish_at_ms: now
+                                            .saturating_add(self.cfg.blackhole_delivery_grace_ms),
+                                    });
+                                }
+                            } else {
+                                to_remove.push(key);
                             }
+                        } else {
+                            to_remove.push(key);
                         }
-                        to_remove.push(key); // в любом случае снимаем зависший handshake
                     }
                 }
-                Phase::Armed { domain, t0 } => {
+                Phase::Armed {
+                    domain,
+                    t0,
+                    capture_timestamp,
+                } => {
                     let silent = now.saturating_sub(*t0);
                     if silent >= self.cfg.armed_silence_timeout_ms {
                         if !f.inbound_data_seen && f.ch_retx >= self.cfg.min_ch_retx {
-                            out.push(Observation {
+                            let observation = Observation {
                                 flow_id: f.id,
                                 domain: domain.clone(),
                                 dst_ip: f.key_ip,
@@ -754,10 +869,24 @@ impl FlowTable {
                                 remote_port: f.remote_port,
                                 verdict: Verdict::Blackhole,
                                 evidence: "silence+retransmit",
+                                armed_at_ms: Some(*t0),
+                                armed_at_capture_timestamp: *capture_timestamp,
                                 ts_ms: now,
-                            });
+                            };
+                            if self.cfg.blackhole_delivery_grace_ms == 0 {
+                                out.push(observation);
+                                to_remove.push(key);
+                            } else {
+                                f.pending_blackhole = Some(PendingBlackhole {
+                                    kind: PendingBlackholeKind::TlsSilence,
+                                    observation,
+                                    publish_at_ms: now
+                                        .saturating_add(self.cfg.blackhole_delivery_grace_ms),
+                                });
+                            }
+                        } else {
+                            to_remove.push(key);
                         }
-                        to_remove.push(key);
                     }
                 }
                 Phase::Done => {}
@@ -841,6 +970,13 @@ mod tests {
     fn strict_cfg() -> Config {
         Config {
             working_signal_mode: WorkingSignalMode::StrictTls,
+            ..cfg()
+        }
+    }
+
+    fn tentative_cfg() -> Config {
+        Config {
+            blackhole_delivery_grace_ms: 2_000,
             ..cfg()
         }
     }
@@ -1014,7 +1150,7 @@ mod tests {
         assert!(t.on_packet(&syn(1000), 0).is_none());
         assert!(t.on_packet(&synack(), 10).is_none());
         assert!(t
-            .on_packet(&out_data(1001, client_hello("www.youtube.com")), 20)
+            .on_captured_packet(&out_data(1001, client_hello("www.youtube.com")), 20, 2_000,)
             .is_none());
         let obs = t.on_packet(&in_data(server_hello()), 40).unwrap();
         assert_eq!(obs.verdict, Verdict::Working);
@@ -1023,6 +1159,8 @@ mod tests {
         assert_ne!(obs.flow_id, 0);
         assert_eq!(obs.remote_port, 443);
         assert_eq!(obs.evidence, "server_hello");
+        assert_eq!(obs.armed_at_ms, Some(20));
+        assert_eq!(obs.armed_at_capture_timestamp, Some(2_000));
     }
 
     #[test]
@@ -1227,6 +1365,7 @@ mod tests {
         assert_eq!(obs.evidence, "inbound_rst");
         assert_ne!(obs.flow_id, 0);
         assert_eq!(obs.remote_port, 443);
+        assert_eq!(obs.armed_at_ms, Some(20));
     }
 
     #[test]
@@ -1315,13 +1454,14 @@ mod tests {
         assert_eq!(verdicts[0].verdict, Verdict::Blackhole);
         assert_eq!(verdicts[0].evidence, "syn_no_synack");
         assert_eq!(verdicts[0].domain, "www.youtube.com");
+        assert_eq!(verdicts[0].armed_at_ms, None);
     }
 
     #[test]
     fn armed_silence_with_retransmit_is_blackhole() {
         let mut t = FlowTable::new(cfg());
         t.on_packet(&syn(1000), 0);
-        t.on_packet(&out_data(1001, client_hello("www.youtube.com")), 20);
+        t.on_captured_packet(&out_data(1001, client_hello("www.youtube.com")), 20, 2_000);
         // Два ретрансмита того же CH (тот же seq) — сервер молчит (min_ch_retx=2).
         t.on_packet(&out_data(1001, client_hello("www.youtube.com")), 1020);
         t.on_packet(&out_data(1001, client_hello("www.youtube.com")), 2020);
@@ -1329,6 +1469,75 @@ mod tests {
         assert_eq!(verdicts.len(), 1);
         assert_eq!(verdicts[0].verdict, Verdict::Blackhole);
         assert_eq!(verdicts[0].evidence, "silence+retransmit");
+        assert_eq!(verdicts[0].armed_at_ms, Some(20));
+        assert_eq!(verdicts[0].armed_at_capture_timestamp, Some(2_000));
+    }
+
+    #[test]
+    fn queued_server_hello_cancels_tentative_tls_blackhole() {
+        let mut t = FlowTable::new(tentative_cfg());
+        let hello = client_hello("www.youtube.com");
+        t.on_packet(&syn(1000), 0);
+        t.on_packet(&out_data(1001, hello.clone()), 20);
+        t.on_packet(&out_data(1001, hello.clone()), 1_020);
+        t.on_packet(&out_data(1001, hello), 2_020);
+
+        assert!(t.on_tick(9_000).is_empty());
+        let working = t.on_packet(&in_data(server_hello()), 9_001).unwrap();
+        assert_eq!(working.verdict, Verdict::Working);
+        assert!(t.on_tick(11_000).is_empty());
+    }
+
+    #[test]
+    fn tentative_tls_blackhole_publishes_only_after_full_grace() {
+        let mut t = FlowTable::new(tentative_cfg());
+        let hello = client_hello("www.youtube.com");
+        t.on_packet(&syn(1000), 0);
+        t.on_packet(&out_data(1001, hello.clone()), 20);
+        t.on_packet(&out_data(1001, hello.clone()), 1_020);
+        t.on_packet(&out_data(1001, hello), 2_020);
+
+        assert!(t.on_tick(9_000).is_empty());
+        assert!(t.on_tick(10_999).is_empty());
+        let observations = t.on_tick(11_000);
+        assert_eq!(observations.len(), 1);
+        assert_eq!(observations[0].verdict, Verdict::Blackhole);
+    }
+
+    #[test]
+    fn packet_at_tentative_publish_deadline_wins_over_blackhole() {
+        let mut t = FlowTable::new(tentative_cfg());
+        let hello = client_hello("www.youtube.com");
+        t.on_packet(&syn(1000), 0);
+        t.on_packet(&out_data(1001, hello.clone()), 20);
+        t.on_packet(&out_data(1001, hello.clone()), 1_020);
+        t.on_packet(&out_data(1001, hello), 2_020);
+
+        assert!(t.on_tick(9_000).is_empty());
+        assert!(t.on_tick(10_999).is_empty());
+        let working = t.on_packet(&in_data(server_hello()), 11_000).unwrap();
+        assert_eq!(working.verdict, Verdict::Working);
+        assert!(t.on_tick(11_000).is_empty());
+    }
+
+    #[test]
+    fn late_synack_cancels_tentative_syn_blackhole() {
+        let mut t = FlowTable::new(tentative_cfg());
+        t.on_packet(&out_data(1001, client_hello("www.youtube.com")), 0);
+        t.on_packet(&out_fin(), 1);
+
+        let second_port = LPORT + 1;
+        for (index, sequence) in [2_000, 2_000, 2_000, 2_000].into_iter().enumerate() {
+            let mut packet = syn(sequence);
+            packet.key.local_port = second_port;
+            t.on_packet(&packet, 100 + index as u64 * 500);
+        }
+
+        assert!(t.on_tick(5_000).is_empty());
+        let mut late_synack = synack();
+        late_synack.key.local_port = second_port;
+        assert!(t.on_packet(&late_synack, 5_001).is_none());
+        assert!(t.on_tick(7_000).is_empty());
     }
 
     #[test]

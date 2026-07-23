@@ -29,16 +29,20 @@ use super::contracts::{
 use super::environment_gate::{
     EndpointProbeBackend, EndpointProbeOutcome, EnvironmentGate, GateClassification, GateFence,
     GateReport, GateRequest, GateRequestError, LocalNetworkSnapshot, PassiveEvidenceSummary,
-    SensorSnapshot, BLACKHOLE_REQUIRED_FLOWS, GATE_REPORT_TTL, RESET_REQUIRED_FLOWS,
-    RESET_REQUIRED_TARGETS,
+    SensorSnapshot, BLACKHOLE_REQUIRED_FLOWS, BLACKHOLE_REQUIRED_TARGETS, GATE_REPORT_TTL,
+    RESET_REQUIRED_FLOWS, RESET_REQUIRED_TARGETS,
 };
 use super::manager::{ConfirmationFlow, ObserveOnlySnapshot};
 use super::recovery::{RecoveryAction, RecoveryConfig, RecoveryOrigin};
 use super::target_registry::{Attribution, ConfigLookupError, TargetRegistry};
+use crate::eyes::flow::{ARMED_SILENCE_TIMEOUT_MS, BLACKHOLE_DELIVERY_GRACE_MS};
 
 pub const CONFIRMATION_DEADLINE_MS: u64 = 20_000;
-pub const CONFIRMATION_CLEAN_WINDOW_MS: u64 = 5_000;
-pub const CONFIRMATION_DELIVERY_MARGIN_MS: u64 = 2_000;
+pub const CONFIRMATION_DELIVERY_MARGIN_MS: u64 = BLACKHOLE_DELIVERY_GRACE_MS;
+const CONFIRMATION_TRACKER_SETTLE_MS: u64 = 500;
+pub const CONFIRMATION_CLEAN_WINDOW_MS: u64 =
+    ARMED_SILENCE_TIMEOUT_MS + CONFIRMATION_DELIVERY_MARGIN_MS + CONFIRMATION_TRACKER_SETTLE_MS;
+const INGRESS_PUBLICATION_SETTLE_MS: u64 = 250;
 const RETAINED_INCIDENT_TTL_MS: u64 = 30_000;
 
 type BackendFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -518,8 +522,9 @@ pub struct HttpsProbeObservation {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HttpsProbeResult {
-    /// Any response below 500 proves that the TLS request reached its target;
-    /// authentication and rate-limit responses remain valid reachability.
+    /// Any HTTP response proves that TLS reached the target. The status code
+    /// describes service health, not whether the candidate bypass transported
+    /// the request successfully.
     HttpResponse {
         status: u16,
     },
@@ -545,6 +550,15 @@ struct SuccessfulProbe {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct WorkingFlow {
     flow_id: u64,
+    sequence: u64,
+    target: String,
+    observed_at_ms: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct WeakAdverseFlow {
+    flow_id: u64,
+    sequence: u64,
     target: String,
     observed_at_ms: u64,
 }
@@ -557,6 +571,7 @@ struct WorkingFlow {
 pub struct ConfirmationArm {
     pub armed_at_monotonic_ms: u64,
     pub armed_at_sensor_ms: u64,
+    pub after_capture_timestamp: Option<i64>,
     pub after_flow_sequence: u64,
     pub last_gap_sequence: Option<u64>,
     pub evidence_epoch: u64,
@@ -585,6 +600,7 @@ impl ConfirmationArm {
         Ok(Self {
             armed_at_monotonic_ms,
             armed_at_sensor_ms: snapshot.logical_now_ms,
+            after_capture_timestamp: Some(snapshot.logical_now_ms.min(i64::MAX as u64) as i64),
             after_flow_sequence: snapshot.last_accepted_flow_sequence.unwrap_or(0),
             last_gap_sequence: snapshot.last_gap_sequence,
             evidence_epoch: lane.evidence_epoch,
@@ -655,15 +671,17 @@ pub struct ConfirmationEvaluator {
     targets: Vec<String>,
     started_at_ms: u64,
     started_at_sensor_ms: u64,
+    after_capture_timestamp: Option<i64>,
     deadline_at_ms: u64,
     initial_counters: EyeHealthCounters,
     health_state: EyeHealthState,
     after_flow_sequence: u64,
+    next_direct_sequence: u64,
+    seen_flow_ids: BTreeSet<u64>,
     successful_probes: Vec<SuccessfulProbe>,
     working_flows: Vec<WorkingFlow>,
-    tls_blackhole_flows: BTreeSet<u64>,
-    reset_flows: BTreeSet<u64>,
-    reset_targets: BTreeSet<String>,
+    tls_blackhole_flows: Vec<WeakAdverseFlow>,
+    reset_flows: Vec<WeakAdverseFlow>,
     last_weak_adverse_at_ms: Option<u64>,
     quorum_reached_at_ms: Option<u64>,
     failure: Option<ConfirmationFailure>,
@@ -684,6 +702,7 @@ impl ConfirmationEvaluator {
             ConfirmationArm {
                 armed_at_monotonic_ms: started_at_ms,
                 armed_at_sensor_ms: started_at_ms,
+                after_capture_timestamp: Some(started_at_ms.min(i64::MAX as u64) as i64),
                 after_flow_sequence: 0,
                 last_gap_sequence: None,
                 evidence_epoch: 0,
@@ -721,15 +740,17 @@ impl ConfirmationEvaluator {
             targets,
             started_at_ms,
             started_at_sensor_ms: arm.armed_at_sensor_ms,
+            after_capture_timestamp: arm.after_capture_timestamp,
             deadline_at_ms: started_at_ms.saturating_add(CONFIRMATION_DEADLINE_MS),
             initial_counters: arm.counters,
             health_state: arm.health,
             after_flow_sequence: arm.after_flow_sequence,
+            next_direct_sequence: arm.after_flow_sequence,
+            seen_flow_ids: BTreeSet::new(),
             successful_probes: Vec::new(),
             working_flows: Vec::new(),
-            tls_blackhole_flows: BTreeSet::new(),
-            reset_flows: BTreeSet::new(),
-            reset_targets: BTreeSet::new(),
+            tls_blackhole_flows: Vec::new(),
+            reset_flows: Vec::new(),
             last_weak_adverse_at_ms: None,
             quorum_reached_at_ms: None,
             failure: (!matches!(arm.health, EyeHealthState::Ready))
@@ -753,7 +774,7 @@ impl ConfirmationEvaluator {
             return self.decision(probe.finished_at_monotonic_ms);
         };
         match probe.result {
-            HttpsProbeResult::HttpResponse { status } if status < 500 => {
+            HttpsProbeResult::HttpResponse { .. } => {
                 if !self
                     .successful_probes
                     .iter()
@@ -767,14 +788,14 @@ impl ConfirmationEvaluator {
                     });
                 }
             }
-            HttpsProbeResult::HttpResponse { .. } | HttpsProbeResult::TargetFailure => {
+            HttpsProbeResult::TargetFailure => {
                 self.failure = Some(ConfirmationFailure::Target);
             }
             HttpsProbeResult::EnvironmentFailure => {
                 self.failure = Some(ConfirmationFailure::Environment);
             }
         }
-        self.refresh_quorum(probe.finished_at_monotonic_ms);
+        self.refresh_quorum();
         self.decision(probe.finished_at_monotonic_ms)
     }
 
@@ -804,7 +825,7 @@ impl ConfirmationEvaluator {
                 }
             }
         }
-        self.refresh_quorum(observed_at_ms);
+        self.refresh_quorum();
         self.decision(observed_at_ms)
     }
 
@@ -817,7 +838,20 @@ impl ConfirmationEvaluator {
             || flow.sequence <= self.after_flow_sequence
             || flow.category != self.category
             || flow.lane_generation != self.lane_generation
-            || flow.monotonic_ts < self.started_at_sensor_ms
+        {
+            return self.decision(observed_at_ms);
+        }
+        let Some(armed_at_sensor_ms) = flow.armed_at_sensor_ms else {
+            return self.decision(observed_at_ms);
+        };
+        let (Some(armed_capture_timestamp), Some(after_capture_timestamp)) = (
+            flow.armed_at_capture_timestamp,
+            self.after_capture_timestamp,
+        ) else {
+            return self.decision(observed_at_ms);
+        };
+        if armed_capture_timestamp <= after_capture_timestamp
+            || armed_at_sensor_ms > flow.monotonic_ts
         {
             return self.decision(observed_at_ms);
         }
@@ -831,13 +865,19 @@ impl ConfirmationEvaluator {
         if process_ts > self.deadline_at_ms {
             return self.decision(observed_at_ms);
         }
-        self.observe_diagnosis(flow.flow_id, target, flow.diagnosis, process_ts);
-        self.refresh_quorum(observed_at_ms);
+        self.observe_diagnosis(
+            flow.flow_id,
+            flow.sequence,
+            target,
+            flow.diagnosis,
+            process_ts,
+        );
+        self.refresh_quorum();
         self.decision(observed_at_ms)
     }
 
     pub fn poll(&mut self, now_ms: u64) -> ConfirmationDecision {
-        self.refresh_quorum(now_ms);
+        self.refresh_quorum();
         self.decision(now_ms)
     }
 
@@ -845,7 +885,20 @@ impl ConfirmationEvaluator {
         if flow.category.as_deref() != Some(self.category.as_str())
             || flow.lane_generation != Some(self.lane_generation)
             || flow.transport != Transport::Tls
-            || flow.monotonic_ts < self.started_at_sensor_ms
+        {
+            return;
+        }
+        let Some(armed_at_sensor_ms) = flow.armed_at_sensor_ms else {
+            return;
+        };
+        let (Some(armed_capture_timestamp), Some(after_capture_timestamp)) = (
+            flow.armed_at_capture_timestamp,
+            self.after_capture_timestamp,
+        ) else {
+            return;
+        };
+        if armed_capture_timestamp <= after_capture_timestamp
+            || armed_at_sensor_ms > flow.monotonic_ts
         {
             return;
         }
@@ -854,55 +907,60 @@ impl ConfirmationEvaluator {
         };
         let process_ts = self.sensor_to_process_time(flow.monotonic_ts);
         if process_ts <= self.deadline_at_ms {
-            self.observe_diagnosis(flow.flow_id, target, flow.diagnosis, process_ts);
+            self.next_direct_sequence = self.next_direct_sequence.saturating_add(1);
+            self.observe_diagnosis(
+                flow.flow_id,
+                self.next_direct_sequence,
+                target,
+                flow.diagnosis,
+                process_ts,
+            );
         }
     }
 
     fn observe_diagnosis(
         &mut self,
         flow_id: u64,
+        sequence: u64,
         target: String,
         diagnosis: Diagnosis,
         monotonic_ts: u64,
     ) {
+        if !self.seen_flow_ids.insert(flow_id) {
+            return;
+        }
         match diagnosis {
             Diagnosis::Working => {
-                if !self
-                    .working_flows
-                    .iter()
-                    .any(|existing| existing.flow_id == flow_id)
-                {
-                    self.working_flows.push(WorkingFlow {
-                        flow_id,
-                        target,
-                        observed_at_ms: monotonic_ts,
-                    });
-                }
+                self.working_flows.push(WorkingFlow {
+                    flow_id,
+                    sequence,
+                    target,
+                    observed_at_ms: monotonic_ts,
+                });
             }
             Diagnosis::TlsBlackhole => {
-                if self.tls_blackhole_flows.insert(flow_id) {
-                    self.last_weak_adverse_at_ms = Some(
-                        self.last_weak_adverse_at_ms
-                            .map_or(monotonic_ts, |current| current.max(monotonic_ts)),
-                    );
-                }
-                if self.tls_blackhole_flows.len() >= BLACKHOLE_REQUIRED_FLOWS as usize {
-                    self.failure = Some(ConfirmationFailure::Strategy);
-                }
+                self.last_weak_adverse_at_ms = Some(
+                    self.last_weak_adverse_at_ms
+                        .map_or(monotonic_ts, |current| current.max(monotonic_ts)),
+                );
+                self.tls_blackhole_flows.push(WeakAdverseFlow {
+                    flow_id,
+                    sequence,
+                    target,
+                    observed_at_ms: monotonic_ts,
+                });
             }
             Diagnosis::TcpReset => {
-                if self.reset_flows.insert(flow_id) {
-                    self.reset_targets.insert(target);
-                    self.last_weak_adverse_at_ms = Some(
-                        self.last_weak_adverse_at_ms
-                            .map_or(monotonic_ts, |current| current.max(monotonic_ts)),
-                    );
-                }
-                if self.reset_flows.len() >= RESET_REQUIRED_FLOWS as usize
-                    && self.reset_targets.len() >= RESET_REQUIRED_TARGETS as usize
-                {
-                    self.failure = Some(ConfirmationFailure::Strategy);
-                }
+                self.last_weak_adverse_at_ms = Some(
+                    self.last_weak_adverse_at_ms
+                        .map_or(monotonic_ts, |current| current.max(monotonic_ts)),
+                );
+                self.reset_flows.push(WeakAdverseFlow {
+                    flow_id,
+                    sequence,
+                    target,
+                    observed_at_ms: monotonic_ts,
+                });
             }
             Diagnosis::HttpBlockPage => {
                 self.failure = Some(ConfirmationFailure::Strategy);
@@ -931,21 +989,70 @@ impl ConfirmationEvaluator {
             .saturating_add(sensor_ms.saturating_sub(self.started_at_sensor_ms))
     }
 
-    fn refresh_quorum(&mut self, now_ms: u64) {
-        if self.failure.is_some() || self.quorum_reached_at_ms.is_some() {
+    fn working_recovery_at(&self, adverse: &WeakAdverseFlow) -> Option<u64> {
+        self.working_flows
+            .iter()
+            .filter(|working| {
+                working.target == adverse.target
+                    && (working.observed_at_ms, working.sequence)
+                        > (adverse.observed_at_ms, adverse.sequence)
+            })
+            .map(|working| working.observed_at_ms)
+            .max()
+    }
+
+    fn weak_adverse_quorum(
+        &self,
+        flows: &[WeakAdverseFlow],
+        required_flows: usize,
+        required_targets: usize,
+    ) -> bool {
+        let active = flows
+            .iter()
+            .filter(|flow| self.working_recovery_at(flow).is_none())
+            .collect::<Vec<_>>();
+        active.len() >= required_flows
+            && active
+                .iter()
+                .map(|flow| flow.target.as_str())
+                .collect::<BTreeSet<_>>()
+                .len()
+                >= required_targets
+    }
+
+    fn has_unrecovered_weak_adverse(&self) -> bool {
+        self.tls_blackhole_flows
+            .iter()
+            .chain(self.reset_flows.iter())
+            .any(|flow| self.working_recovery_at(flow).is_none())
+    }
+
+    fn last_weak_recovery_at_ms(&self) -> Option<u64> {
+        self.tls_blackhole_flows
+            .iter()
+            .chain(self.reset_flows.iter())
+            .filter_map(|flow| self.working_recovery_at(flow))
+            .max()
+    }
+
+    fn refresh_quorum(&mut self) {
+        if self.failure.is_some() {
             return;
         }
-        let reached = if self.targets.len() == 1 {
-            self.single_target_quorum()
+        let reached_at = if self.targets.len() == 1 {
+            self.single_target_quorum_at()
         } else {
-            self.multi_target_quorum()
+            self.multi_target_quorum_at()
         };
-        if reached {
-            self.quorum_reached_at_ms = Some(now_ms.min(self.deadline_at_ms));
+        if let Some(reached_at) = reached_at {
+            self.quorum_reached_at_ms = Some(
+                self.quorum_reached_at_ms
+                    .map_or(reached_at, |current| current.min(reached_at)),
+            );
         }
     }
 
-    fn single_target_quorum(&self) -> bool {
+    fn single_target_quorum_at(&self) -> Option<u64> {
         let target = &self.targets[0];
         let probes = self
             .successful_probes
@@ -959,19 +1066,29 @@ impl ConfirmationEvaluator {
             .filter(|flow| &flow.target == target)
             .map(|flow| flow.flow_id)
             .collect::<BTreeSet<_>>();
-        probes.len() >= 2 && flows.len() >= 2 && self.correspondence_count(target) >= 2
+        if probes.len() < 2 || flows.len() < 2 {
+            return None;
+        }
+        let mut completion_times = self.correspondence_completion_times(target);
+        completion_times.sort_unstable();
+        completion_times.get(1).copied()
     }
 
-    fn multi_target_quorum(&self) -> bool {
-        self.targets
+    fn multi_target_quorum_at(&self) -> Option<u64> {
+        let mut target_completion_times = self
+            .targets
             .iter()
-            .filter(|target| self.correspondence_count(target) >= 1)
-            .take(2)
-            .count()
-            >= 2
+            .filter_map(|target| {
+                self.correspondence_completion_times(target)
+                    .into_iter()
+                    .min()
+            })
+            .collect::<Vec<_>>();
+        target_completion_times.sort_unstable();
+        target_completion_times.get(1).copied()
     }
 
-    fn correspondence_count(&self, target: &str) -> usize {
+    fn correspondence_completion_times(&self, target: &str) -> Vec<u64> {
         let mut probes = self
             .successful_probes
             .iter()
@@ -979,7 +1096,7 @@ impl ConfirmationEvaluator {
             .collect::<Vec<_>>();
         probes.sort_by_key(|probe| (probe.finished_at_ms, probe.probe_id));
         let mut used_flows = BTreeSet::new();
-        let mut matches = 0usize;
+        let mut completion_times = Vec::new();
         for probe in probes {
             let matching = self
                 .working_flows
@@ -997,21 +1114,37 @@ impl ConfirmationEvaluator {
                 .min_by_key(|flow| (flow.observed_at_ms, flow.flow_id));
             if let Some(flow) = matching {
                 used_flows.insert(flow.flow_id);
-                matches += 1;
+                completion_times.push(probe.finished_at_ms.max(flow.observed_at_ms));
             }
         }
-        matches
+        completion_times
     }
 
     fn decision(&self, now_ms: u64) -> ConfirmationDecision {
         if let Some(failure) = self.failure {
             return ConfirmationDecision::Failed(failure);
         }
+        if self.weak_adverse_quorum(
+            &self.tls_blackhole_flows,
+            BLACKHOLE_REQUIRED_FLOWS as usize,
+            BLACKHOLE_REQUIRED_TARGETS as usize,
+        ) || self.weak_adverse_quorum(
+            &self.reset_flows,
+            RESET_REQUIRED_FLOWS as usize,
+            RESET_REQUIRED_TARGETS as usize,
+        ) {
+            return ConfirmationDecision::Failed(ConfirmationFailure::Strategy);
+        }
         let clean_anchor = self.quorum_reached_at_ms.map(|reached_at| {
-            self.last_weak_adverse_at_ms
-                .map_or(reached_at, |adverse_at| reached_at.max(adverse_at))
+            let adverse_or_recovery_at = self
+                .last_weak_adverse_at_ms
+                .into_iter()
+                .chain(self.last_weak_recovery_at_ms())
+                .max();
+            adverse_or_recovery_at.map_or(reached_at, |weak_at| reached_at.max(weak_at))
         });
         if matches!(self.health_state, EyeHealthState::Ready)
+            && !self.has_unrecovered_weak_adverse()
             && clean_anchor.is_some_and(|anchor| {
                 now_ms >= anchor.saturating_add(CONFIRMATION_CLEAN_WINDOW_MS)
                     && anchor.saturating_add(CONFIRMATION_CLEAN_WINDOW_MS) <= self.deadline_at_ms
@@ -1030,22 +1163,95 @@ impl ConfirmationEvaluator {
 fn observe_confirmation_snapshot(
     evaluator: &mut ConfirmationEvaluator,
     flows: &[ConfirmationFlow],
+    last_evicted_sequence: Option<u64>,
+    pending_ingress_events: u64,
     flow_cursor: u64,
     now_ms: u64,
 ) -> (u64, ConfirmationDecision) {
+    if last_evicted_sequence.is_some_and(|evicted| evicted > flow_cursor) {
+        evaluator.failure = Some(ConfirmationFailure::Sensor);
+        return (flow_cursor, evaluator.decision(now_ms));
+    }
     let mut last_flow_sequence = flow_cursor;
     for flow in flows.iter().filter(|flow| flow.sequence > flow_cursor) {
         last_flow_sequence = last_flow_sequence.max(flow.sequence);
-        let decision = evaluator.observe_confirmation_flow(flow, now_ms);
-        if matches!(
-            decision,
-            ConfirmationDecision::Failed(failure)
-                if failure != ConfirmationFailure::MissingWorkingEvidence
-        ) {
-            return (last_flow_sequence, decision);
-        }
+        evaluator.observe_confirmation_flow(flow, now_ms);
     }
-    (last_flow_sequence, evaluator.poll(now_ms))
+    let decision = evaluator.poll(now_ms);
+    (
+        last_flow_sequence,
+        if pending_ingress_events == 0 {
+            decision
+        } else {
+            ConfirmationDecision::Pending
+        },
+    )
+}
+
+fn relevant_pending_ingress_events(
+    control_events: u64,
+    flow_events: &BTreeMap<String, u64>,
+    category: &str,
+) -> u64 {
+    control_events.saturating_add(flow_events.get(category).copied().unwrap_or(0))
+}
+
+fn apply_confirmation_delivery_grace(
+    decision: ConfirmationDecision,
+    now_ms: u64,
+    delivery_deadline_ms: u64,
+) -> ConfirmationDecision {
+    if decision == ConfirmationDecision::Failed(ConfirmationFailure::MissingWorkingEvidence)
+        && now_ms < delivery_deadline_ms
+    {
+        ConfirmationDecision::Pending
+    } else {
+        decision
+    }
+}
+
+fn pending_ingress_publication_stalled(
+    pending_events: u64,
+    now_ms: u64,
+    delivery_deadline_ms: u64,
+    pending_since_ms: &mut Option<u64>,
+) -> bool {
+    if pending_events == 0 || now_ms < delivery_deadline_ms {
+        *pending_since_ms = None;
+        return false;
+    }
+    let pending_since = *pending_since_ms.get_or_insert(now_ms);
+    now_ms.saturating_sub(pending_since) >= INGRESS_PUBLICATION_SETTLE_MS
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ConfirmationLoopAction {
+    RefreshSnapshot,
+    ClassifyMissingWorking,
+    Return(ConfirmationDecision),
+}
+
+fn snapshot_decision_action(
+    decision: ConfirmationDecision,
+    probe_transport_failed: bool,
+    missing_working_classification: Option<ConfirmationDecision>,
+) -> ConfirmationLoopAction {
+    match decision {
+        ConfirmationDecision::Pending => ConfirmationLoopAction::RefreshSnapshot,
+        ConfirmationDecision::Failed(ConfirmationFailure::MissingWorkingEvidence)
+            if probe_transport_failed =>
+        {
+            missing_working_classification.map_or(
+                ConfirmationLoopAction::ClassifyMissingWorking,
+                ConfirmationLoopAction::Return,
+            )
+        }
+        terminal => ConfirmationLoopAction::Return(terminal),
+    }
+}
+
+fn probe_decision_action(_decision: ConfirmationDecision) -> ConfirmationLoopAction {
+    ConfirmationLoopAction::RefreshSnapshot
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1404,6 +1610,7 @@ impl AppScopedExecutorBackend {
             .arm
             .armed_at_monotonic_ms
             .saturating_add(request.deadline_ms.min(CONFIRMATION_DEADLINE_MS));
+        let delivery_deadline = deadline.saturating_add(CONFIRMATION_DELIVERY_MARGIN_MS);
 
         let probe_targets = if request.candidate_targets.len() == 1 {
             vec![
@@ -1429,6 +1636,8 @@ impl AppScopedExecutorBackend {
         }
         let mut remaining_probes = probes.len();
         let mut probe_transport_failed = false;
+        let mut missing_working_classification = None;
+        let mut pending_ingress_after_deadline_since = None;
         let mut last_flow_sequence = request.arm.after_flow_sequence;
         let mut candidate_exit = self.candidate_exit.take();
 
@@ -1446,42 +1655,66 @@ impl AppScopedExecutorBackend {
                 probes.abort_all();
                 return Ok(ConfirmationDecision::Failed(ConfirmationFailure::Sensor));
             }
-            let (next_flow_sequence, decision) = observe_confirmation_snapshot(
-                &mut evaluator,
-                &snapshot.confirmation_flows,
-                last_flow_sequence,
-                now_ms,
+            let pending_ingress_events = relevant_pending_ingress_events(
+                snapshot.pending_ingress_control_events,
+                &snapshot.pending_ingress_flow_events,
+                &request.envelope.category,
             );
-            last_flow_sequence = next_flow_sequence;
-            if decision != ConfirmationDecision::Pending {
-                let decision = if decision
-                    == ConfirmationDecision::Failed(ConfirmationFailure::MissingWorkingEvidence)
-                    && probe_transport_failed
-                {
-                    let local = Self::local_network().await;
-                    if !local.online
-                        || !local.interface_up
-                        || !local.default_route_available
-                        || !local.gateway_reachable
-                        || local.fingerprint != request.envelope.expected_network_fingerprint
-                    {
-                        ConfirmationDecision::Failed(ConfirmationFailure::Environment)
-                    } else {
-                        ConfirmationDecision::Failed(ConfirmationFailure::Target)
-                    }
-                } else {
-                    decision
-                };
+            if pending_ingress_publication_stalled(
+                pending_ingress_events,
+                now_ms,
+                delivery_deadline,
+                &mut pending_ingress_after_deadline_since,
+            ) {
                 if let Some(exit) = candidate_exit.take() {
                     self.candidate_exit = Some(exit);
                 }
                 probes.abort_all();
-                return Ok(decision);
+                return Ok(ConfirmationDecision::Failed(ConfirmationFailure::Sensor));
             }
-            if now_ms >= deadline {
-                continue;
+            let (next_flow_sequence, decision) = observe_confirmation_snapshot(
+                &mut evaluator,
+                &snapshot.confirmation_flows,
+                snapshot
+                    .last_evicted_confirmation_flow_sequences
+                    .get(&request.envelope.category)
+                    .copied(),
+                pending_ingress_events,
+                last_flow_sequence,
+                now_ms,
+            );
+            last_flow_sequence = next_flow_sequence;
+            let decision = apply_confirmation_delivery_grace(decision, now_ms, delivery_deadline);
+            match snapshot_decision_action(
+                decision,
+                probe_transport_failed,
+                missing_working_classification,
+            ) {
+                ConfirmationLoopAction::ClassifyMissingWorking => {
+                    let local = Self::local_network().await;
+                    missing_working_classification = Some(
+                        if !local.online
+                            || !local.interface_up
+                            || !local.default_route_available
+                            || !local.gateway_reachable
+                            || local.fingerprint != request.envelope.expected_network_fingerprint
+                        {
+                            ConfirmationDecision::Failed(ConfirmationFailure::Environment)
+                        } else {
+                            ConfirmationDecision::Failed(ConfirmationFailure::Target)
+                        },
+                    );
+                    continue;
+                }
+                ConfirmationLoopAction::Return(decision) => {
+                    if let Some(exit) = candidate_exit.take() {
+                        self.candidate_exit = Some(exit);
+                    }
+                    probes.abort_all();
+                    return Ok(decision);
+                }
+                ConfirmationLoopAction::RefreshSnapshot => {}
             }
-
             tokio::select! {
                 biased;
                 exit = async {
@@ -1513,12 +1746,12 @@ impl AppScopedExecutorBackend {
                     match joined {
                         Some(Ok(ProbeTaskResult::Observed(observation))) => {
                             let decision = evaluator.observe_probe(observation);
-                            if decision != ConfirmationDecision::Pending {
-                                if let Some(exit) = candidate_exit.take() {
-                                    self.candidate_exit = Some(exit);
+                            match probe_decision_action(decision) {
+                                ConfirmationLoopAction::RefreshSnapshot => continue,
+                                ConfirmationLoopAction::ClassifyMissingWorking
+                                | ConfirmationLoopAction::Return(_) => {
+                                    unreachable!("probe decisions are provisional")
                                 }
-                                probes.abort_all();
-                                return Ok(decision);
                             }
                         }
                         Some(Ok(ProbeTaskResult::TransportFailed)) => {
@@ -3621,9 +3854,27 @@ impl AppScopedExecutorBackend {
                 "candidate lane generation changed before confirmation arm",
             ));
         }
+        let (armed_at_sensor_ms, after_capture_timestamp) = {
+            let state = self.app.state::<AppState>();
+            let eyes = state.eyes.lock_recover();
+            let eyes = eyes.as_ref().ok_or_else(|| {
+                BackendFailure::new(
+                    ConfirmationFailure::Sensor,
+                    "Legacy Eyes is not active at confirmation arm",
+                )
+            })?;
+            let capture_timestamp = eyes.capture_timestamp().ok_or_else(|| {
+                BackendFailure::new(
+                    ConfirmationFailure::Sensor,
+                    "Legacy Eyes capture clock is unavailable at confirmation arm",
+                )
+            })?;
+            (eyes.sensor_monotonic_ms(), Some(capture_timestamp))
+        };
         Ok(ConfirmationArm {
             armed_at_monotonic_ms: self.monotonic_ms(),
-            armed_at_sensor_ms: snapshot.logical_now_ms,
+            armed_at_sensor_ms,
+            after_capture_timestamp,
             after_flow_sequence: snapshot.last_accepted_flow_sequence.unwrap_or(0),
             last_gap_sequence: snapshot.last_gap_sequence,
             evidence_epoch: lane.evidence_epoch,
@@ -4303,6 +4554,7 @@ impl ScopedExecutorBackend for AppScopedExecutorBackend {
                 .unwrap_or(ConfirmationArm {
                     armed_at_monotonic_ms: self.monotonic_ms(),
                     armed_at_sensor_ms: 0,
+                    after_capture_timestamp: None,
                     after_flow_sequence: 0,
                     last_gap_sequence: None,
                     evidence_epoch: 0,
@@ -5000,14 +5252,60 @@ mod tests {
             flow_id,
             target: target.into(),
             diagnosis,
+            armed_at_sensor_ms: Some(sensor_ms),
+            armed_at_capture_timestamp: Some(sensor_ms as i64),
             monotonic_ts: sensor_ms,
         }
+    }
+
+    fn confirmation_flow_armed_at(
+        sequence: u64,
+        flow_id: u64,
+        target: &str,
+        diagnosis: Diagnosis,
+        armed_at_sensor_ms: u64,
+        verdict_sensor_ms: u64,
+    ) -> ConfirmationFlow {
+        let mut flow = confirmation_flow(sequence, flow_id, target, diagnosis, verdict_sensor_ms);
+        flow.armed_at_sensor_ms = Some(armed_at_sensor_ms);
+        flow.armed_at_capture_timestamp = Some(armed_at_sensor_ms as i64);
+        flow
+    }
+
+    fn direct_confirmation_flow(
+        flow_id: u64,
+        target: &str,
+        diagnosis: Diagnosis,
+        sensor_ms: u64,
+    ) -> EyeEvent {
+        EyeEvent::Flow(
+            FlowEvent::new(
+                EventEnvelope::new(
+                    SessionId::new(11),
+                    SensorGeneration::new(4),
+                    RegistryVersion::new(6),
+                ),
+                Some("video".into()),
+                Some(LaneGeneration::new(8)),
+                flow_id,
+                target,
+                IpAddr::V4(Ipv4Addr::new(203, 0, 113, 10)),
+                Transport::Tls,
+                diagnosis,
+                "confirmation_test",
+                sensor_ms,
+            )
+            .unwrap()
+            .with_armed_at_sensor_ms(sensor_ms)
+            .with_armed_at_capture_timestamp(sensor_ms as i64),
+        )
     }
 
     fn arm() -> ConfirmationArm {
         ConfirmationArm {
             armed_at_monotonic_ms: 10_000,
             armed_at_sensor_ms: 500,
+            after_capture_timestamp: Some(500),
             after_flow_sequence: 100,
             last_gap_sequence: None,
             evidence_epoch: 3,
@@ -5086,8 +5384,55 @@ mod tests {
             ),
             ConfirmationDecision::Pending
         );
-        assert_eq!(evaluator.poll(15_699), ConfirmationDecision::Pending);
-        assert_eq!(evaluator.poll(15_700), ConfirmationDecision::Succeeded);
+        let quorum_at = evaluator
+            .quorum_reached_at_ms
+            .expect("positive quorum must be formed");
+        assert_eq!(
+            evaluator.poll(quorum_at + CONFIRMATION_CLEAN_WINDOW_MS - 1),
+            ConfirmationDecision::Pending
+        );
+        assert_eq!(
+            evaluator.poll(quorum_at + CONFIRMATION_CLEAN_WINDOW_MS),
+            ConfirmationDecision::Succeeded
+        );
+    }
+
+    #[test]
+    fn confirmation_clean_window_covers_armed_blackhole_detection_and_delivery() {
+        let envelope = confirmation_envelope();
+        let mut evaluator = ConfirmationEvaluator::new_armed(
+            &envelope,
+            ["one.video.example", "two.video.example"],
+            10_000,
+            arm(),
+        )
+        .unwrap();
+        evaluator.observe_probe(probe(1, "one.video.example", 10_100, 10_500));
+        evaluator.observe_probe(probe(2, "two.video.example", 10_200, 10_600));
+        evaluator.observe_confirmation_flow(
+            &confirmation_flow(101, 11, "one.video.example", Diagnosis::Working, 650),
+            10_650,
+        );
+        evaluator.observe_confirmation_flow(
+            &confirmation_flow(102, 12, "two.video.example", Diagnosis::Working, 700),
+            10_700,
+        );
+
+        let quorum_at = evaluator
+            .quorum_reached_at_ms
+            .expect("positive quorum must be formed");
+        let required_clean_ms = crate::eyes::flow::Config::default()
+            .armed_silence_timeout_ms
+            .saturating_add(CONFIRMATION_DELIVERY_MARGIN_MS);
+        assert!(CONFIRMATION_CLEAN_WINDOW_MS > required_clean_ms);
+        assert_eq!(
+            evaluator.poll(quorum_at + required_clean_ms),
+            ConfirmationDecision::Pending
+        );
+        assert_eq!(
+            evaluator.poll(quorum_at + CONFIRMATION_CLEAN_WINDOW_MS),
+            ConfirmationDecision::Succeeded
+        );
     }
 
     #[test]
@@ -5108,7 +5453,15 @@ mod tests {
             &confirmation_flow(102, 2, "only.video.example", Diagnosis::Working, 1_900),
             11_900,
         );
-        assert_eq!(evaluator.poll(16_900), ConfirmationDecision::Succeeded);
+        let quorum_at = evaluator.quorum_reached_at_ms.unwrap();
+        assert_eq!(
+            evaluator.poll(quorum_at + CONFIRMATION_CLEAN_WINDOW_MS - 1),
+            ConfirmationDecision::Pending
+        );
+        assert_eq!(
+            evaluator.poll(quorum_at + CONFIRMATION_CLEAN_WINDOW_MS),
+            ConfirmationDecision::Succeeded
+        );
     }
 
     #[test]
@@ -5136,11 +5489,20 @@ mod tests {
             ConfirmationDecision::Pending
         );
         assert_eq!(evaluator.poll(20_299), ConfirmationDecision::Pending);
-        assert_eq!(evaluator.poll(20_300), ConfirmationDecision::Succeeded);
+        assert_eq!(evaluator.poll(20_300), ConfirmationDecision::Pending);
+        assert_eq!(
+            evaluator.observe_confirmation_flow(
+                &confirmation_flow(104, 4, "only.video.example", Diagnosis::Working, 6_000),
+                15_500,
+            ),
+            ConfirmationDecision::Pending
+        );
+        assert_eq!(evaluator.poll(25_999), ConfirmationDecision::Pending);
+        assert_eq!(evaluator.poll(26_000), ConfirmationDecision::Succeeded);
     }
 
     #[test]
-    fn second_distinct_tls_blackhole_rejects_the_candidate() {
+    fn two_tls_blackholes_for_one_target_do_not_reject_the_candidate() {
         let envelope = confirmation_envelope();
         let mut evaluator =
             ConfirmationEvaluator::new_armed(&envelope, ["only.video.example"], 10_000, arm())
@@ -5164,6 +5526,614 @@ mod tests {
         assert_eq!(
             evaluator.observe_confirmation_flow(
                 &confirmation_flow(103, 2, "only.video.example", Diagnosis::TlsBlackhole, 800,),
+                10_300,
+            ),
+            ConfirmationDecision::Pending,
+            "two flows to one endpoint are one correlated failure, not independent quorum"
+        );
+    }
+
+    #[test]
+    fn tls_blackhole_quorum_requires_two_distinct_targets() {
+        let envelope = confirmation_envelope();
+        let mut evaluator = ConfirmationEvaluator::new_armed(
+            &envelope,
+            ["one.video.example", "two.video.example"],
+            10_000,
+            arm(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            evaluator.observe_confirmation_flow(
+                &confirmation_flow(101, 1, "one.video.example", Diagnosis::TlsBlackhole, 600,),
+                10_100,
+            ),
+            ConfirmationDecision::Pending
+        );
+        assert_eq!(
+            evaluator.observe_confirmation_flow(
+                &confirmation_flow(102, 2, "two.video.example", Diagnosis::TlsBlackhole, 700,),
+                10_200,
+            ),
+            ConfirmationDecision::Failed(ConfirmationFailure::Strategy)
+        );
+    }
+
+    #[test]
+    fn flow_armed_before_confirmation_is_ignored_even_if_its_verdict_is_new() {
+        let envelope = confirmation_envelope();
+        let mut evaluator = ConfirmationEvaluator::new_armed(
+            &envelope,
+            ["one.video.example", "two.video.example"],
+            10_000,
+            arm(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            evaluator.observe_confirmation_flow(
+                &confirmation_flow_armed_at(
+                    101,
+                    1,
+                    "one.video.example",
+                    Diagnosis::TlsBlackhole,
+                    500,
+                    600,
+                ),
+                10_100,
+            ),
+            ConfirmationDecision::Pending
+        );
+        assert_eq!(
+            evaluator.observe_confirmation_flow(
+                &confirmation_flow_armed_at(
+                    102,
+                    2,
+                    "two.video.example",
+                    Diagnosis::TlsBlackhole,
+                    600,
+                    700,
+                ),
+                10_200,
+            ),
+            ConfirmationDecision::Pending,
+            "a stale flow must not combine with a candidate-owned flow"
+        );
+        assert_eq!(
+            evaluator.observe_confirmation_flow(
+                &confirmation_flow_armed_at(
+                    103,
+                    3,
+                    "one.video.example",
+                    Diagnosis::TlsBlackhole,
+                    700,
+                    800,
+                ),
+                10_300,
+            ),
+            ConfirmationDecision::Failed(ConfirmationFailure::Strategy),
+            "two fresh flows on distinct targets must remain terminal"
+        );
+    }
+
+    #[test]
+    fn post_arm_qpc_is_authoritative_when_rounded_sensor_ms_is_equal_or_lower() {
+        let envelope = confirmation_envelope();
+
+        for armed_ms in [500, 499] {
+            let confirmation_arm = arm();
+            let mut evaluator = ConfirmationEvaluator::new_armed(
+                &envelope,
+                ["one.video.example", "two.video.example"],
+                10_000,
+                confirmation_arm,
+            )
+            .unwrap();
+
+            evaluator.observe_confirmation_flow(
+                &confirmation_flow(101, 1, "one.video.example", Diagnosis::TlsBlackhole, 600),
+                10_100,
+            );
+
+            let mut working = confirmation_flow_armed_at(
+                102,
+                2,
+                "one.video.example",
+                Diagnosis::Working,
+                armed_ms,
+                700,
+            );
+            working.armed_at_capture_timestamp =
+                Some(confirmation_arm.after_capture_timestamp.unwrap() + 1);
+            evaluator.observe_confirmation_flow(&working, 10_200);
+
+            assert_eq!(
+                evaluator.observe_confirmation_flow(
+                    &confirmation_flow(103, 3, "two.video.example", Diagnosis::TlsBlackhole, 800,),
+                    10_300,
+                ),
+                ConfirmationDecision::Pending,
+                "post-arm QPC flow must count even when rounded armed_ms={armed_ms}"
+            );
+        }
+    }
+
+    #[test]
+    fn post_arm_qpc_accepts_flow_completed_before_rounded_sensor_sample() {
+        let envelope = confirmation_envelope();
+        let confirmation_arm = arm();
+        let mut evaluator = ConfirmationEvaluator::new_armed(
+            &envelope,
+            ["one.video.example"],
+            10_000,
+            confirmation_arm,
+        )
+        .unwrap();
+        let mut working =
+            confirmation_flow_armed_at(101, 1, "one.video.example", Diagnosis::Working, 499, 499);
+        working.armed_at_capture_timestamp =
+            Some(confirmation_arm.after_capture_timestamp.unwrap() + 1);
+
+        evaluator.observe_confirmation_flow(&working, 10_000);
+
+        assert!(
+            evaluator
+                .working_flows
+                .iter()
+                .any(|flow| flow.flow_id == working.flow_id),
+            "QPC proves the complete flow was captured after arm even though rounded sensor time is lower"
+        );
+    }
+
+    #[test]
+    fn newer_working_in_the_same_snapshot_recovers_weak_quorum_before_decision() {
+        let envelope = confirmation_envelope();
+        let mut evaluator = ConfirmationEvaluator::new_armed(
+            &envelope,
+            ["one.video.example", "two.video.example"],
+            10_000,
+            arm(),
+        )
+        .unwrap();
+        let flows = [
+            confirmation_flow(101, 1, "one.video.example", Diagnosis::TlsBlackhole, 600),
+            confirmation_flow(102, 2, "two.video.example", Diagnosis::TlsBlackhole, 700),
+            confirmation_flow(103, 3, "two.video.example", Diagnosis::Working, 800),
+        ];
+
+        assert_eq!(
+            observe_confirmation_snapshot(&mut evaluator, &flows, None, 0, 100, 10_300),
+            (103, ConfirmationDecision::Pending)
+        );
+    }
+
+    #[test]
+    fn confirmation_snapshot_fails_sensor_when_unseen_journal_entries_were_evicted() {
+        let envelope = confirmation_envelope();
+        let mut evaluator =
+            ConfirmationEvaluator::new_armed(&envelope, ["one.video.example"], 10_000, arm())
+                .unwrap();
+        let retained = [confirmation_flow(
+            102,
+            2,
+            "one.video.example",
+            Diagnosis::Working,
+            700,
+        )];
+
+        assert_eq!(
+            observe_confirmation_snapshot(&mut evaluator, &retained, Some(101), 0, 100, 10_300),
+            (
+                100,
+                ConfirmationDecision::Failed(ConfirmationFailure::Sensor)
+            )
+        );
+        assert!(evaluator.working_flows.is_empty());
+    }
+
+    #[test]
+    fn confirmation_snapshot_defers_terminal_decision_while_ingress_is_pending() {
+        let envelope = confirmation_envelope();
+        let mut evaluator =
+            ConfirmationEvaluator::new_armed(&envelope, ["one.video.example"], 10_000, arm())
+                .unwrap();
+
+        assert_eq!(
+            observe_confirmation_snapshot(&mut evaluator, &[], None, 1, 100, 30_000),
+            (100, ConfirmationDecision::Pending)
+        );
+    }
+
+    #[test]
+    fn confirmation_ignores_pending_flows_from_an_unrelated_category() {
+        let pending = BTreeMap::from([("discord".to_owned(), 3), ("youtube_twitch".to_owned(), 2)]);
+
+        assert_eq!(
+            relevant_pending_ingress_events(1, &pending, "youtube_twitch"),
+            3
+        );
+        assert_eq!(relevant_pending_ingress_events(1, &pending, "other"), 1);
+    }
+
+    #[test]
+    fn every_probe_decision_requires_a_fresh_manager_snapshot() {
+        for decision in [
+            ConfirmationDecision::Pending,
+            ConfirmationDecision::Succeeded,
+            ConfirmationDecision::Failed(ConfirmationFailure::Strategy),
+            ConfirmationDecision::Failed(ConfirmationFailure::Sensor),
+            ConfirmationDecision::Failed(ConfirmationFailure::MissingWorkingEvidence),
+        ] {
+            assert_eq!(
+                probe_decision_action(decision),
+                ConfirmationLoopAction::RefreshSnapshot
+            );
+        }
+    }
+
+    #[test]
+    fn local_network_classification_is_revalidated_after_await() {
+        let missing = ConfirmationDecision::Failed(ConfirmationFailure::MissingWorkingEvidence);
+        let target = ConfirmationDecision::Failed(ConfirmationFailure::Target);
+
+        assert_eq!(
+            snapshot_decision_action(missing, true, None),
+            ConfirmationLoopAction::ClassifyMissingWorking
+        );
+        assert_eq!(
+            snapshot_decision_action(ConfirmationDecision::Pending, true, Some(target)),
+            ConfirmationLoopAction::RefreshSnapshot
+        );
+        assert_eq!(
+            snapshot_decision_action(ConfirmationDecision::Succeeded, true, Some(target)),
+            ConfirmationLoopAction::Return(ConfirmationDecision::Succeeded)
+        );
+        assert_eq!(
+            snapshot_decision_action(
+                ConfirmationDecision::Failed(ConfirmationFailure::Strategy),
+                true,
+                Some(target),
+            ),
+            ConfirmationLoopAction::Return(ConfirmationDecision::Failed(
+                ConfirmationFailure::Strategy,
+            ))
+        );
+        assert_eq!(
+            snapshot_decision_action(
+                ConfirmationDecision::Failed(ConfirmationFailure::Sensor),
+                true,
+                Some(target),
+            ),
+            ConfirmationLoopAction::Return(ConfirmationDecision::Failed(
+                ConfirmationFailure::Sensor,
+            ))
+        );
+        assert_eq!(
+            snapshot_decision_action(missing, true, Some(target)),
+            ConfirmationLoopAction::Return(target)
+        );
+    }
+
+    #[test]
+    fn missing_working_waits_for_the_delivery_deadline_without_visible_pending() {
+        let missing = ConfirmationDecision::Failed(ConfirmationFailure::MissingWorkingEvidence);
+
+        assert_eq!(
+            apply_confirmation_delivery_grace(missing, 30_000, 32_000),
+            ConfirmationDecision::Pending
+        );
+        assert_eq!(
+            apply_confirmation_delivery_grace(missing, 32_000, 32_000),
+            missing
+        );
+    }
+
+    #[test]
+    fn ingress_publication_at_delivery_deadline_gets_bounded_settle_time() {
+        let mut pending_since = None;
+
+        assert!(!pending_ingress_publication_stalled(
+            1,
+            32_000,
+            32_000,
+            &mut pending_since
+        ));
+        assert!(!pending_ingress_publication_stalled(
+            1,
+            32_249,
+            32_000,
+            &mut pending_since
+        ));
+        assert!(pending_ingress_publication_stalled(
+            1,
+            32_250,
+            32_000,
+            &mut pending_since
+        ));
+        assert!(!pending_ingress_publication_stalled(
+            0,
+            32_250,
+            32_000,
+            &mut pending_since
+        ));
+        assert_eq!(pending_since, None);
+    }
+
+    #[test]
+    fn late_published_working_uses_evidence_time_for_quorum() {
+        let envelope = confirmation_envelope();
+        let mut evaluator = ConfirmationEvaluator::new_armed(
+            &envelope,
+            ["one.video.example", "two.video.example"],
+            10_000,
+            arm(),
+        )
+        .unwrap();
+        evaluator.observe_probe(probe(1, "one.video.example", 10_100, 10_200));
+        evaluator.observe_confirmation_flow(
+            &confirmation_flow(101, 1, "one.video.example", Diagnosis::Working, 700),
+            10_200,
+        );
+        evaluator.observe_probe(probe(2, "two.video.example", 18_500, 19_500));
+
+        // The sensor saw the second flow at process time 19_000, before the
+        // probe finished at 19_500, but Manager
+        // did not publish it until the bounded delivery-grace interval.
+        let late = [confirmation_flow(
+            102,
+            2,
+            "two.video.example",
+            Diagnosis::Working,
+            9_500,
+        )];
+        let (cursor, decision) =
+            observe_confirmation_snapshot(&mut evaluator, &late, None, 0, 101, 30_500);
+
+        assert_eq!(cursor, 102);
+        assert_eq!(evaluator.quorum_reached_at_ms, Some(19_500));
+        assert_eq!(
+            apply_confirmation_delivery_grace(decision, 30_500, 32_000),
+            ConfirmationDecision::Succeeded
+        );
+    }
+
+    #[test]
+    fn http_503_still_proves_candidate_transport_reachability() {
+        let envelope = confirmation_envelope();
+        let mut evaluator =
+            ConfirmationEvaluator::new_armed(&envelope, ["one.video.example"], 10_000, arm())
+                .unwrap();
+
+        assert_eq!(
+            evaluator.observe_probe(HttpsProbeObservation {
+                probe_id: 1,
+                domain: "one.video.example".to_owned(),
+                started_at_monotonic_ms: 10_100,
+                finished_at_monotonic_ms: 10_200,
+                result: HttpsProbeResult::HttpResponse { status: 503 },
+            }),
+            ConfirmationDecision::Pending
+        );
+        assert_eq!(evaluator.successful_probes.len(), 1);
+    }
+
+    #[test]
+    fn pending_working_is_applied_after_a_provisional_probe_failure() {
+        let envelope = confirmation_envelope();
+        let mut evaluator = ConfirmationEvaluator::new_armed(
+            &envelope,
+            ["one.video.example", "two.video.example"],
+            10_000,
+            arm(),
+        )
+        .unwrap();
+        let adverse = [
+            confirmation_flow(101, 1, "one.video.example", Diagnosis::TlsBlackhole, 600),
+            confirmation_flow(102, 2, "two.video.example", Diagnosis::TlsBlackhole, 700),
+        ];
+
+        assert_eq!(
+            observe_confirmation_snapshot(&mut evaluator, &adverse, None, 1, 100, 10_300),
+            (102, ConfirmationDecision::Pending)
+        );
+        let probe_decision = evaluator.observe_probe(HttpsProbeObservation {
+            probe_id: 1,
+            domain: "one.video.example".to_owned(),
+            started_at_monotonic_ms: 10_100,
+            finished_at_monotonic_ms: 10_200,
+            result: HttpsProbeResult::HttpResponse { status: 200 },
+        });
+        assert_eq!(
+            probe_decision_action(probe_decision),
+            ConfirmationLoopAction::RefreshSnapshot
+        );
+
+        let recovered = [confirmation_flow(
+            103,
+            3,
+            "two.video.example",
+            Diagnosis::Working,
+            800,
+        )];
+        assert_eq!(
+            observe_confirmation_snapshot(&mut evaluator, &recovered, None, 0, 102, 10_400),
+            (103, ConfirmationDecision::Pending)
+        );
+    }
+
+    #[test]
+    fn later_sequence_working_in_same_millisecond_recovers_weak_quorum() {
+        let envelope = confirmation_envelope();
+        let mut evaluator = ConfirmationEvaluator::new_armed(
+            &envelope,
+            ["one.video.example", "two.video.example"],
+            10_000,
+            arm(),
+        )
+        .unwrap();
+        let flows = [
+            confirmation_flow(101, 1, "one.video.example", Diagnosis::TlsBlackhole, 600),
+            confirmation_flow(102, 2, "two.video.example", Diagnosis::TlsBlackhole, 600),
+            confirmation_flow(103, 3, "two.video.example", Diagnosis::Working, 600),
+        ];
+
+        assert_eq!(
+            observe_confirmation_snapshot(&mut evaluator, &flows, None, 0, 100, 10_300),
+            (103, ConfirmationDecision::Pending)
+        );
+    }
+
+    #[test]
+    fn direct_eye_call_order_breaks_same_millisecond_ties_instead_of_flow_id() {
+        let envelope = confirmation_envelope();
+        let mut evaluator = ConfirmationEvaluator::new_armed(
+            &envelope,
+            ["one.video.example", "two.video.example"],
+            10_000,
+            arm(),
+        )
+        .unwrap();
+
+        evaluator.observe_eye(
+            &direct_confirmation_flow(10, "one.video.example", Diagnosis::TlsBlackhole, 600),
+            10_100,
+        );
+        evaluator.observe_eye(
+            &direct_confirmation_flow(20, "two.video.example", Diagnosis::TlsBlackhole, 600),
+            10_100,
+        );
+
+        assert_eq!(
+            evaluator.observe_eye(
+                &direct_confirmation_flow(
+                    1,
+                    "two.video.example",
+                    Diagnosis::Working,
+                    600,
+                ),
+                10_100,
+            ),
+            ConfirmationDecision::Pending,
+            "a later verdict must recover same-ms adverse evidence even when its flow started earlier"
+        );
+    }
+
+    #[test]
+    fn newer_working_recovers_delayed_older_adverse_evidence() {
+        let envelope = confirmation_envelope();
+        let mut evaluator = ConfirmationEvaluator::new_armed(
+            &envelope,
+            ["one.video.example", "two.video.example"],
+            10_000,
+            arm(),
+        )
+        .unwrap();
+
+        evaluator.observe_confirmation_flow(
+            &confirmation_flow(101, 1, "one.video.example", Diagnosis::Working, 800),
+            10_300,
+        );
+        evaluator.observe_confirmation_flow(
+            &confirmation_flow(102, 2, "two.video.example", Diagnosis::TlsBlackhole, 700),
+            10_300,
+        );
+        assert_eq!(
+            evaluator.observe_confirmation_flow(
+                &confirmation_flow(103, 3, "one.video.example", Diagnosis::TlsBlackhole, 600),
+                10_300,
+            ),
+            ConfirmationDecision::Pending
+        );
+    }
+
+    #[test]
+    fn duplicate_flow_id_cannot_change_diagnosis_or_recover_a_target() {
+        let envelope = confirmation_envelope();
+        let mut evaluator = ConfirmationEvaluator::new_armed(
+            &envelope,
+            ["one.video.example", "two.video.example"],
+            10_000,
+            arm(),
+        )
+        .unwrap();
+
+        evaluator.observe_confirmation_flow(
+            &confirmation_flow(101, 1, "one.video.example", Diagnosis::TlsBlackhole, 600),
+            10_100,
+        );
+        evaluator.observe_confirmation_flow(
+            &confirmation_flow(102, 1, "one.video.example", Diagnosis::Working, 700),
+            10_200,
+        );
+        assert_eq!(
+            evaluator.observe_confirmation_flow(
+                &confirmation_flow(103, 2, "two.video.example", Diagnosis::TlsBlackhole, 800),
+                10_300,
+            ),
+            ConfirmationDecision::Failed(ConfirmationFailure::Strategy)
+        );
+    }
+
+    #[test]
+    fn newer_working_flow_recovers_only_its_own_blackhole_target() {
+        let envelope = confirmation_envelope();
+        let mut evaluator = ConfirmationEvaluator::new_armed(
+            &envelope,
+            ["one.video.example", "two.video.example"],
+            10_000,
+            arm(),
+        )
+        .unwrap();
+
+        evaluator.observe_confirmation_flow(
+            &confirmation_flow(101, 1, "one.video.example", Diagnosis::TlsBlackhole, 600),
+            10_100,
+        );
+        evaluator.observe_confirmation_flow(
+            &confirmation_flow(102, 2, "one.video.example", Diagnosis::Working, 700),
+            10_200,
+        );
+        assert_eq!(
+            evaluator.observe_confirmation_flow(
+                &confirmation_flow(103, 3, "two.video.example", Diagnosis::TlsBlackhole, 800),
+                10_300,
+            ),
+            ConfirmationDecision::Pending,
+            "Working must remove older weak evidence for the same target"
+        );
+        assert_eq!(
+            evaluator.observe_confirmation_flow(
+                &confirmation_flow(104, 4, "one.video.example", Diagnosis::TlsBlackhole, 900),
+                10_400,
+            ),
+            ConfirmationDecision::Failed(ConfirmationFailure::Strategy),
+            "a newer failure may make the recovered target adverse again"
+        );
+    }
+
+    #[test]
+    fn working_flow_for_another_target_does_not_clear_blackhole_evidence() {
+        let envelope = confirmation_envelope();
+        let mut evaluator = ConfirmationEvaluator::new_armed(
+            &envelope,
+            ["one.video.example", "two.video.example"],
+            10_000,
+            arm(),
+        )
+        .unwrap();
+
+        evaluator.observe_confirmation_flow(
+            &confirmation_flow(101, 1, "one.video.example", Diagnosis::TlsBlackhole, 600),
+            10_100,
+        );
+        evaluator.observe_confirmation_flow(
+            &confirmation_flow(102, 2, "two.video.example", Diagnosis::Working, 700),
+            10_200,
+        );
+        assert_eq!(
+            evaluator.observe_confirmation_flow(
+                &confirmation_flow(103, 3, "two.video.example", Diagnosis::TlsBlackhole, 800),
                 10_300,
             ),
             ConfirmationDecision::Failed(ConfirmationFailure::Strategy)
@@ -5198,13 +6168,13 @@ mod tests {
                 104,
                 4,
                 "only.video.example",
-                Diagnosis::TlsBlackhole,
+                Diagnosis::HttpBlockPage,
                 20_200,
             ),
         ];
 
         assert_eq!(
-            observe_confirmation_snapshot(&mut evaluator, &adverse_batch, 102, 30_000),
+            observe_confirmation_snapshot(&mut evaluator, &adverse_batch, None, 0, 102, 30_000),
             (
                 104,
                 ConfirmationDecision::Failed(ConfirmationFailure::Strategy)
@@ -5238,6 +6208,43 @@ mod tests {
             evaluator.observe_confirmation_flow(
                 &confirmation_flow(103, 3, "one.video.example", Diagnosis::TcpReset, 700),
                 10_200,
+            ),
+            ConfirmationDecision::Failed(ConfirmationFailure::Strategy)
+        );
+    }
+
+    #[test]
+    fn newer_working_recovers_delayed_resets_only_for_its_target() {
+        let envelope = confirmation_envelope();
+        let mut evaluator = ConfirmationEvaluator::new_armed(
+            &envelope,
+            ["one.video.example", "two.video.example"],
+            10_000,
+            arm(),
+        )
+        .unwrap();
+
+        evaluator.observe_confirmation_flow(
+            &confirmation_flow(101, 1, "one.video.example", Diagnosis::Working, 900),
+            10_400,
+        );
+        for (sequence, flow_id, target, sensor_ms) in [
+            (102, 2, "one.video.example", 600),
+            (103, 3, "two.video.example", 700),
+            (104, 4, "two.video.example", 800),
+        ] {
+            assert_eq!(
+                evaluator.observe_confirmation_flow(
+                    &confirmation_flow(sequence, flow_id, target, Diagnosis::TcpReset, sensor_ms),
+                    10_400,
+                ),
+                ConfirmationDecision::Pending
+            );
+        }
+        assert_eq!(
+            evaluator.observe_confirmation_flow(
+                &confirmation_flow(105, 5, "one.video.example", Diagnosis::TcpReset, 1_000),
+                10_500,
             ),
             ConfirmationDecision::Failed(ConfirmationFailure::Strategy)
         );
@@ -5787,6 +6794,7 @@ mod tests {
             let arm = ConfirmationArm {
                 armed_at_monotonic_ms: self.now_ms,
                 armed_at_sensor_ms: self.now_ms,
+                after_capture_timestamp: Some(self.now_ms.min(i64::MAX as u64) as i64),
                 after_flow_sequence: 0,
                 last_gap_sequence: None,
                 evidence_epoch: 1,

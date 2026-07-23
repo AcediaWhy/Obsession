@@ -5,7 +5,8 @@
 //! cache, UI, or legacy Brain side effects.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use tokio::sync::mpsc;
 
@@ -24,6 +25,7 @@ pub struct LegacyIngress {
     flow_tx: mpsc::Sender<FlowEvent>,
     control_tx: mpsc::Sender<EyeEvent>,
     counters: Arc<AtomicHealthCounters>,
+    pending_events: Arc<PendingIngressEvents>,
 }
 
 /// Manager-owned receivers. Control traffic cannot be displaced by a Flow
@@ -31,6 +33,88 @@ pub struct LegacyIngress {
 pub struct LegacyIngressReceiver {
     flow_rx: mpsc::Receiver<FlowEvent>,
     control_rx: mpsc::Receiver<EyeEvent>,
+    pending_events: Arc<PendingIngressEvents>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PendingIngressScope {
+    Control,
+    Category(String),
+    Diagnostic,
+}
+
+impl PendingIngressScope {
+    pub(crate) fn for_event(event: &EyeEvent) -> Self {
+        match event {
+            EyeEvent::Flow(flow) => flow.category.as_ref().map_or(Self::Diagnostic, |category| {
+                Self::Category(category.clone())
+            }),
+            EyeEvent::Health(_) | EyeEvent::Gap(_) => Self::Control,
+        }
+    }
+
+    fn for_flow(flow: &FlowEvent) -> Self {
+        flow.category.as_ref().map_or(Self::Diagnostic, |category| {
+            Self::Category(category.clone())
+        })
+    }
+}
+
+#[derive(Debug, Default)]
+struct PendingIngressEvents {
+    control_events: AtomicU64,
+    flow_events: Mutex<BTreeMap<String, u64>>,
+}
+
+impl PendingIngressEvents {
+    fn reserve(&self, scope: &PendingIngressScope) {
+        match scope {
+            PendingIngressScope::Control => {
+                self.control_events.fetch_add(1, Ordering::AcqRel);
+            }
+            PendingIngressScope::Category(category) => {
+                let mut flows = self.lock_flows();
+                let pending = flows.entry(category.clone()).or_default();
+                *pending = pending.saturating_add(1);
+            }
+            PendingIngressScope::Diagnostic => {}
+        }
+    }
+
+    fn release(&self, scope: &PendingIngressScope) {
+        match scope {
+            PendingIngressScope::Control => decrement_pending(&self.control_events),
+            PendingIngressScope::Category(category) => {
+                let mut flows = self.lock_flows();
+                let remove = if let Some(pending) = flows.get_mut(category) {
+                    debug_assert!(*pending > 0, "ingress category counter underflow");
+                    *pending = pending.saturating_sub(1);
+                    *pending == 0
+                } else {
+                    debug_assert!(false, "missing ingress category counter");
+                    false
+                };
+                if remove {
+                    flows.remove(category);
+                }
+            }
+            PendingIngressScope::Diagnostic => {}
+        }
+    }
+
+    fn control_count(&self) -> u64 {
+        self.control_events.load(Ordering::Acquire)
+    }
+
+    fn flow_counts(&self) -> BTreeMap<String, u64> {
+        self.lock_flows().clone()
+    }
+
+    fn lock_flows(&self) -> MutexGuard<'_, BTreeMap<String, u64>> {
+        self.flow_events
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -63,15 +147,18 @@ fn channel_with_capacity(
     let (flow_tx, flow_rx) = mpsc::channel(flow_capacity);
     let (control_tx, control_rx) = mpsc::channel(control_capacity);
     let counters = Arc::new(AtomicHealthCounters::default());
+    let pending_events = Arc::new(PendingIngressEvents::default());
     (
         LegacyIngress {
             flow_tx,
             control_tx,
             counters,
+            pending_events: Arc::clone(&pending_events),
         },
         LegacyIngressReceiver {
             flow_rx,
             control_rx,
+            pending_events,
         },
     )
 }
@@ -81,15 +168,29 @@ impl LegacyIngress {
         Arc::clone(&self.counters)
     }
 
+    pub fn pending_control_event_count(&self) -> u64 {
+        self.pending_events.control_count()
+    }
+
+    pub fn pending_flow_event_counts(&self) -> BTreeMap<String, u64> {
+        self.pending_events.flow_counts()
+    }
+
     pub fn try_flow(&self, event: FlowEvent) -> FlowIngressResult {
         let event_ts = event.monotonic_ts;
+        let pending_scope = PendingIngressScope::for_flow(&event);
+        self.pending_events.reserve(&pending_scope);
         match self.flow_tx.try_send(event) {
             Ok(()) => FlowIngressResult::Accepted,
             Err(mpsc::error::TrySendError::Full(_)) => {
+                self.pending_events.release(&pending_scope);
                 self.counters.record_queue_drop(event_ts);
                 FlowIngressResult::DroppedFull
             }
-            Err(mpsc::error::TrySendError::Closed(_)) => FlowIngressResult::Closed,
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                self.pending_events.release(&pending_scope);
+                FlowIngressResult::Closed
+            }
         }
     }
 
@@ -103,15 +204,35 @@ impl LegacyIngress {
 
     fn try_control(&self, event: EyeEvent) -> ControlIngressResult {
         debug_assert!(!matches!(event, EyeEvent::Flow(_)));
+        let pending_scope = PendingIngressScope::Control;
+        self.pending_events.reserve(&pending_scope);
         match self.control_tx.try_send(event) {
             Ok(()) => ControlIngressResult::Accepted,
-            Err(mpsc::error::TrySendError::Full(_)) => ControlIngressResult::Full,
-            Err(mpsc::error::TrySendError::Closed(_)) => ControlIngressResult::Closed,
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                self.pending_events.release(&pending_scope);
+                ControlIngressResult::Full
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                self.pending_events.release(&pending_scope);
+                ControlIngressResult::Closed
+            }
         }
     }
 }
 
 impl LegacyIngressReceiver {
+    pub fn pending_control_event_count(&self) -> u64 {
+        self.pending_events.control_count()
+    }
+
+    pub fn pending_flow_event_counts(&self) -> BTreeMap<String, u64> {
+        self.pending_events.flow_counts()
+    }
+
+    pub fn acknowledge_published_event(&self, scope: &PendingIngressScope) {
+        self.pending_events.release(scope);
+    }
+
     /// Control-first receive for the observe-only manager loop.
     pub async fn recv(&mut self) -> Option<EyeEvent> {
         if let Ok(event) = self.control_rx.try_recv() {
@@ -132,6 +253,13 @@ impl LegacyIngressReceiver {
     pub fn try_recv_control(&mut self) -> Option<EyeEvent> {
         self.control_rx.try_recv().ok()
     }
+}
+
+fn decrement_pending(pending: &AtomicU64) {
+    let result = pending.fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+        current.checked_sub(1)
+    });
+    debug_assert!(result.is_ok(), "ingress pending-event counter underflow");
 }
 
 /// Immutable expected epochs plus an explicit close bit. This is the first
@@ -435,7 +563,7 @@ mod tests {
     async fn full_flow_queue_is_nonblocking_and_control_remains_available() {
         let (ingress, mut receiver) = channel_with_capacity(1, 1);
         assert_eq!(
-            ingress.try_flow(flow(envelope(1, 1, 1), None, None, 10)),
+            ingress.try_flow(flow(envelope(1, 1, 1), Some("discord"), Some(1), 10)),
             FlowIngressResult::Accepted
         );
         assert_eq!(
@@ -455,5 +583,22 @@ mod tests {
         );
         assert_eq!(receiver.recv().await, Some(EyeEvent::Health(health)));
         assert!(matches!(receiver.try_recv_flow(), Some(event) if event.monotonic_ts == 10));
+    }
+
+    #[tokio::test]
+    async fn accepted_event_remains_pending_until_manager_publication_ack() {
+        let (ingress, mut receiver) = channel_with_capacity(2, 2);
+        assert_eq!(
+            ingress.try_flow(flow(envelope(1, 1, 1), Some("discord"), Some(1), 10,)),
+            FlowIngressResult::Accepted
+        );
+        assert_eq!(ingress.pending_flow_event_counts().get("discord"), Some(&1));
+
+        let event = receiver.recv().await.unwrap();
+        assert!(matches!(event, EyeEvent::Flow(_)));
+        assert_eq!(ingress.pending_flow_event_counts().get("discord"), Some(&1));
+
+        receiver.acknowledge_published_event(&PendingIngressScope::for_event(&event));
+        assert!(ingress.pending_flow_event_counts().is_empty());
     }
 }

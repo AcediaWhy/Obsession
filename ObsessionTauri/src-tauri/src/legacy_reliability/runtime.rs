@@ -47,7 +47,7 @@ pub struct LegacyReliabilityHandle {
 
 impl LegacyReliabilityHandle {
     pub fn snapshot(&self) -> ObserveOnlySnapshot {
-        self.status.borrow().clone()
+        read_coherent_snapshot_with_hook(&self.status, &self.ingress, || {})
     }
 
     /// Immutable registry used by both Eyes and this exact Manager generation.
@@ -110,6 +110,36 @@ impl LegacyReliabilityHandle {
         {
             join.abort();
             let _ = join.await;
+        }
+    }
+}
+
+fn read_coherent_snapshot_with_hook(
+    status: &watch::Receiver<ObserveOnlySnapshot>,
+    ingress: &LegacyIngress,
+    mut after_borrow: impl FnMut(),
+) -> ObserveOnlySnapshot {
+    let mut status = status.clone();
+    loop {
+        let mut snapshot = status.borrow_and_update().clone();
+        after_borrow();
+        let pending_ingress_control_events = ingress.pending_control_event_count();
+        let pending_ingress_flow_events = ingress.pending_flow_event_counts();
+        match status.has_changed() {
+            Ok(true) => continue,
+            Ok(false) => {
+                snapshot.pending_ingress_control_events = pending_ingress_control_events;
+                snapshot.pending_ingress_flow_events = pending_ingress_flow_events;
+                return snapshot;
+            }
+            Err(_) => {
+                snapshot.pending_ingress_control_events = pending_ingress_control_events;
+                snapshot.pending_ingress_flow_events = pending_ingress_flow_events;
+                snapshot.session.closed = true;
+                snapshot.health.state = super::contracts::EyeHealthState::Blind;
+                snapshot.health.receiver_failed = true;
+                return snapshot;
+            }
         }
     }
 }
@@ -320,7 +350,7 @@ async fn run_manager(
             }
             outcome = tokio::time::timeout(HEALTH_POLL_INTERVAL, manager.recv_next(now_ms)) => {
                 match outcome {
-                    Ok(ReceiveOutcome::Event { .. }) => {
+                    Ok(ReceiveOutcome::Event { pending_scope, .. }) => {
                         let snapshot = manager.snapshot();
                         append_snapshot_logs(
                             reliability_log.as_mut(),
@@ -329,6 +359,7 @@ async fn run_manager(
                         );
                         previous_snapshot = snapshot.clone();
                         let _ = status_tx.send(snapshot);
+                        manager.acknowledge_published_ingress_event(&pending_scope);
                     }
                     Ok(ReceiveOutcome::ReceiverClosed | ReceiveOutcome::ManagerClosed) => {
                         if let Some(task) = gate_task.take() {
@@ -709,5 +740,84 @@ fn log_counters(
         distinct_blackhole_targets: evidence.blackhole_targets,
         gaps: snapshot.gaps.total_gaps,
         queue_drops: snapshot.health.counters.queue_drops,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::legacy_reliability::contracts::{
+        EventEnvelope, EyeEvent, EyeHealthCounters, EyeHealthState, HealthEvent, LaneGeneration,
+        LegacySessionContext, NetworkFingerprint, RegistryVersion, SensorGeneration, SessionId,
+    };
+    use crate::legacy_reliability::ingress::{channel, ControlIngressResult, PendingIngressScope};
+
+    fn snapshot_fixture() -> ObserveOnlySnapshot {
+        let (ingress, receiver) = channel();
+        ObserveOnlyManager::new(
+            LegacySessionContext::new(
+                SessionId::new(1),
+                vec!["discord".to_owned()],
+                NetworkFingerprint::Unknown,
+            ),
+            SensorGeneration::new(2),
+            RegistryVersion::new(3),
+            BTreeMap::from([("discord".to_owned(), LaneGeneration::new(4))]),
+            ingress.counters(),
+            receiver,
+        )
+        .unwrap()
+        .snapshot()
+    }
+
+    #[test]
+    fn snapshot_reader_retries_when_publication_overtakes_pending_sample() {
+        let initial = snapshot_fixture();
+        let mut published = initial.clone();
+        published.accepted.health_events = 1;
+        published.accepted.total_events = 1;
+        let (status_tx, status_rx) = watch::channel(initial);
+        let (ingress, mut receiver) = channel();
+        let mut inject_once = true;
+
+        let snapshot = read_coherent_snapshot_with_hook(&status_rx, &ingress, || {
+            if !inject_once {
+                return;
+            }
+            inject_once = false;
+            let event = HealthEvent {
+                envelope: EventEnvelope::new(
+                    SessionId::new(1),
+                    SensorGeneration::new(2),
+                    RegistryVersion::new(3),
+                ),
+                state: EyeHealthState::Ready,
+                counters: EyeHealthCounters::default(),
+            };
+            assert_eq!(
+                ingress.try_health(event.clone()),
+                ControlIngressResult::Accepted
+            );
+            status_tx.send(published.clone()).unwrap();
+            let received = receiver.try_recv_control().unwrap();
+            assert_eq!(received, EyeEvent::Health(event));
+            receiver.acknowledge_published_event(&PendingIngressScope::for_event(&received));
+        });
+
+        assert_eq!(snapshot.accepted.health_events, 1);
+        assert_eq!(snapshot.pending_ingress_control_events, 0);
+    }
+
+    #[test]
+    fn closed_manager_watch_is_returned_fail_closed() {
+        let (status_tx, status_rx) = watch::channel(snapshot_fixture());
+        let (ingress, _receiver) = channel();
+        drop(status_tx);
+
+        let snapshot = read_coherent_snapshot_with_hook(&status_rx, &ingress, || {});
+
+        assert!(snapshot.session.closed);
+        assert_eq!(snapshot.health.state, EyeHealthState::Blind);
+        assert!(snapshot.health.receiver_failed);
     }
 }

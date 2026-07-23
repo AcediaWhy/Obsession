@@ -20,15 +20,17 @@
 
 use std::ffi::c_void;
 use std::path::Path;
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
-use std::sync::Arc;
+use std::sync::atomic::Ordering;
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TryRecvError, TrySendError};
+use std::sync::{Arc, Mutex, TryLockError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use libloading::{Library, Symbol};
+use windows::Win32::System::Performance::QueryPerformanceCounter;
 
 use crate::dpi_supervisor::{WorkerStopOutcome, WorkerTeardown};
-use crate::eyes::flow::{Config, FlowTable, WorkingSignalMode};
+use crate::eyes::flow::{Config, FlowTable, WorkingSignalMode, BLACKHOLE_DELIVERY_GRACE_MS};
 use crate::eyes::parse::{decode_ip_tcp, ParsedPacket};
 use crate::eyes::signal::Observation;
 use crate::legacy_reliability::health::AtomicHealthCounters;
@@ -47,8 +49,94 @@ const PACKET_BUF: usize = 65535;
 /// отдельное наблюдение, чем бесконечно наращивать RAM.
 const PACKET_QUEUE_CAP: usize = 4096;
 const TRACKER_TICK: Duration = Duration::from_millis(250);
+const TRACKER_DRAIN_BUDGET: usize = 256;
+const CAPTURE_HANDOFF_TIMEOUT: Duration = Duration::from_millis(250);
+const CAPTURE_HANDOFF_RETRY: Duration = Duration::from_millis(1);
 const DROP_LOG_INTERVAL: Duration = Duration::from_secs(5);
 const PARTIAL_START_CLEANUP_TIMEOUT: Duration = Duration::from_secs(1);
+
+struct CapturedPacket {
+    packet: ParsedPacket,
+    captured_at_ms: u64,
+    capture_timestamp: i64,
+}
+
+#[derive(Debug)]
+enum StableEmpty<T, O> {
+    Busy,
+    Packet(T),
+    Tick(O),
+    Disconnected,
+    Poisoned,
+}
+
+fn try_stable_empty<T, O>(
+    publication_gate: &Mutex<()>,
+    rx: &Receiver<T>,
+    on_empty: impl FnOnce() -> O,
+) -> StableEmpty<T, O> {
+    let _publication = match publication_gate.try_lock() {
+        Ok(guard) => guard,
+        Err(TryLockError::WouldBlock) => return StableEmpty::Busy,
+        Err(TryLockError::Poisoned(_)) => return StableEmpty::Poisoned,
+    };
+
+    match rx.try_recv() {
+        Ok(packet) => StableEmpty::Packet(packet),
+        Err(TryRecvError::Empty) => StableEmpty::Tick(on_empty()),
+        Err(TryRecvError::Disconnected) => StableEmpty::Disconnected,
+    }
+}
+
+fn backlog_tick_watermark(next_capture_at_ms: u64) -> u64 {
+    next_capture_at_ms.saturating_sub(1)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum QueueDrain<T> {
+    Empty,
+    Backlogged(T),
+    Disconnected,
+    Halted,
+}
+
+fn drain_available<T>(
+    rx: &Receiver<T>,
+    budget: usize,
+    mut process: impl FnMut(T) -> bool,
+) -> QueueDrain<T> {
+    for _ in 0..budget {
+        match rx.try_recv() {
+            Ok(packet) => {
+                if !process(packet) {
+                    return QueueDrain::Halted;
+                }
+            }
+            Err(TryRecvError::Empty) => return QueueDrain::Empty,
+            Err(TryRecvError::Disconnected) => return QueueDrain::Disconnected,
+        }
+    }
+
+    match rx.try_recv() {
+        Ok(packet) => QueueDrain::Backlogged(packet),
+        Err(TryRecvError::Empty) => QueueDrain::Empty,
+        Err(TryRecvError::Disconnected) => QueueDrain::Disconnected,
+    }
+}
+
+fn process_captured_packet(
+    table: &mut FlowTable,
+    captured: CapturedPacket,
+    mut emit_observation: impl FnMut(Observation) -> bool,
+) -> bool {
+    table
+        .on_captured_packet(
+            &captured.packet,
+            captured.captured_at_ms,
+            captured.capture_timestamp,
+        )
+        .is_none_or(&mut emit_observation)
+}
 
 struct TickDeadline {
     period: Duration,
@@ -65,6 +153,10 @@ impl TickDeadline {
 
     fn wait(&self, now: Instant) -> Duration {
         self.next.saturating_duration_since(now)
+    }
+
+    fn is_due(&self, now: Instant) -> bool {
+        now >= self.next
     }
 
     /// Возвращает true не чаще одного раза за period. Пропущенные интервалы
@@ -212,8 +304,9 @@ impl WinDivert {
         })
     }
 
-    /// Блокирующий приём одного пакета. Возвращает (len, outbound) либо None при ошибке.
-    unsafe fn recv_into(&self, buf: &mut [u8]) -> Option<(usize, bool)> {
+    /// Блокирующий приём одного пакета. Timestamp WinDivert использует тот же
+    /// QueryPerformanceCounter clock, что и confirmation-arm.
+    unsafe fn recv_into(&self, buf: &mut [u8]) -> Option<(usize, bool, i64)> {
         let mut addr = WinDivertAddress::zeroed();
         let mut recv_len: u32 = 0;
         let ok = (self.recv)(
@@ -226,7 +319,7 @@ impl WinDivert {
         if ok == 0 {
             return None;
         }
-        Some((recv_len as usize, addr.outbound()))
+        Some((recv_len as usize, addr.outbound(), addr.timestamp))
     }
 }
 
@@ -246,6 +339,7 @@ pub struct EyesHandle {
     capture: Option<JoinHandle<()>>,
     tracker: Option<JoinHandle<()>>,
     divert: Arc<WinDivert>,
+    sensor_started: Instant,
 }
 
 pub struct EyesStartError {
@@ -322,6 +416,20 @@ fn cleanup_partial_capture(capture: JoinHandle<()>, timeout: Duration) -> Partia
 }
 
 impl EyesHandle {
+    pub(crate) fn capture_timestamp(&self) -> Option<i64> {
+        let mut timestamp = 0i64;
+        unsafe { QueryPerformanceCounter(&mut timestamp) }
+            .ok()
+            .map(|()| timestamp)
+    }
+
+    pub(crate) fn sensor_monotonic_ms(&self) -> u64 {
+        self.sensor_started
+            .elapsed()
+            .as_millis()
+            .min(u128::from(u64::MAX)) as u64
+    }
+
     pub(crate) fn begin_stop(mut self) -> WorkerTeardown {
         self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
         unsafe {
@@ -416,6 +524,7 @@ where
     // invariant here as well as at the current dpi caller so future callers
     // cannot accidentally re-enable compatibility semantics.
     cfg.working_signal_mode = WorkingSignalMode::StrictTls;
+    cfg.blackhole_delivery_grace_ms = BLACKHOLE_DELIVERY_GRACE_MS;
     let filter = port_plan
         .to_windivert_filter()
         .ok_or_else(|| EyesStartError::clean("Legacy Eyes capture plan is empty"))?;
@@ -435,16 +544,19 @@ where
     let divert =
         Arc::new(unsafe { WinDivert::open(dll_path, filter) }.map_err(EyesStartError::clean)?);
     let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let sensor_started = Instant::now();
 
     // Bounded канал: поток захвата -> поток трекинга. Capture не блокируется
     // на полном канале, чтобы backlog не переехал в WinDivert/kernel buffers.
-    let (tx, rx): (SyncSender<ParsedPacket>, Receiver<ParsedPacket>) =
+    let (tx, rx): (SyncSender<CapturedPacket>, Receiver<CapturedPacket>) =
         mpsc::sync_channel(PACKET_QUEUE_CAP);
+    let publication_gate = Arc::new(Mutex::new(()));
 
     // Поток захвата: блокирующий recv, декод, отправка в трекер.
     let capture = {
         let divert = Arc::clone(&divert);
         let capture_stop = Arc::clone(&stop);
+        let publication_gate = Arc::clone(&publication_gate);
         let health = health.clone();
         std::thread::Builder::new()
             .name("eyes-capture".into())
@@ -452,7 +564,7 @@ where
                 let mut buf = vec![0u8; PACKET_BUF];
                 let mut dropped = 0u64;
                 let mut last_drop_log: Option<Instant> = None;
-                let started = Instant::now();
+                let started = sensor_started;
                 let _worker_guard = SensorWorkerGuard::new(
                     Arc::clone(&capture_stop),
                     health.clone(),
@@ -460,13 +572,28 @@ where
                 );
                 while !capture_stop.load(std::sync::atomic::Ordering::SeqCst) {
                     match unsafe { divert.recv_into(&mut buf) } {
-                        Some((len, outbound)) => {
+                        Some((len, outbound, capture_timestamp)) => {
+                            let _publication = match publication_gate.lock() {
+                                Ok(guard) => guard,
+                                Err(_) => {
+                                    if let Some(health) = health.as_ref() {
+                                        health.record_sensor_failure(
+                                            started.elapsed().as_millis() as u64,
+                                        );
+                                    }
+                                    break;
+                                }
+                            };
                             let now_ms = started.elapsed().as_millis() as u64;
                             if let Some(health) = health.as_ref() {
                                 health.record_packet(now_ms);
                             }
                             match decode_ip_tcp(&buf[..len], outbound) {
-                                Some(pkt) => match tx.try_send(pkt) {
+                                Some(packet) => match tx.try_send(CapturedPacket {
+                                    packet,
+                                    captured_at_ms: now_ms,
+                                    capture_timestamp,
+                                }) {
                                     Ok(()) => {}
                                     Err(TrySendError::Full(_)) => {
                                         if let Some(health) = health.as_ref() {
@@ -524,14 +651,15 @@ where
     let tracker = {
         let tracker_stop = Arc::clone(&stop);
         let divert_for_tracker = Arc::clone(&divert);
+        let publication_gate = Arc::clone(&publication_gate);
         let health = health.clone();
         let spawned = std::thread::Builder::new()
             .name("eyes-tracker".into())
             .spawn(move || {
-                let start = Instant::now();
+                let start = sensor_started;
                 let _worker_guard =
                     SensorWorkerGuard::new(Arc::clone(&tracker_stop), health.clone(), start);
-                let emit_observation = |observation: Observation| {
+                let mut emit_observation = |observation: Observation| {
                     let callback_result =
                         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                             on_observation(observation)
@@ -551,37 +679,156 @@ where
                 };
                 let mut table = FlowTable::new(cfg);
                 let mut tick = TickDeadline::new(Instant::now(), TRACKER_TICK);
-                loop {
+                let mut pending_packet = None;
+                let mut publication_wait_started = None;
+                'tracker: loop {
                     let wait = tick.wait(Instant::now());
-                    match rx.recv_timeout(wait) {
-                        Ok(pkt) => {
-                            let now = start.elapsed().as_millis() as u64;
-                            if let Some(obs) = table.on_packet(&pkt, now) {
-                                if !emit_observation(obs) {
-                                    break;
+                    let captured = match pending_packet.take() {
+                        Some(captured) => Some(captured),
+                        None => match rx.recv_timeout(wait) {
+                            Ok(captured) => Some(captured),
+                            Err(RecvTimeoutError::Timeout) => None,
+                            Err(RecvTimeoutError::Disconnected) => {
+                                if !tracker_stop.load(std::sync::atomic::Ordering::SeqCst) {
+                                    if let Some(health) = health.as_ref() {
+                                        health.record_sensor_failure(
+                                            start.elapsed().as_millis() as u64
+                                        );
+                                    }
                                 }
+                                break;
                             }
-                        }
-                        Err(RecvTimeoutError::Timeout) => {}
-                        Err(RecvTimeoutError::Disconnected) => {
-                            if !tracker_stop.load(std::sync::atomic::Ordering::SeqCst) {
-                                if let Some(health) = health.as_ref() {
-                                    health
-                                        .record_sensor_failure(start.elapsed().as_millis() as u64);
-                                }
-                            }
+                        },
+                    };
+                    if let Some(captured) = captured {
+                        if !process_captured_packet(&mut table, captured, &mut emit_observation) {
                             break;
                         }
                     }
-                    // Пакеты могут будить tracker тысячами раз в секунду, но полный
-                    // O(flows) tick выполняется только по временному дедлайну.
+                    if tracker_stop.load(std::sync::atomic::Ordering::SeqCst) {
+                        break;
+                    }
+
+                    // A due timeout may never overtake packets which are already
+                    // waiting in the capture queue. Process a bounded batch first;
+                    // if the producer still has backlog, retain the look-ahead
+                    // packet and defer the tick until the tracker catches up.
                     let wall_now = Instant::now();
-                    if tick.take_due(wall_now) {
-                        let now = start.elapsed().as_millis() as u64;
-                        for obs in table.on_tick(now) {
-                            if !emit_observation(obs) {
+                    if tick.is_due(wall_now) {
+                        let drain = drain_available(&rx, TRACKER_DRAIN_BUDGET, |captured| {
+                            process_captured_packet(&mut table, captured, &mut emit_observation)
+                        });
+                        match drain {
+                            QueueDrain::Empty => {
+                                let now_ms = start.elapsed().as_millis() as u64;
+                                match try_stable_empty(&publication_gate, &rx, || {
+                                    table.on_tick(now_ms)
+                                }) {
+                                    StableEmpty::Busy => {
+                                        let started =
+                                            *publication_wait_started.get_or_insert(wall_now);
+                                        if wall_now.saturating_duration_since(started)
+                                            >= CAPTURE_HANDOFF_TIMEOUT
+                                        {
+                                            if let Some(health) = health.as_ref() {
+                                                health.record_sensor_failure(now_ms);
+                                            }
+                                            tracker_stop.store(true, Ordering::SeqCst);
+                                            unsafe {
+                                                (divert_for_tracker.shutdown)(
+                                                    divert_for_tracker.handle,
+                                                    SHUTDOWN_BOTH,
+                                                );
+                                            }
+                                            break;
+                                        }
+                                        std::thread::sleep(CAPTURE_HANDOFF_RETRY);
+                                        continue;
+                                    }
+                                    StableEmpty::Packet(captured) => {
+                                        let tick_watermark =
+                                            backlog_tick_watermark(captured.captured_at_ms);
+                                        pending_packet = Some(captured);
+                                        publication_wait_started = None;
+                                        if tick.take_due(Instant::now()) {
+                                            for obs in table.on_tick(tick_watermark) {
+                                                if !emit_observation(obs) {
+                                                    break 'tracker;
+                                                }
+                                            }
+                                        }
+                                        if tracker_stop.load(std::sync::atomic::Ordering::SeqCst) {
+                                            break;
+                                        }
+                                        std::thread::yield_now();
+                                        continue;
+                                    }
+                                    StableEmpty::Tick(observations) => {
+                                        publication_wait_started = None;
+                                        let advanced = tick.take_due(Instant::now());
+                                        debug_assert!(advanced, "stable empty tick must be due");
+                                        if tracker_stop.load(std::sync::atomic::Ordering::SeqCst) {
+                                            break;
+                                        }
+                                        for observation in observations {
+                                            if !emit_observation(observation) {
+                                                break 'tracker;
+                                            }
+                                        }
+                                        continue;
+                                    }
+                                    StableEmpty::Disconnected => {
+                                        if !tracker_stop.load(std::sync::atomic::Ordering::SeqCst) {
+                                            if let Some(health) = health.as_ref() {
+                                                health.record_sensor_failure(now_ms);
+                                            }
+                                        }
+                                        break;
+                                    }
+                                    StableEmpty::Poisoned => {
+                                        if let Some(health) = health.as_ref() {
+                                            health.record_sensor_failure(now_ms);
+                                        }
+                                        tracker_stop.store(true, Ordering::SeqCst);
+                                        unsafe {
+                                            (divert_for_tracker.shutdown)(
+                                                divert_for_tracker.handle,
+                                                SHUTDOWN_BOTH,
+                                            );
+                                        }
+                                        break;
+                                    }
+                                }
+                            }
+                            QueueDrain::Backlogged(captured) => {
+                                let tick_watermark =
+                                    backlog_tick_watermark(captured.captured_at_ms);
+                                pending_packet = Some(captured);
+                                publication_wait_started = None;
+                                if tick.take_due(wall_now) {
+                                    for obs in table.on_tick(tick_watermark) {
+                                        if !emit_observation(obs) {
+                                            break 'tracker;
+                                        }
+                                    }
+                                }
+                                if tracker_stop.load(std::sync::atomic::Ordering::SeqCst) {
+                                    break;
+                                }
+                                std::thread::yield_now();
+                                continue;
+                            }
+                            QueueDrain::Disconnected => {
+                                if !tracker_stop.load(std::sync::atomic::Ordering::SeqCst) {
+                                    if let Some(health) = health.as_ref() {
+                                        health.record_sensor_failure(
+                                            start.elapsed().as_millis() as u64
+                                        );
+                                    }
+                                }
                                 break;
                             }
+                            QueueDrain::Halted => break,
                         }
                     }
                     if tracker_stop.load(std::sync::atomic::Ordering::SeqCst) {
@@ -614,12 +861,131 @@ where
         capture: Some(capture),
         tracker: Some(tracker),
         divert,
+        sensor_started,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::eyes::parse::{FlowKey, TcpFlags};
+    use std::net::{IpAddr, Ipv4Addr};
+
+    #[test]
+    fn captured_packet_keeps_the_capture_time_while_queued() {
+        let captured = CapturedPacket {
+            packet: ParsedPacket {
+                outbound: true,
+                key: FlowKey {
+                    local_port: 50_000,
+                    remote_ip: IpAddr::V4(Ipv4Addr::new(203, 0, 113, 10)),
+                    remote_port: 443,
+                },
+                ttl: 64,
+                seq: 1,
+                flags: TcpFlags::default(),
+                payload: Vec::new(),
+            },
+            captured_at_ms: 41,
+            capture_timestamp: 9_001,
+        };
+
+        assert_eq!(captured.captured_at_ms, 41);
+        assert_eq!(captured.capture_timestamp, 9_001);
+        assert_eq!(captured.packet.key.local_port, 50_000);
+    }
+
+    #[test]
+    fn due_tick_drain_processes_every_ready_packet_before_timeout_evaluation() {
+        let (tx, rx) = std::sync::mpsc::sync_channel(4);
+        tx.send(1).unwrap();
+        tx.send(2).unwrap();
+        tx.send(3).unwrap();
+        let mut processed = Vec::new();
+
+        let outcome = drain_available(&rx, 4, |packet| {
+            processed.push(packet);
+            true
+        });
+
+        assert_eq!(outcome, QueueDrain::Empty);
+        assert_eq!(processed, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn due_tick_is_deferred_when_drain_budget_leaves_backlog() {
+        let (tx, rx) = std::sync::mpsc::sync_channel(4);
+        tx.send(1).unwrap();
+        tx.send(2).unwrap();
+        tx.send(3).unwrap();
+        let mut processed = Vec::new();
+
+        let outcome = drain_available(&rx, 2, |packet| {
+            processed.push(packet);
+            true
+        });
+
+        assert_eq!(outcome, QueueDrain::Backlogged(3));
+        assert_eq!(processed, vec![1, 2]);
+    }
+
+    #[test]
+    fn stable_empty_recheck_observes_producer_that_won_publication_gate() {
+        let gate = std::sync::Mutex::new(());
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        let producer = gate.lock().unwrap();
+
+        assert!(matches!(
+            try_stable_empty(&gate, &rx, || panic!("busy gate must not tick")),
+            StableEmpty::Busy
+        ));
+        tx.send(7).unwrap();
+        drop(producer);
+
+        assert!(matches!(
+            try_stable_empty(&gate, &rx, || panic!("queued packet must win")),
+            StableEmpty::Packet(7)
+        ));
+    }
+
+    #[test]
+    fn stable_empty_tick_runs_while_publication_gate_is_held() {
+        let gate = std::sync::Mutex::new(());
+        let (_tx, rx) = std::sync::mpsc::sync_channel::<u8>(1);
+
+        let result = try_stable_empty(&gate, &rx, || {
+            assert!(matches!(
+                gate.try_lock(),
+                Err(std::sync::TryLockError::WouldBlock)
+            ));
+            42
+        });
+
+        assert!(matches!(result, StableEmpty::Tick(42)));
+    }
+
+    #[test]
+    fn parse_failure_under_gate_is_followed_by_a_tick_not_queue_changed() {
+        let gate = std::sync::Mutex::new(());
+        let (_tx, rx) = std::sync::mpsc::sync_channel::<u8>(1);
+        let parse_failure = gate.lock().unwrap();
+
+        assert!(matches!(
+            try_stable_empty(&gate, &rx, || ()),
+            StableEmpty::Busy
+        ));
+        drop(parse_failure);
+        assert!(matches!(
+            try_stable_empty(&gate, &rx, || 9),
+            StableEmpty::Tick(9)
+        ));
+    }
+
+    #[test]
+    fn backlog_tick_stops_before_the_next_unprocessed_capture() {
+        assert_eq!(backlog_tick_watermark(500), 499);
+        assert_eq!(backlog_tick_watermark(0), 0);
+    }
 
     #[test]
     fn partial_start_error_preserves_cleanup_safety() {

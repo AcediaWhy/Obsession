@@ -110,6 +110,12 @@ pub struct Observation {
     /// Признак, по которому вынесен вердикт: "server_hello" | "tls_app_data"
     /// | "inbound_rst" | "silence+retransmit" | "silence" | "syn_no_synack".
     pub evidence: &'static str,
+    /// Момент распознавания ClientHello в часах текущего sensor generation.
+    /// `None` допустим только для диагностического SYN-timeout без известного SNI.
+    pub armed_at_ms: Option<u64>,
+    /// Высокоточная метка первого ClientHello-пакета из WinDivert/QPC.
+    /// Она образует строгий барьер между предыдущим и новым кандидатом.
+    pub armed_at_capture_timestamp: Option<i64>,
     /// Логическое время события в мс (передаётся снаружи ради детерминизма тестов).
     pub ts_ms: u64,
 }

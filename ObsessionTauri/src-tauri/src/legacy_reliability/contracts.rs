@@ -420,6 +420,13 @@ pub struct FlowEvent {
     #[serde(with = "diagnosis_serde")]
     pub diagnosis: Diagnosis,
     pub evidence: FlowEvidence,
+    /// ClientHello arming time in the current sensor-generation clock.
+    /// Missing timing remains valid diagnostic input but cannot confirm or
+    /// reject a recovery candidate.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub armed_at_sensor_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub armed_at_capture_timestamp: Option<i64>,
     pub monotonic_ts: u64,
 }
 
@@ -451,8 +458,20 @@ impl FlowEvent {
             transport,
             diagnosis,
             evidence: evidence.into(),
+            armed_at_sensor_ms: None,
+            armed_at_capture_timestamp: None,
             monotonic_ts,
         })
+    }
+
+    pub fn with_armed_at_sensor_ms(mut self, armed_at_sensor_ms: u64) -> Self {
+        self.armed_at_sensor_ms = Some(armed_at_sensor_ms);
+        self
+    }
+
+    pub fn with_armed_at_capture_timestamp(mut self, capture_timestamp: i64) -> Self {
+        self.armed_at_capture_timestamp = Some(capture_timestamp);
+        self
     }
 
     pub const fn envelope(&self) -> EventEnvelope {
@@ -489,6 +508,10 @@ struct FlowEventWire {
     #[serde(with = "diagnosis_serde")]
     diagnosis: Diagnosis,
     evidence: FlowEvidence,
+    #[serde(default)]
+    armed_at_sensor_ms: Option<u64>,
+    #[serde(default)]
+    armed_at_capture_timestamp: Option<i64>,
     monotonic_ts: u64,
 }
 
@@ -498,6 +521,8 @@ impl<'de> Deserialize<'de> for FlowEvent {
         D: serde::Deserializer<'de>,
     {
         let event = FlowEventWire::deserialize(deserializer)?;
+        let armed_at_sensor_ms = event.armed_at_sensor_ms;
+        let armed_at_capture_timestamp = event.armed_at_capture_timestamp;
         Self::new(
             event.envelope,
             event.category,
@@ -510,6 +535,11 @@ impl<'de> Deserialize<'de> for FlowEvent {
             event.evidence,
             event.monotonic_ts,
         )
+        .map(|mut flow| {
+            flow.armed_at_sensor_ms = armed_at_sensor_ms;
+            flow.armed_at_capture_timestamp = armed_at_capture_timestamp;
+            flow
+        })
         .map_err(serde::de::Error::custom)
     }
 }

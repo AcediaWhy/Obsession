@@ -90,7 +90,9 @@ pub fn adapt_observation(
         Transport::Tls
     };
     let diagnosis = Diagnosis::from_verdict_evidence(observation.verdict, observation.evidence);
-    let event = FlowEvent::new(
+    let armed_at_sensor_ms = observation.armed_at_ms;
+    let armed_at_capture_timestamp = observation.armed_at_capture_timestamp;
+    let mut event = FlowEvent::new(
         envelope,
         category,
         lane_generation,
@@ -103,6 +105,12 @@ pub fn adapt_observation(
         observation.ts_ms,
     )
     .map_err(AdaptError::InvalidFlow)?;
+    if let Some(armed_at_sensor_ms) = armed_at_sensor_ms {
+        event = event.with_armed_at_sensor_ms(armed_at_sensor_ms);
+    }
+    if let Some(capture_timestamp) = armed_at_capture_timestamp {
+        event = event.with_armed_at_capture_timestamp(capture_timestamp);
+    }
 
     Ok(AdaptedFlow { event, attribution })
 }
@@ -149,6 +157,8 @@ mod tests {
             remote_port: port,
             verdict,
             evidence,
+            armed_at_ms: Some(33),
+            armed_at_capture_timestamp: Some(3_300),
             ts_ms: 55,
         }
     }
@@ -177,6 +187,8 @@ mod tests {
         assert_eq!(adapted.event.diagnosis, Diagnosis::TcpReset);
         assert_eq!(adapted.event.transport, Transport::Tls);
         assert_eq!(adapted.event.flow_id, 17);
+        assert_eq!(adapted.event.armed_at_sensor_ms, Some(33));
+        assert_eq!(adapted.event.armed_at_capture_timestamp, Some(3_300));
         assert!(matches!(
             adapted.attribution,
             FlowAttribution::Matched { .. }
