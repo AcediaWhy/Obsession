@@ -883,6 +883,41 @@ impl ConfirmationEvaluator {
         self.decision(now_ms)
     }
 
+    fn terminal_summary(&self, decision: ConfirmationDecision, remaining_probes: usize) -> String {
+        let probe_targets = self
+            .successful_probes
+            .iter()
+            .map(|probe| probe.target.as_str())
+            .collect::<BTreeSet<_>>()
+            .len();
+        let working_targets = self
+            .working_flows
+            .iter()
+            .map(|flow| flow.target.as_str())
+            .collect::<BTreeSet<_>>()
+            .len();
+        let blackhole_targets = self
+            .tls_blackhole_flows
+            .iter()
+            .map(|flow| flow.target.as_str())
+            .collect::<BTreeSet<_>>()
+            .len();
+        let reset_targets = self
+            .reset_flows
+            .iter()
+            .map(|flow| flow.target.as_str())
+            .collect::<BTreeSet<_>>()
+            .len();
+        format!(
+            "Legacy candidate confirmation terminal: decision={decision:?}, successful_probes={}, probe_targets={probe_targets}, working_flows={}, working_targets={working_targets}, tls_blackholes={}, blackhole_targets={blackhole_targets}, resets={}, reset_targets={reset_targets}, quorum_reached={}, remaining_probes={remaining_probes}",
+            self.successful_probes.len(),
+            self.working_flows.len(),
+            self.tls_blackhole_flows.len(),
+            self.reset_flows.len(),
+            self.quorum_reached_at_ms.is_some(),
+        )
+    }
+
     fn observe_flow(&mut self, flow: &FlowEvent) {
         if flow.category.as_deref() != Some(self.category.as_str())
             || flow.lane_generation != Some(self.lane_generation)
@@ -1448,6 +1483,64 @@ pub struct StartedLane {
     pub confirmation_arm: ConfirmationArm,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ConfirmationProbePlan {
+    evaluator_targets: Vec<String>,
+    probe_hosts: Vec<String>,
+}
+
+fn confirmation_probe_plan(
+    candidate_targets: &[String],
+    incident_targets: &[String],
+) -> Option<ConfirmationProbePlan> {
+    let mut candidate_targets = candidate_targets
+        .iter()
+        .filter_map(|target| normalize_domain(target))
+        .collect::<Vec<_>>();
+    candidate_targets
+        .sort_by(|left, right| right.len().cmp(&left.len()).then_with(|| left.cmp(right)));
+    candidate_targets.dedup();
+
+    let mut seen_targets = BTreeSet::new();
+    let mut matched = Vec::new();
+    for host in incident_targets
+        .iter()
+        .filter_map(|host| normalize_domain(host))
+    {
+        let Some(target) = candidate_targets
+            .iter()
+            .find(|target| domain_matches_suffix(&host, target))
+        else {
+            continue;
+        };
+        if seen_targets.insert(target.clone()) {
+            matched.push((target.clone(), host));
+            if matched.len() == 2 {
+                break;
+            }
+        }
+    }
+    if matched.is_empty() {
+        return None;
+    }
+
+    let evaluator_targets = matched
+        .iter()
+        .map(|(target, _)| target.clone())
+        .collect::<Vec<_>>();
+    let mut probe_hosts = matched
+        .into_iter()
+        .map(|(_, host)| host)
+        .collect::<Vec<_>>();
+    if probe_hosts.len() == 1 {
+        probe_hosts.push(probe_hosts[0].clone());
+    }
+    Some(ConfirmationProbePlan {
+        evaluator_targets,
+        probe_hosts,
+    })
+}
+
 #[derive(Clone, Debug)]
 pub struct ConfirmationRequest {
     pub envelope: IntentEnvelope,
@@ -1455,6 +1548,7 @@ pub struct ConfirmationRequest {
     pub owner: ProcessOwner,
     pub arm: ConfirmationArm,
     pub candidate_targets: Vec<String>,
+    pub probe_hosts: Vec<String>,
     pub deadline_ms: u64,
     pub clean_window_ms: u64,
 }
@@ -1607,21 +1701,8 @@ impl AppScopedExecutorBackend {
             .saturating_add(request.deadline_ms.min(CONFIRMATION_DEADLINE_MS));
         let delivery_deadline = deadline.saturating_add(CONFIRMATION_DELIVERY_MARGIN_MS);
 
-        let probe_targets = if request.candidate_targets.len() == 1 {
-            vec![
-                request.candidate_targets[0].clone(),
-                request.candidate_targets[0].clone(),
-            ]
-        } else {
-            request
-                .candidate_targets
-                .iter()
-                .take(2)
-                .cloned()
-                .collect::<Vec<_>>()
-        };
         let mut probes = tokio::task::JoinSet::new();
-        for (index, target) in probe_targets.into_iter().enumerate() {
+        for (index, target) in request.probe_hosts.into_iter().enumerate() {
             probes.spawn(run_https_confirmation_probe(
                 self.app.clone(),
                 index as u64 + 1,
@@ -1702,6 +1783,16 @@ impl AppScopedExecutorBackend {
                     continue;
                 }
                 ConfirmationLoopAction::Return(decision) => {
+                    crate::util::emit_log(
+                        &self.app,
+                        if decision == ConfirmationDecision::Succeeded {
+                            "success"
+                        } else {
+                            "warn"
+                        },
+                        "legacy-reliability",
+                        &evaluator.terminal_summary(decision, remaining_probes),
+                    );
                     if let Some(exit) = candidate_exit.take() {
                         self.candidate_exit = Some(exit);
                     }
@@ -2963,6 +3054,19 @@ where
             ));
         }
 
+        let Some(probe_plan) = confirmation_probe_plan(
+            active.plan.candidate_targets(),
+            &active.incident_gate_anchor.category_targets,
+        ) else {
+            return Ok(result(
+                envelope,
+                ExecutorOutcome::ConfirmationFailed {
+                    candidate: owner,
+                    reason: ConfirmationFailure::Target,
+                },
+                self.backend.monotonic_ms(),
+            ));
+        };
         let request = ConfirmationRequest {
             envelope: envelope.clone(),
             candidate,
@@ -2970,7 +3074,8 @@ where
             arm: active
                 .confirmation_arm
                 .ok_or(ExecutorRunError::ActionMismatch)?,
-            candidate_targets: active.plan.candidate_targets().to_vec(),
+            candidate_targets: probe_plan.evaluator_targets,
+            probe_hosts: probe_plan.probe_hosts,
             deadline_ms: CONFIRMATION_DEADLINE_MS,
             clean_window_ms: CONFIRMATION_CLEAN_WINDOW_MS,
         };
@@ -5231,6 +5336,51 @@ mod tests {
             expected_registry_version: RegistryVersion::new(6),
             expected_network_fingerprint: network(),
         }
+    }
+
+    #[test]
+    fn confirmation_probes_exact_incident_host_instead_of_alphabetical_suffixes() {
+        let candidate_targets = vec![
+            "1e100.net".to_owned(),
+            "7tv.app".to_owned(),
+            "googlevideo.com".to_owned(),
+            "youtube.com".to_owned(),
+        ];
+        let incident_targets = vec!["www.youtube.com".to_owned()];
+
+        let plan = confirmation_probe_plan(&candidate_targets, &incident_targets)
+            .expect("the incident host belongs to the candidate");
+
+        assert_eq!(plan.evaluator_targets, ["youtube.com"]);
+        assert_eq!(plan.probe_hosts, ["www.youtube.com", "www.youtube.com"]);
+    }
+
+    #[test]
+    fn confirmation_terminal_summary_is_privacy_safe_and_exposes_evidence_counts() {
+        let envelope = confirmation_envelope();
+        let mut evaluator =
+            ConfirmationEvaluator::new_armed(&envelope, ["one.video.example"], 10_000, arm())
+                .unwrap();
+        evaluator.observe_probe(probe(1, "one.video.example", 10_100, 10_300));
+        evaluator.observe_confirmation_flow(
+            &confirmation_flow(101, 1, "one.video.example", Diagnosis::Working, 700),
+            10_300,
+        );
+        evaluator.observe_confirmation_flow(
+            &confirmation_flow(102, 2, "one.video.example", Diagnosis::TlsBlackhole, 900),
+            10_500,
+        );
+
+        let summary = evaluator.terminal_summary(
+            ConfirmationDecision::Failed(ConfirmationFailure::MissingWorkingEvidence),
+            1,
+        );
+
+        assert!(summary.contains("successful_probes=1"));
+        assert!(summary.contains("working_flows=1"));
+        assert!(summary.contains("tls_blackholes=1"));
+        assert!(summary.contains("remaining_probes=1"));
+        assert!(!summary.contains("one.video.example"));
     }
 
     fn confirmation_flow(
