@@ -40,6 +40,8 @@ use crate::eyes::flow::{ARMED_SILENCE_TIMEOUT_MS, BLACKHOLE_DELIVERY_GRACE_MS};
 pub const CONFIRMATION_DEADLINE_MS: u64 = 20_000;
 pub const CONFIRMATION_DELIVERY_MARGIN_MS: u64 = BLACKHOLE_DELIVERY_GRACE_MS;
 const CONFIRMATION_TRACKER_SETTLE_MS: u64 = 500;
+const CONFIRMATION_WEAK_ADVERSE_SETTLE_MS: u64 =
+    CONFIRMATION_DELIVERY_MARGIN_MS + CONFIRMATION_TRACKER_SETTLE_MS;
 pub const CONFIRMATION_CLEAN_WINDOW_MS: u64 =
     ARMED_SILENCE_TIMEOUT_MS + CONFIRMATION_DELIVERY_MARGIN_MS + CONFIRMATION_TRACKER_SETTLE_MS;
 const INGRESS_PUBLICATION_SETTLE_MS: u64 = 250;
@@ -1020,13 +1022,6 @@ impl ConfirmationEvaluator {
                 >= required_targets
     }
 
-    fn has_unrecovered_weak_adverse(&self) -> bool {
-        self.tls_blackhole_flows
-            .iter()
-            .chain(self.reset_flows.iter())
-            .any(|flow| self.working_recovery_at(flow).is_none())
-    }
-
     fn last_weak_recovery_at_ms(&self) -> Option<u64> {
         self.tls_blackhole_flows
             .iter()
@@ -1136,15 +1131,15 @@ impl ConfirmationEvaluator {
             return ConfirmationDecision::Failed(ConfirmationFailure::Strategy);
         }
         let clean_anchor = self.quorum_reached_at_ms.map(|reached_at| {
-            let adverse_or_recovery_at = self
-                .last_weak_adverse_at_ms
-                .into_iter()
-                .chain(self.last_weak_recovery_at_ms())
-                .max();
-            adverse_or_recovery_at.map_or(reached_at, |weak_at| reached_at.max(weak_at))
+            self.last_weak_recovery_at_ms()
+                .map_or(reached_at, |recovery_at| reached_at.max(recovery_at))
+        });
+        let weak_adverse_settled = self.last_weak_adverse_at_ms.is_none_or(|adverse_at| {
+            let settled_at = adverse_at.saturating_add(CONFIRMATION_WEAK_ADVERSE_SETTLE_MS);
+            now_ms >= settled_at && settled_at <= self.deadline_at_ms
         });
         if matches!(self.health_state, EyeHealthState::Ready)
-            && !self.has_unrecovered_weak_adverse()
+            && weak_adverse_settled
             && clean_anchor.is_some_and(|anchor| {
                 now_ms >= anchor.saturating_add(CONFIRMATION_CLEAN_WINDOW_MS)
                     && anchor.saturating_add(CONFIRMATION_CLEAN_WINDOW_MS) <= self.deadline_at_ms
@@ -5499,6 +5494,56 @@ mod tests {
         );
         assert_eq!(evaluator.poll(25_999), ConfirmationDecision::Pending);
         assert_eq!(evaluator.poll(26_000), ConfirmationDecision::Succeeded);
+    }
+
+    #[test]
+    fn single_unrecovered_tls_blackhole_settles_without_requiring_working_recovery() {
+        let envelope = confirmation_envelope();
+        let mut evaluator =
+            ConfirmationEvaluator::new_armed(&envelope, ["only.video.example"], 10_000, arm())
+                .unwrap();
+        evaluator.observe_probe(probe(1, "only.video.example", 10_100, 10_300));
+        evaluator.observe_probe(probe(2, "only.video.example", 10_400, 10_600));
+        evaluator.observe_confirmation_flow(
+            &confirmation_flow(101, 1, "only.video.example", Diagnosis::Working, 700),
+            10_300,
+        );
+        evaluator.observe_confirmation_flow(
+            &confirmation_flow(102, 2, "only.video.example", Diagnosis::Working, 1_000),
+            10_600,
+        );
+
+        let quorum_at = evaluator
+            .quorum_reached_at_ms
+            .expect("positive quorum must be formed");
+        let clean_at = quorum_at.saturating_add(CONFIRMATION_CLEAN_WINDOW_MS);
+        let adverse_at = clean_at.saturating_sub(100);
+        let adverse_sensor_ms = arm()
+            .armed_at_sensor_ms
+            .saturating_add(adverse_at.saturating_sub(arm().armed_at_monotonic_ms));
+        assert_eq!(
+            evaluator.observe_confirmation_flow(
+                &confirmation_flow(
+                    103,
+                    3,
+                    "only.video.example",
+                    Diagnosis::TlsBlackhole,
+                    adverse_sensor_ms,
+                ),
+                adverse_at,
+            ),
+            ConfirmationDecision::Pending
+        );
+
+        let settle_ms = CONFIRMATION_WEAK_ADVERSE_SETTLE_MS;
+        assert_eq!(
+            evaluator.poll(adverse_at.saturating_add(settle_ms).saturating_sub(1)),
+            ConfirmationDecision::Pending
+        );
+        assert_eq!(
+            evaluator.poll(adverse_at.saturating_add(settle_ms)),
+            ConfirmationDecision::Succeeded
+        );
     }
 
     #[test]
