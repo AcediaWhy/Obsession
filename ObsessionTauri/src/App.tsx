@@ -121,7 +121,7 @@ export default function App() {
     const scheduleWarm = () => {
       if (warmed) return;
       warmed = true;
-      const warm = () => void import("./design/components/RainScene3D");
+      const warm = () => void import("./design/components/RainHybridScene");
       if (ric) ric(warm);
       else window.setTimeout(warm, 1500);
     };

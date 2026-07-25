@@ -144,6 +144,7 @@ describe("FrameScheduler", () => {
       telemetryWindowSize: 4,
       qualityCooldownMs: 1_000,
       qualityUpgradeWindows: 2,
+      qualityGraceMs: 0,
     });
 
     recordWindow(scheduler, 0, 25, 12);
@@ -202,12 +203,43 @@ describe("FrameScheduler", () => {
     expect(previewDraws).toBe(5);
   });
 
+  it("keeps the startup grace: no downgrades from boot jank, then reacts", () => {
+    const host = new FakeFrameHost();
+    const scheduler = new FrameScheduler(host, {
+      initialRefreshHz: 120,
+      telemetryWindowSize: 4,
+      qualityCooldownMs: 1_000,
+      qualityGraceMs: 3_000,
+    });
+
+    // Джанк первых секунд (компиляция шейдеров, прогрев) — тир не падает.
+    recordWindow(scheduler, 0, 25, 12);
+    expect(scheduler.getSnapshot().qualityTier).toBe("high");
+    recordWindow(scheduler, 1_500, 25, 12);
+    expect(scheduler.getSnapshot().qualityTier).toBe("high");
+
+    // После форы честная перегрузка приводит к даунгрейду.
+    recordWindow(scheduler, 3_200, 25, 12);
+    expect(scheduler.getSnapshot().qualityTier).toBe("balanced");
+  });
+
+  it("starts from a persisted tier when provided", () => {
+    const host = new FakeFrameHost();
+    const scheduler = new FrameScheduler(host, {
+      initialRefreshHz: 60,
+      initialQualityTier: "balanced",
+    });
+    expect(scheduler.getSnapshot().qualityTier).toBe("balanced");
+    expect(frameQualityScale(scheduler.getSnapshot().qualityTier)).toBe(0.8);
+  });
+
   it("delivers quality changes to backing-store callbacks only on tier changes", () => {
     const host = new FakeFrameHost();
     const scheduler = new FrameScheduler(host, {
       initialRefreshHz: 120,
       telemetryWindowSize: 4,
       qualityCooldownMs: 1_000,
+      qualityGraceMs: 0,
     });
     const quality: string[] = [];
     scheduler.createLoop(() => {}, {

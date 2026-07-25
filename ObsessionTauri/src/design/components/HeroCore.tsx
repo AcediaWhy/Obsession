@@ -1,9 +1,9 @@
-import { AnimatePresence, motion } from "framer-motion";
+import { AnimatePresence, motion, useIsPresent } from "framer-motion";
 import { useThemeStore, type Theme } from "../../store/themeStore";
 import { useMotionOff, useRenderHidden } from "../render";
 import { dur, ease } from "../tokens";
 import { AuroraCore } from "./AuroraCore";
-import { RainCore } from "./RainCore";
+import { RainLanternCore } from "./RainLanternCore";
 import { OphanimCore } from "./OphanimCore";
 import { FallenCore } from "./FallenCore";
 import { CatnapCore } from "./CatnapCore";
@@ -18,20 +18,23 @@ type Props = {
   // ядра игнорируют лишние пропсы; экраны, не знающие про тему, могут их не слать.
   scanning?: boolean;
   alarm?: boolean;
+  paused?: boolean;
 };
 
 // Ядро конкретной темы. Тема — пропом (как в HeroField): при кроссфейде
 // уходящая ветка должна держать СТАРУЮ тему, а чтение стора внутри мгновенно
 // переключило бы её на новую.
 function ThemedCore({ theme, ...props }: Props & { theme: Theme }) {
-  if (theme === "ophanim") return <OphanimCore {...props} />;
-  if (theme === "fallendown") return <FallenCore {...props} />;
-  if (theme === "catnap") return <CatnapCore {...props} />;
-  if (theme === "midnight") return <MidnightCore {...props} />;
-  // «Rain» (id japan): поверхность воды с расходящейся рябью от капель.
-  if (theme === "japan") return <RainCore {...props} />;
+  const isPresent = useIsPresent();
+  const coreProps = { ...props, paused: props.paused || !isPresent };
+  if (theme === "ophanim") return <OphanimCore {...coreProps} />;
+  if (theme === "fallendown") return <FallenCore {...coreProps} />;
+  if (theme === "catnap") return <CatnapCore {...coreProps} />;
+  if (theme === "midnight") return <MidnightCore {...coreProps} />;
+  // «Rain» (id japan): янтарный фонарь за холодным мокрым стеклом.
+  if (theme === "japan") return <RainLanternCore {...coreProps} />;
   // Aurora — исходное ядро (световые шторы).
-  return <AuroraCore {...props} />;
+  return <AuroraCore {...coreProps} />;
 }
 
 // Диспетчер hero-ядра по выбранной теме + кроссфейд при её смене. Все варианты

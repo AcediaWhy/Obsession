@@ -50,6 +50,11 @@ export type FrameSchedulerOptions = {
   telemetryWindowSize?: number;
   qualityCooldownMs?: number;
   qualityUpgradeWindows?: number;
+  /** Стартовый тир (например, сохранённый с прошлой сессии). */
+  initialQualityTier?: QualityTier;
+  /** Стартовая фора: до её истечения даунгрейды запрещены — джанк первых
+   *  секунд (компиляция шейдеров, прогрев WebView) не роняет качество. */
+  qualityGraceMs?: number;
 };
 
 type FrameTask = {
@@ -86,6 +91,8 @@ const DEFAULT_OPTIONS: Required<FrameSchedulerOptions> = {
   telemetryWindowSize: 120,
   qualityCooldownMs: 10_000,
   qualityUpgradeWindows: 3,
+  initialQualityTier: "high",
+  qualityGraceMs: 5_000,
 };
 
 function roundCadence(value: number): number {
@@ -178,12 +185,14 @@ export class FrameScheduler {
   private pendingRefreshWindows = 0;
   private lastQualityChangeAt = Number.NEGATIVE_INFINITY;
   private healthyWindows = 0;
+  private graceUntil = Number.NEGATIVE_INFINITY;
 
   constructor(host: FrameHost, options: FrameSchedulerOptions = {}) {
     this.host = host;
     this.options = { ...DEFAULT_OPTIONS, ...options };
+    this.graceUntil = host.now() + this.options.qualityGraceMs;
     const refreshHz = this.options.initialRefreshHz;
-    const qualityTier: QualityTier = "high";
+    const qualityTier: QualityTier = this.options.initialQualityTier;
     this.snapshot = {
       refreshHz,
       targetFps: chooseTargetCadence(refreshHz, qualityTier),
@@ -352,15 +361,19 @@ export class FrameScheduler {
       telemetry.missedFrameRatio > 0.08 ||
       telemetry.p95FrameCostMs > targetInterval * 0.7 ||
       telemetry.p95FrameIntervalMs > displayInterval * 1.5;
+    // Порог подъёма 0.45 бюджета кадра: между ним и порогом перегруза (0.7)
+    // остаётся зона гистерезиса — тир не осциллирует.
     const healthy =
       telemetry.missedFrameRatio < 0.01 &&
-      telemetry.p95FrameCostMs < targetInterval * 0.35 &&
+      telemetry.p95FrameCostMs < targetInterval * 0.45 &&
       telemetry.p95FrameIntervalMs <= displayInterval * 1.25;
     const cooldownElapsed = now - this.lastQualityChangeAt >= this.options.qualityCooldownMs;
     const index = QUALITY_ORDER.indexOf(this.snapshot.qualityTier);
 
     if (overloaded) {
       this.healthyWindows = 0;
+      // Стартовая фора: джанк первых секунд (шейдеры, прогрев) не считается.
+      if (now < this.graceUntil) return this.snapshot.qualityTier;
       if (cooldownElapsed && index > 0) {
         this.lastQualityChangeAt = now;
         return QUALITY_ORDER[index - 1];
@@ -540,4 +553,33 @@ const browserFrameHost: FrameHost = {
   },
 };
 
-export const frameScheduler = new FrameScheduler(browserFrameHost);
+// Последний стабильный тир переживает перезапуск: сильная машина стартует
+// сразу с high, слабая — со своего проверенного тира (без 10с джанка на старте).
+const QUALITY_TIER_KEY = "obsession.frameTier";
+
+function readPersistedTier(): QualityTier | undefined {
+  try {
+    const value = localStorage.getItem(QUALITY_TIER_KEY);
+    return value === "high" || value === "balanced" || value === "low" ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+const persistedInitialTier = readPersistedTier();
+export const frameScheduler = new FrameScheduler(
+  browserFrameHost,
+  persistedInitialTier ? { initialQualityTier: persistedInitialTier } : {},
+);
+
+let persistedTier = frameScheduler.getSnapshot().qualityTier;
+frameScheduler.subscribe(() => {
+  const tier = frameScheduler.getSnapshot().qualityTier;
+  if (tier === persistedTier) return;
+  persistedTier = tier;
+  try {
+    localStorage.setItem(QUALITY_TIER_KEY, tier);
+  } catch {
+    // приватный режим/квота — некритично, начнём следующую сессию с high
+  }
+});

@@ -1,5 +1,7 @@
 # Night Train Realism (WebGL2) Design
 
+> **Статус (2026-07-18): реализовано.** Этапы 0–5 выполнены: WebGL2 мир→FBO+мипы→композит, сумеречный мир, вода с перевёрнутой линзой, mistSim-конденсат, интерьер купе светом, финальный грейд, RainTrainFallback перерисован, легаси удалено. Тесты 60/60, build зелёный.
+
 Supersedes the water/world parts of `2026-07-18-rain-warm-lanterns-storm-design.md`
 (its warm-lantern grade and storm factor live on in spirit inside the new
 composite shader and weather coupling). Reference implementations studied:

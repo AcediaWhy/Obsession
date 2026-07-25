@@ -5,7 +5,7 @@ import { useThemeStore, THEMES, type Theme } from "../store/themeStore";
 import { useSecretStore } from "../store/secretStore";
 import { GlassPanel } from "../design/components/GlassPanel";
 import { AuroraCore } from "../design/components/AuroraCore";
-import { RainCore } from "../design/components/RainCore";
+import { RainLanternCore } from "../design/components/RainLanternCore";
 import { OphanimCore } from "../design/components/OphanimCore";
 import { FallenCore } from "../design/components/FallenCore";
 import { CatnapCore } from "../design/components/CatnapCore";
@@ -301,7 +301,7 @@ function ThemeTile({
         ) : id === "midnight" ? (
           <MidnightCore active={selected} onClick={() => {}} size={104} />
         ) : id === "japan" ? (
-          <RainCore active={selected} onClick={() => {}} size={104} />
+          <RainLanternCore active={selected} onClick={() => {}} size={104} variant="preview" />
         ) : (
           <AuroraCore active={selected} onClick={() => {}} size={104} />
         )}

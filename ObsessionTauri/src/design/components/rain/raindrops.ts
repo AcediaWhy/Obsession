@@ -1,6 +1,7 @@
 // Порт raindrops.js из codrops/RainEffect — симуляция капель, пишущая «water map».
-// Максимально дословно (структура, формулы, константы сохранены), добавлены типы
-// и явные lifecycle-методы для внешнего frame pipeline.
+// Максимально дословно (структура, формулы, константы сохранены), добавлены типы,
+// явные lifecycle-методы для внешнего frame pipeline и сбор wipes (следы
+// движущихся капель) для симуляции конденсата.
 import { random, chance, times, createCanvas } from "./random";
 
 const dropSize = 64;
@@ -39,6 +40,9 @@ function makeDrop(o: Partial<Drop>): Drop {
     ...o,
   };
 }
+
+/** Нормализованный (0..1) след движущейся капли — им протирается конденсат. */
+export type RainWipe = { x: number; y: number; radius: number };
 
 export interface RaindropsOptions {
   minR: number;
@@ -88,8 +92,8 @@ export class Raindrops {
   width: number;
   height: number;
   scale: number;
-  dropAlpha: HTMLImageElement;
-  dropColor: HTMLImageElement;
+  dropAlpha: CanvasImageSource;
+  dropColor: CanvasImageSource;
   options: RaindropsOptions;
 
   canvas!: HTMLCanvasElement;
@@ -102,6 +106,8 @@ export class Raindrops {
   dropsGfx: HTMLCanvasElement[] = [];
   clearDropletsGfx!: HTMLCanvasElement;
   textureCleaningIterations = 0;
+  /** Следы движущихся капель за последний step (нормализованные координаты). */
+  wipes: RainWipe[] = [];
 
   private destroyed = false;
 
@@ -109,8 +115,8 @@ export class Raindrops {
     width: number,
     height: number,
     scale: number,
-    dropAlpha: HTMLImageElement,
-    dropColor: HTMLImageElement,
+    dropAlpha: CanvasImageSource,
+    dropColor: CanvasImageSource,
     options: Partial<RaindropsOptions> = {},
   ) {
     this.width = width;
@@ -146,9 +152,9 @@ export class Raindrops {
   }
 
   /** Подгоняет размер water-map под новый размер окна. Ресайзим канвасы
-   *  in-place (this.canvas держит RainRenderer как canvasLiquid — пересоздание
-   *  порвало бы ссылку). Капли живут в нормализованных к scale координатах,
-   *  поэтому переживают ресайз; меняются только границы спавна/буферы. */
+   *  in-place (this.canvas снаружи держит GL-пайплайн — пересоздание порвало
+   *  бы ссылку). Капли живут в нормализованных к scale координатах, поэтому
+   *  переживают ресайз; меняются только границы спавна/буферы. */
   resize(width: number, height: number) {
     if (this.destroyed || (width === this.width && height === this.height)) return;
     this.width = width;
@@ -178,6 +184,7 @@ export class Raindrops {
     release(this.canvas);
     release(this.droplets);
     this.drops = [];
+    this.wipes = [];
   }
 
   drawDroplet(x: number, y: number, r: number) {
@@ -340,6 +347,9 @@ export class Raindrops {
       return va > vb ? 1 : va == vb ? 0 : -1;
     });
 
+    const modelWidth = this.width / this.scale;
+    const modelHeight = this.height / this.scale;
+
     this.drops.forEach((drop, i) => {
       if (!drop.killed) {
         // update gravity (chance of drops "creeping down")
@@ -450,8 +460,15 @@ export class Raindrops {
 
         if (!drop.killed) {
           newDrops.push(drop);
-          if (moved && this.options.dropletsRate > 0)
+          if (moved && this.options.dropletsRate > 0) {
             this.clearDroplets(drop.x, drop.y, drop.r * this.options.dropletsCleaningRadiusMultiplier);
+            // Ползущая капля заодно протирает конденсат (узкой дорожкой).
+            this.wipes.push({
+              x: drop.x / modelWidth,
+              y: drop.y / modelHeight,
+              radius: (drop.r * 0.95) / modelWidth,
+            });
+          }
           this.drawDrop(this.ctx, drop);
         }
       }
@@ -463,11 +480,10 @@ export class Raindrops {
   step(dt: number) {
     if (this.destroyed) return;
     this.clearCanvas();
+    this.wipes.length = 0;
     // timeScale — от реального dt (хелпер уже клампит его maxDt), а не от
-    // «идеального» кадра: прежний потолок 1.1 на каждом пропущенном кадре
-    // (deltaT≈33 мс → timeScale 2.0 → кламп 1.1) вёл физику в полскорости —
-    // дождь буквально замедлялся. Потолок 2.0 оставлен как страховка формул
-    // (Math.pow(0.x, timeScale), коллизии) от взрыва после фриза.
+    // «идеального» кадра: потолок 2.0 — страховка формул (Math.pow(0.x, ts),
+    // коллизии) от взрыва после фриза.
     let timeScale = dt * 60;
     if (timeScale > 2) timeScale = 2;
     timeScale *= this.options.globalTimeScale;

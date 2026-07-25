@@ -11,6 +11,7 @@ import {
   type RenderLoop,
 } from "../render";
 import { RainCoreModel, type RainCoreSnapshot } from "./rain/coreModel";
+import { createSpriteCache } from "./glowSprite";
 
 type Props = {
   active: boolean;
@@ -21,7 +22,75 @@ type Props = {
   variant?: "control" | "preview";
 };
 
-type GlassDrop = { x: number; y: number; radius: number; speed: number; alpha: number };
+// Ядро «Rain» — круги по тихой воде. НЕ предмет и НЕ коллаж: единственный образ —
+// концентрические кольца, расходящиеся от точек, куда падают капли; медитативно,
+// мягкая геометрия, дышит. Палитра строго холодная, из темы (data-theme="japan"):
+// сталь-синий / серебро-синий, тёмное сине-серое стекло — никакого тёплого
+// янтаря. При OFF вода спит (кольца тусклые, редкие), при ON оживает (ярче), а на
+// включении в центр падает капля и расходится крупное кольцо (transitionDrop).
+// Всё запечено в кэш-спрайты: в кадре только globalAlpha + drawImage, ноль
+// градиентов и ноль Math.random. coreModel не трогаем — снапшот {light, water}
+// лишь ПЕРЕинтерпретируется в яркость воды.
+
+// Холодная палитра темы Rain (globals.css [data-theme="japan"]).
+const CREST = "210, 228, 244"; // серебристо-синий гребень волны
+const DEEP = "150, 182, 212"; // accent-cyan — свечение глубины
+
+const clamp01 = (x: number) => Math.max(0, Math.min(1, x));
+const smoothstep = (a: number, b: number, x: number) => {
+  const t = clamp01((x - a) / (b - a));
+  return t * t * (3 - 2 * t);
+};
+
+// ─── Модульные кэш-спрайты (шарятся между всеми инстансами, вкл. 6 превью) ─────
+
+// Тёмная сине-серая гладь воды: центр чуть светлее (глубина светится), к краю
+// уходит в почти чёрный сланец. Мягко, без жёстких границ-«объекта».
+const water = createSpriteCache(1, 256, (sctx, px) => {
+  const R = px / 2;
+  const g = sctx.createRadialGradient(R, R * 0.94, 0, R, R, R);
+  g.addColorStop(0, "rgba(24, 34, 48, 0.92)");
+  g.addColorStop(0.55, "rgba(11, 18, 28, 0.96)");
+  g.addColorStop(1, "rgba(4, 8, 14, 1)");
+  sctx.fillStyle = g;
+  sctx.fillRect(0, 0, px, px);
+});
+
+// Волна-кольцо: мягкий тонкий светящийся гребень (прозрачно внутри → серебристо-
+// синий пик у ~0.8R → прозрачно снаружи). Масштабируется по радиусу ряби —
+// растёт и физично размывается. Цвет холодный, запечён; яркость даём globalAlpha.
+const wave = createSpriteCache(1, 256, (sctx, px) => {
+  const R = px / 2;
+  const g = sctx.createRadialGradient(R, R, 0, R, R, R);
+  g.addColorStop(0.0, `rgba(${CREST}, 0)`);
+  g.addColorStop(0.62, `rgba(${CREST}, 0)`);
+  g.addColorStop(0.8, `rgba(${CREST}, 0.9)`);
+  g.addColorStop(0.9, `rgba(${DEEP}, 0.32)`);
+  g.addColorStop(1.0, `rgba(${DEEP}, 0)`);
+  sctx.fillStyle = g;
+  sctx.fillRect(0, 0, px, px);
+});
+
+// Мягкое пятно-свечение: дышащее ядро глубины + короткая вспышка на удар капли.
+const spark = createSpriteCache(1, 128, (sctx, px) => {
+  const R = px / 2;
+  const g = sctx.createRadialGradient(R, R, 0, R, R, R);
+  g.addColorStop(0, `rgba(${CREST}, 0.85)`);
+  g.addColorStop(0.4, `rgba(${DEEP}, 0.3)`);
+  g.addColorStop(1, `rgba(${DEEP}, 0)`);
+  sctx.fillStyle = g;
+  sctx.fillRect(0, 0, px, px);
+});
+
+// Источники капель — детерминированная раскладка (доля размера от центра). Разные
+// НЕсоизмеримые периоды → кольца никогда не синхронны, вода «живая». Ноль RNG.
+const SOURCES = [
+  { dx: 0.0, dy: -0.02, period: 2.6, phase: 0.0, maxR: 0.46, strength: 1.0 },
+  { dx: -0.17, dy: 0.15, period: 3.3, phase: 1.3, maxR: 0.26, strength: 0.6 },
+  { dx: 0.18, dy: -0.14, period: 3.9, phase: 2.7, maxR: 0.24, strength: 0.55 },
+] as const;
+
+const RIPPLE_LIFE = 3.2; // сколько секунд живёт одно кольцо
 
 export function RainLanternCore({
   active,
@@ -43,7 +112,7 @@ export function RainLanternCore({
         style={{
           inset: size * 0.01,
           background: active
-            ? "radial-gradient(circle, rgba(222,132,73,0.17), rgba(81,111,132,0.08) 48%, transparent 72%)"
+            ? "radial-gradient(circle, rgba(150,182,212,0.18), rgba(122,152,190,0.08) 48%, transparent 72%)"
             : "radial-gradient(circle, rgba(89,111,126,0.12), transparent 70%)",
           filter: `blur(${Math.max(8, size * 0.05)}px)`,
         }}
@@ -62,7 +131,7 @@ export function RainLanternCore({
           inset: size * 0.055,
           border: "1px solid rgba(222,235,242,0.12)",
           boxShadow: active
-            ? "inset 0 0 30px rgba(238,162,104,0.10), 0 0 18px rgba(211,130,75,0.13)"
+            ? "inset 0 0 30px rgba(150,182,212,0.10), 0 0 18px rgba(122,152,190,0.14)"
             : "inset 0 0 30px rgba(148,176,193,0.08), 0 0 12px rgba(91,118,137,0.10)",
         }}
       />
@@ -70,9 +139,9 @@ export function RainLanternCore({
         className="pointer-events-none absolute rounded-full px-2 py-1 text-2xs font-bold tracking-[0.32em]"
         style={{
           bottom: size * 0.21,
-          color: active ? "#F5D0B5" : "#C1D0DA",
+          color: active ? "#DCEAF6" : "#C1D0DA",
           background: "rgba(3,7,11,0.24)",
-          textShadow: active ? "0 0 12px rgba(225,139,82,0.58)" : "0 0 10px rgba(130,158,177,0.48)",
+          textShadow: active ? "0 0 12px rgba(150,182,212,0.55)" : "0 0 10px rgba(130,158,177,0.48)",
         }}
       >
         {busy ? "···" : active ? "ON" : "OFF"}
@@ -133,23 +202,10 @@ function LanternCanvas({
     const model = new RainCoreModel(stateRef.current.active);
     const role = variant === "control" ? "hero" : "preview";
     const baseDpr = role === "hero" ? Math.min(window.devicePixelRatio || 1, 2) : 1;
-    let drops: GlassDrop[] = [];
-    let spawnAccumulator = 0;
     let backingDpr = 0;
-    let quality: QualityTier = "high";
+    let mask: CanvasGradient | null = null;
 
-    const resetDrops = () => {
-      const count = variant === "preview" ? 6 : 15;
-      drops = Array.from({ length: count }, () => ({
-        x: 0.12 + Math.random() * 0.76,
-        y: 0.08 + Math.random() * 0.72,
-        radius: 0.008 + Math.random() * 0.018,
-        speed: 0.012 + Math.random() * 0.028,
-        alpha: 0.35 + Math.random() * 0.42,
-      }));
-    };
     const resizeBacking = (nextQuality: QualityTier) => {
-      quality = nextQuality;
       const scale = frameQualityScale(nextQuality);
       const nextDpr = role === "hero" ? Math.max(1, baseDpr * scale) : Math.max(0.65, scale);
       if (Math.abs(nextDpr - backingDpr) < 0.001) return;
@@ -157,10 +213,14 @@ function LanternCanvas({
       canvas.width = Math.max(1, Math.round(size * nextDpr));
       canvas.height = Math.max(1, Math.round(size * nextDpr));
       ctx.setTransform(nextDpr, 0, 0, nextDpr, 0, 0);
-      resetDrops();
+      mask = ctx.createRadialGradient(size / 2, size / 2, size * 0.2, size / 2, size / 2, size * 0.47);
+      mask.addColorStop(0, "rgba(0,0,0,1)");
+      mask.addColorStop(0.74, "rgba(0,0,0,1)");
+      mask.addColorStop(1, "rgba(0,0,0,0)");
     };
     resizeBacking("high");
 
+    let t = 0;
     const draw = (dt: number) => {
       const state = stateRef.current;
       const staticFrame = state.paused || state.reducedMotion;
@@ -169,30 +229,8 @@ function LanternCanvas({
         busy: state.busy,
         reducedMotion: staticFrame,
       });
-      if (!staticFrame) {
-        spawnAccumulator += dt * snapshot.water * (variant === "preview" ? 0.9 : 2.2);
-        if (spawnAccumulator >= 1) {
-          spawnAccumulator -= 1;
-          const limit = variant === "preview" ? 8 : quality === "low" ? 12 : 20;
-          if (drops.length < limit) {
-            drops.push({
-              x: 0.12 + Math.random() * 0.76,
-              y: 0.05 + Math.random() * 0.22,
-              radius: 0.009 + Math.random() * 0.018,
-              speed: 0.018 + Math.random() * 0.035,
-              alpha: 0.4 + Math.random() * 0.35,
-            });
-          }
-        }
-        for (const drop of drops) {
-          drop.y += drop.speed * (0.35 + snapshot.water * 1.5) * dt * 60;
-          if (drop.y > 0.94) {
-            drop.y = 0.05;
-            drop.x = 0.12 + Math.random() * 0.76;
-          }
-        }
-      }
-      paintLantern(ctx, size, snapshot, drops, variant);
+      if (!staticFrame) t += dt;
+      paintRipples(ctx, size, snapshot, t, mask, staticFrame, variant);
     };
 
     const loop = createRenderLoop(draw, {
@@ -206,7 +244,6 @@ function LanternCanvas({
     return () => {
       loop.dispose();
       loopRef.current = null;
-      drops = [];
       canvas.width = 0;
       canvas.height = 0;
     };
@@ -220,77 +257,105 @@ function LanternCanvas({
   return <canvas ref={canvasRef} className="pointer-events-none absolute" style={{ width: size, height: size }} />;
 }
 
-function paintLantern(
+function paintRipples(
   ctx: CanvasRenderingContext2D,
   size: number,
   snapshot: RainCoreSnapshot,
-  drops: readonly GlassDrop[],
+  t: number,
+  mask: CanvasGradient | null,
+  poster: boolean,
   variant: "control" | "preview",
 ) {
+  // Живость воды: при OFF (light≈0.12) кольца еле тлеют, при ON (light→1) яркие.
+  const energy = 0.14 + clamp01((snapshot.light - 0.12) / 0.88) * 0.86;
+  const cx = size / 2;
+  const cy = size / 2;
+
   ctx.clearRect(0, 0, size, size);
-  ctx.save();
-  ctx.beginPath();
-  ctx.arc(size / 2, size / 2, size * 0.445, 0, Math.PI * 2);
-  ctx.clip();
+  ctx.globalCompositeOperation = "source-over";
+  ctx.globalAlpha = 1;
+  ctx.drawImage(water(0), 0, 0, size, size);
 
-  const base = ctx.createRadialGradient(size * 0.54, size * 0.43, 0, size * 0.5, size * 0.5, size * 0.47);
-  base.addColorStop(0, `rgba(75,92,101,${0.14 + snapshot.light * 0.08})`);
-  base.addColorStop(0.48, "rgba(12,23,31,0.96)");
-  base.addColorStop(1, "rgba(2,6,10,1)");
-  ctx.fillStyle = base;
-  ctx.fillRect(0, 0, size, size);
+  ctx.globalCompositeOperation = "lighter";
 
-  const lamp = ctx.createRadialGradient(size * 0.56, size * 0.41, 0, size * 0.56, size * 0.41, size * 0.27);
-  lamp.addColorStop(0, `rgba(255,190,128,${0.36 + snapshot.light * 0.58})`);
-  lamp.addColorStop(0.12, `rgba(229,137,78,${snapshot.light * 0.48})`);
-  lamp.addColorStop(0.42, `rgba(160,76,40,${snapshot.light * 0.16})`);
-  lamp.addColorStop(1, "rgba(28,44,53,0)");
-  ctx.fillStyle = lamp;
-  ctx.fillRect(0, 0, size, size);
+  // Дышащее ядро глубины — центр воды мягко пульсирует светом.
+  const breathe = poster ? 0.7 : 0.65 + 0.35 * Math.sin(t * 1.2);
+  const cr = size * 0.16;
+  ctx.globalAlpha = (0.1 + energy * 0.34) * breathe;
+  ctx.drawImage(spark(0), cx - cr, cy - cr, cr * 2, cr * 2);
 
-  const reflection = ctx.createLinearGradient(size * 0.56, size * 0.46, size * 0.5, size * 0.82);
-  reflection.addColorStop(0, `rgba(221,137,82,${snapshot.light * 0.18})`);
-  reflection.addColorStop(1, "rgba(46,64,74,0)");
-  ctx.fillStyle = reflection;
-  ctx.fillRect(size * 0.43, size * 0.45, size * 0.26, size * 0.4);
-
-  for (const drop of drops) {
-    const x = drop.x * size;
-    const y = drop.y * size;
-    const radius = drop.radius * size;
-    const gradient = ctx.createRadialGradient(x - radius * 0.28, y - radius * 0.35, radius * 0.08, x, y, radius);
-    gradient.addColorStop(0, `rgba(238,248,252,${drop.alpha * 0.82})`);
-    gradient.addColorStop(0.32, `rgba(134,171,192,${drop.alpha * 0.13})`);
-    gradient.addColorStop(0.76, `rgba(27,50,64,${drop.alpha * 0.08})`);
-    gradient.addColorStop(1, `rgba(205,229,240,${drop.alpha * (0.24 + snapshot.water * 0.44)})`);
-    ctx.fillStyle = gradient;
-    ctx.beginPath();
-    ctx.ellipse(x, y, radius, radius * 1.35, 0.08, 0, Math.PI * 2);
-    ctx.fill();
+  if (poster) {
+    // Замерзшая рябь: детерминированный набор колец из центра.
+    for (let i = 0; i < 3; i += 1) {
+      const r = size * (0.16 + i * 0.11);
+      ctx.globalAlpha = energy * (0.5 - i * 0.13);
+      ctx.drawImage(wave(0), cx - r, cy - r, r * 2, r * 2);
+    }
+  } else {
+    for (const s of SOURCES) {
+      drawSource(ctx, size, cx + s.dx * size, cy + s.dy * size, s, t, energy);
+    }
+    if (variant === "control" && snapshot.transitionDrop != null) {
+      drawActivation(ctx, size, cx, cy, snapshot.transitionDrop, energy);
+    }
   }
 
-  if (snapshot.transitionDrop != null && variant === "control") {
-    const eased = snapshot.transitionDrop * snapshot.transitionDrop;
-    const x = size * 0.73;
-    const y = size * (0.12 + eased * 0.82);
-    const radius = size * 0.046;
-    ctx.strokeStyle = `rgba(177,207,222,${0.28 * (1 - snapshot.transitionDrop)})`;
-    ctx.lineWidth = Math.max(1, radius * 0.28);
-    ctx.beginPath();
-    ctx.moveTo(x, Math.max(size * 0.1, y - size * 0.23));
-    ctx.lineTo(x, y);
-    ctx.stroke();
-    ctx.fillStyle = "rgba(205,229,239,0.55)";
-    ctx.beginPath();
-    ctx.ellipse(x, y, radius, radius * 1.55, 0.04, 0, Math.PI * 2);
-    ctx.fill();
+  if (mask) {
+    ctx.globalCompositeOperation = "destination-in";
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = mask;
+    ctx.fillRect(0, 0, size, size);
   }
+  ctx.globalCompositeOperation = "source-over";
+  ctx.globalAlpha = 1;
+}
 
-  const edge = ctx.createRadialGradient(size / 2, size / 2, size * 0.31, size / 2, size / 2, size * 0.46);
-  edge.addColorStop(0, "rgba(0,0,0,0)");
-  edge.addColorStop(0.78, "rgba(2,7,11,0.18)");
-  edge.addColorStop(1, "rgba(0,2,5,0.82)");
-  ctx.fillStyle = edge;
-  ctx.fillRect(0, 0, size, size);
-  ctx.restore();
+function drawSource(
+  ctx: CanvasRenderingContext2D,
+  size: number,
+  cx: number,
+  cy: number,
+  src: (typeof SOURCES)[number],
+  t: number,
+  energy: number,
+) {
+  const gen = Math.floor((t + src.phase) / src.period);
+  const back = Math.ceil(RIPPLE_LIFE / src.period);
+  for (let k = gen; k >= gen - back; k -= 1) {
+    const age = t + src.phase - k * src.period;
+    if (age < 0 || age > RIPPLE_LIFE) continue;
+    const p = age / RIPPLE_LIFE;
+    const r = src.maxR * size * (1 - (1 - p) * (1 - p)); // ease-out: волна замедляется
+    const a = smoothstep(0, 0.07, p) * Math.pow(1 - p, 1.5) * energy * src.strength;
+    if (a <= 0.003) continue;
+    ctx.globalAlpha = a;
+    ctx.drawImage(wave(0), cx - r, cy - r, r * 2, r * 2);
+    // Удар капли: короткая вспышка в точке рождения кольца.
+    if (age < 0.22) {
+      const fr = size * 0.05;
+      ctx.globalAlpha = (1 - age / 0.22) * energy * src.strength * 0.7;
+      ctx.drawImage(spark(0), cx - fr, cy - fr, fr * 2, fr * 2);
+    }
+  }
+}
+
+function drawActivation(
+  ctx: CanvasRenderingContext2D,
+  size: number,
+  cx: number,
+  cy: number,
+  drop: NonNullable<RainCoreSnapshot["transitionDrop"]>,
+  energy: number,
+) {
+  // Включение обхода: капля упала в центр — крупное яркое кольцо расходится
+  // (fall 0→1), затем тает (alpha). Один акцент, ровно концепция «круги по воде».
+  const p = drop.fall;
+  const r = size * 0.46 * (1 - (1 - p) * (1 - p));
+  ctx.globalAlpha = drop.alpha * (0.5 + energy * 0.5);
+  ctx.drawImage(wave(0), cx - r, cy - r, r * 2, r * 2);
+  if (p < 0.32) {
+    const fr = size * 0.09;
+    ctx.globalAlpha = (1 - p / 0.32) * drop.alpha;
+    ctx.drawImage(spark(0), cx - fr, cy - fr, fr * 2, fr * 2);
+  }
 }

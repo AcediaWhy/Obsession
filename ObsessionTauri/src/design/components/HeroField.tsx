@@ -1,22 +1,24 @@
 import { Component, lazy, Suspense, type ReactNode } from "react";
 import type { Theme } from "../../store/themeStore";
-import { useRenderActive, useRenderHidden } from "../render";
+import { useRenderHidden } from "../render";
 import { AuroraField } from "./AuroraField";
 import { OphanimField } from "./OphanimField";
 import { FallenField } from "./FallenField";
-import { RainField2D } from "./RainField2D";
+import { RainFallback } from "./RainFallback";
 import { CatnapField } from "./CatnapField";
 import { MidnightField } from "./MidnightField";
 
-// 3D-сцена «Rain» (id japan) грузится лениво (three.js только при выборе темы)
-// и только если доступен WebGL; при любой ошибке рендера — откат на 2D-дождь
-// (RainField2D), тематически верный запасной вариант.
-const RainScene3D = lazy(() => import("./RainScene3D"));
+// Гибридная WebGL-сцена Rain грузится только после выбора темы. Suspense и
+// любая sync/async ошибка показывают композиционно совпадающий 2D-fallback.
+const RainHybridScene = lazy(() => import("./RainHybridScene"));
 
 function webglSupported(): boolean {
   try {
     const c = document.createElement("canvas");
-    return !!(c.getContext("webgl2") || c.getContext("webgl"));
+    const gl = c.getContext("webgl2") || c.getContext("webgl");
+    if (!gl) return false;
+    gl.getExtension("WEBGL_lose_context")?.loseContext();
+    return true;
   } catch {
     return false;
   }
@@ -49,7 +51,6 @@ export function HeroField({
   frozen?: boolean;
 }) {
   // Пока окно скрыто (трей/сворачивание) — размонтируем тяжёлую сцену целиком.
-  const renderOn = useRenderActive();
   const hidden = useRenderHidden();
   if (hidden) {
     return (
@@ -70,13 +71,13 @@ export function HeroField({
   } else if (theme === "midnight") {
     scene = <MidnightField paused={frozen} />;
   } else if (theme === "japan") {
-    if (!WEBGL || !renderOn) {
-      scene = <RainField2D paused={frozen} />;
+    if (!WEBGL) {
+      scene = <RainFallback paused={frozen} />;
     } else {
       scene = (
-        <Fallback3D fallback={<RainField2D paused={frozen} />}>
-          <Suspense fallback={<RainField2D paused={frozen} />}>
-            <RainScene3D paused={frozen} />
+        <Fallback3D fallback={<RainFallback paused={frozen} />}>
+          <Suspense fallback={<RainFallback paused={frozen} />}>
+            <RainHybridScene paused={frozen} />
           </Suspense>
         </Fallback3D>
       );

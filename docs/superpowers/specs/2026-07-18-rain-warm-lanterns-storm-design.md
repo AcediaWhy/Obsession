@@ -1,5 +1,7 @@
 # Rain Theme: Warm Lanterns and Dramatic Storm Design
 
+> **SUPERSEDED** (2026-07-18): тема перестроена в «окно ночного поезда» — см. 2026-07-18-night-train-realism-webgl2-design.md. Ночная сакура/фонари удалены из кода.
+
 ## Problem
 
 The Rain theme (`japan`) renders the night-sakura photo with an even cold
@@ -30,11 +32,13 @@ unchanged except where the storm factor feeds existing `Raindrops` options.
 sample (`bg`) and the refracted drop content (`tex` before blending), so drops
 act as lenses of the same graded scene:
 
-- Luminance of the sample keys a warm tint: highlights shift toward amber
-  (≈ `vec3(1.0, 0.72, 0.42)`), shadows keep a cold blue bias.
-- The grade is a lerp between the original color and the warm-shifted color
-  driven by `smoothstep` over luminance, so midtones stay natural and only
-  genuinely bright areas (lanterns) ignite.
+- Luminance of the sample keys a warm tint: highlights converge toward a
+  fixed amber hue (`vec3(1.0, 0.55, 0.24) * luma * 1.3`) — a multiplicative
+  tint was rejected because it keeps the blown-out cyan channel ratios;
+  shadows get a light cold bias (`color * vec3(0.92, 1.0, 1.12)`).
+- The grade mixes cold → amber via `smoothstep(0.30, 0.70, luma)`: the night
+  sky and sakura (luma ≲ 0.38) stay cold, only genuinely bright areas
+  (lantern glass, luma ≳ 0.7) ignite.
 - A single scalar uniform `u_warmth` (0..1.2) scales the effect. The grade
   function is pure GLSL ALU — no extra textures, no CPU pixel passes.
 

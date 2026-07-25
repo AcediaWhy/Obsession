@@ -1,4 +1,4 @@
-// Порт random.js.
+// Порт random.js из codrops/RainEffect.
 export function random(
   from: number | null = null,
   to: number | null = null,
