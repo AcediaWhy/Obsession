@@ -101,6 +101,7 @@ impl NetCache {
     }
 
     /// Рабочий `.conf` для (сеть, категория), если есть в кэше.
+    #[allow(dead_code)] // consumed by the quarantined compatibility Brain
     pub fn get(&self, mac: &str, category: &str) -> Option<String> {
         self.networks
             .get(mac)

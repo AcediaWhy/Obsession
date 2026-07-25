@@ -267,6 +267,10 @@ pub enum ExecutorOutcome {
     RolledBack {
         previous: ProcessOwner,
     },
+    RolledBackForRetry {
+        previous: ProcessOwner,
+        refreshed_fence: IntentFence,
+    },
     RollbackFailed {
         previous_fingerprint: ConfigFingerprint,
     },

@@ -807,6 +807,14 @@ pub fn get_settings(app: AppHandle) -> Settings {
     s
 }
 
+fn patch_requires_legacy_reliability_reconcile(patch: &SettingsPatch) -> bool {
+    // Mode/pause/freeze changes are consumed by the recovery overlay. Only the
+    // master capability switch owns the Eyes/Manager lifecycle. In particular,
+    // DPI category persistence before Zapret2 start must not enqueue a Legacy
+    // observer teardown.
+    patch.legacy_reliability_enabled.is_some()
+}
+
 fn mutate_settings<F>(app: &AppHandle, mutate: F) -> Result<Settings, String>
 where
     F: FnOnce(&mut Settings),
@@ -819,7 +827,9 @@ where
         .map_err(|_| "settings lock poisoned".to_string())?;
     let mut next = guard.clone();
     mutate(&mut next);
-    let legacy_automation_changed = guard.legacy_reliability_mode != next.legacy_reliability_mode
+    let legacy_automation_changed = guard.legacy_reliability_enabled
+        != next.legacy_reliability_enabled
+        || guard.legacy_reliability_mode != next.legacy_reliability_mode
         || guard.legacy_automatic_paused != next.legacy_automatic_paused
         || guard.legacy_reliability_frozen_categories != next.legacy_reliability_frozen_categories;
     next.save(&base).map_err(|e| e.to_string())?;
@@ -833,8 +843,16 @@ where
 
 #[tauri::command]
 pub fn update_settings(app: AppHandle, patch: SettingsPatch) -> Result<Settings, String> {
+    let reconcile_legacy_reliability = patch_requires_legacy_reliability_reconcile(&patch);
     let settings = mutate_settings(&app, |settings| settings.apply_patch(patch))?;
     crate::legacy_reliability::status::refresh_recovery_overlay(&app);
+    #[cfg(windows)]
+    if reconcile_legacy_reliability {
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            crate::dpi::reconcile_legacy_reliability(&app).await;
+        });
+    }
     Ok(settings)
 }
 
@@ -1262,5 +1280,19 @@ mod bootstrap_tests {
         assert_eq!(value["legacyReliability"]["value"]["phase"], "inactive");
         assert_eq!(value["hosts"]["revision"], 8);
         assert_eq!(value["hosts"]["value"]["provider"], "malw");
+    }
+
+    #[test]
+    fn only_the_legacy_master_switch_reconciles_observer_lifecycle() {
+        let mut patch = SettingsPatch {
+            selected_categories: Some(vec!["discord".into()]),
+            zapret2_selected_categories: Some(vec!["youtube_twitch".into()]),
+            legacy_reliability_mode: Some("automatic".into()),
+            ..SettingsPatch::default()
+        };
+        assert!(!patch_requires_legacy_reliability_reconcile(&patch));
+
+        patch.legacy_reliability_enabled = Some(false);
+        assert!(patch_requires_legacy_reliability_reconcile(&patch));
     }
 }

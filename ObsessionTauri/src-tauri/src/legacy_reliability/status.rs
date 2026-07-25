@@ -514,6 +514,9 @@ fn unix_now_secs() -> u64 {
 }
 
 fn recovery_mode_from_settings(settings: &crate::settings::Settings) -> RecoveryMode {
+    if !settings.legacy_reliability_enabled {
+        return RecoveryMode::ObserveOnly;
+    }
     match settings.legacy_reliability_mode.as_str() {
         "assisted" => RecoveryMode::Assisted,
         "automatic" => RecoveryMode::Automatic,
@@ -526,7 +529,12 @@ fn apply_recovery_settings(
     settings: &crate::settings::Settings,
 ) {
     recovery.set_mode(recovery_mode_from_settings(settings));
-    recovery.set_automatic_paused(settings.legacy_automatic_paused);
+    recovery.set_automatic_paused(
+        !settings.legacy_reliability_enabled || settings.legacy_automatic_paused,
+    );
+    if !settings.legacy_reliability_enabled {
+        recovery.cancel_pending();
+    }
     recovery.set_manual_frozen_categories(
         settings
             .legacy_reliability_frozen_categories
@@ -1210,5 +1218,25 @@ mod tests {
         );
         assert_eq!(section.value.mode, LegacyReliabilityMode::Assisted);
         assert_eq!(revision.current(), 1);
+    }
+
+    #[test]
+    fn disabled_capability_forces_recovery_to_observe_only_and_paused() {
+        let mut recovery =
+            super::super::recovery_runtime::LegacyRecoveryRuntime::new(RecoveryMode::Automatic);
+        recovery.set_automatic_paused(false);
+        let settings = crate::settings::Settings {
+            legacy_reliability_enabled: false,
+            legacy_reliability_mode: "automatic".into(),
+            legacy_automatic_paused: false,
+            ..Default::default()
+        };
+
+        apply_recovery_settings(&mut recovery, &settings);
+
+        let status = recovery.status();
+        assert_eq!(status.mode, RecoveryMode::ObserveOnly);
+        assert!(status.automatic_paused);
+        assert!(status.proposal.is_none());
     }
 }

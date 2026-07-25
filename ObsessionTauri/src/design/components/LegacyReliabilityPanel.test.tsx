@@ -78,6 +78,154 @@ const PROPOSAL = {
 };
 
 describe("LegacyReliabilityPanel", () => {
+  it("keeps the enabled panel compact until the user opens settings", () => {
+    const compactMarkup = renderToStaticMarkup(
+      <LegacyReliabilityPanelView
+        status={status({
+          mode: "automatic",
+          lanes: [
+            lane({
+              classification: "working",
+              confidence: "high",
+              workingConfirmedRecently: true,
+            }),
+          ],
+        })}
+        configuredEnabled
+        configuredMode="automatic"
+        detailsExpanded={false}
+        onEnabledChange={() => {}}
+        onDetailsExpandedChange={() => {}}
+      />,
+    );
+
+    expect(compactMarkup).toContain("Контроль доступа");
+    expect(compactMarkup).toContain("Автоматический режим");
+    expect(compactMarkup).toContain("Всё работает");
+    expect(compactMarkup).toContain('role="switch"');
+    expect(compactMarkup).toContain('aria-checked="true"');
+    expect(compactMarkup).toContain('aria-expanded="false"');
+    expect(compactMarkup).not.toContain('role="radiogroup"');
+    expect(compactMarkup).not.toContain("Оценка категорий");
+    expect(compactMarkup).not.toContain("Предполагаемое действие");
+
+    const expandedMarkup = renderToStaticMarkup(
+      <LegacyReliabilityPanelView
+        status={status({
+          mode: "automatic",
+          lanes: [
+            lane({
+              classification: "working",
+              confidence: "high",
+              workingConfirmedRecently: true,
+            }),
+          ],
+        })}
+        configuredEnabled
+        configuredMode="automatic"
+        detailsExpanded
+        onEnabledChange={() => {}}
+        onDetailsExpandedChange={() => {}}
+      />,
+    );
+
+    expect(expandedMarkup).toContain('aria-expanded="true"');
+    expect(expandedMarkup).toContain('role="radiogroup"');
+    expect(expandedMarkup).toContain("YouTube / Twitch");
+    expect(expandedMarkup).not.toContain("Оценка категорий");
+  });
+
+  it("collapses a disabled capability to one quiet row", () => {
+    const markup = renderToStaticMarkup(
+      <LegacyReliabilityPanelView
+        status={status({
+          mode: "automatic",
+          lanes: [lane({ classification: "working", confidence: "high" })],
+        })}
+        configuredEnabled={false}
+        configuredMode="automatic"
+        detailsExpanded
+        technicalDetailsExpanded
+        onEnabledChange={() => {}}
+        onDetailsExpandedChange={() => {}}
+        onTechnicalDetailsExpandedChange={() => {}}
+      />,
+    );
+
+    expect(markup).toContain("Контроль доступа выключен");
+    expect(markup).toContain("Конфигурации остаются без изменений");
+    expect(markup).toContain('role="switch"');
+    expect(markup).toContain('aria-checked="false"');
+    expect(markup).not.toContain('role="radiogroup"');
+    expect(markup).not.toContain("YouTube / Twitch");
+    expect(markup).not.toContain("Предполагаемое действие");
+    expect(markup).not.toContain("Последний результат");
+  });
+
+  it("explains safe shutdown without reopening the full panel", () => {
+    const markup = renderToStaticMarkup(
+      <LegacyReliabilityPanelView
+        status={status({
+          mode: "automatic",
+          activeAttempt: {
+            ...PROPOSAL,
+            origin: { kind: "automatic", controlGeneration: 9 },
+            phase: "confirming",
+            phaseStartedAtMonotonicMs: 71_000,
+          },
+        })}
+        configuredEnabled={false}
+        configuredMode="automatic"
+        detailsExpanded
+        onEnabledChange={() => {}}
+        onDetailsExpandedChange={() => {}}
+      />,
+    );
+
+    expect(markup).toContain("Контроль доступа выключается");
+    expect(markup).toContain(
+      "Текущая замена безопасно завершится, затем контроль отключится",
+    );
+    expect(markup).not.toContain("Шаг 4 из 4");
+    expect(markup).not.toContain('role="radiogroup"');
+  });
+
+  it("keeps historical diagnostics behind a second disclosure", () => {
+    const completion = {
+      ...PROPOSAL,
+      origin: { kind: "automatic" as const, controlGeneration: 9 },
+      phase: "applied" as const,
+      disposition: "candidate_applied" as const,
+      finishedAtMonotonicMs: 74_000,
+    };
+    const compactDetails = renderToStaticMarkup(
+      <LegacyReliabilityPanelView
+        status={status({ mode: "automatic", lastCompletion: completion })}
+        configuredEnabled
+        configuredMode="automatic"
+        detailsExpanded
+        technicalDetailsExpanded={false}
+        onTechnicalDetailsExpandedChange={() => {}}
+      />,
+    );
+    expect(compactDetails).toContain("Технические сведения");
+    expect(compactDetails).not.toContain("Последний результат");
+    expect(compactDetails).not.toContain("Замена завершена");
+
+    const technicalDetails = renderToStaticMarkup(
+      <LegacyReliabilityPanelView
+        status={status({ mode: "automatic", lastCompletion: completion })}
+        configuredEnabled
+        configuredMode="automatic"
+        detailsExpanded
+        technicalDetailsExpanded
+        onTechnicalDetailsExpandedChange={() => {}}
+      />,
+    );
+    expect(technicalDetails).toContain("Последний результат");
+    expect(technicalDetails).toContain("Замена завершена");
+  });
+
   it.each<
     [LegacyReliabilityPhase, string, "muted" | "ok" | "warn" | "danger"]
   >([
@@ -241,9 +389,9 @@ describe("LegacyReliabilityPanel", () => {
       />,
     );
 
-    expect(markup).toContain("Контроль надёжности");
+    expect(markup).toContain("Контроль доступа");
     expect(markup).toContain("Наблюдение");
-    expect(markup).toContain("Оценка категорий");
+    expect(markup).not.toContain("Оценка категорий");
     expect(markup).toContain("YouTube / Twitch");
     expect(markup).toContain("youtube_twitch_1.conf");
     expect(markup).toContain("Вероятна блокировка");
@@ -255,7 +403,7 @@ describe("LegacyReliabilityPanel", () => {
     );
     expect(markup).not.toContain("Авто-восстановление");
     expect(markup).not.toContain("Подтвердить замену");
-    expect(markup).not.toContain('role="switch"');
+    expect(markup).toContain('role="switch"');
   });
 
   it("marks a freeze intent as unexecuted and explains an ordinary wait", () => {
@@ -323,7 +471,7 @@ describe("LegacyReliabilityPanel", () => {
     );
 
     expect(markup).toContain("Ожидание запуска");
-    expect(markup).toContain("Сбои фиксируются, конфигурации не меняются.");
+    expect(markup).toContain("Запустится вместе с обходом");
     expect(markup).not.toContain("Оценка категорий");
     expect(markup).not.toContain("Предполагаемое действие");
     expect(markup).not.toContain("Подтвердить замену");
@@ -344,9 +492,7 @@ describe("LegacyReliabilityPanel", () => {
     expect(observeMarkup).toMatch(
       /role="radio" aria-checked="true"[^>]*>Наблюдение/,
     );
-    expect(observeMarkup).toContain(
-      "Сбои фиксируются, конфигурации не меняются.",
-    );
+    expect(observeMarkup).toContain("Только наблюдение");
 
     const assistedMarkup = renderToStaticMarkup(
       <LegacyReliabilityPanelView
@@ -358,9 +504,7 @@ describe("LegacyReliabilityPanel", () => {
     expect(assistedMarkup).toMatch(
       /role="radio" aria-checked="true"[^>]*>С подтверждением/,
     );
-    expect(assistedMarkup).toContain(
-      "Замена выполняется только после вашего подтверждения.",
-    );
+    expect(assistedMarkup).toContain("С подтверждением");
   });
 
   it("requires an explicit second step before Automatic is enabled", () => {
@@ -405,15 +549,8 @@ describe("LegacyReliabilityPanel", () => {
       />,
     );
 
-    expect(markup).toContain("Автозамена включена");
-    expect(markup).toContain("Меняется только проблемная категория");
-    expect(markup).toContain(">Остановить</button>");
-    expect(markup).toContain(
-      "Защитная пауза перед следующей автозаменой: около 29 с.",
-    );
-    expect(markup).toContain(
-      "Автозамена выполняется только после защитной проверки сети",
-    );
+    expect(markup).toContain("Автозамена");
+    expect(markup).toContain("Следующая попытка: около 29 с");
     expect(markup).toContain(
       "Перед автоматической заменой защитные проверки будут повторены.",
     );
@@ -422,7 +559,7 @@ describe("LegacyReliabilityPanel", () => {
     );
   });
 
-  it("shows the global pause and explains an already active safe transaction", () => {
+  it("shows the global automatic pause without another large control card", () => {
     const markup = renderToStaticMarkup(
       <LegacyReliabilityPanelView
         status={status({
@@ -441,12 +578,10 @@ describe("LegacyReliabilityPanel", () => {
       />,
     );
 
-    expect(markup).toContain("Автозамена остановлена");
-    expect(markup).toContain("Новые автоматические попытки запрещены");
-    expect(markup).toContain(">Возобновить</button>");
-    expect(markup).toContain(
-      "Уже начатая операция будет безопасно завершена или отменена с откатом.",
-    );
+    expect(markup).toContain("Новые попытки приостановлены");
+    expect(markup).toContain('aria-label="Возобновить автоматическую замену"');
+    expect(markup).toContain("Проверка доступа");
+    expect(markup).not.toContain("Уже начатая операция будет безопасно завершена");
   });
 
   it("keeps an Automatic attempt transparent after the mode is downgraded", () => {
@@ -466,8 +601,7 @@ describe("LegacyReliabilityPanel", () => {
     );
 
     expect(markup).toContain("Автоматическое восстановление");
-    expect(markup).toContain("Текущая автоматическая операция уже начата");
-    expect(markup).toContain("новый режим действует для следующих попыток");
+    expect(markup).toContain("Остановка текущей конфигурации");
     expect(markup).not.toContain("Сбои фиксируются, конфигурации не меняются.");
   });
 
@@ -483,10 +617,9 @@ describe("LegacyReliabilityPanel", () => {
         onLaneFreezeChange={() => {}}
       />,
     );
-    expect(frozenMarkup).toContain("Автозамена приостановлена");
-    expect(frozenMarkup).toContain(">Разрешить</button>");
+    expect(frozenMarkup).toContain(">Включить</button>");
     expect(frozenMarkup).toContain(
-      "Только для будущих попыток; текущая операция не прерывается.",
+      'aria-label="Разрешить автоматическую замену для YouTube / Twitch"',
     );
 
     const enabledMarkup = renderToStaticMarkup(
@@ -497,8 +630,7 @@ describe("LegacyReliabilityPanel", () => {
         onLaneFreezeChange={() => {}}
       />,
     );
-    expect(enabledMarkup).toContain("Автозамена разрешена");
-    expect(enabledMarkup).toContain(">Приостановить</button>");
+    expect(enabledMarkup).toContain(">Пауза</button>");
   });
 
   it("renders a terminal lane halt separately from a user freeze", () => {
@@ -513,9 +645,8 @@ describe("LegacyReliabilityPanel", () => {
       />,
     );
 
-    expect(markup).toContain("Автовосстановление остановлено");
-    expect(markup).toContain("Требуется ручной перезапуск обхода.");
-    expect(markup).not.toContain(">Приостановить</button>");
+    expect(markup).toContain("Остановлено");
+    expect(markup).not.toContain(">Пауза</button>");
   });
 
   it("normalizes the frozen category patch without duplicates", () => {
@@ -716,6 +847,6 @@ describe("LegacyReliabilityPanel", () => {
         status={status({ negativeCooldownCount: 2 })}
       />,
     );
-    expect(markup).toContain("Кандидаты на паузе после неудачной проверки: 2");
+    expect(markup).toContain("Кандидаты после неудачной проверки: 2");
   });
 });

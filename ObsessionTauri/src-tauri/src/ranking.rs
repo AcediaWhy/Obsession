@@ -6,6 +6,10 @@
 //! `get_configs_for_category`, иначе отбрасывается. Битый/несовместимый файл →
 //! деградация к L3 (полный список категории), не падение.
 
+// Retained for the pre-Manager compatibility Brain; consumed in a later
+// assessment phase.
+#![allow(dead_code)]
+
 use std::collections::HashMap;
 
 use serde::Deserialize;

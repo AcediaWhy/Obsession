@@ -708,14 +708,20 @@ impl AppState {
         let legacy_trust_cache =
             crate::legacy_reliability::cache::LegacyTrustCacheStore::load(&paths);
         let legacy_cache_boot_nonce = rand::random::<u128>();
-        let recovery_mode = match settings.legacy_reliability_mode.as_str() {
-            "assisted" => crate::legacy_reliability::recovery::RecoveryMode::Assisted,
-            "automatic" => crate::legacy_reliability::recovery::RecoveryMode::Automatic,
-            _ => crate::legacy_reliability::recovery::RecoveryMode::ObserveOnly,
+        let recovery_mode = if settings.legacy_reliability_enabled {
+            match settings.legacy_reliability_mode.as_str() {
+                "assisted" => crate::legacy_reliability::recovery::RecoveryMode::Assisted,
+                "automatic" => crate::legacy_reliability::recovery::RecoveryMode::Automatic,
+                _ => crate::legacy_reliability::recovery::RecoveryMode::ObserveOnly,
+            }
+        } else {
+            crate::legacy_reliability::recovery::RecoveryMode::ObserveOnly
         };
         let mut legacy_recovery =
             crate::legacy_reliability::recovery_runtime::LegacyRecoveryRuntime::new(recovery_mode);
-        legacy_recovery.set_automatic_paused(settings.legacy_automatic_paused);
+        legacy_recovery.set_automatic_paused(
+            !settings.legacy_reliability_enabled || settings.legacy_automatic_paused,
+        );
         for category in &settings.legacy_reliability_frozen_categories {
             legacy_recovery.freeze_category(category.clone());
         }
@@ -732,7 +738,8 @@ impl AppState {
                 crate::legacy_reliability::status::LegacyReliabilityMode::Automatic
             }
         };
-        initial_reliability.automatic_paused = settings.legacy_automatic_paused;
+        initial_reliability.automatic_paused =
+            !settings.legacy_reliability_enabled || settings.legacy_automatic_paused;
         initial_reliability.frozen_categories =
             settings.legacy_reliability_frozen_categories.clone();
         Self {

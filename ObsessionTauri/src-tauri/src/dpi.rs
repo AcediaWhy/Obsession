@@ -1774,6 +1774,44 @@ fn stop_eyes(app: &AppHandle) -> EyesTeardownReport {
     report
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LegacyReliabilityReconcileAction {
+    Noop,
+    WaitForRecovery,
+    StopObserver,
+    StartObserver,
+    PublishInactive,
+}
+
+fn legacy_reliability_reconcile_action(
+    enabled: bool,
+    observer_running: bool,
+    recovery_active: bool,
+    legacy_runtime_active: bool,
+    zapret2_runtime_active: bool,
+) -> LegacyReliabilityReconcileAction {
+    // Eyes is a shared runtime slot: Zapret2 installs its compatibility Eyes
+    // there as well. Legacy settings must never tear down an observer owned by
+    // the active Zapret2 data plane.
+    if zapret2_runtime_active {
+        LegacyReliabilityReconcileAction::Noop
+    } else if !enabled {
+        if recovery_active {
+            LegacyReliabilityReconcileAction::WaitForRecovery
+        } else if observer_running {
+            LegacyReliabilityReconcileAction::StopObserver
+        } else if legacy_runtime_active {
+            LegacyReliabilityReconcileAction::PublishInactive
+        } else {
+            LegacyReliabilityReconcileAction::Noop
+        }
+    } else if !observer_running && legacy_runtime_active {
+        LegacyReliabilityReconcileAction::StartObserver
+    } else {
+        LegacyReliabilityReconcileAction::Noop
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ExactLegacyRuntimeSnapshot {
     runtime: DpiRuntimeSnapshot,
@@ -1891,6 +1929,295 @@ fn validate_exact_legacy_runtime(
     expected: &ExactLegacyRuntimeSnapshot,
 ) -> Result<(), String> {
     validate_captured_legacy_runtime(&app.state::<AppState>().dpi.lock_recover(), expected)
+}
+
+#[cfg(windows)]
+async fn stop_legacy_reliability_observer(app: &AppHandle) {
+    // The Eyes slot is shared with Zapret2's compatibility observer. Keep a
+    // second defensive check here in addition to the reconciler decision so a
+    // future caller cannot tear down the active Zapret2 data plane.
+    let zapret2_active = {
+        let state = app.state::<AppState>();
+        let dpi = state.dpi.lock_recover();
+        matches!(dpi.active_launch, Some(DpiLaunchSpec::Zapret2 { .. }))
+            && dpi
+                .procs
+                .values()
+                .any(|process| process.engine == "zapret2")
+    };
+    if zapret2_active {
+        util::emit_log(
+            app,
+            "debug",
+            "legacy-reliability",
+            "Контроль доступа не трогает Eyes активного Zapret2.",
+        );
+        return;
+    }
+
+    let manager = app.state::<AppState>().legacy_manager.lock_recover().take();
+    if let Some(manager) = manager {
+        manager.shutdown().await;
+    }
+    let app_for_eyes = app.clone();
+    let _ = tauri::async_runtime::spawn_blocking(move || stop_eyes(&app_for_eyes)).await;
+
+    if !app
+        .state::<AppState>()
+        .settings
+        .lock_recover()
+        .legacy_reliability_enabled
+    {
+        crate::legacy_reliability::status::publish(
+            app,
+            crate::legacy_reliability::status::LegacyReliabilityStatus::inactive(),
+        );
+        util::emit_log(
+            app,
+            "info",
+            "legacy-reliability",
+            "Контроль доступа выключен; Legacy-процессы и конфигурации не изменялись.",
+        );
+    }
+}
+
+#[cfg(windows)]
+async fn start_legacy_reliability_observer_for_active_runtime(
+    app: &AppHandle,
+) -> Result<(), String> {
+    use crate::legacy_reliability::contracts::{
+        EventEnvelope, LegacySessionContext, SensorGeneration, SessionId,
+    };
+    use crate::legacy_reliability::status::{self, LegacyReliabilityStatus};
+
+    if runtime_shutting_down(app)
+        || !app
+            .state::<AppState>()
+            .settings
+            .lock_recover()
+            .legacy_reliability_enabled
+    {
+        return Ok(());
+    }
+    if app
+        .state::<AppState>()
+        .legacy_manager
+        .lock_recover()
+        .is_some()
+        || app.state::<AppState>().eyes.lock_recover().is_some()
+    {
+        return Ok(());
+    }
+
+    let expected_runtime = {
+        let state = app.state::<AppState>();
+        let dpi = state.dpi.lock_recover();
+        capture_exact_legacy_runtime(&dpi, dpi.generation)?
+    };
+    if expected_runtime.owners.is_empty() {
+        return Ok(());
+    }
+    let selections = match &expected_runtime.runtime.launch {
+        Some(DpiLaunchSpec::Legacy { selections }) => selections.clone(),
+        _ => return Ok(()),
+    };
+    let active_categories = expected_runtime.owners.keys().cloned().collect::<Vec<_>>();
+    let lane_generations = expected_runtime
+        .owners
+        .iter()
+        .map(|(category, owner)| (category.clone(), owner.lane_generation))
+        .collect::<BTreeMap<_, _>>();
+    let paths = app.state::<AppState>().paths.clone();
+    let log_root = paths.legacy_reliability_logs_dir();
+    let registry = tauri::async_runtime::spawn_blocking(move || {
+        crate::legacy_reliability::registry_loader::load_target_registry(&paths, &selections)
+    })
+    .await
+    .map_err(|error| format!("Legacy registry worker failed: {error}"))?
+    .map_err(|error| format!("Legacy registry load failed: {error:?}"))?;
+    validate_exact_legacy_runtime(app, &expected_runtime)?;
+    for (category, owner) in &expected_runtime.owners {
+        let lane_generation = lane_generations
+            .get(category)
+            .copied()
+            .ok_or_else(|| format!("Legacy lane generation is missing for {category}"))?;
+        if !registry_owner_matches(&registry, owner, lane_generation) {
+            return Err(format!(
+                "Legacy registry no longer matches the active process owner for {category}"
+            ));
+        }
+    }
+
+    let local_network = tokio::time::timeout(
+        Duration::from_secs(2),
+        crate::netid::resolve_local_read_only(),
+    )
+    .await
+    .unwrap_or_default();
+    validate_exact_legacy_runtime(app, &expected_runtime)?;
+    if !app
+        .state::<AppState>()
+        .settings
+        .lock_recover()
+        .legacy_reliability_enabled
+    {
+        return Ok(());
+    }
+
+    let state = app.state::<AppState>();
+    let session_id = SessionId::new(state.legacy_session_revision.bump());
+    let sensor_generation = SensorGeneration::new(state.legacy_sensor_revision.bump());
+    status::publish(
+        app,
+        LegacyReliabilityStatus::starting(active_categories.clone(), session_id, sensor_generation),
+    );
+    let context = LegacySessionContext::new(
+        session_id,
+        active_categories.clone(),
+        local_network.fingerprint,
+    );
+    let registry = std::sync::Arc::new(registry);
+    let manager = crate::legacy_reliability::runtime::spawn(
+        context,
+        sensor_generation,
+        std::sync::Arc::clone(&registry),
+        lane_generations.clone(),
+        log_root,
+        state.legacy_monotonic_ms(),
+    )
+    .map_err(|error| format!("Legacy Manager start rejected: {error:?}"))?;
+    let envelope = EventEnvelope::new(session_id, sensor_generation, registry.version());
+    if let Err(error) = start_legacy_eyes(
+        app,
+        registry,
+        envelope,
+        std::sync::Arc::new(lane_generations),
+        manager.ingress.clone(),
+    ) {
+        manager.shutdown().await;
+        status::publish(
+            app,
+            LegacyReliabilityStatus::blind(active_categories, session_id, sensor_generation),
+        );
+        return Err(error);
+    }
+
+    let still_enabled = app
+        .state::<AppState>()
+        .settings
+        .lock_recover()
+        .legacy_reliability_enabled;
+    let runtime_valid = validate_exact_legacy_runtime(app, &expected_runtime).is_ok();
+    let snapshot = manager.snapshot();
+    let mut pending_manager = Some(manager);
+    let installed = if still_enabled && runtime_valid && !runtime_shutting_down(app) {
+        let state = app.state::<AppState>();
+        let enabled = state.settings.lock_recover().legacy_reliability_enabled;
+        let mut slot = state.legacy_manager.lock_recover();
+        if enabled && slot.is_none() && state.eyes.lock_recover().is_some() {
+            let manager = pending_manager
+                .take()
+                .expect("pending Legacy Manager must be available once");
+            manager.forward_public_status(app.clone());
+            *slot = Some(manager);
+            true
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+    if !installed {
+        pending_manager
+            .expect("failed Legacy Manager install retains the pending handle")
+            .shutdown()
+            .await;
+        let app_for_eyes = app.clone();
+        let _ = tauri::async_runtime::spawn_blocking(move || stop_eyes(&app_for_eyes)).await;
+        if !still_enabled {
+            status::publish(app, LegacyReliabilityStatus::inactive());
+        }
+        return Ok(());
+    }
+
+    status::publish_snapshot_if_owned(app, &snapshot);
+    util::emit_log(
+        app,
+        "success",
+        "legacy-reliability",
+        "Контроль доступа включён для текущего Legacy-запуска.",
+    );
+    Ok(())
+}
+
+#[cfg(windows)]
+pub async fn reconcile_legacy_reliability(app: &AppHandle) {
+    loop {
+        if runtime_shutting_down(app) {
+            return;
+        }
+        let state = app.state::<AppState>();
+        // Serialize the observer transition with public DPI start/stop. Without
+        // this fence a decision made for Legacy could race a Zapret2 launch and
+        // stop the newly installed shared Eyes handle.
+        let gate = state.dpi_gate.lock().await;
+        if runtime_shutting_down(app) {
+            return;
+        }
+        let enabled = state.settings.lock_recover().legacy_reliability_enabled;
+        let observer_running =
+            state.legacy_manager.lock_recover().is_some() || state.eyes.lock_recover().is_some();
+        let recovery_active = state
+            .legacy_recovery
+            .lock_recover()
+            .status()
+            .active_attempt
+            .is_some();
+        let (legacy_runtime_active, zapret2_runtime_active) = {
+            let dpi = state.dpi.lock_recover();
+            (
+                matches!(dpi.active_launch, Some(DpiLaunchSpec::Legacy { .. }))
+                    && dpi.procs.values().any(|process| process.engine == "legacy"),
+                matches!(dpi.active_launch, Some(DpiLaunchSpec::Zapret2 { .. }))
+                    && dpi
+                        .procs
+                        .values()
+                        .any(|process| process.engine == "zapret2"),
+            )
+        };
+
+        match legacy_reliability_reconcile_action(
+            enabled,
+            observer_running,
+            recovery_active,
+            legacy_runtime_active,
+            zapret2_runtime_active,
+        ) {
+            LegacyReliabilityReconcileAction::WaitForRecovery => {
+                drop(gate);
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            LegacyReliabilityReconcileAction::StopObserver => {
+                stop_legacy_reliability_observer(app).await;
+                return;
+            }
+            LegacyReliabilityReconcileAction::StartObserver => {
+                if let Err(error) = start_legacy_reliability_observer_for_active_runtime(app).await
+                {
+                    util::emit_log(app, "error", "legacy-reliability", &error);
+                }
+                return;
+            }
+            LegacyReliabilityReconcileAction::PublishInactive => {
+                crate::legacy_reliability::status::publish(
+                    app,
+                    crate::legacy_reliability::status::LegacyReliabilityStatus::inactive(),
+                );
+                return;
+            }
+            LegacyReliabilityReconcileAction::Noop => return,
+        }
+    }
 }
 
 fn registry_owner_matches(
@@ -3305,6 +3632,20 @@ pub(crate) fn describe_zapret2_profiles(
     }
     Ok(descriptors)
 }
+
+fn zapret2_strategy_lua_files(
+    strategies: &[crate::dpi_engine::manifest::StrategyDef],
+) -> Vec<&str> {
+    let mut files = Vec::new();
+    for strategy in strategies {
+        let lua = strategy.lua.as_str();
+        if !lua.is_empty() && !files.contains(&lua) {
+            files.push(lua);
+        }
+    }
+    files
+}
+
 /// Вариант запуска Zapret2 с проверенными DSL-overrides. Override заменяет
 /// только свой транспорт выбранной категории; противоположный транспорт и все
 /// профили остальных категорий остаются из целостного bundled Strategy Pack.
@@ -3360,6 +3701,17 @@ pub(crate) async fn start_zapret2_with_overrides(
                 &format!("[zapret2] нет стратегий для категории {category} — пропуск"),
             );
             continue;
+        }
+
+        // Adaptive profiles compile to the same Lua desync functions as their
+        // bundled control profiles. Load those runtime modules before deciding
+        // which built-in profiles are replaced, otherwise an all-adaptive
+        // category would leave functions such as `fake` undefined in winws2.
+        for lua in zapret2_strategy_lua_files(&selected_profiles) {
+            let lua = abs(lua);
+            if !lua_init.contains(&lua) {
+                lua_init.push(lua);
+            }
         }
 
         let adaptive = [StrategyTransport::Tls, StrategyTransport::Quic]
@@ -3820,6 +4172,7 @@ pub async fn start_many(app: &AppHandle, configs: &[(String, String)]) -> Result
     #[cfg(windows)]
     let (start_generation, exact_runtime, initial_reliability_status) = {
         let state = app.state::<AppState>();
+        let reliability_enabled = state.settings.lock_recover().legacy_reliability_enabled;
         let mut dpi = state.dpi.lock_recover();
         dpi.last_legacy_selection = started_pairs.clone();
         dpi.active_launch = Some(DpiLaunchSpec::Legacy {
@@ -3830,12 +4183,14 @@ pub async fn start_many(app: &AppHandle, configs: &[(String, String)]) -> Result
         if !exact_runtime {
             dpi.active_launch = None;
         }
-        let initial_reliability_status = if exact_runtime {
+        let initial_reliability_status = if exact_runtime && reliability_enabled {
             crate::legacy_reliability::status::LegacyReliabilityStatus::starting(
                 active_categories.clone(),
                 session_id,
                 sensor_generation,
             )
+        } else if exact_runtime {
+            crate::legacy_reliability::status::LegacyReliabilityStatus::inactive()
         } else if dpi
             .procs
             .values()
@@ -3959,17 +4314,6 @@ pub async fn start_many(app: &AppHandle, configs: &[(String, String)]) -> Result
         }
         match registry {
             Ok(Ok(registry)) => {
-                let local_network = tokio::time::timeout(
-                    Duration::from_secs(2),
-                    crate::netid::resolve_local_read_only(),
-                )
-                .await
-                .unwrap_or_default();
-                let context = LegacySessionContext::new(
-                    session_id,
-                    active_categories.clone(),
-                    local_network.fingerprint,
-                );
                 let registry = std::sync::Arc::new(registry);
                 {
                     let state = app.state::<AppState>();
@@ -3984,6 +4328,32 @@ pub async fn start_many(app: &AppHandle, configs: &[(String, String)]) -> Result
                             .map(|fingerprint| fingerprint.as_hex().to_owned());
                     }
                 }
+                if !app
+                    .state::<AppState>()
+                    .settings
+                    .lock_recover()
+                    .legacy_reliability_enabled
+                {
+                    status::publish(app, LegacyReliabilityStatus::inactive());
+                    util::emit_log(
+                        app,
+                        "info",
+                        "legacy-reliability",
+                        "Контроль доступа выключен; Eyes и Manager не запускались.",
+                    );
+                    return Ok(started);
+                }
+                let local_network = tokio::time::timeout(
+                    Duration::from_secs(2),
+                    crate::netid::resolve_local_read_only(),
+                )
+                .await
+                .unwrap_or_default();
+                let context = LegacySessionContext::new(
+                    session_id,
+                    active_categories.clone(),
+                    local_network.fingerprint,
+                );
                 match crate::legacy_reliability::runtime::spawn(
                     context,
                     sensor_generation,
@@ -4532,6 +4902,61 @@ fn spawn_reader<R>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn adaptive_replacement_retains_strategy_lua_dependencies() {
+        let strategy = crate::dpi_engine::manifest::StrategyDef {
+            id: "adaptive-control".into(),
+            category: "youtube_twitch".into(),
+            aggressiveness: 1,
+            lua: "lua/zapret-antidpi.lua".into(),
+            desync: vec!["fake:blob=fake_default_quic:repeats=6".into()],
+            transports: vec!["udp".into(), "quic".into()],
+            hostlist: None,
+            ipset: None,
+            filter_tcp: None,
+            filter_udp: Some("443".into()),
+            filter_l7: vec!["quic".into()],
+            payload: vec!["quic_initial".into()],
+            out_range: None,
+            in_range: None,
+        };
+
+        assert_eq!(
+            zapret2_strategy_lua_files(&[strategy.clone(), strategy]),
+            vec!["lua/zapret-antidpi.lua"],
+            "adaptive replacement still needs the control profile's Lua runtime",
+        );
+    }
+
+    #[test]
+    fn reliability_reconcile_waits_for_transactions_and_never_touches_dpi_processes() {
+        assert_eq!(
+            legacy_reliability_reconcile_action(false, true, true, true, false),
+            LegacyReliabilityReconcileAction::WaitForRecovery
+        );
+        assert_eq!(
+            legacy_reliability_reconcile_action(false, true, false, true, false),
+            LegacyReliabilityReconcileAction::StopObserver
+        );
+        assert_eq!(
+            legacy_reliability_reconcile_action(true, false, false, true, false),
+            LegacyReliabilityReconcileAction::StartObserver
+        );
+        assert_eq!(
+            legacy_reliability_reconcile_action(true, false, false, false, false),
+            LegacyReliabilityReconcileAction::Noop
+        );
+        assert_eq!(
+            legacy_reliability_reconcile_action(false, false, false, true, false),
+            LegacyReliabilityReconcileAction::PublishInactive
+        );
+        assert_eq!(
+            legacy_reliability_reconcile_action(false, true, false, false, true),
+            LegacyReliabilityReconcileAction::Noop,
+            "Legacy master switch must not stop the shared Eyes owned by Zapret2",
+        );
+    }
 
     #[cfg(windows)]
     #[test]

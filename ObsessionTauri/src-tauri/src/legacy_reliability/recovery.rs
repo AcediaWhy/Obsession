@@ -9,14 +9,16 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use serde::{Deserialize, Serialize};
 
 use super::contracts::{
-    AttemptId, ConfigFingerprint, ExecutorOutcome, ExecutorResult, ExecutorStage, IntentEnvelope,
-    IntentFence, LaneGeneration, NetworkFingerprint, ProcessOwner, SessionId,
+    AttemptId, ConfigFingerprint, ConfirmationFailure, ExecutorOutcome, ExecutorResult,
+    ExecutorStage, IntentEnvelope, IntentFence, LaneGeneration, NetworkFingerprint, ProcessOwner,
+    SessionId,
 };
 
 pub const ASSISTED_PROPOSAL_TTL_MS: u64 = 30_000;
 pub const AUTOMATIC_PACING_MS: u64 = 30_000;
 pub const NEGATIVE_COOLDOWN_MS: u64 = 300_000;
 pub const MAX_NEGATIVE_COOLDOWNS: usize = 128;
+pub const MAX_AUTOMATIC_LADDER_CANDIDATES: usize = 16;
 
 const MAX_RETIRED_PROPOSALS: usize = 128;
 
@@ -93,8 +95,8 @@ impl RecoveryConfig {
 }
 
 /// One independently fenced incident. Candidate order is already ranked by
-/// the caller; this coordinator only applies safety exclusions and chooses at
-/// most the first eligible candidate.
+/// the caller; this coordinator applies safety exclusions and preserves the
+/// eligible order for an Automatic recovery ladder.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RecoveryRequest {
     incident_id: IncidentId,
@@ -348,6 +350,7 @@ pub enum RecoveryAction {
         envelope: IntentEnvelope,
         previous: RecoveryConfig,
         previous_lane_generation: LaneGeneration,
+        retry_pending: bool,
     },
     Complete {
         completion: RecoveryCompletion,
@@ -422,11 +425,13 @@ struct ActiveAttempt {
     previous: RecoveryConfig,
     previous_owner: ProcessOwner,
     candidate: RecoveryConfig,
+    remaining_candidates: VecDeque<RecoveryConfig>,
     candidate_lane_generation: LaneGeneration,
     current_lane_generation: LaneGeneration,
     expected_rollback_generation: Option<LaneGeneration>,
     candidate_owner: Option<ProcessOwner>,
     confirmation_succeeded: bool,
+    retry_after_rollback: bool,
     origin: RecoveryOrigin,
     phase: RecoveryPhase,
     phase_started_at_monotonic_ms: u64,
@@ -679,11 +684,13 @@ impl RecoveryCoordinator {
             return Err(ConsiderError::IncidentAlreadyHandled);
         }
 
-        let candidate = request
+        let mut seen_fingerprints = BTreeSet::new();
+        let mut eligible_candidates = request
             .candidates
             .iter()
-            .find(|candidate| {
+            .filter(|candidate| {
                 candidate.fingerprint != request.previous.fingerprint
+                    && seen_fingerprints.insert(candidate.fingerprint.clone())
                     && !self.negative_cooldowns.contains_key(&CooldownKey {
                         stable_network: stable_network.clone(),
                         category: request.fence.category.clone(),
@@ -691,6 +698,12 @@ impl RecoveryCoordinator {
                     })
             })
             .cloned()
+            .collect::<VecDeque<_>>();
+        if self.mode == RecoveryMode::Automatic {
+            eligible_candidates.truncate(MAX_AUTOMATIC_LADDER_CANDIDATES);
+        }
+        let candidate = eligible_candidates
+            .pop_front()
             .ok_or(ConsiderError::NoEligibleCandidate)?;
 
         let suggestion = RecoverySuggestion {
@@ -728,6 +741,7 @@ impl RecoveryCoordinator {
                 request.previous,
                 request.previous_owner,
                 candidate,
+                eligible_candidates,
                 RecoveryOrigin::Automatic {
                     control_generation: request.automatic_control_generation,
                 },
@@ -798,6 +812,7 @@ impl RecoveryCoordinator {
             pending.previous,
             pending.previous_owner,
             pending.candidate,
+            VecDeque::new(),
             RecoveryOrigin::Assisted,
             now_ms,
         ))
@@ -892,6 +907,7 @@ impl RecoveryCoordinator {
         previous: RecoveryConfig,
         previous_owner: ProcessOwner,
         candidate: RecoveryConfig,
+        remaining_candidates: VecDeque<RecoveryConfig>,
         origin: RecoveryOrigin,
         now_ms: u64,
     ) -> RecoveryAction {
@@ -903,6 +919,7 @@ impl RecoveryCoordinator {
             expected_rollback_generation: None,
             candidate_owner: None,
             confirmation_succeeded: false,
+            retry_after_rollback: false,
             origin,
             phase: RecoveryPhase::Preflight,
             phase_started_at_monotonic_ms: now_ms,
@@ -910,6 +927,7 @@ impl RecoveryCoordinator {
             previous,
             previous_owner,
             candidate,
+            remaining_candidates,
         };
         let action = RecoveryAction::Preflight {
             envelope: active.envelope.clone(),
@@ -1052,6 +1070,7 @@ impl RecoveryCoordinator {
                     return Err(TransitionError::ProcessOwnerMismatch);
                 }
                 self.record_negative_cooldown(active, now_ms);
+                mark_automatic_retry(active);
                 Ok(Transition::Continue(begin_rollback(active, now_ms)))
             }
             (
@@ -1063,6 +1082,7 @@ impl RecoveryCoordinator {
             ) => {
                 if reason.penalizes_candidate() {
                     self.record_negative_cooldown(active, now_ms);
+                    mark_automatic_retry(active);
                 }
                 Ok(Transition::Continue(begin_rollback(active, now_ms)))
             }
@@ -1085,6 +1105,14 @@ impl RecoveryCoordinator {
                 ensure_candidate_owner(active, &candidate)?;
                 if reason.penalizes_candidate() {
                     self.record_negative_cooldown(active, now_ms);
+                }
+                if matches!(
+                    reason,
+                    ConfirmationFailure::Strategy
+                        | ConfirmationFailure::Target
+                        | ConfirmationFailure::MissingWorkingEvidence
+                ) {
+                    mark_automatic_retry(active);
                 }
                 Ok(Transition::Continue(begin_rollback(active, now_ms)))
             }
@@ -1116,6 +1144,7 @@ impl RecoveryCoordinator {
             ) => {
                 if reason.penalizes_candidate() {
                     self.record_negative_cooldown(active, now_ms);
+                    mark_automatic_retry(active);
                 }
                 Ok(Transition::Continue(begin_rollback(active, now_ms)))
             }
@@ -1128,9 +1157,13 @@ impl RecoveryCoordinator {
             ) => {
                 ensure_candidate_owner(active, &process)?;
                 self.record_negative_cooldown(active, now_ms);
+                mark_automatic_retry(active);
                 Ok(Transition::Continue(begin_rollback(active, now_ms)))
             }
             (RecoveryPhase::RollingBack, ExecutorOutcome::RolledBack { previous }) => {
+                if active.retry_after_rollback {
+                    return Err(TransitionError::UnexpectedOutcome);
+                }
                 let expected = active
                     .expected_rollback_generation
                     .ok_or(TransitionError::UnexpectedOutcome)?;
@@ -1143,6 +1176,43 @@ impl RecoveryCoordinator {
                     ),
                     false,
                 ))
+            }
+            (
+                RecoveryPhase::RollingBack,
+                ExecutorOutcome::RolledBackForRetry {
+                    previous,
+                    refreshed_fence,
+                },
+            ) => {
+                if !active.retry_after_rollback
+                    || !matches!(active.origin, RecoveryOrigin::Automatic { .. })
+                {
+                    return Err(TransitionError::UnexpectedOutcome);
+                }
+                let expected = active
+                    .expected_rollback_generation
+                    .ok_or(TransitionError::UnexpectedOutcome)?;
+                ensure_owner(&previous, active.previous.fingerprint(), expected)?;
+                rebase_after_retry_rollback(active, &refreshed_fence, expected)?;
+                let next_candidate = active
+                    .remaining_candidates
+                    .pop_front()
+                    .ok_or(TransitionError::UnexpectedOutcome)?;
+                active.previous_owner = previous;
+                active.candidate = next_candidate;
+                active.candidate_lane_generation = next_generation(expected);
+                active.expected_rollback_generation = None;
+                active.candidate_owner = None;
+                active.confirmation_succeeded = false;
+                active.retry_after_rollback = false;
+                active.enter(RecoveryPhase::Preflight, now_ms);
+                Ok(Transition::Continue(RecoveryAction::Preflight {
+                    envelope: active.envelope.clone(),
+                    previous: active.previous.clone(),
+                    previous_owner: active.previous_owner.clone(),
+                    candidate: active.candidate.clone(),
+                    origin: active.origin,
+                }))
             }
             (
                 RecoveryPhase::RollingBack,
@@ -1276,7 +1346,13 @@ fn begin_rollback(active: &mut ActiveAttempt, now_ms: u64) -> RecoveryAction {
         envelope: active.envelope.clone(),
         previous: active.previous.clone(),
         previous_lane_generation,
+        retry_pending: active.retry_after_rollback,
     }
+}
+
+fn mark_automatic_retry(active: &mut ActiveAttempt) {
+    active.retry_after_rollback = matches!(active.origin, RecoveryOrigin::Automatic { .. })
+        && !active.remaining_candidates.is_empty();
 }
 
 fn rebase_after_observer_restart(
@@ -1296,6 +1372,27 @@ fn rebase_after_observer_restart(
 
     active.current_lane_generation = active.candidate_lane_generation;
     active.envelope = IntentEnvelope::from_fence(previous.attempt_id, &refreshed);
+    Ok(())
+}
+
+fn rebase_after_retry_rollback(
+    active: &mut ActiveAttempt,
+    refreshed: &IntentFence,
+    expected_lane_generation: LaneGeneration,
+) -> Result<(), TransitionError> {
+    let previous = &active.envelope;
+    if refreshed.session_id != previous.session_id
+        || refreshed.category != previous.category
+        || refreshed.network_fingerprint != previous.expected_network_fingerprint
+        || refreshed.lane_generation != expected_lane_generation
+        || refreshed.sensor_generation == previous.expected_sensor_generation
+        || refreshed.registry_version == previous.expected_registry_version
+    {
+        return Err(TransitionError::RefreshedFenceMismatch);
+    }
+
+    active.current_lane_generation = expected_lane_generation;
+    active.envelope = IntentEnvelope::from_fence(previous.attempt_id, refreshed);
     Ok(())
 }
 
@@ -2183,6 +2280,410 @@ mod tests {
                 }
             } if candidate_config_id == "candidate-b"
         ));
+    }
+
+    #[test]
+    fn automatic_candidate_failure_marks_rollback_for_immediate_retry_without_pacing() {
+        let clock = FakeClock::default();
+        let mut coordinator = RecoveryCoordinator::new(RecoveryMode::Automatic);
+        let envelope = match coordinator
+            .consider(request(1, &["candidate-a", "candidate-b"]), clock.now())
+            .unwrap()
+        {
+            RecoveryDecision::Automatic {
+                action: RecoveryAction::Preflight { envelope, .. },
+            } => envelope,
+            other => panic!("unexpected decision: {other:?}"),
+        };
+        let envelope = pass_preflight(&mut coordinator, &envelope, &clock);
+        coordinator
+            .apply_result(result(
+                &envelope,
+                ExecutorOutcome::Stopped {
+                    previous: owner("active", 7, 1),
+                },
+                &clock,
+            ))
+            .unwrap();
+
+        let rollback = coordinator
+            .apply_result(result(
+                &envelope,
+                ExecutorOutcome::StartFailed {
+                    candidate_fingerprint: ConfigFingerprint::new("sha256:candidate-a"),
+                },
+                &clock,
+            ))
+            .unwrap();
+        let serialized = serde_json::to_value(&rollback).unwrap();
+
+        assert_eq!(serialized["kind"], "rollback_previous");
+        assert_eq!(serialized["retryPending"], true);
+        assert_eq!(
+            coordinator
+                .status()
+                .automatic_pacing_until_monotonic_ms,
+            None
+        );
+    }
+
+    #[test]
+    fn automatic_retry_rebases_same_attempt_and_preflights_next_candidate() {
+        let clock = FakeClock::default();
+        let mut coordinator = RecoveryCoordinator::new(RecoveryMode::Automatic);
+        let initial_envelope = match coordinator
+            .consider(request(1, &["candidate-a", "candidate-b"]), clock.now())
+            .unwrap()
+        {
+            RecoveryDecision::Automatic {
+                action: RecoveryAction::Preflight { envelope, .. },
+            } => envelope,
+            other => panic!("unexpected decision: {other:?}"),
+        };
+        let envelope = pass_preflight(&mut coordinator, &initial_envelope, &clock);
+        coordinator
+            .apply_result(result(
+                &envelope,
+                ExecutorOutcome::Stopped {
+                    previous: owner("active", 7, 1),
+                },
+                &clock,
+            ))
+            .unwrap();
+        let rollback = coordinator
+            .apply_result(result(
+                &envelope,
+                ExecutorOutcome::StartFailed {
+                    candidate_fingerprint: ConfigFingerprint::new("sha256:candidate-a"),
+                },
+                &clock,
+            ))
+            .unwrap();
+        let (rollback_envelope, rollback_generation) = match rollback {
+            RecoveryAction::RollbackPrevious {
+                envelope,
+                previous_lane_generation,
+                retry_pending: true,
+                ..
+            } => (envelope, previous_lane_generation),
+            other => panic!("unexpected action: {other:?}"),
+        };
+        let refreshed_fence = IntentFence {
+            session_id: rollback_envelope.session_id,
+            category: rollback_envelope.category.clone(),
+            network_fingerprint: rollback_envelope.expected_network_fingerprint.clone(),
+            lane_generation: rollback_generation,
+            sensor_generation: SensorGeneration::new(90),
+            registry_version: RegistryVersion::new(91),
+        };
+        let previous_owner = ProcessOwner {
+            pid: 9,
+            process_start_identity: ProcessStartIdentity::new(9),
+            config_fingerprint: ConfigFingerprint::new("sha256:active"),
+            lane_generation: rollback_generation,
+        };
+        let mut serialized = serde_json::to_value(ExecutorOutcome::RolledBack {
+            previous: previous_owner.clone(),
+        })
+        .unwrap();
+        serialized["kind"] = serde_json::json!("rolled_back_for_retry");
+        serialized["refreshedFence"] = serde_json::to_value(&refreshed_fence).unwrap();
+        let retry_outcome: ExecutorOutcome = serde_json::from_value(serialized)
+            .expect("executor outcome must represent a fenced retry rollback");
+
+        let next = coordinator
+            .apply_result(result(&rollback_envelope, retry_outcome, &clock))
+            .unwrap();
+        match next {
+            RecoveryAction::Preflight {
+                envelope,
+                previous,
+                previous_owner: actual_owner,
+                candidate,
+                origin: RecoveryOrigin::Automatic { .. },
+            } => {
+                assert_eq!(envelope.attempt_id, initial_envelope.attempt_id);
+                assert!(envelope.matches_fence(&refreshed_fence));
+                assert_eq!(previous.config_id(), "active");
+                assert_eq!(actual_owner, previous_owner);
+                assert_eq!(candidate.config_id(), "candidate-b");
+            }
+            other => panic!("unexpected action: {other:?}"),
+        }
+        assert_eq!(
+            coordinator
+                .status()
+                .automatic_pacing_until_monotonic_ms,
+            None
+        );
+    }
+
+    #[test]
+    fn automatic_environment_failure_never_walks_the_candidate_queue() {
+        let clock = FakeClock::default();
+        let mut coordinator = RecoveryCoordinator::new(RecoveryMode::Automatic);
+        let envelope = match coordinator
+            .consider(request(1, &["candidate-a", "candidate-b"]), clock.now())
+            .unwrap()
+        {
+            RecoveryDecision::Automatic {
+                action: RecoveryAction::Preflight { envelope, .. },
+            } => envelope,
+            other => panic!("unexpected decision: {other:?}"),
+        };
+        let envelope = pass_preflight(&mut coordinator, &envelope, &clock);
+        coordinator
+            .apply_result(result(
+                &envelope,
+                ExecutorOutcome::Stopped {
+                    previous: owner("active", 7, 1),
+                },
+                &clock,
+            ))
+            .unwrap();
+        let candidate = ProcessOwner {
+            pid: 8,
+            process_start_identity: ProcessStartIdentity::new(8),
+            config_fingerprint: ConfigFingerprint::new("sha256:candidate-a"),
+            lane_generation: envelope.expected_lane_generation,
+        };
+        let envelope = match coordinator
+            .apply_result(result(
+                &envelope,
+                ExecutorOutcome::Ready {
+                    candidate: candidate.clone(),
+                },
+                &clock,
+            ))
+            .unwrap()
+        {
+            RecoveryAction::ConfirmCandidate { envelope, .. } => envelope,
+            other => panic!("unexpected action: {other:?}"),
+        };
+
+        let rollback = coordinator
+            .apply_result(result(
+                &envelope,
+                ExecutorOutcome::ConfirmationFailed {
+                    candidate,
+                    reason: ConfirmationFailure::Environment,
+                },
+                &clock,
+            ))
+            .unwrap();
+        assert!(matches!(
+            rollback,
+            RecoveryAction::RollbackPrevious {
+                retry_pending: false,
+                ..
+            }
+        ));
+        assert_eq!(coordinator.status().negative_cooldown_count, 0);
+    }
+
+    #[test]
+    fn automatic_ambiguous_target_failure_rechecks_environment_on_next_candidate() {
+        let clock = FakeClock::default();
+        let mut coordinator = RecoveryCoordinator::new(RecoveryMode::Automatic);
+        let envelope = match coordinator
+            .consider(request(1, &["candidate-a", "candidate-b"]), clock.now())
+            .unwrap()
+        {
+            RecoveryDecision::Automatic {
+                action: RecoveryAction::Preflight { envelope, .. },
+            } => envelope,
+            other => panic!("unexpected decision: {other:?}"),
+        };
+        let envelope = pass_preflight(&mut coordinator, &envelope, &clock);
+        coordinator
+            .apply_result(result(
+                &envelope,
+                ExecutorOutcome::Stopped {
+                    previous: owner("active", 7, 1),
+                },
+                &clock,
+            ))
+            .unwrap();
+        let candidate = ProcessOwner {
+            pid: 8,
+            process_start_identity: ProcessStartIdentity::new(8),
+            config_fingerprint: ConfigFingerprint::new("sha256:candidate-a"),
+            lane_generation: envelope.expected_lane_generation,
+        };
+        let envelope = match coordinator
+            .apply_result(result(
+                &envelope,
+                ExecutorOutcome::Ready {
+                    candidate: candidate.clone(),
+                },
+                &clock,
+            ))
+            .unwrap()
+        {
+            RecoveryAction::ConfirmCandidate { envelope, .. } => envelope,
+            other => panic!("unexpected action: {other:?}"),
+        };
+
+        let rollback = coordinator
+            .apply_result(result(
+                &envelope,
+                ExecutorOutcome::ConfirmationFailed {
+                    candidate,
+                    reason: ConfirmationFailure::Target,
+                },
+                &clock,
+            ))
+            .unwrap();
+        assert!(matches!(
+            rollback,
+            RecoveryAction::RollbackPrevious {
+                retry_pending: true,
+                ..
+            }
+        ));
+        assert_eq!(
+            coordinator.status().negative_cooldown_count,
+            0,
+            "ambiguous target failure is rechecked, not blamed on the candidate"
+        );
+    }
+
+    #[test]
+    fn automatic_exhaustion_cools_every_failed_candidate_and_paces_once() {
+        let clock = FakeClock::default();
+        let mut coordinator = RecoveryCoordinator::new(RecoveryMode::Automatic);
+        let initial_envelope = match coordinator
+            .consider(request(1, &["candidate-a", "candidate-b"]), clock.now())
+            .unwrap()
+        {
+            RecoveryDecision::Automatic {
+                action: RecoveryAction::Preflight { envelope, .. },
+            } => envelope,
+            other => panic!("unexpected decision: {other:?}"),
+        };
+        let first_envelope = pass_preflight(&mut coordinator, &initial_envelope, &clock);
+        coordinator
+            .apply_result(result(
+                &first_envelope,
+                ExecutorOutcome::Stopped {
+                    previous: owner("active", 7, 1),
+                },
+                &clock,
+            ))
+            .unwrap();
+        let first_rollback = coordinator
+            .apply_result(result(
+                &first_envelope,
+                ExecutorOutcome::StartFailed {
+                    candidate_fingerprint: ConfigFingerprint::new("sha256:candidate-a"),
+                },
+                &clock,
+            ))
+            .unwrap();
+        let (first_rollback_envelope, first_rollback_generation) = match first_rollback {
+            RecoveryAction::RollbackPrevious {
+                envelope,
+                previous_lane_generation,
+                retry_pending: true,
+                ..
+            } => (envelope, previous_lane_generation),
+            other => panic!("unexpected action: {other:?}"),
+        };
+        let first_previous_owner = ProcessOwner {
+            pid: 9,
+            process_start_identity: ProcessStartIdentity::new(9),
+            config_fingerprint: ConfigFingerprint::new("sha256:active"),
+            lane_generation: first_rollback_generation,
+        };
+        let refreshed_fence = IntentFence {
+            session_id: first_rollback_envelope.session_id,
+            category: first_rollback_envelope.category.clone(),
+            network_fingerprint: first_rollback_envelope
+                .expected_network_fingerprint
+                .clone(),
+            lane_generation: first_rollback_generation,
+            sensor_generation: SensorGeneration::new(90),
+            registry_version: RegistryVersion::new(91),
+        };
+        let second_preflight = coordinator
+            .apply_result(result(
+                &first_rollback_envelope,
+                ExecutorOutcome::RolledBackForRetry {
+                    previous: first_previous_owner.clone(),
+                    refreshed_fence,
+                },
+                &clock,
+            ))
+            .unwrap();
+        let second_envelope = match second_preflight {
+            RecoveryAction::Preflight {
+                envelope,
+                candidate,
+                ..
+            } => {
+                assert_eq!(candidate.config_id(), "candidate-b");
+                envelope
+            }
+            other => panic!("unexpected action: {other:?}"),
+        };
+        let second_envelope = pass_preflight(&mut coordinator, &second_envelope, &clock);
+        coordinator
+            .apply_result(result(
+                &second_envelope,
+                ExecutorOutcome::Stopped {
+                    previous: first_previous_owner,
+                },
+                &clock,
+            ))
+            .unwrap();
+        let final_rollback = coordinator
+            .apply_result(result(
+                &second_envelope,
+                ExecutorOutcome::StartFailed {
+                    candidate_fingerprint: ConfigFingerprint::new("sha256:candidate-b"),
+                },
+                &clock,
+            ))
+            .unwrap();
+        let (final_envelope, final_generation) = match final_rollback {
+            RecoveryAction::RollbackPrevious {
+                envelope,
+                previous_lane_generation,
+                retry_pending: false,
+                ..
+            } => (envelope, previous_lane_generation),
+            other => panic!("unexpected action: {other:?}"),
+        };
+        let terminal = coordinator
+            .apply_result(result(
+                &final_envelope,
+                ExecutorOutcome::RolledBack {
+                    previous: ProcessOwner {
+                        pid: 10,
+                        process_start_identity: ProcessStartIdentity::new(10),
+                        config_fingerprint: ConfigFingerprint::new("sha256:active"),
+                        lane_generation: final_generation,
+                    },
+                },
+                &clock,
+            ))
+            .unwrap();
+
+        assert!(matches!(
+            terminal,
+            RecoveryAction::Complete {
+                completion: RecoveryCompletion {
+                    disposition: RecoveryDisposition::RolledBack,
+                    ..
+                }
+            }
+        ));
+        let status = coordinator.status();
+        assert_eq!(status.negative_cooldown_count, 2);
+        assert_eq!(
+            status.automatic_pacing_until_monotonic_ms,
+            Some(clock.now() + AUTOMATIC_PACING_MS)
+        );
     }
 
     #[test]

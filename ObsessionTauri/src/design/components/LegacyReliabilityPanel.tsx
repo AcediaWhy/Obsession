@@ -15,7 +15,7 @@ import type {
 } from "../../lib/tauri";
 import { useLegacyReliabilityStore } from "../../store/legacyReliabilityStore";
 import { useSettingsStore } from "../../store/settingsStore";
-import { Button, SectionLabel } from "./atoms";
+import { Button, SectionLabel, Switch } from "./atoms";
 
 export type LegacyReliabilityTone = "muted" | "ok" | "warn" | "danger";
 
@@ -217,6 +217,44 @@ function pacingLabel(remainingMs: number): string {
   return `около ${minutes} мин`;
 }
 
+const MODE_LABEL: Record<LegacyReliabilityMode, string> = {
+  observe_only: "Только наблюдение",
+  assisted: "С подтверждением",
+  automatic: "Автоматический режим",
+};
+
+function compactCategories(status: LegacyReliabilityStatus): string {
+  const categories = status.activeCategories.length
+    ? status.activeCategories
+    : status.lanes.map((lane) => lane.category);
+  return [...new Set(categories)]
+    .sort((left, right) => categoryRank(left) - categoryRank(right))
+    .map(categoryLabel)
+    .join(" и ");
+}
+
+function compactStatus(
+  status: LegacyReliabilityStatus,
+): LegacyReliabilityDisplayModel {
+  if (status.activeAttempt) {
+    return RECOVERY_PHASE_DISPLAY[status.activeAttempt.phase];
+  }
+  if (status.phase !== "observing") {
+    return getLegacyReliabilityDisplayModel(status.phase);
+  }
+  const lanes = status.lanes.map(getLegacyLaneDisplayModel);
+  if (lanes.some((lane) => lane.tone === "danger")) {
+    return { label: "Есть проблема", tone: "danger" };
+  }
+  if (lanes.some((lane) => lane.tone === "warn")) {
+    return { label: "Требуется внимание", tone: "warn" };
+  }
+  if (lanes.length > 0 && lanes.every((lane) => lane.tone === "ok")) {
+    return { label: "Всё работает", tone: "ok" };
+  }
+  return { label: "Наблюдение активно", tone: "ok" };
+}
+
 function waitIntentLabel(reason: LegacyReliabilityClassification): string {
   switch (reason) {
     case "working":
@@ -321,76 +359,74 @@ function LegacyLaneRow({
   const freezePending = controlsPending || !freezeSynchronized;
 
   return (
-    <li className="rounded-lg bg-white/5 px-3 py-2">
-      <div className="flex items-center justify-between gap-3 text-xs">
-        <span className="font-medium text-ink-soft">
-          {categoryLabel(lane.category)}
-        </span>
+    <li className="border-t border-white/10 py-2 first:border-t-0">
+      <div className="flex min-w-0 items-center gap-2.5">
         <span
-          className={`text-right font-semibold ${TONE_CLASS[display.tone]}`}
-        >
-          {display.label}
-        </span>
-      </div>
-      <div className="mt-1 flex items-center justify-between gap-3 text-3xs text-ink-muted">
-        <span
-          className="min-w-0 flex-1 truncate"
-          title={lane.activeConfig ?? undefined}
-        >
-          {lane.activeConfig ?? "Конфигурация не определена"}
-        </span>
-        <span
-          className="min-w-0 max-w-[70%] truncate text-right"
-          title={assessment}
-        >
-          {assessment}
-        </span>
-      </div>
-      {automatic ? (
-        <div
-          className={`mt-2 border-t pt-2 ${
-            halted ? "border-danger/20" : "border-white/10"
+          aria-hidden="true"
+          className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+            display.tone === "ok"
+              ? "bg-ok"
+              : display.tone === "warn"
+                ? "bg-warn"
+                : display.tone === "danger"
+                  ? "bg-danger"
+                  : "bg-ink-muted"
           }`}
-        >
-          <div className="flex min-w-0 items-center justify-between gap-2 text-3xs">
+        />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center justify-between gap-2 text-xs">
+            <span className="truncate font-medium text-ink-soft">
+              {categoryLabel(lane.category)}
+            </span>
             <span
-              className={`min-w-0 truncate font-medium ${
-                halted
-                  ? "text-danger"
-                  : frozen
-                    ? "text-warn"
-                    : "text-ink-muted"
+              className={`shrink-0 text-right font-semibold ${TONE_CLASS[display.tone]}`}
+            >
+              {display.label}
+            </span>
+          </div>
+          <div className="mt-0.5 flex min-w-0 items-center justify-between gap-2 text-3xs text-ink-muted">
+            <span
+              className="min-w-0 flex-1 truncate"
+              title={lane.activeConfig ?? undefined}
+            >
+              {lane.activeConfig ?? "Конфигурация не определена"}
+            </span>
+            <span className="shrink-0" title={assessment}>
+              {assessment}
+            </span>
+          </div>
+        </div>
+        {automatic ? (
+          halted ? (
+            <span className="shrink-0 text-3xs font-semibold text-danger">
+              Остановлено
+            </span>
+          ) : (
+            <button
+              type="button"
+              aria-label={`${configuredFrozen ? "Разрешить" : "Приостановить"} автоматическую замену для ${categoryLabel(lane.category)}`}
+              title={
+                configuredFrozen
+                  ? "Разрешить автоматическую замену"
+                  : "Приостановить автоматическую замену"
+              }
+              disabled={freezePending || !onFreezeChange}
+              onClick={() => onFreezeChange?.(lane.category, !configuredFrozen)}
+              className={`no-drag shrink-0 rounded-lg border px-2 py-1 text-3xs font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:cursor-not-allowed disabled:opacity-50 ${
+                frozen
+                  ? "border-warn/30 bg-warn/10 text-warn"
+                  : "border-glass-border bg-white/5 text-ink-muted hover:bg-white/10 hover:text-ink-soft"
               }`}
             >
-              {halted
-                ? "Автовосстановление остановлено"
-                : frozen
-                  ? "Автозамена приостановлена"
-                  : "Автозамена разрешена"}
-            </span>
-            {!halted ? (
-              <button
-                type="button"
-                aria-label={`${configuredFrozen ? "Разрешить" : "Приостановить"} автоматическую замену для ${categoryLabel(lane.category)}`}
-                disabled={freezePending || !onFreezeChange}
-                onClick={() => onFreezeChange?.(lane.category, !configuredFrozen)}
-                className="no-drag shrink-0 rounded-md border border-glass-border bg-white/5 px-2 py-1 font-semibold text-ink-soft transition-colors hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {freezePending
-                  ? "Применяется…"
-                  : configuredFrozen
-                    ? "Разрешить"
-                    : "Приостановить"}
-              </button>
-            ) : null}
-          </div>
-          <p className="mt-1 text-3xs leading-snug text-ink-muted">
-            {halted
-              ? "Требуется ручной перезапуск обхода."
-              : "Только для будущих попыток; текущая операция не прерывается."}
-          </p>
-        </div>
-      ) : null}
+              {freezePending
+                ? "…"
+                : configuredFrozen
+                  ? "Включить"
+                  : "Пауза"}
+            </button>
+          )
+        ) : null}
+      </div>
     </li>
   );
 }
@@ -482,58 +518,6 @@ function LegacyAutomaticOptInCard({
           Отмена
         </Button>
       </div>
-    </div>
-  );
-}
-
-function LegacyAutomaticControlCard({
-  paused,
-  sessionActive,
-  attemptActive,
-  pending,
-  onPauseChange,
-}: {
-  paused: boolean;
-  sessionActive: boolean;
-  attemptActive: boolean;
-  pending: boolean;
-  onPauseChange?: (paused: boolean) => void;
-}) {
-  return (
-    <div
-      role="status"
-      aria-live="polite"
-      className={`rounded-lg border px-3 py-2.5 text-xs ${
-        paused ? "border-warn/40 bg-warn/10" : "border-ok/35 bg-ok/10"
-      }`}
-    >
-      <div className="flex items-center justify-between gap-3">
-        <div className="min-w-0">
-          <div className={`font-semibold ${paused ? "text-warn" : "text-ok"}`}>
-            {paused ? "Автозамена остановлена" : "Автозамена включена"}
-          </div>
-          <p className="mt-0.5 text-3xs leading-snug text-ink-soft">
-            {paused
-              ? "Новые автоматические попытки запрещены; текущие конфигурации продолжают работать."
-              : sessionActive
-                ? "Меняется только проблемная категория после защитной проверки."
-                : "Автовосстановление начнёт работу при следующем запуске обхода."}
-          </p>
-        </div>
-        <Button
-          variant={paused ? "primary" : "danger"}
-          className="shrink-0 px-2.5 py-1.5 text-3xs"
-          disabled={pending || !onPauseChange}
-          onClick={() => onPauseChange?.(!paused)}
-        >
-          {pending ? "Применяется…" : paused ? "Возобновить" : "Остановить"}
-        </Button>
-      </div>
-      {paused && attemptActive ? (
-        <p className="mt-1.5 border-t border-warn/20 pt-1.5 text-3xs text-ink-muted">
-          Уже начатая операция будет безопасно завершена или отменена с откатом.
-        </p>
-      ) : null}
     </div>
   );
 }
@@ -733,13 +717,19 @@ function LegacyCompletionCard({
 
 export function LegacyReliabilityPanelView({
   status,
+  configuredEnabled = true,
   configuredMode = status.mode,
   configuredAutomaticPaused = status.automaticPaused,
   configuredFrozenCategories = status.frozenCategories,
+  detailsExpanded = true,
+  technicalDetailsExpanded = true,
   automaticOptInRequested = false,
   modeChangePending = false,
   approvalPending = false,
   approvalError = "",
+  onEnabledChange,
+  onDetailsExpandedChange,
+  onTechnicalDetailsExpandedChange,
   onModeChange,
   onAutomaticOptInConfirm,
   onAutomaticOptInCancel,
@@ -748,13 +738,19 @@ export function LegacyReliabilityPanelView({
   onApprove,
 }: {
   status: LegacyReliabilityStatus;
+  configuredEnabled?: boolean;
   configuredMode?: LegacyReliabilityMode;
   configuredAutomaticPaused?: boolean;
   configuredFrozenCategories?: string[];
+  detailsExpanded?: boolean;
+  technicalDetailsExpanded?: boolean;
   automaticOptInRequested?: boolean;
   modeChangePending?: boolean;
   approvalPending?: boolean;
   approvalError?: string;
+  onEnabledChange?: (enabled: boolean) => void;
+  onDetailsExpandedChange?: (expanded: boolean) => void;
+  onTechnicalDetailsExpandedChange?: (expanded: boolean) => void;
   onModeChange?: (mode: LegacyReliabilityMode) => void;
   onAutomaticOptInConfirm?: () => void;
   onAutomaticOptInCancel?: () => void;
@@ -762,7 +758,6 @@ export function LegacyReliabilityPanelView({
   onLaneFreezeChange?: (category: string, frozen: boolean) => void;
   onApprove?: (proposal: LegacyReliabilityProposal) => void;
 }) {
-  const display = getLegacyReliabilityDisplayModel(status.phase);
   const lanes = [...status.lanes].sort(
     (left, right) =>
       categoryRank(left.category) - categoryRank(right.category) ||
@@ -781,21 +776,29 @@ export function LegacyReliabilityPanelView({
   const frozenCategories = new Set(status.frozenCategories);
   const configuredFrozen = new Set(configuredFrozenCategories);
   const haltedCategories = new Set(status.haltedCategories);
-
-  const liveActivity = status.activeAttempt ? (
-    <LegacyActiveAttemptCard attempt={status.activeAttempt} />
-  ) : status.proposal ? (
-    <LegacyProposalCard
-      status={status}
-      configuredMode={configuredMode}
-      proposal={status.proposal}
-      approvalPending={approvalPending}
-      approvalError={approvalError}
-      onApprove={onApprove}
-    />
-  ) : sessionActive ? (
-    <LegacyIntentCallout intent={safeIntent} mode={status.mode} />
-  ) : null;
+  const summary = compactStatus(status);
+  const shutdownPending = !configuredEnabled && Boolean(status.activeAttempt);
+  const summaryTitle = shutdownPending
+    ? "Контроль доступа выключается"
+    : configuredEnabled
+      ? MODE_LABEL[configuredMode]
+      : "Контроль доступа выключен";
+  const categories = compactCategories(status);
+  const summaryDetail = shutdownPending
+    ? "Текущая замена безопасно завершится, затем контроль отключится"
+    : !configuredEnabled
+      ? "Конфигурации остаются без изменений"
+      : status.activeAttempt
+        ? `${categoryLabel(status.activeAttempt.category)} · ${RECOVERY_PHASE_DISPLAY[status.activeAttempt.phase].label}`
+        : status.phase === "inactive"
+          ? "Запустится вместе с обходом"
+          : categories
+            ? `${categories} под наблюдением`
+            : summary.label;
+  const technicalDetailsAvailable =
+    sessionActive ||
+    Boolean(status.lastCompletion) ||
+    status.negativeCooldownCount > 0;
   const completionActiveConfig = status.lastCompletion
     ? (status.lanes.find(
         (lane) => lane.category === status.lastCompletion?.category,
@@ -804,125 +807,205 @@ export function LegacyReliabilityPanelView({
 
   return (
     <div className="w-full">
-      <SectionLabel>Контроль надёжности</SectionLabel>
-      <div className="flex flex-col gap-2 rounded-lg bg-white/5 px-3 py-2.5 text-sm">
-        <div>
-          <div className="mb-1.5 flex items-center justify-between gap-3">
-            <span className="text-xs text-ink-muted">Режим восстановления</span>
-            {modeChangePending || !modeSynchronized ? (
-              <span aria-live="polite" className="text-3xs text-ink-muted">
-                Применяется…
-              </span>
-            ) : null}
-          </div>
-          <LegacyModeSelector
-            mode={configuredMode}
-            disabled={modeChangePending || automaticOptInRequested}
-            onChange={onModeChange}
-          />
-        </div>
-        <div className="flex items-center justify-between gap-3">
-          <span className="text-xs text-ink-muted">Состояние наблюдения</span>
+      <SectionLabel>Контроль доступа</SectionLabel>
+      <div className="rounded-xl border border-glass-border bg-white/5 p-2.5">
+        <div className="flex min-w-0 items-center gap-2.5">
           <span
-            className={`text-right text-xs font-semibold ${TONE_CLASS[display.tone]}`}
-          >
-            {display.label}
-          </span>
-        </div>
-      </div>
-
-      {automaticOptInRequested ? (
-        <div className="mt-2">
-          <LegacyAutomaticOptInCard
-            disabled={modeChangePending}
-            onConfirm={onAutomaticOptInConfirm}
-            onCancel={onAutomaticOptInCancel}
+            aria-hidden="true"
+            className={`h-2 w-2 shrink-0 rounded-full transition-colors ${
+              !configuredEnabled
+                ? "bg-ink-muted"
+                : summary.tone === "ok"
+                  ? "bg-ok shadow-[0_0_9px_1px_rgba(52,211,153,0.45)]"
+                  : summary.tone === "warn"
+                    ? "bg-warn"
+                    : summary.tone === "danger"
+                      ? "bg-danger"
+                      : "bg-ink-muted"
+            }`}
           />
-        </div>
-      ) : null}
-
-      {automaticActive ? (
-        <div className="mt-2">
-          <LegacyAutomaticControlCard
-            paused={status.automaticPaused}
-            sessionActive={sessionActive}
-            attemptActive={Boolean(status.activeAttempt)}
-            pending={automaticControlsPending}
-            onPauseChange={onAutomaticPauseChange}
-          />
-          {!status.automaticPaused &&
-          status.automaticPacingRemainingMs !== null &&
-          status.automaticPacingRemainingMs > 0 ? (
-            <p className="mt-1.5 px-1 text-3xs text-ink-muted">
-              Защитная пауза перед следующей автозаменой: {pacingLabel(status.automaticPacingRemainingMs)}.
+          <div className="min-w-0 flex-1">
+            <div className="flex min-w-0 items-center gap-2 text-xs">
+              <span className="truncate font-semibold text-ink-soft">
+                {summaryTitle}
+              </span>
+              {configuredEnabled ? (
+                <span
+                  className={`shrink-0 text-3xs font-semibold ${TONE_CLASS[summary.tone]}`}
+                >
+                  {summary.label}
+                </span>
+              ) : null}
+            </div>
+            <p className="mt-0.5 truncate text-3xs text-ink-muted" title={summaryDetail}>
+              {summaryDetail}
             </p>
+          </div>
+          <Switch
+            checked={configuredEnabled}
+            disabled={modeChangePending || !onEnabledChange}
+            ariaLabel={
+              configuredEnabled
+                ? "Выключить контроль доступа"
+                : "Включить контроль доступа"
+            }
+            onChange={onEnabledChange ?? (() => {})}
+          />
+          {configuredEnabled ? (
+            <button
+              type="button"
+              aria-label={detailsExpanded ? "Свернуть настройки" : "Настроить контроль доступа"}
+              aria-expanded={detailsExpanded}
+              disabled={modeChangePending || !onDetailsExpandedChange}
+              onClick={() => onDetailsExpandedChange?.(!detailsExpanded)}
+              className="no-drag shrink-0 rounded-lg px-1.5 py-1 text-xs font-semibold text-ink-muted transition-colors hover:bg-white/5 hover:text-ink-soft focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:opacity-40"
+            >
+              <span aria-hidden="true">{detailsExpanded ? "⌃" : "⌄"}</span>
+            </button>
           ) : null}
         </div>
-      ) : null}
 
-      {lanes.length > 0 ? (
-        <div className="mt-3">
-          <div className="mb-1.5 px-1 text-2xs font-semibold uppercase tracking-[0.12em] text-ink-muted">
-            Оценка категорий
+        {configuredEnabled && detailsExpanded ? (
+          <div className="mt-2.5 border-t border-white/10 pt-2.5">
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <span className="text-3xs font-semibold uppercase tracking-[0.12em] text-ink-muted">
+                Режим
+              </span>
+              {modeChangePending || !modeSynchronized ? (
+                <span aria-live="polite" className="text-3xs text-ink-muted">
+                  Применяется…
+                </span>
+              ) : null}
+            </div>
+            <LegacyModeSelector
+              mode={configuredMode}
+              disabled={modeChangePending || automaticOptInRequested}
+              onChange={onModeChange}
+            />
+
+            {automaticOptInRequested ? (
+              <div className="mt-2">
+                <LegacyAutomaticOptInCard
+                  disabled={modeChangePending}
+                  onConfirm={onAutomaticOptInConfirm}
+                  onCancel={onAutomaticOptInCancel}
+                />
+              </div>
+            ) : null}
+
+            {automaticActive ? (
+              <div className="mt-2 flex items-center gap-3 rounded-xl bg-white/5 px-3 py-2">
+                <div className="min-w-0 flex-1">
+                  <div className="text-xs font-medium text-ink-soft">Автозамена</div>
+                  <div className="mt-0.5 truncate text-3xs text-ink-muted">
+                    {status.automaticPaused
+                      ? "Новые попытки приостановлены"
+                      : status.automaticPacingRemainingMs !== null &&
+                          status.automaticPacingRemainingMs > 0
+                        ? `Следующая попытка: ${pacingLabel(status.automaticPacingRemainingMs)}`
+                        : "Включена для проблемных категорий"}
+                  </div>
+                </div>
+                <Switch
+                  checked={!configuredAutomaticPaused}
+                  disabled={automaticControlsPending || !onAutomaticPauseChange}
+                  ariaLabel={
+                    configuredAutomaticPaused
+                      ? "Возобновить автоматическую замену"
+                      : "Приостановить автоматическую замену"
+                  }
+                  onChange={(active) => onAutomaticPauseChange?.(!active)}
+                />
+              </div>
+            ) : null}
+
+            {lanes.length > 0 ? (
+              <ul
+                aria-label="Состояние категорий"
+                className="mt-2 rounded-xl bg-white/5 px-3"
+              >
+                {lanes.map((lane) => (
+                  <LegacyLaneRow
+                    key={`${lane.category}:${lane.laneGeneration}`}
+                    lane={lane}
+                    automatic={automaticActive}
+                    frozen={frozenCategories.has(lane.category)}
+                    configuredFrozen={configuredFrozen.has(lane.category)}
+                    halted={haltedCategories.has(lane.category)}
+                    controlsPending={modeChangePending}
+                    onFreezeChange={onLaneFreezeChange}
+                  />
+                ))}
+              </ul>
+            ) : null}
+
+            {status.proposal ? (
+              <div className="mt-2">
+                <LegacyProposalCard
+                  status={status}
+                  configuredMode={configuredMode}
+                  proposal={status.proposal}
+                  approvalPending={approvalPending}
+                  approvalError={approvalError}
+                  onApprove={onApprove}
+                />
+              </div>
+            ) : null}
+
+            {status.activeAttempt ? (
+              <div className="mt-2">
+                <LegacyActiveAttemptCard attempt={status.activeAttempt} />
+              </div>
+            ) : null}
+
+            {technicalDetailsAvailable ? (
+              <button
+                type="button"
+                aria-expanded={technicalDetailsExpanded}
+                disabled={!onTechnicalDetailsExpandedChange}
+                onClick={() =>
+                  onTechnicalDetailsExpandedChange?.(!technicalDetailsExpanded)
+                }
+                className="no-drag mt-2 w-full rounded-lg px-2 py-1.5 text-center text-3xs font-semibold text-ink-muted transition-colors hover:bg-white/5 hover:text-ink-soft focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:opacity-40"
+              >
+                Технические сведения {technicalDetailsExpanded ? "⌃" : "⌄"}
+              </button>
+            ) : null}
+
+            {technicalDetailsExpanded ? (
+              <div className="mt-2 border-t border-white/10 pt-2">
+                {!status.activeAttempt && !status.proposal && sessionActive ? (
+                  <LegacyIntentCallout intent={safeIntent} mode={status.mode} />
+                ) : null}
+                {status.lastCompletion ? (
+                  <div className="mt-2 first:mt-0">
+                    <div className="mb-1.5 px-1 text-3xs font-semibold uppercase tracking-[0.12em] text-ink-muted">
+                      Последний результат
+                    </div>
+                    <LegacyCompletionCard
+                      completion={status.lastCompletion}
+                      activeConfig={completionActiveConfig}
+                    />
+                  </div>
+                ) : null}
+                {status.negativeCooldownCount > 0 ? (
+                  <p className="mt-2 px-1 text-3xs text-ink-muted">
+                    Кандидаты после неудачной проверки: {status.negativeCooldownCount}
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
           </div>
-          <ul aria-label="Оценки категорий" className="flex flex-col gap-1.5">
-            {lanes.map((lane) => (
-              <LegacyLaneRow
-                key={`${lane.category}:${lane.laneGeneration}`}
-                lane={lane}
-                automatic={automaticActive}
-                frozen={frozenCategories.has(lane.category)}
-                configuredFrozen={configuredFrozen.has(lane.category)}
-                halted={haltedCategories.has(lane.category)}
-                controlsPending={modeChangePending}
-                onFreezeChange={onLaneFreezeChange}
-              />
-            ))}
-          </ul>
-        </div>
-      ) : null}
-
-      {liveActivity ? <div className="mt-2">{liveActivity}</div> : null}
-
-      {status.lastCompletion ? (
-        <div className="mt-2">
-          <div className="mb-1.5 px-1 text-2xs font-semibold uppercase tracking-[0.12em] text-ink-muted">
-            Последний результат
-          </div>
-          <LegacyCompletionCard
-            completion={status.lastCompletion}
-            activeConfig={completionActiveConfig}
-          />
-        </div>
-      ) : null}
-
-      {status.negativeCooldownCount > 0 ? (
-        <p className="mt-1.5 px-1 text-3xs text-ink-muted">
-          Кандидаты на паузе после неудачной проверки: {status.negativeCooldownCount}
-        </p>
-      ) : null}
-
-      <p className="mt-2 px-1 text-2xs leading-relaxed text-ink-muted">
-        {status.activeAttempt
-          ? status.activeAttempt.origin.kind === "automatic"
-            ? "Текущая автоматическая операция уже начата и безопасно завершится либо откатится; новый режим действует для следующих попыток."
-            : "Ранее подтверждённая операция уже начата и безопасно завершится либо откатится."
-          : !modeSynchronized
-          ? "Настройка режима применяется. До завершения конфигурации не меняются."
-          : configuredMode === "automatic"
-            ? status.automaticPaused
-              ? "Автоматические попытки остановлены глобальным переключателем."
-              : "Автозамена выполняется только после защитной проверки сети и состояния процесса."
-            : configuredMode === "assisted"
-              ? "Замена выполняется только после вашего подтверждения."
-              : "Сбои фиксируются, конфигурации не меняются."}
-      </p>
+        ) : null}
+      </div>
     </div>
   );
 }
 
 export function LegacyReliabilityPanel() {
   const [automaticOptInRequested, setAutomaticOptInRequested] = useState(false);
+  const [detailsExpanded, setDetailsExpanded] = useState(false);
+  const [technicalDetailsExpanded, setTechnicalDetailsExpanded] = useState(false);
   const status = useLegacyReliabilityStore((state) => state.status);
   const approvalPending = useLegacyReliabilityStore(
     (state) => state.approvalPending,
@@ -939,6 +1022,9 @@ export function LegacyReliabilityPanel() {
   const configuredMode = useSettingsStore(
     (state) => state.settings?.legacy_reliability_mode,
   );
+  const configuredEnabled = useSettingsStore(
+    (state) => state.settings?.legacy_reliability_enabled,
+  );
   const configuredAutomaticPaused = useSettingsStore(
     (state) => state.settings?.legacy_automatic_paused,
   );
@@ -951,6 +1037,7 @@ export function LegacyReliabilityPanel() {
   return (
     <LegacyReliabilityPanelView
       status={status}
+      configuredEnabled={configuredEnabled ?? true}
       configuredMode={configuredMode ?? status.mode}
       configuredAutomaticPaused={
         configuredAutomaticPaused ?? status.automaticPaused
@@ -961,9 +1048,26 @@ export function LegacyReliabilityPanel() {
       automaticOptInRequested={
         automaticOptInRequested && configuredMode !== "automatic"
       }
+      detailsExpanded={detailsExpanded}
+      technicalDetailsExpanded={technicalDetailsExpanded}
       modeChangePending={settingsSaving}
       approvalPending={approvalPending}
       approvalError={approvalError}
+      onEnabledChange={
+        configuredEnabled !== undefined
+          ? (enabled) => {
+              clearApprovalError();
+              setAutomaticOptInRequested(false);
+              if (!enabled) {
+                setDetailsExpanded(false);
+                setTechnicalDetailsExpanded(false);
+              }
+              void patchSettings({ legacy_reliability_enabled: enabled });
+            }
+          : undefined
+      }
+      onDetailsExpandedChange={setDetailsExpanded}
+      onTechnicalDetailsExpandedChange={setTechnicalDetailsExpanded}
       onModeChange={
         configuredMode
           ? (mode) => {

@@ -22,6 +22,7 @@ const fixture = {
         has_completed_onboarding: true,
         auto_recovery: false,
         legacy_reliability_migration_version: 1,
+        legacy_reliability_enabled: true,
         legacy_reliability_mode: "observe_only",
         legacy_automatic_paused: true,
         legacy_reliability_frozen_categories: [],
@@ -208,6 +209,7 @@ describe("BootstrapSnapshot contract", () => {
   it("sends Automatic controls through atomic settings patches", async () => {
     vi.mocked(invoke).mockResolvedValue(undefined);
 
+    await api.updateSettings({ legacy_reliability_enabled: false });
     await api.updateSettings({ legacy_reliability_mode: "automatic" });
     await api.updateSettings({ legacy_automatic_paused: true });
     await api.updateSettings({
@@ -215,12 +217,15 @@ describe("BootstrapSnapshot contract", () => {
     });
 
     expect(invoke).toHaveBeenNthCalledWith(1, "update_settings", {
-      patch: { legacy_reliability_mode: "automatic" },
+      patch: { legacy_reliability_enabled: false },
     });
     expect(invoke).toHaveBeenNthCalledWith(2, "update_settings", {
-      patch: { legacy_automatic_paused: true },
+      patch: { legacy_reliability_mode: "automatic" },
     });
     expect(invoke).toHaveBeenNthCalledWith(3, "update_settings", {
+      patch: { legacy_automatic_paused: true },
+    });
+    expect(invoke).toHaveBeenNthCalledWith(4, "update_settings", {
       patch: { legacy_reliability_frozen_categories: ["discord"] },
     });
   });

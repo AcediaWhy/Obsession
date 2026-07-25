@@ -33,7 +33,9 @@ use super::environment_gate::{
     RESET_REQUIRED_FLOWS, RESET_REQUIRED_TARGETS,
 };
 use super::manager::{ConfirmationFlow, ObserveOnlySnapshot};
-use super::recovery::{RecoveryAction, RecoveryConfig, RecoveryOrigin};
+use super::recovery::{
+    RecoveryAction, RecoveryConfig, RecoveryOrigin, MAX_AUTOMATIC_LADDER_CANDIDATES,
+};
 use super::target_registry::{Attribution, ConfigLookupError, TargetRegistry};
 use crate::eyes::flow::{ARMED_SILENCE_TIMEOUT_MS, BLACKHOLE_DELIVERY_GRACE_MS};
 
@@ -46,6 +48,7 @@ pub const CONFIRMATION_CLEAN_WINDOW_MS: u64 =
     ARMED_SILENCE_TIMEOUT_MS + CONFIRMATION_DELIVERY_MARGIN_MS + CONFIRMATION_TRACKER_SETTLE_MS;
 const INGRESS_PUBLICATION_SETTLE_MS: u64 = 250;
 const RETAINED_INCIDENT_TTL_MS: u64 = 30_000;
+const MAX_SCOPED_RECOVERY_TRANSITIONS: usize = MAX_AUTOMATIC_LADDER_CANDIDATES * 6 + 2;
 
 type BackendFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
@@ -1664,6 +1667,12 @@ struct ActiveExecution {
     manual_after_rollback: bool,
 }
 
+#[derive(Clone, Debug)]
+struct RetainedRetryIncident {
+    attempt_id: AttemptId,
+    anchor: IncidentGateAnchor,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ExecutorRunError {
     Busy,
@@ -1966,8 +1975,8 @@ pub async fn run_scoped_recovery(
     };
     let mut executor = ScopedExecutor::new(backend);
     let mut action = initial_action;
-    let mut pending_cache_failure = None;
-    for _ in 0..12 {
+    let mut pending_cache_failures = Vec::new();
+    for _ in 0..MAX_SCOPED_RECOVERY_TRANSITIONS {
         let executed_action = action.clone();
         let result = match executor.execute(action).await {
             Ok(result) => result,
@@ -1978,7 +1987,11 @@ pub async fn run_scoped_recovery(
                     .lock_recover()
                     .force_manual_failure(state.legacy_monotonic_ms())
                     .ok_or(ScopedRecoveryRunError::Executor(error))?;
-                persist_candidate_failure(app, pending_cache_failure.take()).await;
+                persist_candidate_failures(
+                    app,
+                    std::mem::take(&mut pending_cache_failures),
+                )
+                .await;
                 super::status::refresh_recovery_overlay(app);
                 return Ok(terminal);
             }
@@ -1995,7 +2008,12 @@ pub async fn run_scoped_recovery(
             );
         }
         if let Some(failure) = candidate_cache_failure(&executed_action, &result) {
-            pending_cache_failure = Some(failure);
+            if !pending_cache_failures.iter().any(|pending| {
+                pending.envelope.category == failure.envelope.category
+                    && pending.candidate.fingerprint() == failure.candidate.fingerprint()
+            }) {
+                pending_cache_failures.push(failure);
+            }
         }
         let next_action = { state.legacy_recovery.lock_recover().apply_result(result) };
         action = match next_action {
@@ -2007,7 +2025,11 @@ pub async fn run_scoped_recovery(
                     .lock_recover()
                     .force_manual_failure(state.legacy_monotonic_ms())
                     .ok_or(ScopedRecoveryRunError::Coordinator(error))?;
-                persist_candidate_failure(app, pending_cache_failure.take()).await;
+                persist_candidate_failures(
+                    app,
+                    std::mem::take(&mut pending_cache_failures),
+                )
+                .await;
                 super::status::refresh_recovery_overlay(app);
                 return Ok(terminal);
             }
@@ -2017,7 +2039,7 @@ pub async fn run_scoped_recovery(
             action,
             RecoveryAction::Complete { .. } | RecoveryAction::ManualIntervention { .. }
         ) {
-            persist_candidate_failure(app, pending_cache_failure.take()).await;
+            persist_candidate_failures(app, std::mem::take(&mut pending_cache_failures)).await;
             return Ok(action);
         }
     }
@@ -2029,7 +2051,7 @@ pub async fn run_scoped_recovery(
             .force_manual_failure(state.legacy_monotonic_ms())
     };
     if let Some(terminal) = terminal {
-        persist_candidate_failure(app, pending_cache_failure.take()).await;
+        persist_candidate_failures(app, std::mem::take(&mut pending_cache_failures)).await;
         super::status::refresh_recovery_overlay(app);
         Ok(terminal)
     } else {
@@ -2095,15 +2117,31 @@ fn candidate_cache_failure(
     })
 }
 
-async fn persist_candidate_failure(app: &AppHandle, failure: Option<PendingCandidateCacheFailure>) {
+async fn persist_candidate_failures(
+    app: &AppHandle,
+    failures: Vec<PendingCandidateCacheFailure>,
+) {
+    if failures.is_empty() {
+        return;
+    }
+    let local = AppScopedExecutorBackend::local_network().await;
+    for failure in failures {
+        persist_candidate_failure(app, Some(failure), &local).await;
+    }
+}
+
+async fn persist_candidate_failure(
+    app: &AppHandle,
+    failure: Option<PendingCandidateCacheFailure>,
+    local: &crate::netid::LocalNetworkIdentity,
+) {
     let Some(failure) = failure else {
         return;
     };
     // Rollback may take long enough for the user to move to another Wi-Fi.
     // Session-start identity alone is therefore insufficient for a persisted
     // cooldown: resolve the local network again immediately before the write.
-    let local = AppScopedExecutorBackend::local_network().await;
-    if !cache_network_fence_matches(&local, &failure.envelope.expected_network_fingerprint) {
+    if !cache_network_fence_matches(local, &failure.envelope.expected_network_fingerprint) {
         return;
     }
     let state = app.state::<AppState>();
@@ -2215,6 +2253,7 @@ impl Error for ExecutorRunError {}
 pub struct ScopedExecutor<B> {
     backend: B,
     active: Option<ActiveExecution>,
+    retained_retry_incident: Option<RetainedRetryIncident>,
     last_failure: Option<BackendFailure>,
 }
 
@@ -2226,6 +2265,7 @@ where
         Self {
             backend,
             active: None,
+            retained_retry_incident: None,
             last_failure: None,
         }
     }
@@ -2308,9 +2348,15 @@ where
                 envelope,
                 previous,
                 previous_lane_generation,
+                retry_pending,
             } => {
-                self.execute_rollback(envelope, previous, previous_lane_generation)
-                    .await
+                self.execute_rollback(
+                    envelope,
+                    previous,
+                    previous_lane_generation,
+                    retry_pending,
+                )
+                .await
             }
             RecoveryAction::Complete { .. } | RecoveryAction::ManualIntervention { .. } => {
                 Err(ExecutorRunError::ActionMismatch)
@@ -2329,6 +2375,10 @@ where
         if self.active.is_some() {
             return Err(ExecutorRunError::Busy);
         }
+        let retained_retry_incident = self
+            .retained_retry_incident
+            .take()
+            .filter(|retained| retained.attempt_id == envelope.attempt_id);
         if let Err(failure) = self
             .backend
             .authorize_recovery(origin, envelope.category.clone())
@@ -2477,7 +2527,16 @@ where
             }
         }
 
-        let gate_authorization = match self.backend.fresh_environment_gate(&envelope, None).await {
+        let gate_authorization = match self
+            .backend
+            .fresh_environment_gate(
+                &envelope,
+                retained_retry_incident
+                    .as_ref()
+                    .map(|retained| &retained.anchor),
+            )
+            .await
+        {
             Ok(authorization) => authorization,
             Err(failure) => return Ok(self.preflight_rejected(envelope, failure)),
         };
@@ -2486,12 +2545,18 @@ where
             &gate_fence(&envelope),
             gate_authorization.report.generated_at_monotonic_ms,
         )
-        .and_then(|()| {
-            validate_initial_gate_authorization(
+        .and_then(|()| match retained_retry_incident.as_ref() {
+            Some(retained) => authorize_retained_gate(
+                &gate_authorization,
+                &retained.anchor,
+                &envelope,
+                self.backend.monotonic_ms(),
+            ),
+            None => validate_initial_gate_authorization(
                 &gate_authorization,
                 &envelope,
                 self.backend.monotonic_ms(),
-            )
+            ),
         });
         if let Err(error) = initial_gate_result {
             return Ok(self.preflight_rejected(
@@ -3184,6 +3249,7 @@ where
         envelope: IntentEnvelope,
         previous: RecoveryConfig,
         previous_lane_generation: LaneGeneration,
+        retry_pending: bool,
     ) -> Result<ExecutorResult, ExecutorRunError> {
         let active = self.active_for(&envelope)?.clone();
         if active.previous != previous {
@@ -3193,31 +3259,42 @@ where
         let rollback = self
             .perform_rollback(&active, &envelope, previous_lane_generation)
             .await;
-        self.active = None;
-        match rollback {
-            Ok(owner) if !active.manual_after_rollback => Ok(result(
-                envelope,
-                ExecutorOutcome::RolledBack { previous: owner },
-                self.backend.monotonic_ms(),
-            )),
-            Ok(_) => Ok(result(
-                envelope,
-                ExecutorOutcome::RollbackFailed {
-                    previous_fingerprint: previous.fingerprint().clone(),
-                },
-                self.backend.monotonic_ms(),
-            )),
+        let outcome = match rollback {
+            Ok(owner) if !active.manual_after_rollback && retry_pending => {
+                match self.backend.current_fence(envelope.category.clone()).await {
+                    Ok(refreshed_fence) => {
+                        self.retained_retry_incident = Some(RetainedRetryIncident {
+                            attempt_id: envelope.attempt_id,
+                            anchor: active.incident_gate_anchor.clone(),
+                        });
+                        ExecutorOutcome::RolledBackForRetry {
+                            previous: owner,
+                            refreshed_fence,
+                        }
+                    }
+                    Err(failure) => {
+                        self.last_failure = Some(failure);
+                        ExecutorOutcome::RollbackFailed {
+                            previous_fingerprint: previous.fingerprint().clone(),
+                        }
+                    }
+                }
+            }
+            Ok(owner) if !active.manual_after_rollback => {
+                ExecutorOutcome::RolledBack { previous: owner }
+            }
+            Ok(_) => ExecutorOutcome::RollbackFailed {
+                previous_fingerprint: previous.fingerprint().clone(),
+            },
             Err(failure) => {
                 self.last_failure = Some(failure);
-                Ok(result(
-                    envelope,
-                    ExecutorOutcome::RollbackFailed {
-                        previous_fingerprint: previous.fingerprint().clone(),
-                    },
-                    self.backend.monotonic_ms(),
-                ))
+                ExecutorOutcome::RollbackFailed {
+                    previous_fingerprint: previous.fingerprint().clone(),
+                }
             }
-        }
+        };
+        self.active = None;
+        Ok(result(envelope, outcome, self.backend.monotonic_ms()))
     }
 
     async fn perform_rollback(
@@ -4060,6 +4137,7 @@ impl ScopedExecutorBackend for AppScopedExecutorBackend {
                 ));
             }
             let authorized = settings.dpi_engine == "legacy"
+                && settings.legacy_reliability_enabled
                 && settings.legacy_reliability_mode == "automatic"
                 && !settings.legacy_automatic_paused
                 && !settings
@@ -7048,7 +7126,7 @@ mod tests {
         coordinator: &mut RecoveryCoordinator,
         mut action: RecoveryAction,
     ) -> RecoveryAction {
-        for _ in 0..12 {
+        for _ in 0..MAX_SCOPED_RECOVERY_TRANSITIONS {
             executor.backend_mut().advance();
             let result = executor.execute(action).await.unwrap();
             action = coordinator.apply_result(result).unwrap();

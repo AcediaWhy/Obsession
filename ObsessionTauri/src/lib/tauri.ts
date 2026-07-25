@@ -117,6 +117,8 @@ export interface Settings {
   auto_recovery: boolean;
   /** One-way backend migration marker; not an Automatic opt-in control. */
   legacy_reliability_migration_version: number;
+  /** Master switch for Legacy Eyes, Manager and recovery coordination. */
+  legacy_reliability_enabled: boolean;
   /** Legacy reliability rollout. Automatic is an explicit Legacy-only opt-in. */
   legacy_reliability_mode: "observe_only" | "assisted" | "automatic";
   /** Global safety latch for new automatic Legacy attempts. */

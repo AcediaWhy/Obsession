@@ -36,6 +36,9 @@ pub struct Settings {
     /// Legacy Reliability rollout mode. Automatic remains a separate explicit
     /// opt-in and is never inferred from the compatibility `auto_recovery` flag.
     pub legacy_reliability_mode: String,
+    /// Master capability switch. When false, Eyes/Manager are not started and
+    /// recovery settings are retained only for a future explicit re-enable.
+    pub legacy_reliability_enabled: bool,
     /// Persisted Phase 4 kill switch. Missing/old settings deserialize to the
     /// safe engaged state; explicitly selecting Automatic disarms it atomically.
     pub legacy_automatic_paused: bool,
@@ -77,6 +80,7 @@ pub struct SettingsPatch {
     pub ai_provider: Option<String>,
     pub has_completed_onboarding: Option<bool>,
     pub auto_recovery: Option<bool>,
+    pub legacy_reliability_enabled: Option<bool>,
     pub legacy_reliability_mode: Option<String>,
     pub legacy_automatic_paused: Option<bool>,
     pub legacy_reliability_frozen_categories: Option<Vec<String>>,
@@ -103,6 +107,7 @@ impl Default for Settings {
             has_completed_onboarding: false,
             auto_recovery: false,
             legacy_reliability_migration_version: LEGACY_RELIABILITY_MIGRATION_VERSION,
+            legacy_reliability_enabled: true,
             legacy_reliability_mode: "observe_only".to_string(),
             legacy_automatic_paused: true,
             legacy_reliability_frozen_categories: Vec::new(),
@@ -171,6 +176,7 @@ impl Settings {
         if patch.auto_recovery.is_some() {
             self.auto_recovery = false;
         }
+        apply!(legacy_reliability_enabled);
         let requested_pause = patch.legacy_automatic_paused;
         if let Some(mode) = patch.legacy_reliability_mode {
             match mode.as_str() {
@@ -362,8 +368,19 @@ mod tests {
     #[test]
     fn legacy_automatic_mode_is_explicit_and_old_flag_migrates_safe() {
         let mut settings = Settings::default();
+        assert!(settings.legacy_reliability_enabled);
         assert_eq!(settings.legacy_reliability_mode, "observe_only");
         assert!(settings.legacy_automatic_paused);
+        settings.apply_patch(SettingsPatch {
+            legacy_reliability_enabled: Some(false),
+            ..Default::default()
+        });
+        assert!(!settings.legacy_reliability_enabled);
+        settings.apply_patch(SettingsPatch {
+            legacy_reliability_enabled: Some(true),
+            ..Default::default()
+        });
+        assert!(settings.legacy_reliability_enabled);
         settings.apply_patch(SettingsPatch {
             legacy_reliability_mode: Some("assisted".into()),
             ..Default::default()
@@ -409,6 +426,7 @@ mod tests {
         .unwrap();
         let migrated = Settings::load(&dir);
         assert!(!migrated.auto_recovery);
+        assert!(migrated.legacy_reliability_enabled);
         assert_eq!(migrated.legacy_reliability_mode, "observe_only");
         assert!(migrated.legacy_automatic_paused);
         assert_eq!(
