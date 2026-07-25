@@ -398,6 +398,7 @@ struct SessionContext {
     asn_region: Option<String>,
     tried: HashSet<String>,
     probe_transport: Option<StrategyTransport>,
+    candidate_fingerprint: Option<String>,
     probe_targets: Vec<ProbeTarget>,
     dns_cache: SessionDnsCache,
     session_mode: Option<SearchSessionMode>,
@@ -989,6 +990,7 @@ async fn handle_event(
                     context.asn_region = prepared.asn_region;
                     context.tried.clear();
                     context.probe_transport = Some(prepared.transport);
+                    context.candidate_fingerprint = None;
                     context.probe_targets = prepared.targets;
                     context.dns_cache = prepared.dns_cache;
                     context.session_mode = Some(prepared.mode);
@@ -1454,8 +1456,9 @@ async fn execute_actions(
                         candidate.transport
                     ),
                 );
-                context.tried.insert(fingerprint);
+                context.tried.insert(fingerprint.clone());
                 context.probe_transport = Some(candidate.transport);
+                context.candidate_fingerprint = Some(fingerprint);
                 context.last_probe = None;
                 context.pending_rollback = None;
                 let app = app.clone();
@@ -1741,10 +1744,14 @@ fn record_failure(app: &AppHandle, context: &SessionContext) {
     let Some(transport) = context.probe_transport else {
         return;
     };
+    let Some(candidate_fingerprint) = context.candidate_fingerprint.as_deref() else {
+        return;
+    };
     if cache.record_failure_for_transport(
         network_key,
         category,
         transport,
+        candidate_fingerprint,
         probe_summary(context, unix_secs()),
     ) {
         let _ = cache.save(&paths);

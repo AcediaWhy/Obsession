@@ -7,6 +7,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use super::compiler;
 use super::dsl::{
     override_key, AdaptiveCategory, StrategyCandidate, StrategyTransport, STRATEGY_SCHEMA_VERSION,
 };
@@ -495,6 +496,7 @@ impl AdaptiveStrategyCache {
         &mut self,
         network_key: &str,
         category: AdaptiveCategory,
+        candidate_fingerprint: &str,
         probe: ProbeSummary,
     ) -> bool {
         let Some(transport) = self
@@ -510,7 +512,13 @@ impl AdaptiveStrategyCache {
         else {
             return false;
         };
-        self.record_failure_for_transport(network_key, category, transport, probe)
+        self.record_failure_for_transport(
+            network_key,
+            category,
+            transport,
+            candidate_fingerprint,
+            probe,
+        )
     }
 
     pub fn record_failure_for_transport(
@@ -518,6 +526,7 @@ impl AdaptiveStrategyCache {
         network_key: &str,
         category: AdaptiveCategory,
         transport: StrategyTransport,
+        candidate_fingerprint: &str,
         probe: ProbeSummary,
     ) -> bool {
         let Some(entry) = self.networks.get_mut(network_key).and_then(|network| {
@@ -527,6 +536,9 @@ impl AdaptiveStrategyCache {
         }) else {
             return false;
         };
+        if compiler::effective_fingerprint(&entry.candidate) != candidate_fingerprint {
+            return false;
+        }
         entry.failure_count = entry.failure_count.saturating_add(1);
         entry.last_probe = Some(probe);
         if entry.failure_count >= DISABLE_AFTER_FAILURES {
@@ -785,6 +797,7 @@ mod tests {
     #[test]
     fn repeated_failures_disable_until_reconfirmed() {
         let candidate = youtube_candidate();
+        let fingerprint = compiler::effective_fingerprint(&candidate);
         let mut cache = AdaptiveStrategyCache::default();
         cache
             .put_confirmed("net", None, "1.0.2", candidate.clone(), 1, probe(1))
@@ -793,6 +806,7 @@ mod tests {
             assert!(cache.record_failure(
                 "net",
                 AdaptiveCategory::YoutubeTwitch,
+                &fingerprint,
                 ProbeSummary {
                     passed: 0,
                     failed: 2,
@@ -809,6 +823,56 @@ mod tests {
         assert!(cache
             .confirmed_candidate("net", AdaptiveCategory::YoutubeTwitch, "1.0.2")
             .is_some());
+    }
+
+    #[test]
+    fn failure_for_different_candidate_does_not_penalize_confirmed() {
+        let confirmed = youtube_candidate();
+        let different = StrategyCandidate::new(
+            AdaptiveCategory::YoutubeTwitch,
+            StrategyTransport::Tls,
+            vec![StrategyStep::new(StrategyFunction::MultiDisorderLegacy)
+                .with_arg("pos", StrategyValue::Text("1".into()))],
+            vec![AllowedPayload::TlsClientHello],
+            Some(AllowedRange::FirstTenDataPackets),
+        );
+        let different_fingerprint = compiler::effective_fingerprint(&different);
+        assert_ne!(
+            different_fingerprint,
+            compiler::effective_fingerprint(&confirmed)
+        );
+
+        let mut cache = AdaptiveStrategyCache::default();
+        cache
+            .put_confirmed("net", None, "1.0.2", confirmed.clone(), 1, probe(1))
+            .unwrap();
+
+        for at in 2..=4 {
+            assert!(!cache.record_failure_for_transport(
+                "net",
+                AdaptiveCategory::YoutubeTwitch,
+                StrategyTransport::Tls,
+                &different_fingerprint,
+                ProbeSummary {
+                    passed: 0,
+                    failed: 2,
+                    measured_at: at,
+                },
+            ));
+        }
+
+        let entry = cache
+            .entry_for_transport_scoped(
+                "net",
+                AdaptiveCategory::YoutubeTwitch,
+                StrategyTransport::Tls,
+                "1.0.2",
+                None,
+            )
+            .unwrap();
+        assert_eq!(entry.candidate, confirmed);
+        assert_eq!(entry.failure_count, 0);
+        assert_eq!(entry.disabled_reason, None);
     }
 
     #[test]
