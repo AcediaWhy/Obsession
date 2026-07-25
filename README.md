@@ -14,8 +14,7 @@ DPI-обход, ИИ-разблокировка и Telegram-прокси — в 
 
 <br/>
 
-<!-- Когда появится публичная ссылка на инсталлер — замените #установка на прямой URL -->
-[![Скачать Obsession Setup](https://img.shields.io/badge/%E2%86%93-%D0%A1%D0%BA%D0%B0%D1%87%D0%B0%D1%82%D1%8C%20Obsession%20Setup-8a63d2?style=for-the-badge)](#установка)
+[![Скачать Obsession Setup](https://img.shields.io/badge/%E2%86%93-%D0%A1%D0%BA%D0%B0%D1%87%D0%B0%D1%82%D1%8C%20Obsession%20Setup-8a63d2?style=for-the-badge)](https://github.com/Aizenssk-ss/VlarpSu/releases/latest)
 
 <sub>Установщик ~22 МБ · Windows 10/11 · x64 · без зависимостей</sub>
 
@@ -33,15 +32,10 @@ DPI-обход, ИИ-разблокировка и Telegram-прокси — в 
 
 ## Установка
 
-1. **Скачайте** [«Obsession Setup»](#).
-2. **Запустите** `ObsessionV2.exe` — установщик проведёт через 4 шага (Аврора и глаз прилагаются).
+1. **Скачайте** [«Obsession Setup»](https://github.com/Aizenssk-ss/VlarpSu/releases/latest).
+2. **Запустите** `Obsession-Setup_<версия>_x64.exe` — установщик проведёт через 4 шага (Аврора и глаз прилагаются).
 3. **Разрешите запрос UAC.** Без прав администратора не работают winws (обход) и запись в `hosts` (ИИ).
 4. **Готово.** Obsession живёт в трее — открывайте по клику на иконку-глаз.
-
-> [!NOTE]
-> Прямой ссылки на установщик пока нет — подставьте её в шаг 1 (сейчас там `#`).
-
-<!-- Замените # в шаге 1 на ссылку: GitHub Releases или прямая -->
 
 <sub>~22 МБ · Windows 10/11 x64. Всё внутри — winws, WinDivert, TgWsProxy, конфиги и списки распаковываются в <code>%APPDATA%\Obsession</code> при первом запуске.</sub>
 
@@ -57,7 +51,7 @@ DPI-обход, ИИ-разблокировка и Telegram-прокси — в 
 | `tg` | **Telegram-прокси** | MTProto-через-WebSocket в один клик (headless TgWsProxy). Ссылка `tg://proxy`, **QR для телефона** по LAN, пресеты Fake-TLS, диск-кэш CF-доменов. |
 | `hub` | **Обзор** | Сетевая идентичность и сводный статус обхода / прокси / ИИ на одном экране. |
 | `cfg` | **Профили и списки** | Наборы настроек и встроенный редактор доменных списков. |
-| `ui` | **Темы и атмосфера** | Aurora Glass с живыми Three.js-фонами. Темы Aurora · Ophanim · Rain и скрытые. → [галерея](#темы-и-атмосфера) |
+| `ui` | **Темы и атмосфера** | Aurora Glass с живыми WebGL2/Canvas-фонами. Темы Aurora · Ophanim · Rain и скрытые. → [галерея](#темы-и-атмосфера) |
 | `sys` | **Система** | Динамическая иконка трея, нативные уведомления, тосты, кастомный титлбар, UAC-элевация, автозапуск, онбординг, персист настроек. |
 
 ---
@@ -76,12 +70,12 @@ DPI-обход, ИИ-разблокировка и Telegram-прокси — в 
 
 ## Темы и атмосфера
 
-Интерфейс построен на **Aurora Glass** — тёмном glassmorphism с живыми Three.js-фонами. Три открытые темы (**Aurora · Ophanim · Rain**) и скрытые, которые нужно найти. Для слабых машин есть режим «меньше анимаций».
+Интерфейс построен на **Aurora Glass** — тёмном glassmorphism с живыми фонами на голом WebGL2/Canvas 2D, без внешних 3D-движков. Три открытые темы (**Aurora · Ophanim · Rain**) и скрытые, которые нужно найти. Для слабых машин есть режим «меньше анимаций».
 
 <div align="center">
 <table>
 <tr>
-<td align="center"><img src="ObsessionTauri/public/rain/city.jpg" width="260" alt="Тема Rain — город под дождём" /><br/><sub><b>Rain</b></sub></td>
+<td align="center"><img src="ObsessionTauri/public/rain/poster.jpg" width="260" alt="Тема Rain — дом у пруда в тумане за мокрым стеклом" /><br/><sub><b>Rain</b></sub></td>
 <td align="center"><img src="ObsessionTauri/public/catnap/poster.jpg" width="260" alt="Скрытая тема Catnap — спящий кот в закатном вагоне" /><br/><sub><b>Catnap</b> · скрытая</sub></td>
 <td align="center"><img src="ObsessionTauri/public/midnight/poster.jpg" width="260" alt="Скрытая тема Midnight — фонарь в ночном тумане" /><br/><sub><b>Midnight</b> · скрытая</sub></td>
 </tr>
@@ -108,7 +102,7 @@ DPI-обход, ИИ-разблокировка и Telegram-прокси — в 
 |---|---|
 | **Backend** | Rust · Tauri 2 · `tokio` · `reqwest` · `windows` · WinDivert |
 | **Frontend** | React 18 · TypeScript · Vite · Tailwind CSS · Framer Motion · Zustand |
-| **Графика** | Three.js (`@react-three/fiber`, `drei`, `postprocessing`) |
+| **Графика** | Голый WebGL2 + Canvas 2D — собственный конвейер, без 3D-движков |
 
 ### Требования
 
@@ -137,13 +131,17 @@ ObsessionTauri/
 ├── src/                     React-фронтенд (Aurora Glass)
 │   ├── screens/             Overview · Dpi · Ai · Telegram · Lists · Profiles · Settings
 │   ├── store/               Zustand: dpi · hosts · proxy · lists · profile · log · theme · …
-│   ├── design/              дизайн-токены, компоненты, Three.js-сцены
+│   ├── design/              дизайн-токены, компоненты, WebGL2/Canvas-сцены тем
+│   │   └── components/rain/ конвейер Rain: мир → капли/конденсат → композит
 │   └── lib/tauri.ts         типизированный мост invoke + события
 │
 └── src-tauri/src/           Rust-бэкенд
     ├── dpi.rs               winws: spawn/kill, стрим лога, orphan, тест
     ├── eyes/                «Глаза» — наблюдатель трафика (WinDivert)
     ├── brain/               «Мозг» — авто-восстановление стратегии обхода
+    ├── legacy_reliability/  надёжность Zapret1: оценка, Environment Gate, откат
+    ├── adaptive_strategy/   подбор Strategy Pack для Zapret2 (типизированный DSL)
+    ├── dpi_engine/          абстракция Zapret1/Zapret2 + манифесты паков
     ├── netcache.rs          рейтинг надёжности конфигов по сети
     ├── netid.rs             идентификация сети (MAC шлюза → ASN/регион)
     ├── hosts.rs             атомарная запись hosts + бэкап + провайдеры
