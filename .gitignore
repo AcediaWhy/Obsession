@@ -34,6 +34,11 @@ Thumbs.db
 .agents/
 skills-lock.json
 .codex-dev/
+# Локальная обвязка AI-агентов (навыки, планы, кэш) — на любом уровне дерева.
+.claude/
+.superpowers/
+# Случайный локальный вложение, не относится к приложению.
+/.vibe-contact.jpg
 
 # --- Прочие проекты, не относящиеся к репозиторию (лежат локально) ---
 tg-ws-proxy-1.8.1/
@@ -42,8 +47,11 @@ Smart-Zapret-Launcher-1.62/
 ObessionLauncher/
 LarpingLauncher/
 Goida-AI-Unlocker-1.3.0/
-# Референс-исходники codrops/RainEffect (для изучения движка, не часть приложения)
+# Референс-исходники codrops/RainEffect (для изучения движка, не часть приложения).
+# Слэш в начале обязателен: без него паттерн заматчил бы и наш
+# ObsessionTauri/src/design/components/rain/ — исходники сцены Rain.
 RainEffect-master/
+/rain/
 
 # Локальная распаковка официального Zapret2 для сверки и отбора ресурсов.
 # В приложение входят только проверенные файлы из src-tauri/resources/bin/zapret2.
