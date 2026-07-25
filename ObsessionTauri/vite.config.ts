@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { readFileSync } from "node:fs";
@@ -26,5 +27,11 @@ export default defineConfig({
     host: host || false,
     hmr: host ? { protocol: "ws", host, port: 1421 } : undefined,
     watch: { ignored: ["**/src-tauri/**"] },
+  },
+  // Юнит-тесты редьюсеров сторов. Окружение node: тесты чистые (мокают ../lib/tauri),
+  // DOM не нужен. Rust-тесты живут отдельно в src-tauri (cargo test).
+  test: {
+    environment: "node",
+    include: ["src/**/*.{test,spec}.{ts,tsx}"],
   },
 });
