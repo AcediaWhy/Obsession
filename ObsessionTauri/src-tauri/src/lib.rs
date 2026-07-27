@@ -398,12 +398,18 @@ fn begin_exit(app: &tauri::AppHandle) {
     }
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        // Последняя страховка от зависшего драйвера/внешнего процесса.
+        // Последняя страховка от зависшего драйвера/внешнего процесса. Делает
+        // exit ТОЛЬКО если shutdown не завершился штатно за 15с — иначе поток
+        // убивал бы процесс посреди teardown WebView2 даже при нормальном выходе.
+        static SHUTDOWN_DONE: AtomicBool = AtomicBool::new(false);
         std::thread::spawn(|| {
             std::thread::sleep(std::time::Duration::from_secs(15));
-            std::process::exit(0);
+            if !SHUTDOWN_DONE.load(Ordering::SeqCst) {
+                std::process::exit(0);
+            }
         });
         shutdown(&app).await;
+        SHUTDOWN_DONE.store(true, Ordering::SeqCst);
         app.exit(0);
     });
 }

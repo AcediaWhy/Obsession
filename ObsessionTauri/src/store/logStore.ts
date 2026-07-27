@@ -20,7 +20,15 @@ let flushStarted = false;
 const pending: LogLine[] = [];
 
 function flushPendingLogs(): void {
-  if (pending.length === 0) return;
+  if (pending.length === 0) {
+    // Логов нет — останавливаем цикл, чтобы не держать scheduler в continuous
+    // work на пустом логе (перезапустится при следующем push через invalidate).
+    if (flushStarted) {
+      flushLoop.stop();
+      flushStarted = false;
+    }
+    return;
+  }
   const batch = pending.splice(0, pending.length);
   useLogStore.setState((state) => ({
     lines: [...state.lines, ...batch].slice(-MAX),

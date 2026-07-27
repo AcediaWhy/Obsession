@@ -144,6 +144,10 @@ fn begin_generation_state(p: &mut ProxyState) -> (u64, DetachedProxy) {
         p.generation = 1;
     }
     let generation = p.generation;
+    // Отменяем спящий таймер предыдущей сессии — он неактуален.
+    if let Some(abort) = p.lan_expiry_abort.take() {
+        abort.abort();
+    }
     let detached = DetachedProxy {
         pid: p.pid.take(),
         forwarder: p.forwarder.take(),
@@ -259,14 +263,20 @@ fn spawn_lan_expiry_timer(app: &AppHandle, generation: u64, pid: u32, secs: u16)
     if secs == 0 {
         return; // 0 = без авто-закрытия
     }
-    let app = app.clone();
-    tokio::spawn(async move {
+    let app2 = app.clone();
+    let handle = tokio::spawn(async move {
         tokio::time::sleep(Duration::from_secs(secs as u64)).await;
-        if !is_current(&app, generation, pid) {
+        if !is_current(&app2, generation, pid) {
             return; // сессия сменилась — таймер неактуален
         }
-        close_lan_publication(&app, "истёк таймаут").await;
+        close_lan_publication(&app2, "истёк таймаут").await;
     });
+    // AbortHandle сохраняем, чтобы stop/shutdown не копили спящие таймеры
+    // (по одному на старт с lan_secs>0; раньше жили до естественного пробуждения).
+    app.state::<AppState>()
+        .proxy
+        .lock_recover()
+        .lan_expiry_abort = Some(handle.abort_handle());
 }
 
 /// Async-обёртка [`cleanup_previous_runtime`]: блокирующие taskkill/netsh уходят
