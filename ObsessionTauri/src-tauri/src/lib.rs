@@ -228,8 +228,13 @@ pub fn run() {
                     loop {
                         std::thread::sleep(std::time::Duration::from_millis(300));
                         // При выходе прекращаем поллинг: иначе поток вечно дёргает
-                        // webmem/emit на умирающем AppHandle. Штатно завершаемся.
-                        if h.state::<AppState>().shutting_down.load(Ordering::SeqCst) {
+                        // webmem/emit на умирающем AppHandle. try_state, не state():
+                        // в конце teardown Tauri может снять state до завершения
+                        // потока — state() там паникует (узкое, но реальное окно).
+                        let Some(state) = h.try_state::<AppState>() else {
+                            break;
+                        };
+                        if state.shutting_down.load(Ordering::SeqCst) {
                             break;
                         }
                         let Some(win) = h.get_webview_window("main") else {

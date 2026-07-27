@@ -346,20 +346,29 @@ pub(crate) fn stop_processes_bounded<C: ProcessControl>(
 
     for (index, process) in processes.into_iter().enumerate() {
         let tx = tx.clone();
-        let control = control.clone();
         let reaper = std::thread::Builder::new()
             .name(format!("dpi-process-reaper-{}", process.pid))
-            .spawn(move || {
-                let state = stop_process(process, worker_deadline, control.as_ref());
-                let _ = tx.send((index, state));
-                state
+            .spawn({
+                let control = control.clone();
+                move || {
+                    let state = stop_process(process, worker_deadline, control.as_ref());
+                    let _ = tx.send((index, state));
+                    state
+                }
             });
         match reaper {
             Ok(worker) => {
                 pending += 1;
                 workers.push((index, worker));
             }
-            Err(_) => states[index] = Some(ProcessStopState::ReaperFailed),
+            Err(_) => {
+                // ОС отказала в spawn потока (исчерпание handles/памяти). Раньше
+                // процесс помечался ReaperFailed и считался неубитым навсегда.
+                // Fallback: синхронный kill в вызывающем потоке — медленнее
+                // (без параллелизма), но не оставляет процесс живым.
+                let state = stop_process(process, worker_deadline, control.as_ref());
+                states[index] = Some(state);
+            }
         }
     }
     drop(tx);

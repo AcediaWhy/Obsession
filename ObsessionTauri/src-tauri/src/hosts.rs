@@ -308,7 +308,7 @@ pub async fn install(app: &AppHandle, p: Provider) -> Result<(), String> {
     let pa = snap::snapshot_and_apply(&hosts_path(), &backups_dir, name, &to_write, &oid, &ts)
         .map_err(|e| format!("Ошибка применения hosts: {e}"))?;
 
-    crate::dpi::flush_dns();
+    crate::dpi::flush_dns_async().await;
 
     // 6. Read-only probes AI-сервисов (WS1.6). Без токенов/cookies; откат ТОЛЬКО
     //    если провалены ВСЕ core-сервисы (защита от ложного отката на флапе одного).
@@ -336,7 +336,7 @@ pub async fn install(app: &AppHandle, p: Provider) -> Result<(), String> {
         snap::remove_snapshot(&backups_dir, &pa.applied);
         snap::remove_snapshot(&backups_dir, &pa.pre_op);
         let _ = snap::save_state(&state_path, &state);
-        crate::dpi::flush_dns();
+        crate::dpi::flush_dns_async().await;
         util::emit_log(
             app,
             "error",
@@ -377,7 +377,7 @@ pub async fn uninstall(app: &AppHandle) -> Result<(), String> {
             ps.applied_sha256 = None; // hosts теперь исходный — обнуляем «применённое»
         }
         let _ = snap::save_state(&state_path, &state);
-        crate::dpi::flush_dns();
+        crate::dpi::flush_dns_async().await;
         util::emit_log(
             app,
             "success",
@@ -416,7 +416,7 @@ pub async fn uninstall(app: &AppHandle) -> Result<(), String> {
         ps.applied_sha256 = None;
     }
     let _ = snap::save_state(&state_path, &state);
-    crate::dpi::flush_dns();
+    crate::dpi::flush_dns_async().await;
     app.state::<AppState>().hosts_revision.bump();
     Ok(())
 }
@@ -440,7 +440,7 @@ pub async fn restore_last_known_good(app: &AppHandle, p: Provider) -> Result<(),
         ps.applied_sha256 = Some(lkg.sha256.clone());
     }
     let _ = snap::save_state(&state_path, &state);
-    crate::dpi::flush_dns();
+    crate::dpi::flush_dns_async().await;
     util::emit_log(
         app,
         "success",

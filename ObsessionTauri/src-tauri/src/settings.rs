@@ -265,6 +265,7 @@ fn sanitize_frozen_categories(categories: &mut Vec<String>) {
 }
 
 fn atomic_replace_with_retry(source: &Path, destination: &Path) -> io::Result<()> {
+    let mut last_error = None;
     for attempt in 0..50 {
         match atomic_replace(source, destination) {
             Ok(()) => return Ok(()),
@@ -275,12 +276,17 @@ fn atomic_replace_with_retry(source: &Path, destination: &Path) -> io::Result<()
                         io::ErrorKind::PermissionDenied | io::ErrorKind::WouldBlock
                     ) || matches!(error.raw_os_error(), Some(5 | 32))) =>
             {
+                last_error = Some(error);
                 std::thread::sleep(std::time::Duration::from_millis(2));
             }
             Err(error) => return Err(error),
         }
     }
-    unreachable!()
+    // 50 попыток исчерпаны: возвращаем последнюю ошибку вместо unreachable!() —
+    // при panic=abort это была бы гарантированная остановка приложения.
+    Err(last_error.unwrap_or_else(|| {
+        io::Error::other("atomic_replace: 50 attempts exhausted")
+    }))
 }
 
 #[cfg(windows)]

@@ -4810,9 +4810,16 @@ fn kill_pid(pid: u32) {
         .output();
 }
 
-/// Сбрасывает DNS-кэш (ipconfig /flushdns).
+/// Сбрасывает DNS-кэш (ipconfig /flushdns). Синхронный — только для не-async
+/// контекстов; на async-путях используйте [`flush_dns_async`], чтобы блокирующий
+/// spawn ipconfig не занимал tokio-воркер (на залоченной системе — секунды).
 pub fn flush_dns() {
     let _ = util::std_command("ipconfig").arg("/flushdns").output();
+}
+
+/// Async-вариант: уводит блокирующий spawn ipconfig в blocking-пул.
+pub async fn flush_dns_async() {
+    let _ = tauri::async_runtime::spawn_blocking(flush_dns).await;
 }
 
 /// Убивает PID вне tokio-воркера: блокирующий taskkill уходит в blocking-пул.
