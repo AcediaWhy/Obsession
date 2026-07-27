@@ -302,6 +302,10 @@ fn is_virtual_adapter(name: &str) -> bool {
 }
 
 /// Дописывает строку лога в файл на диске. Ошибки глушим — лог не критичен.
+/// Файл держится открытым в BufWriter: раньше каждое сообщение делало
+/// open/write/close под глобальным мьютексом — сотни syscalls в секунду из
+/// горячего потока Глаз. Flush — при накоплении 4КБ или раз в 2с (по таймеру
+/// в emit_log), чтобы лог был живым для чтения извне.
 fn append_log_file(app: &AppHandle, ts: &str, level: &str, source: &str, message: &str) {
     use std::io::Write;
     let Some(state) = app.try_state::<AppState>() else {
@@ -310,14 +314,21 @@ fn append_log_file(app: &AppHandle, ts: &str, level: &str, source: &str, message
     let file = state.paths.logs_dir().join("app.log");
     // Сериализуем аппенды из разных потоков (поток Глаз, async-задачи, главный):
     // без лока их writeln! могли бы переплестись в одной строке файла.
-    static LOG_LOCK: Mutex<()> = Mutex::new(());
-    let _guard = LOG_LOCK.lock_recover();
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&file)
-    {
-        let _ = writeln!(f, "{ts} [{level}] {source}: {message}");
+    static LOG_WRITER: Mutex<Option<std::io::BufWriter<std::fs::File>>> = Mutex::new(None);
+    let mut guard = LOG_WRITER.lock_recover();
+    if guard.is_none() {
+        match std::fs::OpenOptions::new().create(true).append(true).open(&file) {
+            Ok(f) => *guard = Some(std::io::BufWriter::with_capacity(8192, f)),
+            Err(_) => return,
+        }
+    }
+    if let Some(w) = guard.as_mut() {
+        let _ = writeln!(w, "{ts} [{level}] {source}: {message}");
+        // Пороговый flush: BufWriter сбросит сам при заполнении, но для
+        // малообъёмных логов гарантируем периодический сброс (см. emit_log).
+        if w.buffer().len() >= 4096 {
+            let _ = w.flush();
+        }
     }
 }
 

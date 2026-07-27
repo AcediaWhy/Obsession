@@ -196,9 +196,12 @@ pub async fn install(app: &AppHandle, p: Provider) -> Result<(), String> {
         &format!("Установка ИИ-обхода ({})...", p.label()),
     );
     let (state_path, backups_dir) = state_paths(app);
+    let state_ref = app.state::<AppState>();
+    let _hosts_gate = state_ref.hosts_gate.lock().await;
     let mut state = snap::load_state(&state_path);
     let current = read_hosts_bytes()
         .map_err(|e| format!("не удалось прочитать системный hosts: {e}"))?;
+    let current_sha = snap::sha256_hex(&current);
     let name = p.name();
     let oid = op_id();
     let ts = now_iso();
@@ -276,7 +279,32 @@ pub async fn install(app: &AppHandle, p: Provider) -> Result<(), String> {
     }
     let to_write = report.normalized; // LF, без BOM (F.1)
 
-    // 5. Транзакция: pre-op snapshot → атомарная запись → re-read+hash verify.
+    // 5. TOCTOU-guard: пока шла сеть (до 30с), файл мог быть изменён извне.
+    // Проверяем sha256 прямо перед записью — при расхождении отказываемся,
+    // чтобы не затирать чужие изменения молча.
+    let now = read_hosts_bytes()
+        .map_err(|e| format!("не удалось перечитать hosts перед записью: {e}"))?;
+    if snap::sha256_hex(&now) != current_sha {
+        let _ = snap::write_snapshot(
+            &backups_dir,
+            &format!("{oid}_external_precommit"),
+            Some(name),
+            &ts,
+            &now,
+        );
+        util::emit_log(
+            app,
+            "warn",
+            "hosts",
+            "hosts изменён вне Obsession во время подготовки — установка отменена.",
+        );
+        return Err(
+            "hosts был изменён вне Obsession во время подготовки. Установка отменена."
+                .to_string(),
+        );
+    }
+
+    // 6. Транзакция: pre-op snapshot → атомарная запись → re-read+hash verify.
     let pa = snap::snapshot_and_apply(&hosts_path(), &backups_dir, name, &to_write, &oid, &ts)
         .map_err(|e| format!("Ошибка применения hosts: {e}"))?;
 
@@ -335,6 +363,8 @@ pub async fn install(app: &AppHandle, p: Provider) -> Result<(), String> {
 }
 
 pub async fn uninstall(app: &AppHandle) -> Result<(), String> {
+    let state_ref = app.state::<AppState>();
+    let _hosts_gate = state_ref.hosts_gate.lock().await;
     util::emit_log(app, "info", "hosts", "Удаление ИИ-обхода...");
     let (state_path, backups_dir) = state_paths(app);
     let mut state = snap::load_state(&state_path);
@@ -394,6 +424,8 @@ pub async fn uninstall(app: &AppHandle) -> Result<(), String> {
 /// «Вернуть рабочую версию»: точный откат к last-known-good провайдера
 /// (команда `hosts_restore`).
 pub async fn restore_last_known_good(app: &AppHandle, p: Provider) -> Result<(), String> {
+    let state_ref = app.state::<AppState>();
+    let _hosts_gate = state_ref.hosts_gate.lock().await;
     let (state_path, backups_dir) = state_paths(app);
     let mut state = snap::load_state(&state_path);
     let name = p.name();

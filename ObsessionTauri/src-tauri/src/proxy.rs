@@ -300,6 +300,9 @@ fn cleanup_previous_runtime(app: &AppHandle, detached: DetachedProxy, image: Opt
     }
     // PyInstaller-onefile создаёт дочерний процесс с тем же именем. Sweep
     // выполняется до нового spawn и под gate, поэтому не может задеть новый PID.
+    // Ограничение: taskkill /IM убивает ВСЕ процессы с этим именем, включая
+    // чужой TgWsProxy пользователя — принятый компромисс для добивания
+    // PyInstaller-детей (аналогично документировано в dpi::kill_orphans).
     if let Some(image) = image {
         let swept = util::std_command("taskkill")
             .args(["/F", "/T", "/IM", image])
@@ -488,10 +491,13 @@ async fn start_locked(app: &AppHandle, port: u16, fake_tls_domain: &str) -> Resu
 
     // Monitor имеет право на cleanup только пока generation+PID актуальны.
     let app_mon = app.clone();
+    let (dead_tx, dead_rx) = oneshot::channel::<()>();
+    let mut dead_rx = Some(dead_rx);
     tokio::spawn(async move {
         let status = child.wait().await;
         let code = status.ok().and_then(|s| s.code()).unwrap_or(-1);
         let lived = started.elapsed().as_millis();
+        let _ = dead_tx.send(());
         let Some(detached) = detach_if_current(&app_mon, generation, pid) else {
             return; // штатный stop или уже начался новый generation
         };
@@ -527,8 +533,30 @@ async fn start_locked(app: &AppHandle, port: u16, fake_tls_domain: &str) -> Resu
             Err(_) => {}
         }
     };
-    let link = received_link
-        .unwrap_or_else(|| generate_manual("127.0.0.1", port, &secret, fake_tls_domain));
+    let link = match received_link {
+        Some(l) => l,
+        None => {
+            // Не fabricate-ссылка на непроверенный процесс: если прокси не выдал
+            // ссылку за 5с, проверяем, жив ли он (через monitor-канал — child
+            // уже в monitor-задаче, try_wait недоступен). Жив → честная ошибка
+            // «ссылка не получена», мёртв → «завершился при запуске».
+            let alive = matches!(
+                dead_rx.as_mut().unwrap().try_recv(),
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+            );
+            let (_, detached) = begin_generation(app);
+            cleanup_previous_runtime_async(app, detached, image.clone()).await;
+            emit_status(app);
+            return Err(if alive {
+                format!(
+                    "Прокси запущен, но не выдал ссылку за 5с (порт {port}?). \
+                     Попробуйте другой порт или повторите."
+                )
+            } else {
+                "Прокси завершился, не выдав ссылку.".to_string()
+            });
+        }
+    };
 
     if !is_current(app, generation, pid) {
         return Err("Прокси завершился сразу после запуска.".to_string());
@@ -701,9 +729,11 @@ pub fn current_link(app: &AppHandle) -> String {
     link
 }
 
-/// Генерирует tg://proxy ссылку вручную (fallback, если прокси не выдал её сам).
-/// Секрет всегда с префиксом: `dd` для secure-режима (как печатает сам прокси),
-/// либо `ee` + secret + домен в hex для fake-TLS. Порт — реальный `--port` прокси.
+/// Генерирует tg://proxy ссылку вручную. Использовалась как fallback, когда
+/// прокси не выдавал ссылку сам — сейчас не вызывается (таймаут ссылки = ошибка
+/// запуска, а не молчаливая подмена). Сохранена для возможного будущего
+/// verified-fallback с явной пометкой «unverified».
+#[allow(dead_code)]
 fn generate_manual(host: &str, port: u16, secret: &str, fake_tls_domain: &str) -> String {
     if !fake_tls_domain.is_empty() {
         let domain_hex: String = fake_tls_domain

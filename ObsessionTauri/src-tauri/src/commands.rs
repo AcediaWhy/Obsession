@@ -821,19 +821,33 @@ where
 {
     let state = app.state::<AppState>();
     let base = state.paths.base_dir.clone();
-    let mut guard = state
-        .settings
-        .lock()
-        .map_err(|_| "settings lock poisoned".to_string())?;
-    let mut next = guard.clone();
-    mutate(&mut next);
-    let legacy_automation_changed = guard.legacy_reliability_enabled
-        != next.legacy_reliability_enabled
-        || guard.legacy_reliability_mode != next.legacy_reliability_mode
-        || guard.legacy_automatic_paused != next.legacy_automatic_paused
-        || guard.legacy_reliability_frozen_categories != next.legacy_reliability_frozen_categories;
-    next.save(&base).map_err(|e| e.to_string())?;
-    *guard = next.clone();
+    let (next, legacy_automation_changed) = {
+        let guard = state
+            .settings
+            .lock()
+            .map_err(|_| "settings lock poisoned".to_string())?;
+        let mut next = guard.clone();
+        mutate(&mut next);
+        let changed = guard.legacy_reliability_enabled != next.legacy_reliability_enabled
+            || guard.legacy_reliability_mode != next.legacy_reliability_mode
+            || guard.legacy_automatic_paused != next.legacy_automatic_paused
+            || guard.legacy_reliability_frozen_categories
+                != next.legacy_reliability_frozen_categories;
+        (next, changed)
+    };
+    // Запись на диск — под отдельным save-gate и ВНЕ std::Mutex settings,
+    // чтобы fsync/rename не блокировали читателей (dpi_start, хоткей, close).
+    {
+        let _save = state.settings_save_gate.blocking_lock();
+        next.save(&base).map_err(|e| e.to_string())?;
+    }
+    {
+        let mut guard = state
+            .settings
+            .lock()
+            .map_err(|_| "settings lock poisoned".to_string())?;
+        *guard = next.clone();
+    }
     state.settings_revision.bump();
     if legacy_automation_changed {
         state.legacy_automation_revision.bump();

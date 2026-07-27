@@ -647,7 +647,16 @@ pub struct AppState {
     /// Сериализует proxy start/stop между UI, треем и shutdown.
     pub proxy_gate: tokio::sync::Mutex<()>,
     pub settings: Mutex<Settings>,
+    /// Сериализует запись settings.json на диск (fsync+rename) ОТДЕЛЬНО от
+    /// std::Mutex settings: дисковый I/O не должен блокировать читателей
+    /// настроек (dpi_start, CloseRequested, хоткей). Держится коротко и только
+    /// вокруг save — вне лока settings.
+    pub settings_save_gate: tokio::sync::Mutex<()>,
     pub settings_revision: RevisionClock,
+    /// Сериализует hosts-операции (install/uninstall/restore) на всё время
+    /// чтение→сеть→запись: два конкурентных install не должны смешивать
+    /// pre-op снапшоты и затирать чужие изменения.
+    pub hosts_gate: tokio::sync::Mutex<()>,
     pub hosts_revision: RevisionClock,
     /// Активный наблюдатель трафика («Глаза»), пока запущен winws.
     #[cfg(windows)]
@@ -751,7 +760,9 @@ impl AppState {
             proxy: Mutex::new(ProxyState::default()),
             proxy_gate: tokio::sync::Mutex::new(()),
             settings: Mutex::new(settings),
+            settings_save_gate: tokio::sync::Mutex::new(()),
             settings_revision: RevisionClock::default(),
+            hosts_gate: tokio::sync::Mutex::new(()),
             hosts_revision: RevisionClock::default(),
             #[cfg(windows)]
             eyes: Mutex::new(None),
