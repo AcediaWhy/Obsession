@@ -6,6 +6,7 @@
 //! Механику снапшотов/состояния держит [`crate::hosts_snapshot`], проверку
 //! payload — [`crate::hosts_validate`].
 
+use std::io;
 use std::path::PathBuf;
 
 use serde::Serialize;
@@ -84,8 +85,10 @@ fn read_hosts() -> String {
 }
 
 /// Сырые байты системного hosts (F.1 — без lossy-конверсии на пути записи).
-fn read_hosts_bytes() -> Vec<u8> {
-    std::fs::read(hosts_path()).unwrap_or_default()
+/// Ошибка чтения = отказ операции: подменять молча пустым содержимым нельзя —
+/// иначе снапшот «исходного» hosts окажется пустым и uninstall уничтожит данные.
+fn read_hosts_bytes() -> io::Result<Vec<u8>> {
+    std::fs::read(hosts_path())
 }
 
 /// True, если текущий файл уже помечен Obsession (значит это НЕ исходный hosts).
@@ -194,7 +197,8 @@ pub async fn install(app: &AppHandle, p: Provider) -> Result<(), String> {
     );
     let (state_path, backups_dir) = state_paths(app);
     let mut state = snap::load_state(&state_path);
-    let current = read_hosts_bytes();
+    let current = read_hosts_bytes()
+        .map_err(|e| format!("не удалось прочитать системный hosts: {e}"))?;
     let name = p.name();
     let oid = op_id();
     let ts = now_iso();
@@ -368,8 +372,16 @@ pub async fn uninstall(app: &AppHandle) -> Result<(), String> {
         # localhost name resolution is handled within DNS itself.\n\
         #\t127.0.0.1       localhost\n\
         #\t::1             localhost";
-    snap::write_atomic(&hosts_path(), default_hosts.as_bytes())
-        .map_err(|e| format!("не удалось записать hosts: {e}"))?;
+    if !snap::write_atomic(&hosts_path(), default_hosts.as_bytes())
+        .map_err(|e| format!("не удалось записать hosts: {e}"))?
+    {
+        util::emit_log(
+            app,
+            "warn",
+            "hosts",
+            "стандартный hosts записан НЕатомарно (rename недоступен) — риск при краше",
+        );
+    }
     for ps in state.providers.values_mut() {
         ps.applied_sha256 = None;
     }

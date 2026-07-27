@@ -12,13 +12,29 @@ import eyePoster from "../../src/assets/eye-poster.png";
 // на Rust-стороне (см. src-tauri/src/lib.rs), сюда прилетают события прогресса.
 
 type Step = "welcome" | "options" | "installing" | "done" | "error";
+type InstallMode = "install" | "update" | "repair" | "blocked";
+
+interface InstallerSnapshot {
+  dir: string;
+  mode: InstallMode;
+  installedVersion: string | null;
+  logPath: string;
+}
 
 const VERSION = (import.meta.env.VITE_APP_VERSION as string | undefined) ?? "dev";
 const REDUCE_MOTION = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 const STAGE_TEXT: Record<string, string> = {
   prepare: "подготовка…",
-  install: "распаковка файлов…",
+  stop: "остановка установленной версии…",
+  stage: "подготовка staging-каталога…",
+  install: "распаковка проверенной версии…",
+  verify: "проверка целостности…",
+  commit: "атомарная замена файлов…",
+  registry: "фиксация системных записей…",
+  shortcuts: "настройка ярлыков…",
+  rollback: "восстановление предыдущей версии…",
+  cleanup: "очистка временных файлов…",
   finish: "завершение…",
 };
 // Порядок точек степпера; error остаётся на точке установки, но красной.
@@ -26,13 +42,26 @@ const DOT_INDEX: Record<Step, number> = { welcome: 0, options: 1, installing: 2,
 
 const state = {
   step: "welcome" as Step,
+  mode: "install" as InstallMode,
   dir: "",
+  installedVersion: null as string | null,
+  logPath: "",
   desktop: true,
   startMenu: true,
   pct: 0,
   stage: "prepare",
   error: "",
 };
+
+const MODE_TEXT: Record<Exclude<InstallMode, "blocked">, { noun: string; action: string; done: string }> = {
+  install: { noun: "установки", action: "Установить", done: "Установка завершена" },
+  update: { noun: "обновления", action: "Обновить", done: "Обновление завершено" },
+  repair: { noun: "восстановления", action: "Восстановить", done: "Восстановление завершено" },
+};
+
+function activeMode(): Exclude<InstallMode, "blocked"> {
+  return state.mode === "blocked" ? "repair" : state.mode;
+}
 
 const root = document.getElementById("app")!;
 root.innerHTML = `
@@ -98,43 +127,48 @@ function render() {
 
   switch (state.step) {
     case "welcome":
+      {
+        const installed = state.installedVersion ? `Установлена v${state.installedVersion}` : "Инструмент обхода DPI-блокировок";
       stage.innerHTML = `
         <section class="step step-center">
           ${eyeHtml(96)}
           <h1 class="wordmark">OBSESSION</h1>
           <div class="version">v${VERSION} · x64</div>
-          <p class="tagline">Инструмент обхода DPI-блокировок</p>
+          <p class="tagline">${installed}</p>
         </section>`;
-      right.innerHTML = `<button class="btn btn-primary" id="go-options">Далее</button>`;
+      right.innerHTML = `<button class="btn btn-primary" id="go-options">${state.mode === "install" ? "Далее" : MODE_TEXT[activeMode()].action}</button>`;
       bind("go-options", () => {
         state.step = "options";
         render();
       });
       break;
+      }
 
     case "options": {
+      const copy = MODE_TEXT[activeMode()];
+      const browse = state.mode === "install" ? `<button class="btn btn-ghost btn-sm" id="browse">Обзор…</button>` : "";
       stage.innerHTML = `
         <section class="step">
-          <h2 class="step-title">Параметры установки</h2>
+          <h2 class="step-title">Параметры ${copy.noun}</h2>
           <div class="glass options-panel">
             <label class="field-label">Путь установки</label>
             <div class="path-row">
               <div class="path-input" id="path-view"></div>
-              <button class="btn btn-ghost btn-sm" id="browse">Обзор…</button>
+              ${browse}
             </div>
             <label class="check"><input type="checkbox" id="cb-desktop" ${state.desktop ? "checked" : ""}/><span>Ярлык на рабочем столе</span></label>
             <label class="check"><input type="checkbox" id="cb-start" ${state.startMenu ? "checked" : ""}/><span>Ярлык в меню «Пуск»</span></label>
-            <div class="hint">Потребуется ~45 МБ свободного места. Запущенный Obsession будет закрыт.</div>
+            <div class="hint">${state.mode === "install" ? "Потребуется ~45 МБ свободного места." : "Текущая версия останется доступна до атомарной замены файлов."} Запущенный Obsession будет закрыт.</div>
           </div>
         </section>`;
       setPathView();
       left.innerHTML = `<button class="btn btn-ghost" id="back">Назад</button>`;
-      right.innerHTML = `<button class="btn btn-primary" id="do-install">Установить</button>`;
+      right.innerHTML = `<button class="btn btn-primary" id="do-install">${copy.action}</button>`;
       bind("back", () => {
         state.step = "welcome";
         render();
       });
-      bind("browse", () => void pickDir());
+      if (state.mode === "install") bind("browse", () => void pickDir());
       bind("do-install", () => void startInstall());
       (el("cb-desktop") as HTMLInputElement).onchange = (e) =>
         (state.desktop = (e.target as HTMLInputElement).checked);
@@ -144,20 +178,25 @@ function render() {
     }
 
     case "installing":
+      {
+        const copy = MODE_TEXT[activeMode()];
       stage.innerHTML = `
         <section class="step step-center">
           ${eyeHtml(84)}
-          <h2 class="step-title">Установка</h2>
+          <h2 class="step-title">${copy.action}</h2>
           <div class="progress-track"><div class="progress-fill" id="bar" style="width:${state.pct}%"></div></div>
           <div class="stage-line" id="stage-line">${STAGE_TEXT[state.stage] ?? "…"}</div>
         </section>`;
       break;
+      }
 
     case "done":
+      {
+        const copy = MODE_TEXT[activeMode()];
       stage.innerHTML = `
         <section class="step step-center">
           ${eyeHtml(84)}
-          <h2 class="step-title">Установка завершена</h2>
+          <h2 class="step-title">${copy.done}</h2>
           <div class="stage-line" id="done-path"></div>
         </section>`;
       el("done-path").textContent = state.dir;
@@ -172,20 +211,21 @@ function render() {
         });
       });
       break;
+      }
 
     case "error":
       stage.innerHTML = `
         <section class="step step-center">
           <div class="glass error-panel">
-            <div class="error-title">Установка не удалась</div>
+            <div class="error-title">Операция не выполнена</div>
             <div class="error-msg" id="err-msg"></div>
           </div>
         </section>`;
       el("err-msg").textContent = state.error;
       left.innerHTML = `<button class="btn btn-ghost" id="quit">Закрыть</button>`;
-      right.innerHTML = `<button class="btn btn-primary" id="retry">Повторить</button>`;
+      right.innerHTML = state.mode === "blocked" ? "" : `<button class="btn btn-primary" id="retry">Повторить</button>`;
       bind("quit", () => void invoke("close_setup"));
-      bind("retry", () => void startInstall());
+      if (state.mode !== "blocked") bind("retry", () => void startInstall());
       break;
   }
 }
@@ -204,7 +244,13 @@ async function pickDir() {
   }
 }
 
+let installing = false;
+
 async function startInstall() {
+  // Защита от двойного клика по «Повторить»: второй конкурентный invoke
+  // ударит по NSIS-движку, пока первый ещё работает.
+  if (installing) return;
+  installing = true;
   state.step = "installing";
   state.pct = 0;
   state.stage = "prepare";
@@ -215,6 +261,8 @@ async function startInstall() {
   } catch (e) {
     state.error = String(e);
     state.step = "error";
+  } finally {
+    installing = false;
   }
   render();
 }
@@ -236,9 +284,20 @@ document.addEventListener("contextmenu", (e) => e.preventDefault());
 
 void (async () => {
   try {
-    state.dir = await invoke<string>("default_dir");
-  } catch {
+    const snapshot = await invoke<InstallerSnapshot>("installer_snapshot");
+    state.dir = snapshot.dir;
+    state.mode = snapshot.mode;
+    state.installedVersion = snapshot.installedVersion;
+    state.logPath = snapshot.logPath;
+    if (snapshot.mode === "blocked") {
+      state.error = `Установлена более новая версия Obsession (${snapshot.installedVersion ?? "неизвестно"}). Понижение до ${VERSION} заблокировано.`;
+      state.step = "error";
+    }
+  } catch (error) {
     state.dir = "C:\\Obsession";
+    state.mode = "blocked";
+    state.error = String(error);
+    state.step = "error";
   }
   render();
 })();

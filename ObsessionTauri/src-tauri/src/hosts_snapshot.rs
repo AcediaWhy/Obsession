@@ -217,19 +217,44 @@ pub fn is_externally_modified(current: &[u8], applied_sha256: Option<&str>) -> b
     }
 }
 
-/// Атомарная запись файла: temp рядом + rename, с fallback на прямую запись
-/// (System32/антивирус иногда ломают rename). Создаёт родительский каталог.
-pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
+/// Атомарная запись файла: temp рядом + fsync + rename, с fallback на прямую
+/// запись (System32/антивирус иногда ломают rename). Создаёт родительский
+/// каталог. Возвращает `true`, если гарантия атомарности сохранена, и `false`,
+/// если пришлось деградировать до неатомарной записи (вызывающий обязан
+/// залогировать это как degraded — краш в этой точке оставит обрезанный файл).
+pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<bool> {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("hosts");
     let tmp = path.with_file_name(format!("{name}.obsession.tmp"));
-    match std::fs::write(&tmp, bytes).and_then(|_| std::fs::rename(&tmp, path)) {
-        Ok(()) => Ok(()),
+    // Пишем temp с принудительным сбросом на диск ДО rename: без fsync при
+    // краше/BSOD между rename и сбросом кэша NTFS файл может оказаться из
+    // нулей — для системного hosts это потеря DNS-резолва всей машины.
+    let write_tmp = || -> io::Result<()> {
+        let mut f = std::fs::File::create(&tmp)?;
+        std::io::Write::write_all(&mut f, bytes)?;
+        f.sync_all()?;
+        Ok(())
+    };
+    match write_tmp().and_then(|_| std::fs::rename(&tmp, path)) {
+        Ok(()) => {
+            // Фиксируем запись каталога, чтобы rename пережил краш.
+            if let Some(parent) = path.parent() {
+                if let Ok(dir) = std::fs::File::open(parent) {
+                    let _ = dir.sync_all();
+                }
+            }
+            Ok(true)
+        }
         Err(_) => {
             let _ = std::fs::remove_file(&tmp);
-            std::fs::write(path, bytes)
+            // Деградация: прямая запись поверх целевого файла. fsync всё равно
+            // делаем — это не даёт атомарности, но сокращает окно повреждения.
+            let mut f = std::fs::File::create(path)?;
+            std::io::Write::write_all(&mut f, bytes)?;
+            f.sync_all()?;
+            Ok(false)
         }
     }
 }
@@ -262,12 +287,16 @@ pub fn snapshot_and_apply(
         &current,
     )?;
 
-    write_atomic(hosts_path, prepared)?;
+    if !write_atomic(hosts_path, prepared)? {
+        eprintln!(
+            "WARN: hosts записан НЕатомарно (rename недоступен) — повышен риск повреждения при краше"
+        );
+    }
 
     let readback = std::fs::read(hosts_path)?;
     if sha256_hex(&readback) != sha256_hex(prepared) {
         // Немедленный откат к pre-op: то, что записали, не читается обратно.
-        write_atomic(hosts_path, &current)?;
+        let _ = write_atomic(hosts_path, &current)?;
         return Err(io::Error::other(
             "записанный hosts не совпал с подготовленным — выполнен откат к pre-op",
         ));
@@ -286,7 +315,10 @@ pub fn snapshot_and_apply(
 /// Восстанавливает `hosts` из снапшота (с проверкой байт-точности снапшота).
 pub fn restore_snapshot(hosts_path: &Path, backups_dir: &Path, r: &SnapshotRef) -> io::Result<()> {
     let bytes = read_snapshot(backups_dir, r)?;
-    write_atomic(hosts_path, &bytes)
+    if !write_atomic(hosts_path, &bytes)? {
+        eprintln!("WARN: restore_snapshot записал hosts НЕатомарно (rename недоступен)");
+    }
+    Ok(())
 }
 
 /// Удаляет файл снапшота (транзиентный pre-op после успешного commit).

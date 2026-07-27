@@ -265,6 +265,8 @@ export const useDpiStore = create<DpiState>((set, get) => ({
     set({ transitioning: true });
     try {
       await api.dpiStop();
+    } catch (e) {
+      set({ error: String(e) });
     } finally {
       set({ transitioning: false });
     }

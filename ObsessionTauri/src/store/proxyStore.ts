@@ -101,8 +101,13 @@ export const useProxyStore = create<ProxyState>((set, get) => ({
     set({ transitioning: true });
     try {
       await api.proxyStop();
+      // Ссылки сбрасываем только после успешной остановки: при ошибке прокси
+      // продолжает работать, и UI не должен показывать «остановлен».
+      set({ link: "", lanLink: null, lanPublished: false, lanExpiryUnix: null });
+    } catch (e) {
+      set({ error: String(e) });
     } finally {
-      set({ transitioning: false, link: "", lanLink: null, lanPublished: false, lanExpiryUnix: null });
+      set({ transitioning: false });
     }
   },
 

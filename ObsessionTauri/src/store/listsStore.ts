@@ -65,8 +65,12 @@ export const useListsStore = create<ListsState>((set, get) => ({
     set({ selected: name, loading: true, error: "" });
     try {
       const content = await api.readList(name);
+      // Пока запрос летел, пользователь мог выбрать другой список — не
+      // записываем чужое содержимое в редактор текущего.
+      if (get().selected !== name) return;
       set({ original: content, draft: content, loading: false });
     } catch (e) {
+      if (get().selected !== name) return;
       set({ loading: false, error: String(e) });
     }
   },

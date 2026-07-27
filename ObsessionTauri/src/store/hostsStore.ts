@@ -65,8 +65,12 @@ export const useHostsStore = create<HostsState>((set, get) => ({
 
   refresh: async () => {
     set({ busy: true, error: "" });
+    const provider = get().provider;
     try {
-      const s = await api.hostsStatus(get().provider);
+      const s = await api.hostsStatus(provider);
+      // Устаревший ответ (провайдер сменился, пока запрос летел) не должен
+      // перезаписывать статус нового провайдера.
+      if (get().provider !== provider) return;
       set({
         status: s.status,
         localVersion: s.local_version,
@@ -75,6 +79,7 @@ export const useHostsStore = create<HostsState>((set, get) => ({
         busy: false,
       });
     } catch (e) {
+      if (get().provider !== provider) return;
       set({ busy: false, error: String(e) });
     }
   },
