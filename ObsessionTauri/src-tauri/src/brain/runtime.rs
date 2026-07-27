@@ -326,7 +326,41 @@ fn write_cache(app: &AppHandle, net: &NetSnapshot, category: &str, conf: &str) {
 pub async fn build_session_start(app: &AppHandle, selections: Vec<(String, String)>) -> BrainEvent {
     // Клонируем paths ДО await — гард AppState не должен пересекать точку ожидания.
     let paths = app.state::<AppState>().paths.clone();
-    let net_id = netid::resolve(&paths).await;
+    // Single-flight через netid_gate (тот же паттерн, что commands::current_netid):
+    // без него Brain и UI-запрос get_network_identity могли бы одновременно
+    // дернуть ipinfo дважды и разъехаться в записи netid_cache.json.
+    let net_id = {
+        let cached = app
+            .state::<AppState>()
+            .netid
+            .lock()
+            .ok()
+            .and_then(|g| g.clone());
+        match cached {
+            Some(id) => id,
+            None => {
+                let state = app.state::<AppState>();
+                let _gate = state.netid_gate.lock().await;
+                // Повторная проверка под gate: конкурентный резолв мог уже
+                // заполнить кэш, пока мы ждали на этом же gate.
+                if let Some(id) = app
+                    .state::<AppState>()
+                    .netid
+                    .lock()
+                    .ok()
+                    .and_then(|g| g.clone())
+                {
+                    id
+                } else {
+                    let id = netid::resolve(&paths).await;
+                    if let Ok(mut slot) = app.state::<AppState>().netid.lock() {
+                        *slot = Some(id.clone());
+                    }
+                    id
+                }
+            }
+        }
+    };
 
     // Сохраняем снимок идентичности в состояние (для лога/диагностики) + лог org.
     if let Some(org) = net_id.org.as_deref() {

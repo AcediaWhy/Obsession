@@ -646,6 +646,11 @@ pub struct AppState {
     /// (без ворот, чтобы сработать, пока тест их держит); `dpi::test` проверяет
     /// его между этапами и обрывается досрочно, освобождая обход.
     pub test_cancel: AtomicBool,
+    /// Поколение теста. Инкрементируется при каждом cancel и на старте теста.
+    /// Тест запоминает generation на входе и отменяется только если cancel
+    /// пришёл из ТОГО ЖЕ поколения — так cancel «чужого» (Brain/UI) теста не
+    /// сбрасывает флаг текущего пользовательского теста.
+    pub test_generation: std::sync::atomic::AtomicU64,
     pub proxy: Mutex<ProxyState>,
     /// Сериализует proxy start/stop между UI, треем и shutdown.
     pub proxy_gate: tokio::sync::Mutex<()>,
@@ -760,6 +765,7 @@ impl AppState {
             dpi: Mutex::new(DpiState::default()),
             dpi_gate: tokio::sync::Mutex::new(()),
             test_cancel: AtomicBool::new(false),
+            test_generation: std::sync::atomic::AtomicU64::new(0),
             proxy: Mutex::new(ProxyState::default()),
             proxy_gate: tokio::sync::Mutex::new(()),
             settings: Mutex::new(settings),

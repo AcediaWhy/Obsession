@@ -4608,21 +4608,25 @@ pub(crate) async fn restore_runtime_snapshot_locked(
 }
 
 /// True, если пользователь запросил отмену теста (флаг в состоянии).
+/// Проверка по generation: отмена действует только если cancel пришёл из
+/// ТОГО ЖЕ поколения, что и текущий тест (см. test_generation в state).
 #[inline]
-fn test_cancelled(app: &AppHandle) -> bool {
-    app.state::<AppState>().test_cancel.load(Ordering::SeqCst)
+fn test_cancelled(app: &AppHandle, generation: u64) -> bool {
+    let state = app.state::<AppState>();
+    state.test_cancel.load(Ordering::SeqCst)
+        && state.test_generation.load(Ordering::SeqCst) == generation
 }
 
 /// Отменяет текущий тест: ставит флаг и убивает тестовый winws, чтобы проба
 /// оборвалась немедленно. PID помечаем как `stopping` — монитор не сочтёт это
 /// крахом. Вызывается БЕЗ ворот (тест их держит), поэтому трогает только атомик
-/// и список процессов.
+/// и список процессов. Инкремент generation помечает, к какому тесту относится
+/// отмена — следующий тест начнёт с нового поколения и не унаследует флаг.
 pub fn cancel_test(app: &AppHandle) {
-    app.state::<AppState>()
-        .test_cancel
-        .store(true, Ordering::SeqCst);
+    let state = app.state::<AppState>();
+    state.test_generation.fetch_add(1, Ordering::SeqCst);
+    state.test_cancel.store(true, Ordering::SeqCst);
     let pids: Vec<u32> = {
-        let state = app.state::<AppState>();
         let mut d = state.dpi.lock_recover();
         let pids: Vec<u32> = d.procs.keys().copied().collect();
         for p in &pids {
@@ -4639,8 +4643,14 @@ pub fn cancel_test(app: &AppHandle) {
 /// Тестирует один конфиг: старт → проверка URL → стоп. Порт из `TestDpiConfigUseCase`.
 /// Проверяет флаг отмены между этапами — по нему обрывается досрочно.
 pub async fn test(app: &AppHandle, category: &str, config_file: &str) -> bool {
-    // Сбрасываем флаг на входе: фронт не вызывает следующий тест после отмены,
-    // поэтому сброс на старте каждого теста безопасен.
+    // Новое поколение на каждый тест: cancel, пришедший ДО этого bump, относится
+    // к предыдущему тесту и на текущий не влияет. Флаг сбрасываем — наш cancel
+    // ещё не приходил (его увидим по совпадению generation).
+    let generation = app
+        .state::<AppState>()
+        .test_generation
+        .fetch_add(1, Ordering::SeqCst)
+        + 1;
     app.state::<AppState>()
         .test_cancel
         .store(false, Ordering::SeqCst);
@@ -4655,7 +4665,7 @@ pub async fn test(app: &AppHandle, category: &str, config_file: &str) -> bool {
         );
         return false;
     }
-    if test_cancelled(app) {
+    if test_cancelled(app, generation) {
         return false;
     }
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -4672,9 +4682,9 @@ pub async fn test(app: &AppHandle, category: &str, config_file: &str) -> bool {
     tokio::time::sleep(Duration::from_millis(1000)).await;
 
     let mut connected = false;
-    if !test_cancelled(app) {
+    if !test_cancelled(app, generation) {
         for url in test_urls(category) {
-            if test_cancelled(app) {
+            if test_cancelled(app, generation) {
                 break;
             }
             if crate::net::test_url(url, 3).await {

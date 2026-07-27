@@ -595,7 +595,9 @@ impl FlowTable {
                     ),
                 );
             }
-            let f = self.flows.get_mut(&pkt.key).expect("flow inserted above");
+            // evict_one мог удалить только что вставленный ключ при совпадении —
+            // на горячем пути пакетов это не паника, а пропуск (None → return).
+            let f = self.flows.get_mut(&pkt.key)?;
             if f.syn_seen {
                 f.syn_retx = f.syn_retx.saturating_add(1); // ретрансмит SYN
             } else {
@@ -641,7 +643,8 @@ impl FlowTable {
                     ),
                 );
             }
-            let f = self.flows.get_mut(&pkt.key).unwrap();
+            // evicted между insert и get — пропускаем пакет, не паникуем.
+            let f = self.flows.get_mut(&pkt.key)?;
             f.last_seen_ms = now;
             if f.first_payload_capture_timestamp.is_none() {
                 f.first_payload_capture_timestamp = capture_timestamp;

@@ -804,7 +804,13 @@ impl RecoveryCoordinator {
             return Err(ApprovalError::FenceChanged);
         }
 
-        let pending = self.proposal.take().expect("proposal checked above");
+        let pending = match self.proposal.take() {
+            Some(p) => p,
+            // Инвариант: proposal проверен as_ref выше. При нарушении (будущий
+            // рефакторинг) возвращаем Expired, а не панику — recovery-координатор
+            // не должен убивать процесс из-за гонки состояния.
+            None => return Err(ApprovalError::Expired),
+        };
         self.retire_proposal(pending.proposal_id, RetiredProposalReason::Approved);
         Ok(self.begin_attempt(
             pending.incident_id,
@@ -839,7 +845,12 @@ impl RecoveryCoordinator {
         self.tick(result.completed_at_monotonic_ms)
             .map_err(|()| TransitionError::ClockMovedBack)?;
 
-        let mut active = self.active.take().expect("active attempt checked above");
+        let mut active = match self.active.take() {
+            Some(a) => a,
+            // as_ref выше гарантировал Some; при нарушении — ошибка перехода,
+            // а не паника (координатор на горячем пути восстановления).
+            None => return Err(TransitionError::NoActiveAttempt),
+        };
         let transition = self.transition(
             &mut active,
             result.outcome,
@@ -1299,8 +1310,11 @@ impl RecoveryCoordinator {
             .as_ref()
             .is_some_and(|proposal| now_ms >= proposal.expires_at_monotonic_ms)
         {
-            let proposal = self.proposal.take().expect("proposal checked above");
-            self.retire_proposal(proposal.proposal_id, RetiredProposalReason::Expired);
+            // take() после is_some_and: None быть не может, но при нарушении
+            // просто ничего не делаем — tick не должен паниковать.
+            if let Some(proposal) = self.proposal.take() {
+                self.retire_proposal(proposal.proposal_id, RetiredProposalReason::Expired);
+            }
         }
         Ok(())
     }
