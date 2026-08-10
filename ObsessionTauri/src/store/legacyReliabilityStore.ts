@@ -25,6 +25,7 @@ export const INITIAL_LEGACY_RELIABILITY_STATUS: LegacyReliabilityStatus = {
   mode: "observe_only",
   phase: "inactive",
   activeCategories: [],
+  runningApplications: [],
   sessionId: null,
   sensorGeneration: null,
   lanes: [],

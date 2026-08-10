@@ -65,6 +65,14 @@ impl IncidentId {
 pub struct ProposalId(u64);
 
 impl ProposalId {
+    pub const fn new(value: u64) -> Option<Self> {
+        if value == 0 {
+            None
+        } else {
+            Some(Self(value))
+        }
+    }
+
     pub const fn get(self) -> u64 {
         self.0
     }
@@ -244,6 +252,29 @@ pub struct AssistedProposalView {
 pub struct AssistedApproval {
     proposal_id: ProposalId,
     attempt_id: AttemptId,
+}
+
+impl AssistedApproval {
+    pub const fn new(proposal_id: u64, attempt_id: u64) -> Option<Self> {
+        let Some(proposal_id) = ProposalId::new(proposal_id) else {
+            return None;
+        };
+        if attempt_id == 0 {
+            return None;
+        }
+        Some(Self {
+            proposal_id,
+            attempt_id: AttemptId::new(attempt_id),
+        })
+    }
+
+    pub const fn proposal_id(self) -> ProposalId {
+        self.proposal_id
+    }
+
+    pub const fn attempt_id(self) -> AttemptId {
+        self.attempt_id
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -2334,9 +2365,7 @@ mod tests {
         assert_eq!(serialized["kind"], "rollback_previous");
         assert_eq!(serialized["retryPending"], true);
         assert_eq!(
-            coordinator
-                .status()
-                .automatic_pacing_until_monotonic_ms,
+            coordinator.status().automatic_pacing_until_monotonic_ms,
             None
         );
     }
@@ -2425,9 +2454,7 @@ mod tests {
             other => panic!("unexpected action: {other:?}"),
         }
         assert_eq!(
-            coordinator
-                .status()
-                .automatic_pacing_until_monotonic_ms,
+            coordinator.status().automatic_pacing_until_monotonic_ms,
             None
         );
     }
@@ -2612,9 +2639,7 @@ mod tests {
         let refreshed_fence = IntentFence {
             session_id: first_rollback_envelope.session_id,
             category: first_rollback_envelope.category.clone(),
-            network_fingerprint: first_rollback_envelope
-                .expected_network_fingerprint
-                .clone(),
+            network_fingerprint: first_rollback_envelope.expected_network_fingerprint.clone(),
             lane_generation: first_rollback_generation,
             sensor_generation: SensorGeneration::new(90),
             registry_version: RegistryVersion::new(91),

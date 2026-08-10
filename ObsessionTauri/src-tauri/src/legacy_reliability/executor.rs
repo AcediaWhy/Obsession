@@ -1987,11 +1987,7 @@ pub async fn run_scoped_recovery(
                     .lock_recover()
                     .force_manual_failure(state.legacy_monotonic_ms())
                     .ok_or(ScopedRecoveryRunError::Executor(error))?;
-                persist_candidate_failures(
-                    app,
-                    std::mem::take(&mut pending_cache_failures),
-                )
-                .await;
+                persist_candidate_failures(app, std::mem::take(&mut pending_cache_failures)).await;
                 super::status::refresh_recovery_overlay(app);
                 return Ok(terminal);
             }
@@ -2025,11 +2021,7 @@ pub async fn run_scoped_recovery(
                     .lock_recover()
                     .force_manual_failure(state.legacy_monotonic_ms())
                     .ok_or(ScopedRecoveryRunError::Coordinator(error))?;
-                persist_candidate_failures(
-                    app,
-                    std::mem::take(&mut pending_cache_failures),
-                )
-                .await;
+                persist_candidate_failures(app, std::mem::take(&mut pending_cache_failures)).await;
                 super::status::refresh_recovery_overlay(app);
                 return Ok(terminal);
             }
@@ -2117,10 +2109,7 @@ fn candidate_cache_failure(
     })
 }
 
-async fn persist_candidate_failures(
-    app: &AppHandle,
-    failures: Vec<PendingCandidateCacheFailure>,
-) {
+async fn persist_candidate_failures(app: &AppHandle, failures: Vec<PendingCandidateCacheFailure>) {
     if failures.is_empty() {
         return;
     }
@@ -2350,13 +2339,8 @@ where
                 previous_lane_generation,
                 retry_pending,
             } => {
-                self.execute_rollback(
-                    envelope,
-                    previous,
-                    previous_lane_generation,
-                    retry_pending,
-                )
-                .await
+                self.execute_rollback(envelope, previous, previous_lane_generation, retry_pending)
+                    .await
             }
             RecoveryAction::Complete { .. } | RecoveryAction::ManualIntervention { .. } => {
                 Err(ExecutorRunError::ActionMismatch)

@@ -51,10 +51,10 @@ pub fn adapt_observation(
         return Err(AdaptError::RegistryVersionMismatch);
     }
 
-    // Phase 1 derives SYN timeouts through a best-effort IP -> last-domain hint.
-    // Shared CDN addresses make that hint insufficient for policy attribution,
-    // so preserve the event only as an unattributed diagnostic until Eyes has
-    // reliable DNS/socket correlation.
+    // IP-only SYN attribution stays diagnostic because shared CDN addresses
+    // cannot prove ownership. `process_socket_syn_no_synack` is emitted only
+    // after the protected service correlates the exact FlowKey with a Windows
+    // TCP owner PID, so it may pass through normal registry attribution.
     let diagnostic_only = observation.evidence == "syn_no_synack";
     let (category, lane_generation, attribution) = if diagnostic_only {
         (None, None, FlowAttribution::Unmatched)
@@ -281,6 +281,31 @@ mod tests {
         assert_eq!(adapted.event.lane_generation, None);
         assert_eq!(adapted.event.diagnosis, Diagnosis::TcpBlackhole);
         assert_eq!(adapted.attribution, FlowAttribution::Unmatched);
+    }
+
+    #[test]
+    fn exact_process_socket_blackhole_gets_the_active_category_and_lane() {
+        let registry = registry(vec![record("discord", "discord.txt", "discord.com\n")]);
+        let adapted = adapt_observation(
+            observation(
+                "gateway.discord.com",
+                443,
+                Verdict::Blackhole,
+                "process_socket_syn_no_synack",
+            ),
+            envelope(&registry),
+            &registry,
+            &BTreeMap::from([("discord".to_string(), LaneGeneration::new(7))]),
+        )
+        .unwrap();
+
+        assert_eq!(adapted.event.category.as_deref(), Some("discord"));
+        assert_eq!(adapted.event.lane_generation, Some(LaneGeneration::new(7)));
+        assert_eq!(adapted.event.diagnosis, Diagnosis::TcpBlackhole);
+        assert!(matches!(
+            adapted.attribution,
+            FlowAttribution::Matched { ref owner, .. } if owner.category == "discord"
+        ));
     }
 
     #[test]

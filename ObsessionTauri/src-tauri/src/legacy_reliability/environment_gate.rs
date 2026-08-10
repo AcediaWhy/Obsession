@@ -31,6 +31,7 @@ pub const CONTROL_QUORUM: usize = 2;
 pub const MAX_CATEGORY_TARGETS: usize = 2;
 pub const RESET_REQUIRED_FLOWS: u32 = 3;
 pub const RESET_REQUIRED_TARGETS: u32 = 2;
+pub const DISCORD_RESET_GATE_REQUIRED_FLOWS: u32 = 2;
 pub const BLACKHOLE_REQUIRED_FLOWS: u32 = 2;
 pub const BLACKHOLE_REQUIRED_TARGETS: u32 = 2;
 pub const RESET_WINDOW: Duration = Duration::from_secs(30);
@@ -106,7 +107,8 @@ impl SensorSnapshot {
 /// Already-deduplicated TLS evidence for one category and its current lane.
 ///
 /// Assessment owns flow/target correlation. The gate receives only bounded
-/// quorum counts from the current 30-second window.
+/// quorum counts from the current evidence window. Discord reset evidence may
+/// span 90 seconds so the updater's slow retry cadence can be corroborated.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PassiveEvidenceSummary {
     pub reset_after_client_hello_flows: u32,
@@ -119,6 +121,11 @@ impl PassiveEvidenceSummary {
     pub const fn has_reset_quorum(self) -> bool {
         self.reset_after_client_hello_flows >= RESET_REQUIRED_FLOWS
             && self.reset_targets >= RESET_REQUIRED_TARGETS
+    }
+
+    pub const fn has_discord_reset_gate_quorum(self) -> bool {
+        self.reset_after_client_hello_flows >= DISCORD_RESET_GATE_REQUIRED_FLOWS
+            && self.reset_targets > 0
     }
 
     pub const fn has_blackhole_quorum(self) -> bool {
@@ -347,6 +354,26 @@ pub fn classify_gate(
     category_targets: &[EndpointProbeOutcome],
     baseline_latency_ms: Option<u64>,
 ) -> GateClassification {
+    classify_gate_for_category(
+        "",
+        local_network,
+        sensor,
+        passive_evidence,
+        controls,
+        category_targets,
+        baseline_latency_ms,
+    )
+}
+
+fn classify_gate_for_category(
+    category: &str,
+    local_network: &LocalNetworkSnapshot,
+    sensor: SensorSnapshot,
+    passive_evidence: PassiveEvidenceSummary,
+    controls: &[EndpointProbeOutcome],
+    category_targets: &[EndpointProbeOutcome],
+    baseline_latency_ms: Option<u64>,
+) -> GateClassification {
     if !sensor.is_reliable() {
         return GateClassification::SensorUnreliable;
     }
@@ -392,10 +419,15 @@ pub fn classify_gate(
     let confirmed_single_target_blackhole = category_targets.len() == 1
         && category_targets[0].dns_succeeded()
         && passive_evidence.has_blackhole_gate_quorum();
+    let confirmed_single_target_reset = category.eq_ignore_ascii_case("discord")
+        && category_targets.len() == 1
+        && category_targets[0].dns_succeeded()
+        && passive_evidence.has_discord_reset_gate_quorum();
     if (reachable_target_count > 0 && reachable_target_count < category_targets.len())
         || (reachable_target_count == 0
             && category_targets.len() == 1
-            && !confirmed_single_target_blackhole)
+            && !confirmed_single_target_blackhole
+            && !confirmed_single_target_reset)
     {
         return GateClassification::TargetUnavailable;
     }
@@ -422,7 +454,7 @@ pub fn classify_gate(
             return GateClassification::DpiBlocked;
         }
 
-        if passive_evidence.has_reset_quorum() {
+        if passive_evidence.has_reset_quorum() || confirmed_single_target_reset {
             return GateClassification::DpiSuspected;
         }
 
@@ -741,7 +773,8 @@ where
             .requested_at_monotonic_ms
             .saturating_add(elapsed_ms(started));
 
-        let classification = classify_gate(
+        let classification = classify_gate_for_category(
+            &request.category,
             &request.local_network,
             request.sensor,
             request.passive_evidence,
@@ -1174,6 +1207,48 @@ mod tests {
                 Some(100),
             ),
             GateClassification::DpiSuspected
+        );
+    }
+
+    #[test]
+    fn corroborated_single_target_resets_are_dpi_suspected() {
+        let target =
+            EndpointProbeOutcome::failed("updates.discord.com", EndpointProbeStage::Transport, 100);
+        let corroborated = PassiveEvidenceSummary {
+            reset_after_client_hello_flows: 2,
+            reset_targets: 1,
+            ..PassiveEvidenceSummary::default()
+        };
+
+        assert_eq!(
+            classify_gate_for_category(
+                "discord",
+                &local_network(),
+                ready_sensor(),
+                corroborated,
+                &healthy_controls(),
+                std::slice::from_ref(&target),
+                Some(100),
+            ),
+            GateClassification::DpiSuspected
+        );
+
+        let uncorroborated = PassiveEvidenceSummary {
+            reset_after_client_hello_flows: 1,
+            reset_targets: 1,
+            ..PassiveEvidenceSummary::default()
+        };
+        assert_eq!(
+            classify_gate_for_category(
+                "discord",
+                &local_network(),
+                ready_sensor(),
+                uncorroborated,
+                &healthy_controls(),
+                &[target],
+                Some(100),
+            ),
+            GateClassification::TargetUnavailable
         );
     }
 

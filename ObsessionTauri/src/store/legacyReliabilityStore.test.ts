@@ -20,6 +20,7 @@ function status(
     mode: "observe_only",
     phase,
     activeCategories: active ? ["discord"] : [],
+    runningApplications: [],
     sessionId: active ? 17 : null,
     sensorGeneration: active ? 4 : null,
     lanes: active
@@ -75,6 +76,7 @@ describe("legacyReliabilityStore", () => {
       mode: "observe_only",
       phase: "inactive",
       activeCategories: [],
+      runningApplications: [],
       sessionId: null,
       sensorGeneration: null,
       lanes: [],

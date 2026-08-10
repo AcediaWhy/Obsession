@@ -15,11 +15,24 @@ use std::collections::{BTreeMap, HashMap};
 use std::net::IpAddr;
 
 use crate::eyes::fake_filter::{is_winws_fake, FakeContext};
-use crate::eyes::parse::{classify_record, extract_sni, ParsedPacket, TlsHandshake, TlsRecord};
+use crate::eyes::parse::{
+    classify_record, extract_sni, FlowKey, ParsedPacket, TlsHandshake, TlsRecord,
+};
 use crate::eyes::signal::{Observation, Verdict};
 
 pub const ARMED_SILENCE_TIMEOUT_MS: u64 = 8_000;
 pub const BLACKHOLE_DELIVERY_GRACE_MS: u64 = 2_000;
+pub const SOCKET_ATTRIBUTION_TTL_MS: u64 = 10_000;
+const SYN_HANDSHAKE_MAX_AGE_MS: u64 = 15_000;
+
+/// Exact service-owned socket attribution. The protected service constructs
+/// this only after correlating a target process PID with the matching Windows
+/// TCP owner row. PIDs and paths are deliberately absent from the Eyes API.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SocketAttributionHint {
+    pub key: FlowKey,
+    pub domain: String,
+}
 
 /// How inbound payload proves that an armed flow is working.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -464,6 +477,12 @@ struct Flow {
     emitted: bool,
 }
 
+#[derive(Clone, Debug)]
+struct SocketAttribution {
+    domain: String,
+    expires_at_ms: u64,
+}
+
 impl Flow {
     fn new(id: u64, key_ip: IpAddr, local_port: u16, remote_port: u16, now: u64) -> Self {
         Self {
@@ -495,6 +514,10 @@ pub struct FlowTable {
     flows: HashMap<crate::eyes::parse::FlowKey, Flow>,
     /// Learned IP→domain: наполняется при arming, нужен для атрибуции SYN-level blackhole.
     ip_domain: HashMap<IpAddr, String>,
+    /// Exact FlowKey→domain attribution supplied by the protected service
+    /// after process/socket-owner correlation. Unlike IP hints, this is safe
+    /// to expose to policy because shared CDN addresses cannot steal a flow.
+    socket_domain: HashMap<FlowKey, SocketAttribution>,
     next_flow_id: u64,
 }
 
@@ -504,6 +527,7 @@ impl FlowTable {
             cfg,
             flows: HashMap::new(),
             ip_domain: HashMap::new(),
+            socket_domain: HashMap::new(),
             next_flow_id: 1,
         }
     }
@@ -778,6 +802,9 @@ impl FlowTable {
         let mut out = Vec::new();
         let mut to_remove: Vec<crate::eyes::parse::FlowKey> = Vec::new();
 
+        self.socket_domain
+            .retain(|_, attribution| attribution.expires_at_ms >= now);
+
         // Собираем ключи заранее, чтобы не держать заём во время мутации.
         let keys: Vec<_> = self.flows.keys().copied().collect();
         for key in keys {
@@ -823,8 +850,20 @@ impl FlowTable {
                             && !f.inbound_data_seen
                             && f.syn_retx >= self.cfg.min_syn_retx
                         {
-                            // Домен неизвестен (SNI не видели) — берём из learned IP→domain.
-                            if let Some(domain) = self.ip_domain.get(&f.key_ip).cloned() {
+                            // An exact process-owned socket hint is policy-safe.
+                            // The old IP-only hint remains diagnostic because a
+                            // shared CDN address cannot prove which app opened it.
+                            let attribution = self
+                                .socket_domain
+                                .get(&key)
+                                .map(|hint| (hint.domain.clone(), "process_socket_syn_no_synack"))
+                                .or_else(|| {
+                                    self.ip_domain
+                                        .get(&f.key_ip)
+                                        .cloned()
+                                        .map(|domain| (domain, "syn_no_synack"))
+                                });
+                            if let Some((domain, evidence)) = attribution {
                                 let observation = Observation {
                                     flow_id: f.id,
                                     domain,
@@ -832,7 +871,7 @@ impl FlowTable {
                                     local_port: f.local_port,
                                     remote_port: f.remote_port,
                                     verdict: Verdict::Blackhole,
-                                    evidence: "syn_no_synack",
+                                    evidence,
                                     armed_at_ms: None,
                                     armed_at_capture_timestamp: None,
                                     ts_ms: now,
@@ -851,7 +890,13 @@ impl FlowTable {
                             } else {
                                 to_remove.push(key);
                             }
-                        } else {
+                        } else if age >= SYN_HANDSHAKE_MAX_AGE_MS {
+                            // TCP SYN retransmissions use an exponential
+                            // schedule. A periodic tick can reach the
+                            // initial timeout before the third retry, so
+                            // keep the bounded flow alive long enough for
+                            // the retry quorum instead of resetting its
+                            // counter on every early tick.
                             to_remove.push(key);
                         }
                     }
@@ -900,6 +945,7 @@ impl FlowTable {
             // Помечаем эмитнутые blackhole как done, чтобы не всплывали повторно —
             // но проще просто удалить: вердикт уже в out.
             self.flows.remove(&key);
+            self.socket_domain.remove(&key);
         }
         out
     }
@@ -913,6 +959,39 @@ impl FlowTable {
             }
         }
         self.ip_domain.insert(ip, domain.to_string());
+    }
+
+    /// Adds one short-lived, exact socket-owner attribution. The hint must
+    /// still belong to the current hostlist; unknown/oversized labels fail
+    /// closed and cannot broaden the observer's policy scope.
+    pub fn remember_socket_domain(&mut self, hint: SocketAttributionHint, now_ms: u64) -> bool {
+        let domain = hint
+            .domain
+            .trim()
+            .trim_end_matches('.')
+            .to_ascii_lowercase();
+        if domain.is_empty()
+            || domain.len() > 253
+            || !domain.is_ascii()
+            || !self.cfg.hostlist_matches(&domain)
+        {
+            return false;
+        }
+        if self.socket_domain.len() >= self.cfg.ip_cache_cap
+            && !self.socket_domain.contains_key(&hint.key)
+        {
+            if let Some(key) = self.socket_domain.keys().next().copied() {
+                self.socket_domain.remove(&key);
+            }
+        }
+        self.socket_domain.insert(
+            hint.key,
+            SocketAttribution {
+                domain,
+                expires_at_ms: now_ms.saturating_add(SOCKET_ATTRIBUTION_TTL_MS),
+            },
+        );
+        true
     }
 
     /// Выкидывает один наименее ценный поток (не-armed, самый старый).
@@ -1458,6 +1537,161 @@ mod tests {
         assert_eq!(verdicts[0].evidence, "syn_no_synack");
         assert_eq!(verdicts[0].domain, "www.youtube.com");
         assert_eq!(verdicts[0].armed_at_ms, None);
+    }
+
+    #[test]
+    fn exact_socket_attribution_covers_a_first_syn_blackhole() {
+        let mut t = FlowTable::new(cfg());
+        let flow_key = FlowKey {
+            local_port: LPORT + 1,
+            remote_ip: IP,
+            remote_port: 443,
+        };
+        assert!(t.remember_socket_domain(
+            SocketAttributionHint {
+                key: flow_key,
+                domain: "www.youtube.com".into(),
+            },
+            1_000,
+        ));
+
+        let mut mk_syn = |seq, now| {
+            let packet = ParsedPacket {
+                outbound: true,
+                key: flow_key,
+                ttl: 128,
+                seq,
+                flags: TcpFlags {
+                    syn: true,
+                    ..Default::default()
+                },
+                payload: vec![],
+            };
+            t.on_packet(&packet, now);
+        };
+        mk_syn(2_000, 1_000);
+        mk_syn(2_000, 2_000);
+        mk_syn(2_000, 3_000);
+        mk_syn(2_000, 4_000);
+
+        let observations = t.on_tick(5_000);
+        assert_eq!(observations.len(), 1);
+        assert_eq!(observations[0].domain, "www.youtube.com");
+        assert_eq!(observations[0].evidence, "process_socket_syn_no_synack");
+        assert_eq!(observations[0].verdict, Verdict::Blackhole);
+        assert!(!t.socket_domain.contains_key(&flow_key));
+    }
+
+    #[test]
+    fn periodic_ticks_preserve_handshake_until_delayed_syn_retry_quorum() {
+        let mut t = FlowTable::new(cfg());
+        assert!(t.remember_socket_domain(
+            SocketAttributionHint {
+                key: key(),
+                domain: "www.youtube.com".into(),
+            },
+            0,
+        ));
+
+        t.on_packet(&syn(1_000), 0);
+        assert!(t.on_tick(750).is_empty());
+        t.on_packet(&syn(1_000), 1_000);
+        assert!(t.on_tick(2_000).is_empty());
+        t.on_packet(&syn(1_000), 3_000);
+        assert!(t.on_tick(3_250).is_empty());
+        assert_eq!(t.len(), 1, "an early tick must not reset the SYN counter");
+        assert!(t.on_tick(6_750).is_empty());
+
+        t.on_packet(&syn(1_000), 7_000);
+        let observations = t.on_tick(7_250);
+        assert_eq!(observations.len(), 1);
+        assert_eq!(observations[0].verdict, Verdict::Blackhole);
+        assert_eq!(observations[0].evidence, "process_socket_syn_no_synack");
+    }
+
+    #[test]
+    fn handshake_without_retry_quorum_is_still_evicted_at_a_hard_bound() {
+        let mut t = FlowTable::new(cfg());
+        t.on_packet(&syn(1_000), 0);
+
+        assert!(t.on_tick(SYN_HANDSHAKE_MAX_AGE_MS - 1).is_empty());
+        assert_eq!(t.len(), 1);
+        assert!(t.on_tick(SYN_HANDSHAKE_MAX_AGE_MS).is_empty());
+        assert_eq!(t.len(), 0);
+    }
+
+    #[test]
+    fn expired_exact_socket_hint_falls_back_to_diagnostic_ip_evidence() {
+        let mut t = FlowTable::new(cfg());
+        let flow_key = FlowKey {
+            local_port: LPORT + 1,
+            remote_ip: IP,
+            remote_port: 443,
+        };
+        assert!(t.remember_socket_domain(
+            SocketAttributionHint {
+                key: flow_key,
+                domain: "www.youtube.com".into(),
+            },
+            0,
+        ));
+        t.remember_ip_domain(IP, "www.youtube.com");
+
+        for now in [0, 1_000, 2_000, 3_000] {
+            let packet = ParsedPacket {
+                outbound: true,
+                key: flow_key,
+                ttl: 128,
+                seq: 2_000,
+                flags: TcpFlags {
+                    syn: true,
+                    ..Default::default()
+                },
+                payload: vec![],
+            };
+            t.on_packet(&packet, now);
+        }
+
+        let observations = t.on_tick(SOCKET_ATTRIBUTION_TTL_MS + 1);
+        assert_eq!(observations.len(), 1);
+        assert_eq!(observations[0].evidence, "syn_no_synack");
+        assert_eq!(observations[0].domain, "www.youtube.com");
+    }
+
+    #[test]
+    fn socket_attribution_is_bounded_and_duplicate_hints_do_not_grow_it() {
+        let mut configuration = cfg();
+        configuration.ip_cache_cap = 2;
+        let mut t = FlowTable::new(configuration);
+        for port in [LPORT, LPORT + 1, LPORT + 2] {
+            assert!(t.remember_socket_domain(
+                SocketAttributionHint {
+                    key: FlowKey {
+                        local_port: port,
+                        remote_ip: IP,
+                        remote_port: 443,
+                    },
+                    domain: "www.youtube.com".into(),
+                },
+                0,
+            ));
+        }
+        assert_eq!(t.socket_domain.len(), 2);
+
+        let key = FlowKey {
+            local_port: LPORT + 2,
+            remote_ip: IP,
+            remote_port: 443,
+        };
+        assert!(t.remember_socket_domain(
+            SocketAttributionHint {
+                key,
+                domain: "WWW.YOUTUBE.COM.".into(),
+            },
+            10,
+        ));
+        assert_eq!(t.socket_domain.len(), 2);
+        assert_eq!(t.socket_domain.get(&key).unwrap().domain, "www.youtube.com");
     }
 
     #[test]

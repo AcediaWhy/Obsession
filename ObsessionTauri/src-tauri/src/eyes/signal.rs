@@ -64,7 +64,9 @@ impl Diagnosis {
     /// Более точный мост с учётом evidence (различает SYN- и TLS-level blackhole).
     pub fn from_verdict_evidence(v: Verdict, evidence: &str) -> Diagnosis {
         match (v, evidence) {
-            (Verdict::Blackhole, "syn_no_synack") => Diagnosis::TcpBlackhole,
+            (Verdict::Blackhole, "syn_no_synack" | "process_socket_syn_no_synack") => {
+                Diagnosis::TcpBlackhole
+            }
             _ => Diagnosis::from_verdict(v),
         }
     }
@@ -142,6 +144,10 @@ mod tests {
         // SYN-level blackhole → TcpBlackhole.
         assert_eq!(
             Diagnosis::from_verdict_evidence(Verdict::Blackhole, "syn_no_synack"),
+            Diagnosis::TcpBlackhole
+        );
+        assert_eq!(
+            Diagnosis::from_verdict_evidence(Verdict::Blackhole, "process_socket_syn_no_synack",),
             Diagnosis::TcpBlackhole
         );
         // Blackhole после ClientHello → TlsBlackhole.

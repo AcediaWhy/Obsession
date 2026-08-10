@@ -50,6 +50,9 @@ pub struct LegacyReliabilityStatus {
     pub mode: LegacyReliabilityMode,
     pub phase: LegacyReliabilityPhase,
     pub active_categories: Vec<String>,
+    /// Sanitized target applications currently observed by the protected
+    /// service. No process identifiers or executable paths are exposed.
+    pub running_applications: Vec<String>,
     pub session_id: Option<u64>,
     pub sensor_generation: Option<u64>,
     pub lanes: Vec<LegacyLaneStatus>,
@@ -92,6 +95,7 @@ impl LegacyReliabilityStatus {
             mode: LegacyReliabilityMode::ObserveOnly,
             phase: LegacyReliabilityPhase::Inactive,
             active_categories: Vec::new(),
+            running_applications: Vec::new(),
             session_id: None,
             sensor_generation: None,
             lanes: Vec::new(),
@@ -181,6 +185,7 @@ impl LegacyReliabilityStatus {
             mode: LegacyReliabilityMode::ObserveOnly,
             phase,
             active_categories,
+            running_applications: Vec::new(),
             session_id: Some(session_id.get()),
             sensor_generation: Some(sensor_generation.get()),
             lanes: Vec::new(),
@@ -925,6 +930,7 @@ mod tests {
                 "mode": "observe_only",
                 "phase": "starting",
                 "activeCategories": ["discord"],
+                "runningApplications": [],
                 "sessionId": 11,
                 "sensorGeneration": 17,
                 "lanes": [],

@@ -341,6 +341,8 @@ export interface LegacyReliabilityStatus {
   mode: LegacyReliabilityMode;
   phase: LegacyReliabilityPhase;
   activeCategories: string[];
+  /** Target applications currently observed; never contains PID or a path. */
+  runningApplications: string[];
   sessionId: number | null;
   sensorGeneration: number | null;
   lanes: LegacyReliabilityLaneAssessment[];

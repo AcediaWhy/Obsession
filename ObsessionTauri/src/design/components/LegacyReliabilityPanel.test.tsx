@@ -48,6 +48,7 @@ function status(
     mode: "observe_only",
     phase: "observing",
     activeCategories: ["youtube_twitch"],
+    runningApplications: [],
     sessionId: 11,
     sensorGeneration: 3,
     lanes: [lane()],
@@ -249,11 +250,11 @@ describe("LegacyReliabilityPanel", () => {
     ["working", "Работает", "ok"],
     ["dpi_suspected", "Вероятна блокировка", "warn"],
     ["dpi_blocked", "Блокировка подтверждена", "danger"],
-    ["offline", "Нет подключения", "warn"],
-    ["dns_failure", "Сбой DNS", "warn"],
-    ["upstream_degraded", "Проблема сети", "warn"],
-    ["target_unavailable", "Сервис недоступен", "warn"],
-    ["service_slow", "Сервис отвечает медленно", "warn"],
+    ["offline", "Нет подключения", "muted"],
+    ["dns_failure", "Сбой DNS", "muted"],
+    ["upstream_degraded", "Проблема сети", "muted"],
+    ["target_unavailable", "Сервис недоступен", "muted"],
+    ["service_slow", "Сервис отвечает медленно", "muted"],
     ["sensor_unreliable", "Данные ненадёжны", "danger"],
   ])("maps %s lane assessment to %s", (classification, label, tone) => {
     expect(
@@ -475,6 +476,40 @@ describe("LegacyReliabilityPanel", () => {
     expect(markup).not.toContain("Оценка категорий");
     expect(markup).not.toContain("Предполагаемое действие");
     expect(markup).not.toContain("Подтвердить замену");
+  });
+
+  it("does not expose a detected Discord process while the observer is inactive", () => {
+    const markup = renderToStaticMarkup(
+      <LegacyReliabilityPanelView
+        status={status({
+          phase: "inactive",
+          activeCategories: [],
+          runningApplications: ["discord"],
+          sessionId: null,
+          sensorGeneration: null,
+          lanes: [],
+        })}
+      />,
+    );
+
+    expect(markup).not.toContain("Discord");
+    expect(markup).toContain("Запустится вместе с обходом");
+  });
+
+  it("does not add a Discord application callout under an active observer", () => {
+    const markup = renderToStaticMarkup(
+      <LegacyReliabilityPanelView
+        status={status({
+          activeCategories: ["discord"],
+          runningApplications: ["discord"],
+          lanes: [lane({ category: "discord" })],
+        })}
+      />,
+    );
+
+    expect(markup).toContain("Discord");
+    expect(markup).toContain("Discord под наблюдением");
+    expect(markup).not.toContain("Discord запущен");
   });
 
   it("offers explicit observe-only, assisted and automatic mode choices", () => {

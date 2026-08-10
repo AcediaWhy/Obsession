@@ -534,6 +534,7 @@ mod tests {
 
         fn paths(&self) -> Paths {
             Paths {
+                resource_dir: self.path.clone(),
                 base_dir: self.path.clone(),
             }
         }
@@ -844,8 +845,10 @@ mod tests {
 
     #[test]
     fn bundled_candidates_form_a_usable_snapshot() {
+        let resource_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources");
         let paths = Paths {
-            base_dir: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources"),
+            base_dir: resource_dir.clone(),
+            resource_dir,
         };
         let selections = [
             ("atrisk".to_string(), "atrisk_1.conf".to_string()),

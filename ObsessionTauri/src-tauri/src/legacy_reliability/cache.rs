@@ -1012,7 +1012,10 @@ mod tests {
             std::process::id()
         ));
         fs::create_dir_all(&base_dir).unwrap();
-        Paths { base_dir }
+        Paths {
+            resource_dir: base_dir.clone(),
+            base_dir,
+        }
     }
 
     fn identity<'a>(

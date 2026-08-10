@@ -635,8 +635,20 @@ impl ObserveOnlyManager {
         &self,
         local_network: LocalNetworkSnapshot,
     ) -> Option<super::environment_gate::GateRequest> {
+        let category = self.lane_generations.keys().next()?.clone();
+        self.baseline_gate_request_for(&category, local_network)
+    }
+
+    /// Builds the same non-actionable baseline request for one exact active
+    /// lane. Service-owned diagnostics use this to rotate categories without
+    /// manufacturing passive evidence or an assessor gate token.
+    pub fn baseline_gate_request_for(
+        &self,
+        category: &str,
+        local_network: LocalNetworkSnapshot,
+    ) -> Option<super::environment_gate::GateRequest> {
         let registry = self.registry.as_ref()?;
-        let (category, generation) = self.lane_generations.iter().next()?;
+        let generation = *self.lane_generations.get(category)?;
         let category_targets = registry
             .active_targets_for_category(category)
             .into_iter()
@@ -647,8 +659,8 @@ impl ObserveOnlyManager {
             return None;
         }
         Some(super::environment_gate::GateRequest {
-            fence: self.gate_fence(*generation),
-            category: category.clone(),
+            fence: self.gate_fence(generation),
+            category: category.to_owned(),
             category_targets,
             local_network,
             sensor: SensorSnapshot {
@@ -1206,6 +1218,42 @@ mod tests {
         )
         .unwrap();
         (manager, registry)
+    }
+
+    #[test]
+    fn baseline_gate_can_target_an_exact_active_category() {
+        let (manager, _) = production_fixture();
+        let request = manager
+            .baseline_gate_request_for(
+                "discord",
+                LocalNetworkSnapshot {
+                    online: true,
+                    interface_up: true,
+                    default_route_available: true,
+                    gateway_reachable: true,
+                    network_fingerprint: NetworkFingerprint::Stable {
+                        key: "test-network".into(),
+                    },
+                },
+            )
+            .unwrap();
+
+        assert_eq!(request.category, "discord");
+        assert_eq!(request.category_targets, ["one.example", "two.example"]);
+        assert_eq!(request.passive_evidence.reset_after_client_hello_flows, 0);
+        assert_eq!(request.passive_evidence.confirmed_tls_blackhole_flows, 0);
+        assert!(manager
+            .baseline_gate_request_for(
+                "missing",
+                LocalNetworkSnapshot {
+                    online: true,
+                    interface_up: true,
+                    default_route_available: true,
+                    gateway_reachable: true,
+                    network_fingerprint: NetworkFingerprint::Unknown,
+                },
+            )
+            .is_none());
     }
 
     fn fixture() -> (ObserveOnlyManager, super::super::ingress::LegacyIngress) {
@@ -1767,7 +1815,9 @@ mod tests {
                 },
             })
             .unwrap();
-        assert_eq!(prepared.pending.requested_at_ms, 3);
+        // Discord's updater retries slowly, so its scoped reset quorum is
+        // reached by the second corroborating flow instead of the third.
+        assert_eq!(prepared.pending.requested_at_ms, 2);
         assert_eq!(prepared.request.requested_at_monotonic_ms, 6_000);
     }
 

@@ -40,11 +40,11 @@ const CLASSIFICATION_DISPLAY = {
   working: { label: "Работает", tone: "ok" },
   dpi_suspected: { label: "Вероятна блокировка", tone: "warn" },
   dpi_blocked: { label: "Блокировка подтверждена", tone: "danger" },
-  offline: { label: "Нет подключения", tone: "warn" },
-  dns_failure: { label: "Сбой DNS", tone: "warn" },
-  upstream_degraded: { label: "Проблема сети", tone: "warn" },
-  target_unavailable: { label: "Сервис недоступен", tone: "warn" },
-  service_slow: { label: "Сервис отвечает медленно", tone: "warn" },
+  offline: { label: "Нет подключения", tone: "muted" },
+  dns_failure: { label: "Сбой DNS", tone: "muted" },
+  upstream_degraded: { label: "Проблема сети", tone: "muted" },
+  target_unavailable: { label: "Сервис недоступен", tone: "muted" },
+  service_slow: { label: "Сервис отвечает медленно", tone: "muted" },
   sensor_unreliable: { label: "Данные ненадёжны", tone: "danger" },
 } as const satisfies Record<
   LegacyReliabilityClassification,
@@ -450,7 +450,7 @@ function LegacyModeSelector({
     <div
       role="radiogroup"
       aria-label="Режим восстановления Legacy"
-      className="grid grid-cols-3 gap-1 rounded-lg bg-black/10 p-1"
+      className="grid gap-0.5"
     >
       {options.map((option) => {
         const selected = mode === option.value;
@@ -465,10 +465,10 @@ function LegacyModeSelector({
             onClick={() => {
               if (!selected) onChange?.(option.value);
             }}
-            className={`no-drag min-w-0 rounded-md px-1.5 py-1.5 text-3xs font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:cursor-not-allowed disabled:opacity-50 ${
+            className={`no-drag flex min-h-8 w-full items-center rounded-lg border-l-2 px-2.5 py-1.5 text-left text-xs font-medium leading-snug transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:cursor-not-allowed disabled:opacity-50 ${
               selected
-                ? "bg-accent/20 text-ink shadow-glow"
-                : "text-ink-muted hover:bg-white/5 hover:text-ink-soft"
+                ? "border-accent bg-white/[0.07] text-ink"
+                : "border-transparent text-ink-muted hover:bg-white/[0.04] hover:text-ink-soft"
             }`}
           >
             {option.label}

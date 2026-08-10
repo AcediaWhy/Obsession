@@ -427,9 +427,7 @@ fn windows_process_identity(pid: u32) -> Result<Option<ProcessIdentity>, String>
         // HRESULT_FROM_WIN32(ERROR_ACCESS_DENIED) — процесс недоступен (уже
         // завершился/чужой): для identity-check это тоже «не наш», а не
         // «живой, но проверка не удалась». Иначе мёртвый PID ждёт дедлайна.
-        Err(error)
-            if matches!(error.code().0 as u32, 0x8007_0057 | 0x8007_0005) =>
-        {
+        Err(error) if matches!(error.code().0 as u32, 0x8007_0057 | 0x8007_0005) => {
             return Ok(None);
         }
         Err(error) => return Err(format!("OpenProcess({pid}) failed: {error}")),

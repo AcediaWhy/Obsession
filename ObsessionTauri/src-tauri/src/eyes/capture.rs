@@ -30,7 +30,9 @@ use libloading::{Library, Symbol};
 use windows::Win32::System::Performance::QueryPerformanceCounter;
 
 use crate::dpi_supervisor::{WorkerStopOutcome, WorkerTeardown};
-use crate::eyes::flow::{Config, FlowTable, WorkingSignalMode, BLACKHOLE_DELIVERY_GRACE_MS};
+use crate::eyes::flow::{
+    Config, FlowTable, SocketAttributionHint, WorkingSignalMode, BLACKHOLE_DELIVERY_GRACE_MS,
+};
 use crate::eyes::parse::{decode_ip_tcp, ParsedPacket};
 use crate::eyes::signal::Observation;
 use crate::legacy_reliability::health::AtomicHealthCounters;
@@ -48,6 +50,7 @@ const PACKET_BUF: usize = 65535;
 /// Жёсткая граница backlog capture -> tracker. При переполнении лучше потерять
 /// отдельное наблюдение, чем бесконечно наращивать RAM.
 const PACKET_QUEUE_CAP: usize = 4096;
+const ATTRIBUTION_QUEUE_CAP: usize = 256;
 const TRACKER_TICK: Duration = Duration::from_millis(250);
 const TRACKER_DRAIN_BUDGET: usize = 256;
 const CAPTURE_HANDOFF_TIMEOUT: Duration = Duration::from_millis(250);
@@ -340,6 +343,7 @@ pub struct EyesHandle {
     tracker: Option<JoinHandle<()>>,
     divert: Arc<WinDivert>,
     sensor_started: Instant,
+    attribution_tx: SyncSender<SocketAttributionHint>,
 }
 
 pub struct EyesStartError {
@@ -416,6 +420,13 @@ fn cleanup_partial_capture(capture: JoinHandle<()>, timeout: Duration) -> Partia
 }
 
 impl EyesHandle {
+    /// Supplies one exact process/socket-owner correlation to the tracker.
+    /// This is a bounded best-effort side channel; failure never widens scope
+    /// or turns a process launch alone into recovery evidence.
+    pub fn try_attribute_socket(&self, hint: SocketAttributionHint) -> bool {
+        self.attribution_tx.try_send(hint).is_ok()
+    }
+
     pub(crate) fn capture_timestamp(&self) -> Option<i64> {
         let mut timestamp = 0i64;
         unsafe { QueryPerformanceCounter(&mut timestamp) }
@@ -550,6 +561,10 @@ where
     // на полном канале, чтобы backlog не переехал в WinDivert/kernel buffers.
     let (tx, rx): (SyncSender<CapturedPacket>, Receiver<CapturedPacket>) =
         mpsc::sync_channel(PACKET_QUEUE_CAP);
+    let (attribution_tx, attribution_rx): (
+        SyncSender<SocketAttributionHint>,
+        Receiver<SocketAttributionHint>,
+    ) = mpsc::sync_channel(ATTRIBUTION_QUEUE_CAP);
     let publication_gate = Arc::new(Mutex::new(()));
 
     // Поток захвата: блокирующий recv, декод, отправка в трекер.
@@ -682,6 +697,16 @@ where
                 let mut pending_packet = None;
                 let mut publication_wait_started = None;
                 'tracker: loop {
+                    let now_ms = start.elapsed().as_millis() as u64;
+                    for _ in 0..ATTRIBUTION_QUEUE_CAP {
+                        match attribution_rx.try_recv() {
+                            Ok(hint) => {
+                                table.remember_socket_domain(hint, now_ms);
+                            }
+                            Err(TryRecvError::Empty) => break,
+                            Err(TryRecvError::Disconnected) => break,
+                        }
+                    }
                     let wait = tick.wait(Instant::now());
                     let captured = match pending_packet.take() {
                         Some(captured) => Some(captured),
@@ -862,6 +887,7 @@ where
         tracker: Some(tracker),
         divert,
         sensor_started,
+        attribution_tx,
     })
 }
 

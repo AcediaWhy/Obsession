@@ -13,9 +13,11 @@ use crate::eyes::Diagnosis;
 use super::contracts::{FlowEvent, LaneGeneration, Transport};
 
 pub const EVIDENCE_WINDOW_MS: u64 = 30_000;
+pub const DISCORD_RESET_EVIDENCE_WINDOW_MS: u64 = 90_000;
 pub const MAX_EVIDENCE_PER_LANE: usize = 2_048;
 pub const RESET_FLOW_QUORUM: usize = 3;
 pub const RESET_TARGET_QUORUM: usize = 2;
+pub const DISCORD_RESET_GATE_FLOW_QUORUM: usize = 2;
 pub const BLACKHOLE_FLOW_QUORUM: usize = 2;
 pub const BLACKHOLE_TARGET_QUORUM: usize = 2;
 pub const WORKING_FLOW_QUORUM: usize = 2;
@@ -231,7 +233,7 @@ impl LaneState {
         }
     }
 
-    fn prune(&mut self, now_ms: u64) {
+    fn prune(&mut self, category: &str, now_ms: u64) {
         // Do not assume producers can never deliver an older timestamp after
         // a newer one: control-first queue draining and capture scheduling may
         // reorder independent flows. Retain by timestamp instead of popping
@@ -242,7 +244,7 @@ impl LaneState {
                 && !gate.recovered_by_working(now_ms)
         });
         self.evidence.retain(|point| {
-            now_ms.saturating_sub(point.ts_ms) <= EVIDENCE_WINDOW_MS
+            evidence_is_fresh(category, point, now_ms)
                 || (preserve_adverse_during_recovery && point.kind != EvidenceKind::Working)
         });
         // Transient environment/site results belong only to the evidence
@@ -250,11 +252,11 @@ impl LaneState {
         // remain latched through silence and expire only after Working
         // hysteresis (and any explicit caller-supplied cooldown).
         let summary = summarize(&self.evidence);
-        if !summary.has_gate_quorum() {
+        if !has_gate_quorum(category, summary) {
             self.pending_gate = None;
             self.gate_in_flight = false;
         }
-        let gate_quorum_still_valid = summary.has_gate_quorum();
+        let gate_quorum_still_valid = has_gate_quorum(category, summary);
         let recovered_by_working = self
             .applied_gate
             .as_ref()
@@ -360,7 +362,7 @@ impl LaneAssessor {
             // Control-first draining may deliver a flow after the Gate even
             // though Eyes observed it before the verdict. Such a delayed
             // success cannot count as post-Gate recovery evidence.
-            lane.prune(now_ms);
+            lane.prune(category, now_ms);
             return false;
         }
         // Do this before time-based pruning: an accepted adverse event that
@@ -375,7 +377,7 @@ impl LaneAssessor {
                 gate.working_recovery_started_at_ms = None;
             }
         }
-        lane.prune(now_ms);
+        lane.prune(category, now_ms);
         if lane.evidence.len() >= MAX_EVIDENCE_PER_LANE {
             self.invalidate(SensorInvalidationReason::EvidenceOverflow);
             return true;
@@ -425,7 +427,7 @@ impl LaneAssessor {
                 lane.applied_gate = None;
             }
             after = summarize(&lane.evidence);
-        } else if after.reset_quorum() || after.blackhole_gate_quorum() {
+        } else if reset_gate_quorum(category, after) || after.blackhole_gate_quorum() {
             // Two independent blackhole flows are enough to refute the
             // display-only session confirmation and ask the active Gate for a
             // diagnosis. High-confidence DpiBlocked still requires distinct
@@ -473,8 +475,8 @@ impl LaneAssessor {
 
     pub fn poll(&mut self, now_ms: u64) {
         let categories = self.lanes.keys().cloned().collect::<Vec<_>>();
-        for lane in self.lanes.values_mut() {
-            lane.prune(now_ms);
+        for (category, lane) in &mut self.lanes {
+            lane.prune(category, now_ms);
         }
         for category in categories {
             self.arm_gate_if_needed(&category, now_ms);
@@ -537,10 +539,10 @@ impl LaneAssessor {
             lane.gate_in_flight = false;
             return false;
         }
-        lane.prune(assessed_at_ms);
+        lane.prune(&request.category, assessed_at_ms);
         let summary = summarize(&lane.evidence);
         let trigger_still_valid = match request.trigger {
-            GateTrigger::ResetQuorum => summary.reset_quorum(),
+            GateTrigger::ResetQuorum => reset_gate_quorum(&request.category, summary),
             GateTrigger::BlackholeQuorum => summary.blackhole_gate_quorum(),
         };
         if !trigger_still_valid {
@@ -585,7 +587,7 @@ impl LaneAssessor {
             let Some(lane) = self.lanes.get_mut(&request.category) else {
                 return false;
             };
-            lane.prune(retry_at_ms);
+            lane.prune(&request.category, retry_at_ms);
             if lane.generation != request.lane_generation
                 || !lane.gate_in_flight
                 || lane
@@ -598,7 +600,7 @@ impl LaneAssessor {
 
             let evidence = summarize(&lane.evidence);
             let trigger_still_valid = match request.trigger {
-                GateTrigger::ResetQuorum => evidence.reset_quorum(),
+                GateTrigger::ResetQuorum => reset_gate_quorum(&request.category, evidence),
                 GateTrigger::BlackholeQuorum => evidence.blackhole_gate_quorum(),
             };
             if !trigger_still_valid {
@@ -648,7 +650,7 @@ impl LaneAssessor {
         let summary = summarize(&lane.evidence);
         let trigger = if summary.blackhole_gate_quorum() {
             Some(GateTrigger::BlackholeQuorum)
-        } else if summary.reset_quorum() {
+        } else if reset_gate_quorum(category, summary) {
             Some(GateTrigger::ResetQuorum)
         } else {
             None
@@ -677,7 +679,7 @@ impl LaneAssessor {
                             .cooldown_until_ms
                             .is_some_and(|until_ms| now_ms < until_ms))
                     && match trigger {
-                        GateTrigger::ResetQuorum => summary.reset_quorum(),
+                        GateTrigger::ResetQuorum => reset_gate_quorum(category, summary),
                         GateTrigger::BlackholeQuorum => summary.blackhole_gate_quorum(),
                     }
             });
@@ -720,12 +722,33 @@ fn summarize(points: &VecDeque<EvidencePoint>) -> EvidenceSummary {
     summarize_iter(points.iter())
 }
 
-fn summarize_at(points: &VecDeque<EvidencePoint>, now_ms: u64) -> EvidenceSummary {
+fn summarize_at(points: &VecDeque<EvidencePoint>, category: &str, now_ms: u64) -> EvidenceSummary {
     summarize_iter(
         points
             .iter()
-            .filter(|point| now_ms.saturating_sub(point.ts_ms) <= EVIDENCE_WINDOW_MS),
+            .filter(|point| evidence_is_fresh(category, point, now_ms)),
     )
+}
+
+fn evidence_is_fresh(category: &str, point: &EvidencePoint, now_ms: u64) -> bool {
+    let window_ms = if point.kind == EvidenceKind::Reset && category.eq_ignore_ascii_case("discord")
+    {
+        DISCORD_RESET_EVIDENCE_WINDOW_MS
+    } else {
+        EVIDENCE_WINDOW_MS
+    };
+    now_ms.saturating_sub(point.ts_ms) <= window_ms
+}
+
+fn reset_gate_quorum(category: &str, evidence: EvidenceSummary) -> bool {
+    evidence.reset_quorum()
+        || (category.eq_ignore_ascii_case("discord")
+            && usize::from(evidence.reset_flows) >= DISCORD_RESET_GATE_FLOW_QUORUM
+            && evidence.reset_targets > 0)
+}
+
+fn has_gate_quorum(category: &str, evidence: EvidenceSummary) -> bool {
+    reset_gate_quorum(category, evidence) || evidence.blackhole_gate_quorum()
 }
 
 fn summarize_iter<'a>(points: impl IntoIterator<Item = &'a EvidencePoint>) -> EvidenceSummary {
@@ -786,8 +809,8 @@ fn assess_lane(
     sensor_reliable: bool,
     now_ms: u64,
 ) -> LaneAssessment {
-    let evidence = summarize_at(&lane.evidence, now_ms);
-    let gate_quorum_still_valid = evidence.has_gate_quorum();
+    let evidence = summarize_at(&lane.evidence, category, now_ms);
+    let gate_quorum_still_valid = has_gate_quorum(category, evidence);
     let (phase, classification, confidence, cooldown_until_ms) = if !sensor_reliable {
         (
             LanePhase::SensorUnreliable,
@@ -944,6 +967,26 @@ mod tests {
         .unwrap()
     }
 
+    fn category_flow(category: &str, id: u64, ts: u64, diagnosis: Diagnosis) -> FlowEvent {
+        FlowEvent::new(
+            EventEnvelope::new(
+                SessionId::new(1),
+                SensorGeneration::new(2),
+                RegistryVersion::new(3),
+            ),
+            Some(category.into()),
+            Some(LANE),
+            id,
+            "redacted.test",
+            IpAddr::V4(Ipv4Addr::new(203, 0, 113, 8)),
+            Transport::Tls,
+            diagnosis,
+            "typed",
+            ts,
+        )
+        .unwrap()
+    }
+
     fn observe(assessor: &mut LaneAssessor, id: u64, target: &str, ts: u64, diagnosis: Diagnosis) {
         assert!(assessor.observe_flow("video", target, &flow(id, ts, diagnosis), ts));
     }
@@ -961,6 +1004,65 @@ mod tests {
         assert_eq!(request.trigger, GateTrigger::ResetQuorum);
         assert_eq!(request.evidence.reset_flows, 4);
         assert_eq!(request.evidence.reset_targets, 2);
+    }
+
+    #[test]
+    fn discord_slow_reset_retries_arm_a_single_target_gate() {
+        let second_reset_at = EVIDENCE_WINDOW_MS + 2;
+        let mut discord = LaneAssessor::new([("discord", LANE, 1)]);
+        assert!(discord.observe_flow(
+            "discord",
+            "updates.discord.com",
+            &category_flow("discord", 1, 1, Diagnosis::TcpReset),
+            1,
+        ));
+        assert!(discord.take_gate_request().is_none());
+
+        assert!(discord.observe_flow(
+            "discord",
+            "updates.discord.com",
+            &category_flow("discord", 2, second_reset_at, Diagnosis::TcpReset),
+            second_reset_at,
+        ));
+        let request = discord.take_gate_request().unwrap();
+        assert_eq!(request.trigger, GateTrigger::ResetQuorum);
+        assert_eq!(request.evidence.reset_flows, 2);
+        assert_eq!(request.evidence.reset_targets, 1);
+
+        let mut video = LaneAssessor::new([("video", LANE, 1)]);
+        assert!(video.observe_flow(
+            "video",
+            "video.example",
+            &category_flow("video", 1, 1, Diagnosis::TcpReset),
+            1,
+        ));
+        assert!(video.observe_flow(
+            "video",
+            "video.example",
+            &category_flow("video", 2, second_reset_at, Diagnosis::TcpReset),
+            second_reset_at,
+        ));
+        assert!(video.take_gate_request().is_none());
+        assert_eq!(video.snapshots(second_reset_at)[0].evidence.reset_flows, 1);
+    }
+
+    #[test]
+    fn discord_reset_evidence_expires_after_its_extended_window() {
+        let mut assessor = LaneAssessor::new([("discord", LANE, 1)]);
+        assert!(assessor.observe_flow(
+            "discord",
+            "updates.discord.com",
+            &category_flow("discord", 1, 1, Diagnosis::TcpReset),
+            1,
+        ));
+
+        let after_window = DISCORD_RESET_EVIDENCE_WINDOW_MS + 2;
+        assessor.poll(after_window);
+        assert_eq!(
+            assessor.snapshots(after_window)[0].evidence,
+            EvidenceSummary::default()
+        );
+        assert!(assessor.take_gate_request().is_none());
     }
 
     #[test]
