@@ -596,7 +596,7 @@ pub struct ProxyForwarder {
 
 pub struct ProxyFirewall {
     pub generation: u64,
-    pub name: String,
+    pub renewal_abort: tokio::task::AbortHandle,
 }
 
 #[derive(Default)]

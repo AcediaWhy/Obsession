@@ -5,8 +5,8 @@
   "identifier": "com.vlarpsu.obsession",
   "build": {
     "beforeDevCommand": "npm run dev",
-    "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeBuildCommand": "npm run build && node scripts/prepare-runtime.mjs",
     "frontendDist": "../dist"
   },
   "app": {
@@ -41,14 +41,17 @@
     ],
     "resources": {
       "resources/bin": "bin",
+      "resources/autohosts": "autohosts",
       "resources/configs": "configs",
       "resources/lists": "lists",
       "resources/icons": "icons",
       "resources/strategy-packs": "strategy-packs",
       "resources/ranking.json": "ranking.json",
-      "resources/manifest.json": "manifest.json"
+      "resources/manifest.json": "manifest.json",
+      "resources/runtime": "runtime"
     },
     "windows": {
+      "allowDowngrades": false,
       "nsis": {
         "installerIcon": "icons/icon.ico",
         "installerHooks": "nsis/hooks.nsh"

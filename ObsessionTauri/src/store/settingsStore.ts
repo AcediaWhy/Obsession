@@ -2,6 +2,7 @@ import { create } from "zustand";
 import {
   api,
   type BootstrapSettings,
+  type ProtectedRuntimeCapabilities,
   type Settings,
   type VersionedSection,
 } from "../lib/tauri";
@@ -14,6 +15,10 @@ interface SettingsState {
   saved: boolean; // короткий флаг «сохранено» для галочки
   settings: Settings | null;
   elevated: boolean;
+  protectedRuntime: ProtectedRuntimeCapabilities;
+  protectedRuntimeAvailable: boolean;
+  protectedDpiAvailable: boolean;
+  protectedLegacyReliabilityAvailable: boolean;
   autostart: boolean; // источник истины — реестр Windows, не settings.json
   error: string;
 
@@ -39,6 +44,21 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   saved: false,
   settings: null,
   elevated: false,
+  protectedRuntime: {
+    serviceAvailable: false,
+    serviceVersion: null,
+    dpi: false,
+    zapret2: false,
+    adaptiveZapret2: false,
+    eyesEvents: false,
+    legacyReliabilityControls: false,
+    legacyReliability: false,
+    hosts: false,
+    proxyLanFirewall: false,
+  },
+  protectedRuntimeAvailable: false,
+  protectedDpiAvailable: false,
+  protectedLegacyReliabilityAvailable: false,
   autostart: false,
   error: "",
 
@@ -48,6 +68,11 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
       revision: section.revision,
       settings: section.value.settings,
       elevated: section.value.elevated,
+      protectedRuntime: section.value.protectedRuntime,
+      protectedRuntimeAvailable: section.value.protectedRuntimeAvailable,
+      protectedDpiAvailable: section.value.protectedDpiAvailable,
+      protectedLegacyReliabilityAvailable:
+        section.value.protectedLegacyReliabilityAvailable,
       autostart: section.value.autostart,
       loaded: true,
       error: "",

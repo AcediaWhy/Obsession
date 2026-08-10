@@ -15,10 +15,15 @@
 //!      LAN IP выбирается через `util::lan_ip_for_phone` (реальная физ. карта,
 //!      не VPN/виртуальный адаптер).
 
+use std::fs::{self, File};
+use std::io::Read;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
 use rand::RngCore;
+use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command as TokioCommand;
@@ -27,6 +32,40 @@ use tokio::task::JoinSet;
 
 use crate::state::{AppState, ProxyFirewall, ProxyForwarder, ProxyState};
 use crate::util::{self, LockExt, ProxyStatusPayload, VersionedSection};
+
+const TGPROXY_RELATIVE: &str = "bin/tg_ws_proxy.exe";
+const TGPROXY_MANIFEST_RELATIVE: &str = "runtime/runtime-manifest.json";
+const MAX_RUNTIME_MANIFEST_BYTES: u64 = 1024 * 1024;
+const MAX_TGPROXY_BYTES: u64 = 256 * 1024 * 1024;
+const PROXY_LAN_FIREWALL_LEASE_SECONDS: u16 = 90;
+const PROXY_LAN_FIREWALL_RENEW_INTERVAL: Duration = Duration::from_secs(30);
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimeResourceManifest {
+    schema_version: u32,
+    engines: Vec<RuntimeResourceEngine>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimeResourceEngine {
+    #[serde(rename = "engine")]
+    _engine: String,
+    #[serde(rename = "executable")]
+    _executable: String,
+    files: Vec<RuntimeResourceFile>,
+    #[serde(rename = "strategies")]
+    _strategies: Vec<serde_json::Value>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimeResourceFile {
+    path: String,
+    size: u64,
+    sha256: String,
+}
 
 fn emit_status(app: &AppHandle) {
     let state = app.state::<AppState>();
@@ -50,7 +89,86 @@ fn emit_status(app: &AppHandle) {
 /// True, если бинарник TgWsProxy найден.
 pub fn available(app: &AppHandle) -> bool {
     let state = app.state::<AppState>();
-    state.paths.tgproxy_path().is_some()
+    verified_tgproxy_path(state.paths.resource_dir()).is_some()
+}
+
+fn verified_tgproxy_path(resource_root: &Path) -> Option<PathBuf> {
+    let canonical_root = fs::canonicalize(resource_root).ok()?;
+    let manifest_path = canonical_root.join(TGPROXY_MANIFEST_RELATIVE);
+    let manifest_metadata = fs::symlink_metadata(&manifest_path).ok()?;
+    if !manifest_metadata.is_file()
+        || manifest_metadata.file_type().is_symlink()
+        || manifest_metadata.len() == 0
+        || manifest_metadata.len() > MAX_RUNTIME_MANIFEST_BYTES
+    {
+        return None;
+    }
+    let mut bytes = Vec::with_capacity(manifest_metadata.len() as usize);
+    File::open(&manifest_path)
+        .ok()?
+        .take(MAX_RUNTIME_MANIFEST_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.is_empty() || bytes.len() as u64 > MAX_RUNTIME_MANIFEST_BYTES {
+        return None;
+    }
+    let manifest: RuntimeResourceManifest = serde_json::from_slice(&bytes).ok()?;
+    if manifest.schema_version != 1 || manifest.engines.is_empty() || manifest.engines.len() > 2 {
+        return None;
+    }
+    let mut records = manifest
+        .engines
+        .iter()
+        .flat_map(|engine| engine.files.iter())
+        .filter(|file| file.path.eq_ignore_ascii_case(TGPROXY_RELATIVE));
+    let record = records.next()?;
+    if records.next().is_some()
+        || record.path != TGPROXY_RELATIVE
+        || record.size == 0
+        || record.size > MAX_TGPROXY_BYTES
+        || record.sha256.len() != 64
+        || !record.sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return None;
+    }
+
+    let candidate = canonical_root.join(TGPROXY_RELATIVE);
+    let metadata = fs::symlink_metadata(&candidate).ok()?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() != record.size {
+        return None;
+    }
+    let canonical_bin = fs::canonicalize(canonical_root.join("bin")).ok()?;
+    let canonical_candidate = fs::canonicalize(&candidate).ok()?;
+    if canonical_candidate.parent() != Some(canonical_bin.as_path())
+        || canonical_candidate
+            .file_name()
+            .and_then(|name| name.to_str())
+            != Some(crate::paths::TGPROXY_EXE)
+        || !sha256_file(&canonical_candidate)
+            .ok()?
+            .eq_ignore_ascii_case(&record.sha256)
+    {
+        return None;
+    }
+    Some(canonical_candidate)
+}
+
+fn sha256_file(path: &Path) -> std::io::Result<String> {
+    let mut file = File::open(path)?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
+    }
+    Ok(digest
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
 }
 
 fn runtime_shutting_down(app: &AppHandle) -> bool {
@@ -62,68 +180,6 @@ fn runtime_shutting_down(app: &AppHandle) -> bool {
 const FORWARD_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const FORWARD_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_FORWARD_CONNECTIONS: usize = 512;
-
-/// Имя firewall-правила — generation-aware: каждое поколение публикации имеет
-/// уникальное имя, поэтому старое поколение не может удалить правило нового
-/// (см. инвариант «generation-safe cleanup»).
-fn firewall_rule_name(port: u16, generation: u64) -> String {
-    format!("Obsession TgWsProxy {port} gen{generation}")
-}
-
-/// Строит argv для `netsh advfirewall firewall add rule` из ВАЛИДИРОВАННЫХ
-/// числовых значений (порт u16, generation u64) и подсети. Чистая функция —
-/// тестируется без запуска netsh (F.3). Правило строго ограничено:
-/// - `profile=private` — только доверенные сети (не Public/Domain);
-/// - `remoteip=<subnet>` — только локальная подсеть, а не весь интернет.
-///   `subnet` = CIDR выбранного интерфейса; при `None` — безопасный keyword
-///   `LocalSubnet` (Windows сам ограничивает текущей локальной подсетью).
-fn build_add_rule_args(port: u16, name: &str, subnet: Option<&str>) -> Vec<String> {
-    let remoteip = subnet.unwrap_or("LocalSubnet");
-    vec![
-        "advfirewall".into(),
-        "firewall".into(),
-        "add".into(),
-        "rule".into(),
-        format!("name={name}"),
-        "group=Obsession".into(),
-        "dir=in".into(),
-        "action=allow".into(),
-        "protocol=tcp".into(),
-        format!("localport={port}"),
-        "profile=private".into(),
-        format!("remoteip={remoteip}"),
-    ]
-}
-
-#[cfg(windows)]
-fn add_firewall_rule(port: u16, name: &str, subnet: Option<&str>) -> Result<(), String> {
-    let mut cmd = util::std_command("netsh");
-    let out = cmd
-        .args(build_add_rule_args(port, name, subnet))
-        .output()
-        .map_err(|e| format!("netsh add rule failed: {e}"))?;
-    if !out.status.success() {
-        return Err(String::from_utf8_lossy(&out.stderr).to_string());
-    }
-    Ok(())
-}
-
-#[cfg(windows)]
-fn remove_firewall_rule(name: &str) {
-    let name_arg = format!("name={name}");
-    let mut cmd = util::std_command("netsh");
-    let _ = cmd
-        .args(["advfirewall", "firewall", "delete", "rule", &name_arg])
-        .output();
-}
-
-#[cfg(not(windows))]
-fn add_firewall_rule(_port: u16, _name: &str, _subnet: Option<&str>) -> Result<(), String> {
-    Ok(())
-}
-
-#[cfg(not(windows))]
-fn remove_firewall_rule(_name: &str) {}
 
 struct DetachedProxy {
     pid: Option<u32>,
@@ -205,12 +261,16 @@ fn detach_if_current(app: &AppHandle, generation: u64, pid: u32) -> Option<Detac
     detach_if_current_state(&mut p, generation, pid)
 }
 
-fn cleanup_nonprocess_runtime(detached: DetachedProxy) {
+async fn cleanup_nonprocess_runtime(detached: DetachedProxy) {
     if let Some(forwarder) = detached.forwarder {
         forwarder.handle.abort();
     }
     if let Some(firewall) = detached.firewall {
-        remove_firewall_rule(&firewall.name);
+        firewall.renewal_abort.abort();
+        let _ = tauri::async_runtime::spawn_blocking(
+            crate::protected_runtime::proxy_lan_firewall_close_blocking,
+        )
+        .await;
     }
 }
 
@@ -222,29 +282,59 @@ fn now_unix() -> u64 {
         .unwrap_or(0)
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LanCloseOrigin {
+    External,
+    ExpiryTask,
+    RenewalTask,
+}
+
 /// Снимает ТОЛЬКО LAN-публикацию (0.0.0.0 forwarder + firewall) текущего
 /// поколения, СОХРАНЯЯ процесс прокси и локальный `127.0.0.1` listener — чтобы
 /// Telegram Desktop продолжал работать после закрытия доступа с телефона.
-/// Забирает ресурсы под локом (быстро), гасит их вне лока (netsh/abort блокирующие).
-pub async fn close_lan_publication(app: &AppHandle, reason: &str) {
+/// Вызывается под `proxy_gate`: fixed firewall rule нельзя закрывать параллельно
+/// с публикацией следующего поколения.
+async fn close_lan_publication_locked(
+    app: &AppHandle,
+    expected: Option<(u64, u32)>,
+    reason: &str,
+    origin: LanCloseOrigin,
+) -> bool {
     let taken = {
         let state = app.state::<AppState>();
         let mut p = state.proxy.lock_recover();
-        if !p.lan_published {
-            return; // публикации нет — нечего снимать
+        if !p.lan_published
+            || expected.is_some_and(|(generation, pid)| !is_current_state(&p, generation, pid))
+        {
+            return false; // публикации нет или задача относится к старому поколению
         }
         p.lan_published = false;
         p.lan_expiry_unix = None;
         p.lan_link = None;
-        (p.forwarder.take(), p.firewall.take())
+        let expiry_abort = p.lan_expiry_abort.take();
+        (p.forwarder.take(), p.firewall.take(), expiry_abort)
     };
-    let (forwarder, firewall) = taken;
+    let (forwarder, firewall, expiry_abort) = taken;
+    if origin != LanCloseOrigin::ExpiryTask {
+        if let Some(abort) = expiry_abort {
+            abort.abort();
+        }
+    }
     if let Some(f) = forwarder {
         f.handle.abort();
     }
     if let Some(fw) = firewall {
-        let name = fw.name.clone();
-        let _ = tauri::async_runtime::spawn_blocking(move || remove_firewall_rule(&name)).await;
+        if origin != LanCloseOrigin::RenewalTask {
+            fw.renewal_abort.abort();
+        }
+        if let Err(error) = crate::protected_runtime::proxy_lan_firewall_close().await {
+            util::emit_log(
+                app,
+                "warn",
+                "proxy",
+                &format!("Защищённая служба не подтвердила закрытие firewall lease: {error}"),
+            );
+        }
     }
     util::emit_log(
         app,
@@ -255,6 +345,13 @@ pub async fn close_lan_publication(app: &AppHandle, reason: &str) {
         ),
     );
     emit_status(app);
+    true
+}
+
+pub async fn close_lan_publication(app: &AppHandle, reason: &str) {
+    let state = app.state::<AppState>();
+    let _gate = state.proxy_gate.lock().await;
+    let _ = close_lan_publication_locked(app, None, reason, LanCloseOrigin::External).await;
 }
 
 /// Спавнит таймер авто-закрытия LAN-публикации. Проверяет generation+pid перед
@@ -266,10 +363,15 @@ fn spawn_lan_expiry_timer(app: &AppHandle, generation: u64, pid: u32, secs: u16)
     let app2 = app.clone();
     let handle = tokio::spawn(async move {
         tokio::time::sleep(Duration::from_secs(secs as u64)).await;
-        if !is_current(&app2, generation, pid) {
-            return; // сессия сменилась — таймер неактуален
-        }
-        close_lan_publication(&app2, "истёк таймаут").await;
+        let state = app2.state::<AppState>();
+        let _gate = state.proxy_gate.lock().await;
+        let _ = close_lan_publication_locked(
+            &app2,
+            Some((generation, pid)),
+            "истёк таймаут",
+            LanCloseOrigin::ExpiryTask,
+        )
+        .await;
     });
     // AbortHandle сохраняем, чтобы stop/shutdown не копили спящие таймеры
     // (по одному на старт с lan_secs>0; раньше жили до естественного пробуждения).
@@ -279,7 +381,50 @@ fn spawn_lan_expiry_timer(app: &AppHandle, generation: u64, pid: u32, secs: u16)
         .lan_expiry_abort = Some(handle.abort_handle());
 }
 
-/// Async-обёртка [`cleanup_previous_runtime`]: блокирующие taskkill/netsh уходят
+fn spawn_lan_lease_renewal(app: &AppHandle, generation: u64, pid: u32, port: u16) -> ProxyFirewall {
+    let app2 = app.clone();
+    let handle = tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(PROXY_LAN_FIREWALL_RENEW_INTERVAL).await;
+            let state = app2.state::<AppState>();
+            let _gate = state.proxy_gate.lock().await;
+            let still_published = {
+                let proxy = state.proxy.lock_recover();
+                is_current_state(&proxy, generation, pid) && proxy.lan_published
+            };
+            if !still_published {
+                return;
+            }
+            if let Err(error) = crate::protected_runtime::proxy_lan_firewall_open(
+                port,
+                PROXY_LAN_FIREWALL_LEASE_SECONDS,
+            )
+            .await
+            {
+                util::emit_log(
+                    &app2,
+                    "warn",
+                    "proxy",
+                    &format!("Firewall lease не продлён; LAN-публикация будет закрыта: {error}"),
+                );
+                let _ = close_lan_publication_locked(
+                    &app2,
+                    Some((generation, pid)),
+                    "не удалось продлить firewall lease",
+                    LanCloseOrigin::RenewalTask,
+                )
+                .await;
+                return;
+            }
+        }
+    });
+    ProxyFirewall {
+        generation,
+        renewal_abort: handle.abort_handle(),
+    }
+}
+
+/// Async-обёртка [`cleanup_previous_runtime`]: блокирующие taskkill/IPC уходят
 /// в blocking-пул, чтобы не занимать tokio-воркер под `proxy_gate` / в teardown.
 async fn cleanup_previous_runtime_async(
     app: &AppHandle,
@@ -301,7 +446,8 @@ fn cleanup_previous_runtime(app: &AppHandle, detached: DetachedProxy, image: Opt
         forwarder.handle.abort();
     }
     if let Some(firewall) = detached.firewall {
-        remove_firewall_rule(&firewall.name);
+        firewall.renewal_abort.abort();
+        let _ = crate::protected_runtime::proxy_lan_firewall_close_blocking();
     }
     if let Some(pid) = detached.pid {
         let _ = util::std_command("taskkill")
@@ -368,7 +514,7 @@ pub async fn toggle(app: &AppHandle, port: u16, fake_tls_domain: &str) -> Result
 async fn start_locked(app: &AppHandle, port: u16, fake_tls_domain: &str) -> Result<String, String> {
     let (exe, bin_dir, cache_path, image) = {
         let state = app.state::<AppState>();
-        match state.paths.tgproxy_path() {
+        match verified_tgproxy_path(state.paths.resource_dir()) {
             Some(e) => {
                 let image = e.file_name().map(|n| n.to_string_lossy().to_string());
                 (
@@ -378,7 +524,12 @@ async fn start_locked(app: &AppHandle, port: u16, fake_tls_domain: &str) -> Resu
                     image,
                 )
             }
-            None => return Err("TgWsProxy.exe не найден в bin/".to_string()),
+            None => {
+                return Err(
+                    "tg_ws_proxy.exe отсутствует или не прошёл проверку runtime-manifest"
+                        .to_string(),
+                )
+            }
         }
     };
 
@@ -508,10 +659,12 @@ async fn start_locked(app: &AppHandle, port: u16, fake_tls_domain: &str) -> Resu
         let code = status.ok().and_then(|s| s.code()).unwrap_or(-1);
         let lived = started.elapsed().as_millis();
         let _ = dead_tx.send(());
+        let state = app_mon.state::<AppState>();
+        let _gate = state.proxy_gate.lock().await;
         let Some(detached) = detach_if_current(&app_mon, generation, pid) else {
             return; // штатный stop или уже начался новый generation
         };
-        cleanup_nonprocess_runtime(detached);
+        cleanup_nonprocess_runtime(detached).await;
         util::emit_log(
             &app_mon,
             "warn",
@@ -572,103 +725,94 @@ async fn start_locked(app: &AppHandle, port: u16, fake_tls_domain: &str) -> Resu
         return Err("Прокси завершился сразу после запуска.".to_string());
     }
 
-    // LAN-ссылка для телефона: тот же proxy через локальный TCP-forwarder.
+    // LAN-публикация fail-closed: сначала служба подтверждает bounded firewall
+    // lease, и только затем приложение начинает слушать 0.0.0.0.
     let lan_link = if lan.ip != "127.0.0.1" {
-        let bind = format!("0.0.0.0:{port}");
-        let target = format!("127.0.0.1:{port}");
-        let route_note = match &lan.route_ip {
-            Some(r) if *r != lan.ip => format!(
-                " Выход в интернет через {r} — это VPN/виртуальный адаптер, телефону он недоступен, поэтому взят LAN-адрес."
-            ),
-            _ => String::new(),
-        };
-        util::emit_log(
-            app,
-            "info",
-            "proxy",
-            &format!(
-                "Телефон: адрес для QR {}:{port} (форвардер слушает 0.0.0.0:{port}, брандмауэр ограничен profile=private + {}). Найденные LAN-адреса: [{}].{route_note}",
-                lan.ip,
-                lan.subnet.as_deref().unwrap_or("LocalSubnet"),
-                lan.candidates.join(", ")
-            ),
-        );
-
-        match tokio::net::TcpListener::bind(&bind).await {
-            Ok(listener) => {
-                let rule_name = firewall_rule_name(port, generation);
-                // netsh — блокирующий; уводим с воркера. Сначала снимаем возможно
-                // оставшийся после crash exact-rule этого порта, затем добавляем.
-                // Правило строго ограничено: profile=private + remoteip=<подсеть>.
-                let rn = rule_name.clone();
-                let subnet = lan.subnet.clone();
-                let fw_res = tauri::async_runtime::spawn_blocking(move || {
-                    remove_firewall_rule(&rn);
-                    add_firewall_rule(port, &rn, subnet.as_deref())
-                })
-                .await
-                .unwrap_or_else(|_| Err("firewall task panicked".to_string()));
-                let firewall = match fw_res {
-                    Ok(()) => Some(ProxyFirewall {
-                        generation,
-                        name: rule_name,
-                    }),
-                    Err(e) => {
+        match crate::protected_runtime::proxy_lan_firewall_open(
+            port,
+            PROXY_LAN_FIREWALL_LEASE_SECONDS,
+        )
+        .await
+        {
+            Ok(()) => {
+                let bind = format!("0.0.0.0:{port}");
+                let target = format!("127.0.0.1:{port}");
+                match tokio::net::TcpListener::bind(&bind).await {
+                    Ok(listener) => {
+                        let route_note = match &lan.route_ip {
+                            Some(route) if *route != lan.ip => format!(
+                                " Выход в интернет через {route} — это VPN/виртуальный адаптер; для QR выбран физический LAN-адрес."
+                            ),
+                            _ => String::new(),
+                        };
+                        util::emit_log(
+                            app,
+                            "info",
+                            "proxy",
+                            &format!(
+                                "Телефон: адрес для QR {}:{port}; firewall lease ограничен Private + LocalSubnet (выбранная подсеть: {}). Найденные LAN-адреса: [{}].{route_note}",
+                                lan.ip,
+                                lan.subnet.as_deref().unwrap_or("не определена"),
+                                lan.candidates.join(", ")
+                            ),
+                        );
+                        let handle = tokio::spawn(run_forwarder(listener, target));
+                        let mut forwarder = Some(ProxyForwarder { generation, handle });
+                        let mut firewall =
+                            Some(spawn_lan_lease_renewal(app, generation, pid, port));
+                        let lan_secs = {
+                            let state = app.state::<AppState>();
+                            let seconds = state.settings.lock_recover().lan_publish_secs;
+                            seconds
+                        };
+                        let expiry = (lan_secs != 0).then(|| now_unix() + u64::from(lan_secs));
+                        let installed = {
+                            let state = app.state::<AppState>();
+                            let mut proxy = state.proxy.lock_recover();
+                            if is_current_state(&proxy, generation, pid) {
+                                proxy.forwarder = forwarder.take();
+                                proxy.firewall = firewall.take();
+                                proxy.lan_published = true;
+                                proxy.lan_expiry_unix = expiry;
+                                true
+                            } else {
+                                false
+                            }
+                        };
+                        if !installed {
+                            cleanup_nonprocess_runtime(DetachedProxy {
+                                pid: None,
+                                forwarder,
+                                firewall,
+                            })
+                            .await;
+                            return Err(
+                                "Прокси завершился во время запуска LAN-форвардера.".to_string()
+                            );
+                        }
+                        spawn_lan_expiry_timer(app, generation, pid, lan_secs);
+                        Some(link.replace("127.0.0.1", &lan.ip))
+                    }
+                    Err(error) => {
+                        let _ = crate::protected_runtime::proxy_lan_firewall_close().await;
                         util::emit_log(
                             app,
                             "warn",
                             "proxy",
-                            &format!("Не удалось добавить правило брандмауэра: {e}"),
+                            &format!("LAN-форвардер не запущен ({bind}): {error}"),
                         );
                         None
                     }
-                };
-                let handle = tokio::spawn(run_forwarder(listener, target));
-                let mut forwarder = Some(ProxyForwarder { generation, handle });
-                let mut firewall = firewall;
-                // Таймаут LAN-публикации из настроек (0 = без авто-закрытия).
-                let lan_secs = {
-                    let state = app.state::<AppState>();
-                    let s = state.settings.lock_recover();
-                    s.lan_publish_secs
-                };
-                let expiry = if lan_secs == 0 {
-                    None
-                } else {
-                    Some(now_unix() + lan_secs as u64)
-                };
-                let installed = {
-                    let state = app.state::<AppState>();
-                    let mut p = state.proxy.lock_recover();
-                    if p.generation == generation && p.pid == Some(pid) {
-                        p.forwarder = forwarder.take();
-                        p.firewall = firewall.take();
-                        p.lan_published = true;
-                        p.lan_expiry_unix = expiry;
-                        true
-                    } else {
-                        false
-                    }
-                };
-                if installed {
-                    spawn_lan_expiry_timer(app, generation, pid, lan_secs);
                 }
-                if !installed {
-                    cleanup_nonprocess_runtime(DetachedProxy {
-                        pid: None,
-                        forwarder,
-                        firewall,
-                    });
-                    return Err("Прокси завершился во время запуска LAN-форвардера.".to_string());
-                }
-                Some(link.replace("127.0.0.1", &lan.ip))
             }
-            Err(e) => {
+            Err(error) => {
                 util::emit_log(
                     app,
                     "warn",
                     "proxy",
-                    &format!("LAN-форвардер не запущен ({bind}): {e}"),
+                    &format!(
+                        "Защищённая LAN-публикация недоступна; локальный прокси продолжает работать: {error}"
+                    ),
                 );
                 None
             }
@@ -711,20 +855,13 @@ pub async fn stop(app: &AppHandle) -> bool {
 }
 
 pub(crate) fn stop_locked(app: &AppHandle) -> bool {
-    let image = {
-        let state = app.state::<AppState>();
-        state
-            .paths
-            .tgproxy_path()
-            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
-    };
     let (_, detached) = begin_generation(app);
-    let killed = cleanup_previous_runtime(app, detached, image.as_deref());
+    let killed = cleanup_previous_runtime(app, detached, Some(crate::paths::TGPROXY_EXE));
     emit_status(app);
     killed
 }
 
-/// Async-обёртка [`stop_locked`]: блокирующие taskkill/netsh уходят в blocking-
+/// Async-обёртка [`stop_locked`]: блокирующие taskkill/IPC уходят в blocking-
 /// пул, чтобы не занимать tokio-воркер под `proxy_gate` / в teardown.
 pub(crate) async fn stop_locked_async(app: &AppHandle) -> bool {
     let app2 = app.clone();
@@ -871,7 +1008,69 @@ fn gen_secret() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    fn tgproxy_fixture(record_path: &str, duplicate: bool) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("obsession-tgproxy-test-{nonce}"));
+        fs::create_dir_all(root.join("bin")).unwrap();
+        fs::create_dir_all(root.join("runtime")).unwrap();
+        let proxy = root.join(TGPROXY_RELATIVE);
+        fs::write(&proxy, b"verified telegram proxy").unwrap();
+        let record = serde_json::json!({
+            "path": record_path,
+            "size": fs::metadata(&proxy).unwrap().len(),
+            "sha256": sha256_file(&proxy).unwrap(),
+        });
+        let files = if duplicate {
+            vec![record.clone(), record]
+        } else {
+            vec![record]
+        };
+        fs::write(
+            root.join(TGPROXY_MANIFEST_RELATIVE),
+            serde_json::to_vec(&serde_json::json!({
+                "schema_version": 1,
+                "engines": [{
+                    "engine": "legacy",
+                    "executable": "bin/winws.exe",
+                    "files": files,
+                    "strategies": []
+                }]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        root
+    }
+
+    #[test]
+    fn tgproxy_requires_one_exact_hash_verified_manifest_record() {
+        let root = tgproxy_fixture(TGPROXY_RELATIVE, false);
+        assert_eq!(
+            verified_tgproxy_path(&root),
+            Some(fs::canonicalize(root.join(TGPROXY_RELATIVE)).unwrap())
+        );
+
+        fs::write(root.join(TGPROXY_RELATIVE), b"tampered telegram proxy").unwrap();
+        assert!(verified_tgproxy_path(&root).is_none());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn tgproxy_rejects_alias_and_duplicate_manifest_records() {
+        let alias = tgproxy_fixture("bin/TgWsProxy.exe", false);
+        assert!(verified_tgproxy_path(&alias).is_none());
+        fs::remove_dir_all(alias).unwrap();
+
+        let duplicate = tgproxy_fixture(TGPROXY_RELATIVE, true);
+        assert!(verified_tgproxy_path(&duplicate).is_none());
+        fs::remove_dir_all(duplicate).unwrap();
+    }
 
     #[test]
     fn stale_generation_cannot_detach_new_runtime() {
@@ -908,48 +1107,6 @@ mod tests {
         assert_eq!(generation, 1);
         assert_eq!(state.generation, 1);
         assert!(!detached.had_runtime());
-    }
-
-    #[test]
-    fn firewall_rule_name_is_generation_scoped() {
-        // Разные поколения → разные имена: старый generation не удалит правило нового.
-        let g1 = firewall_rule_name(1080, 7);
-        let g2 = firewall_rule_name(1080, 8);
-        assert_ne!(g1, g2);
-        assert!(g1.contains("1080") && g1.contains("gen7"));
-    }
-
-    #[test]
-    fn add_rule_args_are_scoped_to_private_and_subnet() {
-        let args = build_add_rule_args(
-            1080,
-            "Obsession TgWsProxy 1080 gen3",
-            Some("192.168.1.0/24"),
-        );
-        assert!(
-            args.contains(&"profile=private".to_string()),
-            "должен быть profile=private"
-        );
-        assert!(
-            args.contains(&"remoteip=192.168.1.0/24".to_string()),
-            "remoteip ограничен подсетью, не весь интернет"
-        );
-        assert!(args.contains(&"localport=1080".to_string()));
-        assert!(args.contains(&"dir=in".to_string()));
-        assert!(args.contains(&"action=allow".to_string()));
-        // Никогда не публикуем на все профили / весь интернет.
-        assert!(!args
-            .iter()
-            .any(|a| a == "profile=any" || a == "remoteip=any"));
-    }
-
-    #[test]
-    fn add_rule_args_fallback_to_localsubnet_without_cidr() {
-        let args = build_add_rule_args(1080, "n", None);
-        assert!(
-            args.contains(&"remoteip=LocalSubnet".to_string()),
-            "без CIDR — безопасный keyword LocalSubnet, не any"
-        );
     }
 
     #[tokio::test]

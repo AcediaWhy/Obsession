@@ -600,6 +600,7 @@ async fn start_prepared(
     config_file: &str,
     conf: &Path,
 ) -> Result<u32, String> {
+    crate::security::require_protected_runtime("Zapret Legacy")?;
     let (winws, base) = {
         let state = app.state::<AppState>();
         (state.paths.winws_path(), state.paths.base_dir.clone())
@@ -1062,6 +1063,7 @@ pub(crate) async fn spawn_scoped_legacy_lane_locked(
     lane_generation: crate::legacy_reliability::contracts::LaneGeneration,
     config_fingerprint: &crate::legacy_reliability::contracts::ConfigFingerprint,
 ) -> Result<PendingLegacyLane, String> {
+    crate::security::require_protected_runtime("Legacy recovery")?;
     if runtime_shutting_down(app) {
         return Err("Приложение завершает работу".into());
     }
@@ -3456,6 +3458,10 @@ pub async fn stop_all(app: &AppHandle) {
 /// `selections` = (категория, strategy_id); пустой/неизвестный id → мягчайшая
 /// стратегия категории из пака. Возвращает PID. Целостность пака проверяется
 /// (`load_pack`) — на непроверенном Lua движок не стартует.
+#[expect(
+    dead_code,
+    reason = "kept fail-closed until Zapret2 is implemented by the protected service"
+)]
 pub async fn start_zapret2(
     app: &AppHandle,
     selections: &[(String, String)],
@@ -3654,6 +3660,7 @@ pub(crate) async fn start_zapret2_with_overrides(
     selections: &[(String, String)],
     adaptive_overrides: &BTreeMap<String, StrategyCandidate>,
 ) -> Result<u32, String> {
+    crate::security::require_protected_runtime("Zapret2")?;
     use crate::dpi_engine::{load_pack, zapret2};
 
     // Backend-инвариант: даже прямой вызов вне UI не должен оставить Legacy и
@@ -4526,85 +4533,6 @@ pub async fn start_many(app: &AppHandle, configs: &[(String, String)]) -> Result
     }
 
     Ok(started)
-}
-
-/// Точный in-memory снимок активного DPI runtime. Вызывающий не должен держать
-/// `dpi` std::Mutex через `.await`.
-pub(crate) fn runtime_snapshot(app: &AppHandle) -> DpiRuntimeSnapshot {
-    app.state::<AppState>()
-        .dpi
-        .lock_recover()
-        .runtime_snapshot()
-}
-
-fn ensure_generation(app: &AppHandle, expected_generation: u64) -> Result<(), String> {
-    let current = app.state::<AppState>().dpi.lock_recover().generation;
-    if current != expected_generation {
-        return Err(format!(
-            "DPI runtime изменён другой операцией: expected generation {expected_generation}, current {current}"
-        ));
-    }
-    Ok(())
-}
-
-/// Запускает candidate поверх исходного Zapret2 snapshot. Функция намеренно не
-/// берёт `dpi_gate`: coordinator должен держать общие ворота на всём respawn.
-pub(crate) async fn start_adaptive_candidate_locked(
-    app: &AppHandle,
-    original: &DpiRuntimeSnapshot,
-    expected_generation: u64,
-    category: &str,
-    candidate: StrategyCandidate,
-) -> Result<u64, String> {
-    ensure_generation(app, expected_generation)?;
-    let DpiLaunchSpec::Zapret2 {
-        selections,
-        adaptive_overrides,
-    } = original
-        .launch
-        .as_ref()
-        .ok_or_else(|| "DPI runtime остановлен — adaptive search недоступен".to_string())?
-    else {
-        return Err("Adaptive search работает только поверх активного Zapret2".to_string());
-    };
-    if candidate.category.as_key() != category {
-        return Err("Категория adaptive candidate не совпадает с запросом".to_string());
-    }
-    if !selections.iter().any(|(selected, _)| selected == category) {
-        return Err(format!("Категория {category} не активна в DPI runtime"));
-    }
-
-    let mut overrides = adaptive_overrides.clone();
-    overrides.insert(
-        override_key(candidate.category, candidate.transport),
-        candidate,
-    );
-    start_zapret2_with_overrides(app, selections, &overrides).await?;
-    Ok(runtime_snapshot(app).generation)
-}
-
-/// Восстанавливает точный исходный launch spec только если никто не сменил DPI
-/// generation после candidate-start. Возвращает generation восстановленного
-/// runtime, чтобы следующая попытка продолжала generation-safe цепочку.
-pub(crate) async fn restore_runtime_snapshot_locked(
-    app: &AppHandle,
-    original: &DpiRuntimeSnapshot,
-    expected_generation: u64,
-) -> Result<u64, String> {
-    ensure_generation(app, expected_generation)?;
-    match original.launch.as_ref() {
-        Some(DpiLaunchSpec::Legacy { selections }) => {
-            start_many(app, selections).await?;
-        }
-        Some(DpiLaunchSpec::Zapret2 {
-            selections,
-            adaptive_overrides,
-        }) => {
-            start_zapret2_with_overrides(app, selections, adaptive_overrides).await?;
-        }
-        None => stop_all(app).await,
-    }
-    Ok(runtime_snapshot(app).generation)
 }
 
 /// True, если пользователь запросил отмену теста (флаг в состоянии).

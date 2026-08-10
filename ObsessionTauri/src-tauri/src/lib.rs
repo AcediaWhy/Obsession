@@ -22,8 +22,10 @@ mod netcache;
 mod netid;
 mod paths;
 mod profiles;
+mod protected_runtime;
 mod proxy;
 mod ranking;
+mod security;
 mod settings;
 mod state;
 mod util;
@@ -91,21 +93,11 @@ fn refresh_tray(app: &tauri::AppHandle, dpi: Option<bool>, proxy: Option<bool>) 
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // UAC-проверка ДО построения окна: winws и запись в hosts требуют прав
-    // администратора. Если прав нет — пробуем перезапуститься с UAC.
-    // В debug-сборке релонч отключён, чтобы `tauri dev` работал без раздвоения
-    // процесса и с hot-reload (обход winws в dev без прав всё равно не сработает).
-    #[cfg(all(windows, not(debug_assertions)))]
-    if !admin::is_elevated() && admin::relaunch_as_admin() {
-        // Пользователь принял UAC — elevated-инстанс запущен, выходим.
-        std::process::exit(0);
-    }
-
     tauri::Builder::default()
         // Single-instance ПЕРВЫМ плагином (требование tauri-plugin-single-instance):
         // второй запуск лаунчера не плодит процесс/трей-иконку, а поднимает уже
-        // открытое окно первого инстанса. Срабатывает уже после UAC-релонча выше
-        // (не-elevated процесс выходит до Builder, лок берёт elevated-инстанс).
+        // открытое окно первого инстанса. UI всегда остаётся обычным процессом:
+        // UAC-релонч удалён, пока нет защищённого helper/service.
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(win) = app.get_webview_window("main") {
                 let _ = win.show();
@@ -153,13 +145,22 @@ pub fn run() {
             // ЧУЖОЙ winws.exe (параллельный Zapret/GoodbyeDPI пользователя).
             #[cfg(windows)]
             {
-                let orphans = dpi::detect_orphaned(&handle);
-                dpi::kill_orphans(&handle, &orphans);
+                if security::protected_runtime_available() {
+                    let orphans = dpi::detect_orphaned(&handle);
+                    dpi::kill_orphans(&handle, &orphans);
+                } else {
+                    util::emit_log(
+                        &handle,
+                        "warn",
+                        "security",
+                        "Привилегированный runtime временно отключён: приложение запущено без UAC и не исполняет компоненты из AppData.",
+                    );
+                }
             }
 
             // Если авто-восстановление включено в настройках — поднимаем Мозг сразу
             // (сессия откроется при следующем dpi_start).
-            if auto_recovery {
+            if auto_recovery && security::protected_runtime_available() {
                 let bh = brain::runtime::start(handle.clone());
                 *handle.state::<AppState>().brain.lock_recover() = Some(bh);
             }
@@ -171,7 +172,7 @@ pub fn run() {
             // настроек (меняется командой set_hotkey). Пустое = выключен; занятость
             // сочетания другим приложением не фатальна — логируем и продолжаем.
             #[cfg(desktop)]
-            if !hotkey_toggle.trim().is_empty() {
+            if security::protected_runtime_available() && !hotkey_toggle.trim().is_empty() {
                 use tauri_plugin_global_shortcut::GlobalShortcutExt;
                 if let Err(e) = handle.global_shortcut().register(hotkey_toggle.as_str()) {
                     util::emit_log(
@@ -438,6 +439,14 @@ async fn shutdown(app: &tauri::AppHandle) {
 
     let _dpi_gate = state.dpi_gate.lock().await;
     let _proxy_gate = state.proxy_gate.lock().await;
+    // hosts_gate ждём последним, сохраняя единственное существующее направление
+    // вложенности (dpi → proxy → hosts): обратного порядка нет ни в одном месте
+    // дерева, поэтому цикла блокировок это не создаёт.
+    //
+    // Ждать обязательно: install() между подменой системного hosts и записью
+    // состояния делает flush_dns и до 6 сетевых проб. Выход в этом окне
+    // обрывал транзакцию на полпути, а точка возврата ещё не была на диске.
+    let _hosts_gate = state.hosts_gate.lock().await;
 
     let brain = state.brain.lock().ok().and_then(|mut b| b.take());
     if let Some(handle) = brain {
@@ -447,19 +456,45 @@ async fn shutdown(app: &tauri::AppHandle) {
     // stop_all сначала будит WinDivert recv и join-ит Eyes, затем завершает все
     // tracked winws. PID регистрируются сразу после spawn, поэтому окно orphan
     // между spawn и ранней проверкой закрыто.
-    dpi::stop_all(app).await;
+    if let Err(error) = protected_runtime::dpi_stop(app).await {
+        util::emit_log(
+            app,
+            "error",
+            "dpi",
+            &format!("Не удалось остановить защищённый DPI runtime при выходе: {error}"),
+        );
+    }
     // Уже держим proxy_gate: используем locked-вариант без повторного lock.
     proxy::stop_locked_async(app).await;
 }
 
 /// Строит иконку в системном трее с меню Показать/Выход.
 fn build_tray(app: &tauri::App) -> tauri::Result<()> {
-    let dpi = CheckMenuItem::with_id(app, "toggle_dpi", "DPI-обход", true, false, None::<&str>)?;
+    let dpi_runtime_available = protected_runtime::dpi_available();
+    let legacy_runtime_available = security::protected_runtime_available();
+    let dpi_label = if dpi_runtime_available {
+        "DPI-обход"
+    } else {
+        "DPI-обход (временно отключён)"
+    };
+    let proxy_label = if legacy_runtime_available {
+        "Telegram-прокси"
+    } else {
+        "Telegram-прокси (временно отключён)"
+    };
+    let dpi = CheckMenuItem::with_id(
+        app,
+        "toggle_dpi",
+        dpi_label,
+        dpi_runtime_available,
+        false,
+        None::<&str>,
+    )?;
     let proxy = CheckMenuItem::with_id(
         app,
         "toggle_proxy",
-        "Telegram-прокси",
-        true,
+        proxy_label,
+        legacy_runtime_available,
         false,
         None::<&str>,
     )?;

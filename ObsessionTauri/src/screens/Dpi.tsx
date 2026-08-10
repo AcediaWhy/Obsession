@@ -4,13 +4,13 @@ import { useShallow } from "zustand/react/shallow";
 
 import { TRANSITION_WATCHDOG_MS, useDpiStore } from "../store/dpiStore";
 import { useAdaptiveStrategyStore } from "../store/adaptiveStrategyStore";
+import { useSettingsStore } from "../store/settingsStore";
 import { GlassPanel } from "../design/components/GlassPanel";
 import { HeroCore } from "../design/components/HeroCore";
 import { Parallax } from "../design/parallax";
 import { Stagger, StaggerItem } from "../design/components/Stagger";
 import { LogStream } from "../design/components/LogStream";
 import { Diagnostics } from "../design/components/Diagnostics";
-import { BrainPanel } from "../design/components/BrainPanel";
 import { LegacyReliabilityPanel } from "../design/components/LegacyReliabilityPanel";
 import { Zapret2StrategyPanel } from "../design/components/Zapret2StrategyPanel";
 import {
@@ -41,6 +41,15 @@ const ZAPRET2_CATEGORY_LABELS: Record<string, string> = {
 const CATEGORY_ORDER = ["discord", "youtube_twitch", "gaming", "universal", "atrisk"];
 
 export function DpiScreen() {
+  const protectedDpiAvailable = useSettingsStore(
+    (state) => state.protectedDpiAvailable,
+  );
+  const legacyToolsAvailable = useSettingsStore(
+    (state) => state.protectedRuntimeAvailable,
+  );
+  const legacyReliabilityAvailable = useSettingsStore(
+    (state) => state.protectedLegacyReliabilityAvailable,
+  );
   const s = useDpiStore(useShallow((state) => ({
     active: state.active,
     transitioning: state.transitioning,
@@ -119,18 +128,34 @@ export function DpiScreen() {
               <Parallax depth={18}>
                 <HeroCore
                   active={s.active}
-                  busy={s.transitioning}
+                  busy={s.transitioning || !protectedDpiAvailable}
                   scanning={s.testing}
                   alarm={s.testing && Object.values(s.testResults).some((v) => !v)}
-                  onClick={() => (s.active ? s.stop() : s.start())}
+                  onClick={() => {
+                    if (s.active) void s.stop();
+                    else if (protectedDpiAvailable) void s.start();
+                  }}
                 />
               </Parallax>
               <div className="text-center text-sm text-ink-soft">
-                {s.active
-                  ? `Обход активен · ${s.processes.length} процесс(ов)`
+                {!protectedDpiAvailable
+                  ? "Защищённая служба DPI недоступна"
+                  : s.active
+                  ? s.processes.length > 0
+                    ? `Обход активен · ${s.processes.length} процесс(ов)`
+                    : "Обход активен · системная служба"
                   : "Активируйте ядро"}
               </div>
             </StaggerItem>
+
+            {!protectedDpiAvailable && (
+              <StaggerItem className="w-full">
+                <div className="w-full rounded-xl border border-warn/40 bg-warn/10 px-3 py-2 text-xs leading-relaxed text-warn">
+                  Не удалось подтвердить защищённую службу ObsessionRuntime или её
+                  DPI-capability. Компоненты из AppData по-прежнему не запускаются.
+                </div>
+              </StaggerItem>
+            )}
 
             {s.error && (
               <StaggerItem className="w-full">
@@ -152,7 +177,7 @@ export function DpiScreen() {
                         (e.kind === "zapret2" ? "Zapret2" : "Zapret Legacy") +
                         ` · v${e.version}` +
                         (e.beta ? " · Beta" : "") +
-                        (e.available ? "" : " (нет бинарника)")
+                        (e.available ? "" : " (пока недоступен)")
                       }
                       active={e.selected}
                       disabled={s.active || !e.available}
@@ -160,12 +185,6 @@ export function DpiScreen() {
                     />
                   ))}
                 </div>
-                {s.engines.some((e) => e.kind === "zapret2" && e.selected) && (
-                  <p className="mt-2 text-xs text-warn">
-                    Zapret2 — экспериментальный режим (Beta). Мозг не выбирает его
-                    автоматически; при сбое выполняется возврат к Zapret Legacy.
-                  </p>
-                )}
               </StaggerItem>
             )}
 
@@ -263,7 +282,7 @@ export function DpiScreen() {
                 <>
                   <Button
                     variant="ghost"
-                    disabled={busy || s.active}
+                    disabled={busy || s.active || !legacyToolsAvailable}
                     onClick={() => s.autoConfigure()}
                     className="flex-1"
                   >
@@ -271,7 +290,7 @@ export function DpiScreen() {
                   </Button>
                   <Button
                     variant="ghost"
-                    disabled={busy || s.active}
+                    disabled={busy || s.active || !legacyToolsAvailable}
                     onClick={() => s.testAll()}
                   >
                     <span className="flex items-center gap-1.5">
@@ -289,11 +308,12 @@ export function DpiScreen() {
               <Diagnostics />
             </StaggerItem>
 
-            {/* Legacy показывает фактический observe-only Manager; Zapret2
-                сохраняет существующую карточку Brain без изменений. */}
-            <StaggerItem className="w-full">
-              {zapret2Selected ? <BrainPanel /> : <LegacyReliabilityPanel />}
-            </StaggerItem>
+            {/* Систему восстановления пока показываем только для Zapret Legacy. */}
+            {!zapret2Selected && legacyReliabilityAvailable && (
+              <StaggerItem className="w-full">
+                <LegacyReliabilityPanel />
+              </StaggerItem>
+            )}
           </Stagger>
         </GlassPanel>
 

@@ -71,6 +71,7 @@ function legacyStatus(
     mode: "observe_only",
     phase,
     activeCategories: active ? ["discord"] : [],
+    runningApplications: [],
     sessionId: active ? 11 : null,
     sensorGeneration: active ? 3 : null,
     lanes: active
@@ -114,10 +115,29 @@ function legacyStatus(
 
 function makeSnapshot(revisions: Partial<Record<string, number>> = {}) {
   return {
-    schemaVersion: 5,
+    schemaVersion: 8,
     settings: {
       revision: revisions.settings ?? 1,
-      value: { settings, elevated: true, autostart: false },
+      value: {
+        settings,
+        elevated: true,
+        autostart: false,
+        protectedRuntime: {
+          serviceAvailable: true,
+          serviceVersion: "1.2.3",
+          dpi: true,
+          zapret2: true,
+          adaptiveZapret2: true,
+          eyesEvents: true,
+          legacyReliabilityControls: true,
+          legacyReliability: true,
+          hosts: false,
+          proxyLanFirewall: false,
+        },
+        protectedRuntimeAvailable: false,
+        protectedDpiAvailable: true,
+        protectedLegacyReliabilityAvailable: false,
+      },
     },
     dpi: {
       revision: revisions.dpi ?? 1,

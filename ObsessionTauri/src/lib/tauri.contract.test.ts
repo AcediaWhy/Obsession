@@ -6,7 +6,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { api, type BootstrapSnapshot, type DpiStatus } from "./tauri";
 
 const fixture = {
-  schemaVersion: 5,
+  schemaVersion: 8,
   settings: {
     revision: 2,
     value: {
@@ -36,6 +36,21 @@ const fixture = {
       },
       elevated: true,
       autostart: false,
+      protectedRuntime: {
+        serviceAvailable: true,
+        serviceVersion: "1.2.3",
+        dpi: true,
+        zapret2: true,
+        adaptiveZapret2: true,
+        eyesEvents: true,
+        legacyReliabilityControls: true,
+        legacyReliability: true,
+        hosts: false,
+        proxyLanFirewall: false,
+      },
+      protectedRuntimeAvailable: false,
+      protectedDpiAvailable: true,
+      protectedLegacyReliabilityAvailable: false,
     },
   },
   dpi: {
@@ -64,6 +79,7 @@ const fixture = {
       mode: "assisted",
       phase: "observing",
       activeCategories: ["discord"],
+      runningApplications: ["discord"],
       sessionId: 42,
       sensorGeneration: 9,
       lanes: [
@@ -128,7 +144,7 @@ describe("BootstrapSnapshot contract", () => {
   });
 
   it("keeps every subsystem revision independent", () => {
-    expect(fixture.schemaVersion).toBe(5);
+    expect(fixture.schemaVersion).toBe(8);
     expect([
       fixture.settings.revision,
       fixture.dpi.revision,
@@ -143,11 +159,27 @@ describe("BootstrapSnapshot contract", () => {
   it("keeps settings metadata and runtime values in versioned sections", () => {
     expect(fixture.settings.value.settings.ai_provider).toBe("malw");
     expect(fixture.settings.value.elevated).toBe(true);
+    expect(fixture.settings.value.protectedRuntime).toEqual({
+      serviceAvailable: true,
+      serviceVersion: "1.2.3",
+      dpi: true,
+      zapret2: true,
+      adaptiveZapret2: true,
+      eyesEvents: true,
+      legacyReliabilityControls: true,
+      legacyReliability: true,
+      hosts: false,
+      proxyLanFirewall: false,
+    });
+    expect(fixture.settings.value.protectedRuntimeAvailable).toBe(false);
+    expect(fixture.settings.value.protectedDpiAvailable).toBe(true);
+    expect(fixture.settings.value.protectedLegacyReliabilityAvailable).toBe(false);
     expect(fixture.dpi.value.processes).toEqual([]);
     expect(fixture.legacyReliability.value).toEqual({
       mode: "assisted",
       phase: "observing",
       activeCategories: ["discord"],
+      runningApplications: ["discord"],
       sessionId: 42,
       sensorGeneration: 9,
       lanes: [

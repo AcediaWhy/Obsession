@@ -154,6 +154,53 @@ pub fn set_original_if_absent(state: &mut HostsManagedState, snap: SnapshotRef) 
     }
 }
 
+/// Ищет ОСИРОТЕВШИЙ снапшот исходного `hosts` прямо в backups-каталоге.
+///
+/// Нужен, когда файл `hosts_snapshot_*_original.txt` на диске есть, а указатель
+/// на него в `state.json` потерян: состояние не успело сохраниться до падения
+/// процесса, либо схема состояния не совпала и `load_state` вернул default.
+/// Без этого поиска `uninstall` уходит в ветку «original не найден» и пишет
+/// синтетическую болванку поверх РЕАЛЬНОГО `hosts` пользователя, хотя точная
+/// копия лежит рядом.
+///
+/// Выбирается САМЫЙ РАННИЙ кандидат: `operation_id` имеет вид
+/// `%Y%m%dT%H%M%S%3f` и сортируется лексикографически, а `original`
+/// выставляется один раз и никогда не перезаписывается — значит истинный
+/// до-Obsession файл захвачен первым. Кандидаты, которые не читаются,
+/// пропускаются: отдать нечитаемую ссылку означало бы записать мусор в hosts.
+pub fn find_orphaned_original(backups_dir: &Path) -> Option<SnapshotRef> {
+    const PREFIX: &str = "hosts_snapshot_";
+    const SUFFIX: &str = "_original.txt";
+
+    let mut candidates: Vec<String> = std::fs::read_dir(backups_dir)
+        .ok()?
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().to_str()?.to_string();
+            (name.starts_with(PREFIX) && name.ends_with(SUFFIX)).then_some(name)
+        })
+        .collect();
+    candidates.sort();
+
+    for file in candidates {
+        let Ok(bytes) = std::fs::read(backups_dir.join(&file)) else {
+            continue;
+        };
+        let operation_id = file[PREFIX.len()..file.len() - ".txt".len()].to_string();
+        return Some(SnapshotRef {
+            operation_id,
+            sha256: sha256_hex(&bytes),
+            size: bytes.len() as u64,
+            file,
+            // Момент захвата восстановить неоткуда — он жил только в state.json.
+            captured_at: String::new(),
+            // Исходный hosts по определению не принадлежит провайдеру.
+            provider: None,
+        });
+    }
+    None
+}
+
 /// Фиксирует снапшот как новый last-known-good провайдера: обновляет указатель,
 /// `applied_sha256`, добавляет в `confirmed` и обрезает до [`MAX_CONFIRMED`].
 pub fn commit_last_known_good(
@@ -393,6 +440,76 @@ mod tests {
         let r = write_snapshot(&dir, "opC", None, "t", b"original").unwrap();
         std::fs::write(dir.join(&r.file), b"tampered").unwrap();
         assert!(read_snapshot(&dir, &r).is_err());
+    }
+
+    #[test]
+    fn orphaned_original_is_none_on_empty_or_missing_dir() {
+        assert!(find_orphaned_original(&temp_dir("orphan_empty")).is_none());
+        assert!(find_orphaned_original(&PathBuf::from("Z:\\nope\\missing")).is_none());
+    }
+
+    /// Снапшот исходного hosts лежит на диске, а указатель на него в state.json
+    /// потерян. Без этого поиска uninstall записал бы синтетическую болванку
+    /// поверх реального hosts пользователя.
+    #[test]
+    fn orphaned_original_is_recovered_and_verifies() {
+        let dir = temp_dir("orphan_found");
+        let bytes = b"127.0.0.1 my-corp-intranet\n";
+        write_snapshot(&dir, "20260101T120000000_original", None, "t", bytes).unwrap();
+        // Шум, который выбирать нельзя: не-original снапшоты того же каталога.
+        write_snapshot(&dir, "20260101T120500000", Some("malw"), "t", b"provider").unwrap();
+        write_snapshot(
+            &dir,
+            "20260101T120600000_external",
+            Some("malw"),
+            "t",
+            b"ext",
+        )
+        .unwrap();
+
+        let found = find_orphaned_original(&dir).expect("original must be found");
+        assert_eq!(found.operation_id, "20260101T120000000_original");
+        // Ссылка должна быть пригодна для restore: read_snapshot сверяет sha256.
+        assert_eq!(read_snapshot(&dir, &found).unwrap(), bytes);
+        assert_eq!(found.size, bytes.len() as u64);
+        assert!(found.provider.is_none());
+    }
+
+    /// op_id имеет вид %Y%m%dT%H%M%S%3f и сортируется лексикографически.
+    /// original ставится один раз и не перезаписывается, поэтому истинный
+    /// до-Obsession снапшот — САМЫЙ РАННИЙ, а не последний.
+    #[test]
+    fn orphaned_original_prefers_the_earliest_capture() {
+        let dir = temp_dir("orphan_earliest");
+        write_snapshot(&dir, "20260301T090000000_original", None, "t", b"later").unwrap();
+        write_snapshot(
+            &dir,
+            "20260101T090000000_original",
+            None,
+            "t",
+            b"true-first",
+        )
+        .unwrap();
+        write_snapshot(&dir, "20260201T090000000_original", None, "t", b"middle").unwrap();
+
+        let found = find_orphaned_original(&dir).unwrap();
+        assert_eq!(found.operation_id, "20260101T090000000_original");
+        assert_eq!(read_snapshot(&dir, &found).unwrap(), b"true-first");
+    }
+
+    /// Повреждённый снапшот не должен выдаваться как точка возврата: восстановление
+    /// из него молча записало бы мусор в системный hosts.
+    #[test]
+    fn orphaned_original_skips_unreadable_candidate() {
+        let dir = temp_dir("orphan_corrupt");
+        // Каталог вместо файла — чтение обязано провалиться.
+        std::fs::create_dir_all(dir.join("hosts_snapshot_20260101T000000000_original.txt"))
+            .unwrap();
+        write_snapshot(&dir, "20260202T000000000_original", None, "t", b"good").unwrap();
+
+        let found = find_orphaned_original(&dir).unwrap();
+        assert_eq!(found.operation_id, "20260202T000000000_original");
+        assert_eq!(read_snapshot(&dir, &found).unwrap(), b"good");
     }
 
     #[test]

@@ -75,10 +75,14 @@ export function TelegramScreen() {
     open: state.open,
   })));
   const settings = useSettingsStore((st) => st.settings);
+  const proxyLanFirewallAvailable = useSettingsStore(
+    (st) => st.protectedRuntime.proxyLanFirewall,
+  );
   const patchSettings = useSettingsStore((st) => st.patch);
   const [qr, setQr] = useState<string | null>(null);
   const lanRemaining = useLanCountdown(s.lanExpiryUnix);
   const lanTimeoutSecs = settings?.lan_publish_secs ?? 0;
+  const canStart = s.available;
 
   // QR-код для телефона: LAN-ссылка (с LAN IP), не 127.0.0.1. В QR кладём
   // УНИВЕРСАЛЬНУЮ ссылку https://t.me/proxy?... вместо кастомной схемы
@@ -130,28 +134,32 @@ export function TelegramScreen() {
             <Parallax depth={18}>
               <HeroCore
                 active={s.running}
-                busy={s.transitioning}
-                onClick={() => (s.running ? s.stop() : s.start())}
+                busy={s.transitioning || (!s.running && !canStart)}
+                onClick={() => {
+                  if (s.running) void s.stop();
+                  else if (canStart) void s.start();
+                }}
                 size={220}
               />
             </Parallax>
             <div className="text-center text-sm text-ink-soft">
-              {s.available
-                ? s.running
-                  ? "Прокси работает"
-                  : "Нажмите, чтобы запустить"
-                : "TgWsProxy.exe не найден"}
+              {s.running
+                ? "Прокси работает"
+                : s.available
+                  ? "Нажмите, чтобы запустить"
+                  : "tg_ws_proxy.exe отсутствует или повреждён"}
             </div>
           </div>
 
-          {!s.available && (
+          {!s.running && !canStart && (
             <GlassPanel className="border-warn/30">
               <p className="text-sm text-warn">
-                TgWsProxy.exe не найден в bundled-ресурсах.
+                tg_ws_proxy.exe не найден в защищённых ресурсах или не прошёл
+                проверку runtime-manifest.
               </p>
               <p className="text-xs text-ink-muted mt-2">
-                Проверьте, что приложение установлено корректно.
-                Переустановите Obsession или скачайте последнюю версию.
+                Переустановите Obsession, чтобы восстановить точный бинарник и его
+                запись SHA-256.
               </p>
             </GlassPanel>
           )}
@@ -199,6 +207,13 @@ export function TelegramScreen() {
               По истечении доступ с телефона закрывается (форвардер и правило
               брандмауэра снимаются). Прокси для Telegram Desktop продолжает работать.
             </p>
+            {!proxyLanFirewallAvailable && (
+              <p className="mt-2 text-xs text-warn">
+                Защищённая LAN-публикация сейчас недоступна. Локальный прокси для
+                Telegram Desktop можно запускать; QR и доступ с телефона останутся
+                выключены.
+              </p>
+            )}
           </div>
 
           {/* Ссылка. */}
@@ -241,7 +256,9 @@ export function TelegramScreen() {
               )}
               {s.running && !s.lanPublished && s.lanLink === null && (
                 <p className="mt-3 text-xs text-ink-muted">
-                  Доступ с телефона закрыт — прокси работает локально для Telegram Desktop.
+                  {proxyLanFirewallAvailable
+                    ? "Доступ с телефона закрыт — прокси работает локально для Telegram Desktop."
+                    : "LAN firewall capability недоступна — прокси работает только локально для Telegram Desktop."}
                 </p>
               )}
             </div>

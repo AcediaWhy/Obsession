@@ -81,75 +81,33 @@ async fn dpi_start_locked(
     if runtime_is_shutting_down(app) {
         return Err("Приложение завершает работу.".to_string());
     }
-
-    // Выбор движка (3.4). Legacy — по умолчанию; Zapret2 — ручная Beta и только
-    // если winws2.exe установлен, иначе безопасный откат к Legacy.
-    let decision = {
-        use crate::dpi_engine::{decide_start, EngineKind};
+    let (engine, zapret2_level) = {
         let state = app.state::<AppState>();
-        let selected = EngineKind::parse(&state.settings.lock_recover().dpi_engine);
-        let winws2_ok = crate::dpi_engine::resources::validate_engine_resources(
-            &state.paths.base_dir,
-            "zapret2",
-        )
-        .is_ok();
-        decide_start(selected, winws2_ok)
+        let settings = state.settings.lock_recover();
+        (settings.dpi_engine.clone(), settings.zapret2_level)
+    };
+    let protected_engine = if engine == "zapret2" {
+        if !crate::protected_runtime::zapret2_available() {
+            return Err("Zapret2 недоступен в защищённой службе.".to_string());
+        }
+        obsession_runtime_protocol::DpiEngine::Zapret2
+    } else {
+        obsession_runtime_protocol::DpiEngine::Legacy
     };
 
-    {
-        use crate::dpi_engine::EngineDecision;
-        match decision {
-            EngineDecision::RunZapret2 => {
-                // Пробуем Zapret2. При ЛЮБОМ сбое старта — авто-возврат Legacy
-                // (инвариант: неудача Zapret2 не оставляет систему без обхода).
-                // Мозг с Zapret2 НЕ связываем (Beta, не brain-selectable).
-                match crate::dpi::start_zapret2(app, &pairs).await {
-                    Ok(pid) => {
-                        crate::util::emit_log(app, "success", "dpi", "Zapret2 Beta запущен.");
-                        return Ok(vec![pid]);
-                    }
-                    Err(e) => {
-                        crate::util::emit_log(
-                            app,
-                            "error",
-                            "dpi",
-                            &format!("Zapret2 не стартовал ({e}) — возврат к Zapret Legacy."),
-                        );
-                        crate::dpi::persist_engine_selection(app, "legacy")?;
-                        // Проваливаемся в Legacy-путь ниже.
-                    }
-                }
-            }
-            EngineDecision::RunLegacy { fell_back: true } => {
-                crate::util::emit_log(
-                    app,
-                    "warn",
-                    "dpi",
-                    "Zapret2 недоступен (нет winws2.exe) — запускаю Zapret Legacy.",
-                );
-                crate::dpi::persist_engine_selection(app, "legacy")?;
-            }
-            EngineDecision::RunLegacy { fell_back: false } => {}
-            EngineDecision::Stopped => {
-                return Err("Zapret2 недоступен и нет рабочего Legacy-набора.".to_string());
-            }
-        }
-    }
-
-    let pids = crate::dpi::start_many(app, &pairs).await?;
+    crate::protected_runtime::dpi_start(app, protected_engine, pairs, zapret2_level).await?;
     if runtime_is_shutting_down(app) {
-        crate::dpi::stop_all(app).await;
+        let _ = crate::protected_runtime::dpi_stop(app).await;
         return Err("Запуск отменён: приложение завершает работу.".to_string());
     }
-    // Legacy SessionStart остаётся намеренно отключён: старый глобальный Brain
-    // умеет выполнять Switch/StopBypass, а Phase 1 только наблюдает.
-    Ok(pids)
+    // PID остаются внутри LocalSystem-службы и намеренно не раскрываются UI.
+    Ok(Vec::new())
 }
 
-async fn dpi_stop_locked(app: &AppHandle) {
+async fn dpi_stop_locked(app: &AppHandle) -> Result<(), String> {
     // Сначала сообщаем Мозгу — штатный stop не должен выглядеть как сбой.
     send_brain_event(app, crate::brain::BrainEvent::SessionStop).await;
-    crate::dpi::stop_all(app).await;
+    crate::protected_runtime::dpi_stop(app).await
 }
 
 pub(crate) async fn dpi_start_session(
@@ -164,10 +122,10 @@ pub(crate) async fn dpi_start_session(
     dpi_start_locked(app, pairs).await
 }
 
-pub(crate) async fn dpi_stop_session(app: &AppHandle) {
+pub(crate) async fn dpi_stop_session(app: &AppHandle) -> Result<(), String> {
     let state = app.state::<AppState>();
     let _gate = state.dpi_gate.lock().await;
-    dpi_stop_locked(app).await;
+    dpi_stop_locked(app).await
 }
 
 /// Общий toggle для UI-independent входов (tray/hotkey). Возвращает итоговый
@@ -184,14 +142,13 @@ pub(crate) async fn dpi_toggle_session(
     if runtime_is_shutting_down(app) {
         return Err("Приложение завершает работу.".to_string());
     }
-    let active = !state.dpi.lock_recover().procs.is_empty();
+    let active = crate::protected_runtime::dpi_active().await?;
     if active {
-        dpi_stop_locked(app).await;
+        dpi_stop_locked(app).await?;
         Ok(false)
     } else {
-        dpi_start_locked(app, pairs)
-            .await
-            .map(|pids| !pids.is_empty())
+        dpi_start_locked(app, pairs).await?;
+        Ok(true)
     }
 }
 
@@ -205,8 +162,8 @@ pub async fn dpi_start(app: AppHandle, configs: Vec<DpiConfigArg>) -> Result<Vec
 }
 
 #[tauri::command]
-pub async fn dpi_stop(app: AppHandle) {
-    dpi_stop_session(&app).await;
+pub async fn dpi_stop(app: AppHandle) -> Result<(), String> {
+    dpi_stop_session(&app).await
 }
 
 /// Один движок для списка в UI: описание + доступность бинарника.
@@ -221,26 +178,22 @@ pub struct EngineOption {
     pub selected: bool,
 }
 
-/// Список DPI-движков для UI: Legacy (Zapret1) всегда, Zapret2 — как Beta,
-/// available зависит от наличия winws2.exe (поставляется в 3.1).
+/// Список DPI-движков для UI. Доступность определяется возможностями
+/// аутентифицированной системной службы, а не файлами в пользовательском профиле.
 #[tauri::command]
 pub fn dpi_engine_list(app: AppHandle) -> Vec<EngineOption> {
     use crate::dpi_engine::EngineKind;
     let state = app.state::<AppState>();
     let selected = state.settings.lock_recover().dpi_engine.clone();
-    let winws_ok =
-        crate::dpi_engine::resources::validate_engine_resources(&state.paths.base_dir, "zapret1")
-            .is_ok();
-    let winws2_ok =
-        crate::dpi_engine::resources::validate_engine_resources(&state.paths.base_dir, "zapret2")
-            .is_ok();
+    let protected_legacy_available = crate::protected_runtime::dpi_available();
+    let protected_zapret2_available = crate::protected_runtime::zapret2_available();
     [EngineKind::Legacy, EngineKind::Zapret2]
         .into_iter()
         .map(|k| {
             let d = k.describe();
             let available = match k {
-                EngineKind::Legacy => winws_ok,
-                EngineKind::Zapret2 => winws2_ok,
+                EngineKind::Legacy => protected_legacy_available,
+                EngineKind::Zapret2 => protected_zapret2_available,
             };
             EngineOption {
                 kind: d.kind.to_string(),
@@ -258,7 +211,7 @@ pub async fn dpi_zapret2_profiles(
     app: AppHandle,
     categories: Vec<String>,
 ) -> Result<Vec<crate::dpi::Zapret2ProfileDescriptor>, String> {
-    let snapshot = crate::dpi::runtime_snapshot(&app);
+    let snapshot = crate::protected_runtime::adaptive_runtime_snapshot();
     let (selections, overrides) = match snapshot.launch {
         Some(crate::state::DpiLaunchSpec::Zapret2 {
             selections,
@@ -282,18 +235,16 @@ pub async fn dpi_zapret2_profiles(
         crate::adaptive_strategy::runtime::cached_entries_for_overrides(&app, &overrides).await;
     crate::dpi::describe_zapret2_profiles(&app, &selections, &overrides, &entries)
 }
-/// Меняет выбранный DPI-движок. Отклоняет выбор недоступного (нет бинарника).
+/// Меняет выбранный DPI-движок. Отклоняет всё, что ещё не предоставлено
+/// защищённой службой.
 /// Смена сериализуется dpi_gate — не пересекается с активным start/stop.
 #[tauri::command]
 pub async fn dpi_engine_set(app: AppHandle, engine: String) -> Result<(), String> {
     use crate::dpi_engine::EngineKind;
     let kind = EngineKind::parse(&engine);
     let state = app.state::<AppState>();
-    let winws2_ok =
-        crate::dpi_engine::resources::validate_engine_resources(&state.paths.base_dir, "zapret2")
-            .is_ok();
-    if kind == EngineKind::Zapret2 && !winws2_ok {
-        return Err("Zapret2 недоступен: winws2.exe не установлен.".to_string());
+    if kind == EngineKind::Zapret2 && !crate::protected_runtime::zapret2_available() {
+        return Err("Zapret2 ещё не перенесён в защищённую службу.".to_string());
     }
     // Сериализуем с активным DPI-циклом, чтобы не переключить движок посреди start.
     let _gate = state.dpi_gate.lock().await;
@@ -301,14 +252,20 @@ pub async fn dpi_engine_set(app: AppHandle, engine: String) -> Result<(), String
     if current == kind {
         return Ok(());
     }
-    let runtime_active = {
-        let dpi = state.dpi.lock_recover();
-        !dpi.procs.is_empty() || dpi.active_launch.is_some()
-    };
+    let runtime_active = crate::protected_runtime::dpi_active().await?;
     if runtime_active {
         return Err("Сначала остановите активный обход, затем переключите DPI-движок.".to_string());
     }
-    mutate_settings(&app, |s| s.dpi_engine = kind.name().to_string())?;
+    // mutate_settings использует blocking_lock и делает fsync/rename. Async-команда
+    // не должна вызывать его прямо на Tokio worker: blocking_lock там паникует,
+    // из-за чего переключатель в UI визуально не реагировал.
+    let save_app = app.clone();
+    let engine_name = kind.name().to_string();
+    tauri::async_runtime::spawn_blocking(move || {
+        mutate_settings(&save_app, |settings| settings.dpi_engine = engine_name)
+    })
+    .await
+    .map_err(|error| format!("Не удалось завершить переключение DPI-движка: {error}"))??;
     crate::util::emit_log(
         &app,
         "info",
@@ -544,11 +501,57 @@ pub fn proxy_link(app: AppHandle) -> String {
     crate::proxy::current_link(&app)
 }
 
+/// Схемы, которые приложению реально нужно открывать: `tg://proxy?...` для
+/// Telegram-прокси и http(s) для внешних ссылок UI.
+const EXTERNAL_URL_SCHEMES: [&str; 3] = ["tg://", "https://", "http://"];
+
+/// Максимум для `tg://proxy?...`: server+port+secret с запасом. Всё длиннее —
+/// не наша ссылка.
+const MAX_EXTERNAL_URL_LEN: usize = 2048;
+
+/// Проверяет строку ПЕРЕД тем, как отдать её в `Start-Process -FilePath`.
+///
+/// Экранирование кавычек в самой команде корректно и разрыв аргумента не даёт,
+/// но `Start-Process -FilePath` принимает не только URL: путь к .exe и UNC-путь
+/// тоже. Процесс элевирован (winws/WinDivert требуют админа), поэтому запущенное
+/// таким образом наследует права администратора. Без allowlist это примитив
+/// эскалации для любого пути, способного дотянуться до IPC с контролируемой
+/// строкой.
+///
+/// Разрешаем ровно [`EXTERNAL_URL_SCHEMES`] и отбиваем всё, что похоже на путь
+/// файловой системы или на инъекцию управляющих символов.
+fn validate_external_url(url: &str) -> Result<(), String> {
+    if url.len() > MAX_EXTERNAL_URL_LEN {
+        return Err("Ссылка слишком длинная.".to_string());
+    }
+    if url.chars().any(|c| c.is_control()) {
+        return Err("Ссылка содержит управляющие символы.".to_string());
+    }
+    // Backslash в URL легитимным не бывает, зато превращает строку в путь
+    // (в т.ч. UNC `\\host\share`), который Start-Process с радостью запустит.
+    if url.contains('\\') {
+        return Err("Ссылка содержит обратный слэш.".to_string());
+    }
+
+    let lowered = url.to_ascii_lowercase();
+    if !EXTERNAL_URL_SCHEMES
+        .iter()
+        .any(|scheme| lowered.starts_with(scheme))
+    {
+        return Err("Разрешены только ссылки tg://, https:// и http://.".to_string());
+    }
+    Ok(())
+}
+
 /// Открывает произвольный URL через системную оболочку. Используется для
 /// `tg://proxy?...` с параметрами (`&`), которые ломают `cmd /c start`.
 /// PowerShell `Start-Process` корректно передаёт URL целиком в ShellExecute.
+/// Строка проходит [`validate_external_url`] — `Start-Process -FilePath`
+/// принимает не только URL, а процесс элевирован.
 #[tauri::command]
 pub fn open_external_url(url: String) -> Result<(), String> {
+    validate_external_url(&url)?;
+
     #[cfg(target_os = "windows")]
     {
         let mut cmd = crate::util::std_command("powershell");
@@ -611,25 +614,7 @@ pub struct RuntimeSnapshot {
 
 #[tauri::command]
 pub fn runtime_get_snapshot(app: AppHandle) -> RuntimeSnapshot {
-    let dpi = {
-        let state = app.state::<AppState>();
-        let mut d = state.dpi.lock_recover();
-        let processes = d
-            .procs
-            .values()
-            .map(|p| crate::util::DpiProcPublic {
-                pid: p.pid,
-                category: p.category.clone(),
-                config_file: p.config_file.clone(),
-            })
-            .collect::<Vec<_>>();
-        let started_at = d.sync_started_at(crate::util::unix_secs());
-        crate::util::DpiStatusPayload {
-            active: !processes.is_empty(),
-            processes,
-            started_at,
-        }
-    };
+    let dpi = crate::protected_runtime::dpi_status();
     let proxy = {
         let state = app.state::<AppState>();
         let p = state.proxy.lock_recover();
@@ -666,13 +651,21 @@ pub fn runtime_get_snapshot(app: AppHandle) -> RuntimeSnapshot {
 }
 
 /// Версия wire-контракта единого startup/resume snapshot.
-pub const BOOTSTRAP_SCHEMA_VERSION: u32 = 5;
+pub const BOOTSTRAP_SCHEMA_VERSION: u32 = 8;
 
 #[derive(Serialize)]
 pub struct BootstrapSettings {
     pub settings: Settings,
     pub elevated: bool,
     pub autostart: bool,
+    #[serde(rename = "protectedRuntime")]
+    pub protected_runtime: crate::protected_runtime::ProtectedRuntimeCapabilities,
+    #[serde(rename = "protectedRuntimeAvailable")]
+    pub protected_runtime_available: bool,
+    #[serde(rename = "protectedDpiAvailable")]
+    pub protected_dpi_available: bool,
+    #[serde(rename = "protectedLegacyReliabilityAvailable")]
+    pub protected_legacy_reliability_available: bool,
 }
 
 #[derive(Serialize)]
@@ -702,6 +695,8 @@ pub fn bootstrap_get_snapshot(app: AppHandle) -> BootstrapSnapshot {
         let guard = state.settings.lock_recover();
         (state.settings_revision.current(), guard.clone())
     };
+    let _ = crate::protected_runtime::sync_legacy_recovery_controls(&settings_value);
+    let protected_runtime = crate::protected_runtime::capability_snapshot();
     let provider = Provider::parse(&settings_value.ai_provider);
     let settings = VersionedSection::new(
         settings_revision,
@@ -709,30 +704,18 @@ pub fn bootstrap_get_snapshot(app: AppHandle) -> BootstrapSnapshot {
             settings: settings_value,
             elevated: crate::admin::is_elevated(),
             autostart: get_autostart(),
+            protected_dpi_available: protected_runtime.dpi,
+            protected_legacy_reliability_available: protected_runtime.legacy_reliability,
+            protected_runtime,
+            protected_runtime_available: crate::security::protected_runtime_available(),
         },
     );
 
     let dpi = {
-        let mut guard = state.dpi.lock_recover();
+        let guard = state.dpi.lock_recover();
         let revision = guard.revision;
-        let processes = guard
-            .procs
-            .values()
-            .map(|process| crate::util::DpiProcPublic {
-                pid: process.pid,
-                category: process.category.clone(),
-                config_file: process.config_file.clone(),
-            })
-            .collect::<Vec<_>>();
-        let started_at = guard.sync_started_at(crate::util::unix_secs());
-        VersionedSection::new(
-            revision,
-            crate::util::DpiStatusPayload {
-                active: !processes.is_empty(),
-                processes,
-                started_at,
-            },
-        )
+        drop(guard);
+        VersionedSection::new(revision, crate::protected_runtime::dpi_status())
     };
 
     let proxy = {
@@ -771,13 +754,15 @@ pub fn bootstrap_get_snapshot(app: AppHandle) -> BootstrapSnapshot {
     };
 
     let legacy_reliability = {
-        // Publisher updates value then revision while holding this status
-        // guard. Read both under the same guard so bootstrap cannot pair an old
-        // revision with a newer value.
-        let status = state.legacy_reliability_status.lock_recover();
-        let value = status.clone();
-        let revision = state.legacy_reliability_revision.current();
-        VersionedSection::new(revision, value)
+        // The protected service owns its own observer revision. Bootstrap
+        // projection advances the app-local section clock on every fresh IPC
+        // read so a service restart cannot make a smaller remote revision look
+        // stale to the already-running frontend.
+        let revision = state.legacy_reliability_revision.bump();
+        VersionedSection::new(
+            revision,
+            crate::protected_runtime::legacy_reliability_status(&app),
+        )
     };
 
     let hosts_revision = state.hosts_revision.current();
@@ -813,6 +798,13 @@ fn patch_requires_legacy_reliability_reconcile(patch: &SettingsPatch) -> bool {
     // DPI category persistence before Zapret2 start must not enqueue a Legacy
     // observer teardown.
     patch.legacy_reliability_enabled.is_some()
+}
+
+fn patch_requires_legacy_controls_sync(patch: &SettingsPatch) -> bool {
+    patch.legacy_reliability_enabled.is_some()
+        || patch.legacy_reliability_mode.is_some()
+        || patch.legacy_automatic_paused.is_some()
+        || patch.legacy_reliability_frozen_categories.is_some()
 }
 
 fn mutate_settings<F>(app: &AppHandle, mutate: F) -> Result<Settings, String>
@@ -858,7 +850,20 @@ where
 #[tauri::command]
 pub fn update_settings(app: AppHandle, patch: SettingsPatch) -> Result<Settings, String> {
     let reconcile_legacy_reliability = patch_requires_legacy_reliability_reconcile(&patch);
+    let sync_legacy_controls = patch_requires_legacy_controls_sync(&patch);
+    let previous =
+        sync_legacy_controls.then(|| app.state::<AppState>().settings.lock_recover().clone());
     let settings = mutate_settings(&app, |settings| settings.apply_patch(patch))?;
+    if sync_legacy_controls {
+        if let Err(error) = crate::protected_runtime::sync_legacy_recovery_controls(&settings) {
+            if let Some(previous) = previous {
+                let _ = crate::protected_runtime::sync_legacy_recovery_controls(&previous);
+                mutate_settings(&app, |settings| *settings = previous)?;
+            }
+            crate::legacy_reliability::status::refresh_recovery_overlay(&app);
+            return Err(error);
+        }
+    }
     crate::legacy_reliability::status::refresh_recovery_overlay(&app);
     #[cfg(windows)]
     if reconcile_legacy_reliability {
@@ -980,6 +985,9 @@ pub async fn legacy_reliability_approve(
     app: AppHandle,
     approval: crate::legacy_reliability::recovery::AssistedApproval,
 ) -> Result<(), String> {
+    if crate::protected_runtime::legacy_reliability_available() {
+        return crate::protected_runtime::approve_legacy_recovery(&app, approval).await;
+    }
     let initial = crate::legacy_reliability::status::approve_pending(&app, approval)?;
     let terminal =
         match crate::legacy_reliability::executor::run_scoped_recovery(&app, initial).await {
@@ -1070,8 +1078,11 @@ pub async fn adaptive_start_search(
     {
         return Err("Adaptive Strategy Brain выключен в настройках".to_string());
     }
+    if !crate::protected_runtime::adaptive_zapret2_available() {
+        return Err("Adaptive Zapret2 недоступен в защищённой службе".to_string());
+    }
     if !matches!(
-        crate::dpi::runtime_snapshot(&app).launch,
+        crate::protected_runtime::adaptive_runtime_snapshot().launch,
         Some(crate::state::DpiLaunchSpec::Zapret2 { .. })
     ) {
         return Err("Поиск доступен только при активном Zapret2".to_string());
@@ -1231,6 +1242,93 @@ pub fn delete_profile(app: AppHandle, id: String) -> Result<Vec<Profile>, String
 }
 
 #[cfg(test)]
+mod external_url_tests {
+    use super::validate_external_url;
+
+    #[test]
+    fn accepts_the_links_the_app_actually_produces() {
+        // Единственный реальный вызывающий — proxyStore.open() со ссылкой,
+        // которую печатает tg_ws_proxy (см. proxy.rs).
+        validate_external_url("tg://proxy?server=192.168.1.10&port=1443&secret=dd00ff").unwrap();
+        validate_external_url("https://t.me/proxy?server=1.2.3.4&port=443").unwrap();
+        validate_external_url("http://localhost:1420").unwrap();
+    }
+
+    #[test]
+    fn rejects_local_executables_and_unc_paths() {
+        // Ровно то, что делало команду примитивом эскалации: Start-Process
+        // -FilePath принимает не только URL, а процесс элевирован.
+        for bad in [
+            r"\\attacker\share\payload.exe",
+            r"C:\Users\Public\dropped.exe",
+            r"C:/Users/Public/dropped.exe",
+            "payload.exe",
+            r"..\..\Windows\System32\cmd.exe",
+        ] {
+            assert!(
+                validate_external_url(bad).is_err(),
+                "должно быть отклонено: {bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_schemes_outside_the_allowlist() {
+        for bad in [
+            "file:///C:/Windows/System32/cmd.exe",
+            "javascript:alert(1)",
+            "data:text/html,<script>1</script>",
+            "ms-settings:",
+            "search-ms:query=x",
+            "vbscript:msgbox",
+            "TG:\\\\evil", // схема есть, но разделитель не "://"
+            "",
+            "   ",
+        ] {
+            assert!(
+                validate_external_url(bad).is_err(),
+                "должно быть отклонено: {bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn scheme_check_is_case_insensitive_but_still_scheme_only() {
+        validate_external_url("TG://proxy?server=1.2.3.4&port=443&secret=dd").unwrap();
+        validate_external_url("HTTPS://t.me/proxy").unwrap();
+        // Схема из allowlist не должна легализовать backslash в остатке.
+        assert!(validate_external_url(r"https://t.me\..\payload.exe").is_err());
+    }
+
+    #[test]
+    fn rejects_control_characters_and_overlong_input() {
+        assert!(validate_external_url("tg://proxy?x=\n1").is_err());
+        assert!(validate_external_url("tg://proxy?x=\r\n1").is_err());
+        assert!(validate_external_url("tg://proxy?x=a\0b").is_err());
+        let long = format!("tg://proxy?secret={}", "d".repeat(4096));
+        assert!(validate_external_url(&long).is_err());
+    }
+
+    /// Доказывает, что валидатор ДЕЙСТВИТЕЛЬНО стоит на пути команды, а не
+    /// просто существует рядом: без этого корректный валидатор мог бы остаться
+    /// неподключённым и тесты выше всё равно были бы зелёными.
+    /// Проверяем только ветку отказа — на валидной ссылке команда реально
+    /// запустила бы Start-Process.
+    #[test]
+    fn command_itself_refuses_a_local_executable_before_spawning() {
+        let error = super::open_external_url(r"C:\Users\Public\dropped.exe".to_string())
+            .expect_err("команда обязана отклонить путь к исполняемому файлу");
+        assert!(
+            error.contains("обратный слэш") || error.contains("Разрешены только"),
+            "ожидали отказ валидации, получили: {error}"
+        );
+
+        super::open_external_url("file:///C:/Windows/System32/cmd.exe".to_string())
+            .expect_err("команда обязана отклонить схему вне allowlist");
+    }
+}
+
+#[cfg(test)]
 mod bootstrap_tests {
     use super::*;
 
@@ -1244,6 +1342,15 @@ mod bootstrap_tests {
                     settings: Settings::default(),
                     elevated: true,
                     autostart: false,
+                    protected_runtime: crate::protected_runtime::ProtectedRuntimeCapabilities {
+                        service_available: true,
+                        service_version: Some("1.2.3".into()),
+                        dpi: true,
+                        ..Default::default()
+                    },
+                    protected_runtime_available: false,
+                    protected_dpi_available: true,
+                    protected_legacy_reliability_available: false,
                 },
             ),
             dpi: VersionedSection::new(
@@ -1286,6 +1393,18 @@ mod bootstrap_tests {
         assert_eq!(value["schemaVersion"], BOOTSTRAP_SCHEMA_VERSION);
         assert_eq!(value["settings"]["revision"], 2);
         assert_eq!(value["settings"]["value"]["elevated"], true);
+        assert_eq!(
+            value["settings"]["value"]["protectedRuntime"]["serviceAvailable"],
+            true
+        );
+        assert_eq!(
+            value["settings"]["value"]["protectedRuntime"]["serviceVersion"],
+            "1.2.3"
+        );
+        assert_eq!(
+            value["settings"]["value"]["protectedLegacyReliabilityAvailable"],
+            false
+        );
         assert_eq!(value["dpi"]["revision"], 3);
         assert_eq!(value["proxy"]["revision"], 4);
         assert_eq!(value["brain"]["revision"], 5);
@@ -1305,8 +1424,16 @@ mod bootstrap_tests {
             ..SettingsPatch::default()
         };
         assert!(!patch_requires_legacy_reliability_reconcile(&patch));
+        assert!(patch_requires_legacy_controls_sync(&patch));
 
         patch.legacy_reliability_enabled = Some(false);
         assert!(patch_requires_legacy_reliability_reconcile(&patch));
+        assert!(patch_requires_legacy_controls_sync(&patch));
+
+        let unrelated = SettingsPatch {
+            selected_categories: Some(vec!["gaming".into()]),
+            ..SettingsPatch::default()
+        };
+        assert!(!patch_requires_legacy_controls_sync(&unrelated));
     }
 }

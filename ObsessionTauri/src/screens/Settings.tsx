@@ -31,6 +31,16 @@ export function SettingsScreen() {
   const cfg = useSettingsStore((s) => s.settings);
   const error = useSettingsStore((s) => s.error);
   const elevated = useSettingsStore((s) => s.elevated);
+  const protectedRuntime = useSettingsStore((s) => s.protectedRuntime);
+  const protectedRuntimeComplete =
+    protectedRuntime.dpi &&
+    protectedRuntime.zapret2 &&
+    protectedRuntime.adaptiveZapret2 &&
+    protectedRuntime.eyesEvents &&
+    protectedRuntime.legacyReliabilityControls &&
+    protectedRuntime.legacyReliability &&
+    protectedRuntime.hosts &&
+    protectedRuntime.proxyLanFirewall;
   const autostart = useSettingsStore((s) => s.autostart);
   const setAutostart = useSettingsStore((s) => s.setAutostart);
   const patch = useSettingsStore((s) => s.patch);
@@ -156,11 +166,30 @@ export function SettingsScreen() {
               <GlassPanel>
                 <SectionLabel>Система</SectionLabel>
                 <div className="divide-y divide-white/5">
-                  <Row label="Права администратора" hint="Нужны для DPI-обхода и правки hosts">
+                  <Row
+                    label="Режим интерфейса"
+                    hint="Obsession должна работать без постоянных прав администратора"
+                  >
                     <span
-                      className={`text-xs font-semibold ${elevated ? "text-ok" : "text-warn"}`}
+                      className={`text-xs font-semibold ${elevated ? "text-warn" : "text-ok"}`}
                     >
-                      {elevated ? "Есть" : "Нет"}
+                      {elevated ? "Повышенный" : "Обычный"}
+                    </span>
+                  </Row>
+                  <Row
+                    label="Защищённый runtime"
+                    hint="Отдельный системный компонент для DPI, hosts и сетевых утилит"
+                  >
+                    <span
+                      className={`text-xs font-semibold ${
+                        protectedRuntimeComplete ? "text-ok" : "text-warn"
+                      }`}
+                    >
+                      {!protectedRuntime.serviceAvailable
+                        ? "Недоступен"
+                        : protectedRuntimeComplete
+                          ? "Работает"
+                          : "Работает частично"}
                     </span>
                   </Row>
                   <Row label="Онбординг" hint="Приветственный экран первого запуска">

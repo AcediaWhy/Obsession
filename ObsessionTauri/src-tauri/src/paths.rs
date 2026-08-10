@@ -8,8 +8,10 @@ use std::path::{Path, PathBuf};
 /// следующем старте `extract_assets` перезаписывает распакованные в appdata
 /// файлы (иконки/конфиги/бинарники), иначе старые копии остаются навсегда.
 /// Берём из Cargo, чтобы гейт не разъезжался с реальной версией приложения.
+#[allow(dead_code)]
 pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const APP_DATA_FOLDER: &str = "Obsession";
+pub const APP_DATA_VENDOR: &str = "vlarpsu";
 pub const WINWS_EXE: &str = "winws.exe";
 pub const TGPROXY_EXE: &str = "tg_ws_proxy.exe";
 
@@ -18,32 +20,57 @@ pub const HOSTS_PATH: &str = r"C:\Windows\System32\drivers\etc\hosts";
 
 #[derive(Clone)]
 pub struct Paths {
+    /// Mutable state owned by the interactive user. It must never contain
+    /// privileged executable code or response configs.
     pub base_dir: PathBuf,
+    /// Immutable resources bundled with the application image. In release this
+    /// directory is below Program Files and is read-only to ordinary users.
+    pub(crate) resource_dir: PathBuf,
 }
 
 impl Paths {
     /// Инициализирует папки в `%APPDATA%\Obsession` и распаковывает ресурсы.
     pub fn init(resource_dir: &Path) -> std::io::Result<Self> {
-        let appdata = std::env::var("APPDATA")
+        let local_appdata = std::env::var("LOCALAPPDATA")
             .map(PathBuf::from)
             .unwrap_or_else(|_| std::env::temp_dir());
-        let base_dir = appdata.join(APP_DATA_FOLDER);
+        let base_dir = local_appdata.join(APP_DATA_VENDOR).join(APP_DATA_FOLDER);
+        let release_resources = if cfg!(debug_assertions) {
+            let source_resources = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources");
+            if source_resources.is_dir() {
+                source_resources
+            } else {
+                resource_dir.to_path_buf()
+            }
+        } else {
+            resource_dir.to_path_buf()
+        };
+        let resource_dir = fs::canonicalize(release_resources)?;
 
-        let paths = Paths { base_dir };
+        let paths = Paths {
+            base_dir,
+            resource_dir,
+        };
         paths.ensure_dirs()?;
-        paths.extract_assets(resource_dir);
-        paths.sanitize_configs();
         Ok(paths)
     }
 
+    #[allow(
+        dead_code,
+        reason = "legacy AppData resource access stays available only for non-executing migration code"
+    )]
+    pub fn resource_dir(&self) -> &Path {
+        &self.resource_dir
+    }
+
     pub fn bin_dir(&self) -> PathBuf {
-        self.base_dir.join("bin")
+        self.resource_dir.join("bin")
     }
     pub fn configs_dir(&self) -> PathBuf {
-        self.base_dir.join("configs")
+        self.resource_dir.join("configs")
     }
     pub fn lists_dir(&self) -> PathBuf {
-        self.base_dir.join("lists")
+        self.resource_dir.join("lists")
     }
     pub fn autohosts_dir(&self) -> PathBuf {
         self.base_dir.join("autohosts")
@@ -66,12 +93,12 @@ impl Paths {
         self.base_dir.join("profiles")
     }
     pub fn icons_dir(&self) -> PathBuf {
-        self.base_dir.join("icons")
+        self.resource_dir.join("icons")
     }
 
     /// Bundled-рейтинг стратегий под ASN_region (копируется из ресурсов в appdata).
     pub fn ranking_path(&self) -> PathBuf {
-        self.base_dir.join("ranking.json")
+        self.resource_dir.join("ranking.json")
     }
     /// L1-кэш «что работало в этой сети» (пишется рантаймом Мозга).
     pub fn netcache_path(&self) -> PathBuf {
@@ -110,7 +137,7 @@ impl Paths {
 
     /// Каталог встроенных Strategy Pack'ов Zapret2 (manifest.json + lua/).
     pub fn strategy_packs_dir(&self) -> PathBuf {
-        self.base_dir.join("strategy-packs")
+        self.resource_dir.join("strategy-packs")
     }
     /// Каталог конкретного встроенного пака (`builtin` по умолчанию).
     #[allow(dead_code)] // потребляется runtime-spawn winws2 (WS3.4, живой тест)
@@ -207,22 +234,18 @@ impl Paths {
     fn ensure_dirs(&self) -> std::io::Result<()> {
         for d in [
             self.base_dir.clone(),
-            self.bin_dir(),
-            self.configs_dir(),
-            self.lists_dir(),
             self.autohosts_dir(),
             self.backups_dir(),
             self.logs_dir(),
             self.legacy_reliability_logs_dir(),
             self.profiles_dir(),
-            self.icons_dir(),
-            self.strategy_packs_dir(),
         ] {
             fs::create_dir_all(d)?;
         }
         Ok(())
     }
 
+    #[allow(dead_code)]
     fn version_marker(&self) -> PathBuf {
         self.base_dir.join(".assets_version")
     }
@@ -231,6 +254,7 @@ impl Paths {
     /// ЛИБО отсутствует ключевой новый ассет (страховка: новые файлы должны
     /// доезжать в appdata даже без bump версии — иначе dev/апгрейд без смены
     /// версии оставляет winws2/пак недокопированными).
+    #[allow(dead_code)]
     fn should_overwrite(&self) -> bool {
         let version_mismatch = match fs::read_to_string(self.version_marker()) {
             Ok(s) => s.trim() != APP_VERSION,
@@ -242,6 +266,7 @@ impl Paths {
     /// True, если хотя бы один ожидаемый ассет отсутствует в appdata. Держим
     /// список маленьким — только «якорные» файлы, появление которых означает
     /// новую поставку (winws2 + его runtime DLL + Lua Strategy Pack).
+    #[allow(dead_code)]
     fn missing_key_asset(&self) -> bool {
         let dev_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources");
         // Проверяем только те, что реально есть в исходнике (иначе на машине без
@@ -275,6 +300,7 @@ impl Paths {
     ///
     /// В dev-режиме ресурсы могут отсутствовать в `resource_dir`, поэтому есть
     /// fallback на исходную папку `src-tauri/resources` (через CARGO_MANIFEST_DIR).
+    #[allow(dead_code)]
     fn extract_assets(&self, resource_dir: &Path) {
         let force = self.should_overwrite();
         let dev_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources");
@@ -341,6 +367,7 @@ impl Paths {
     /// `﻿--wf-tcp=...` не распознаётся, фильтр окна WinDivert не ставится, десинк
     /// не применяется НИ к чему (хендл открыт, но пакеты не захватываются).
     /// Идемпотентно и дёшево — гоняем на каждом старте, чинит и старые установки.
+    #[allow(dead_code)]
     fn sanitize_configs(&self) {
         let mut stack = vec![self.configs_dir()];
         while let Some(dir) = stack.pop() {
@@ -362,6 +389,7 @@ impl Paths {
 }
 
 /// Рекурсивно копирует директорию. `overwrite=false` пропускает существующие.
+#[allow(dead_code)]
 fn copy_dir(src: &Path, dst: &Path, overwrite: bool) -> std::io::Result<()> {
     fs::create_dir_all(dst)?;
     for entry in fs::read_dir(src)? {
@@ -378,4 +406,39 @@ fn copy_dir(src: &Path, dst: &Path, overwrite: bool) -> std::io::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn code_bearing_resources_and_mutable_user_data_use_separate_roots() {
+        let user = PathBuf::from(r"C:\Users\tester\AppData\Local\vlarpsu\Obsession");
+        let resources = PathBuf::from(r"C:\Program Files\Obsession");
+        let paths = Paths {
+            base_dir: user.clone(),
+            resource_dir: resources.clone(),
+        };
+
+        assert_eq!(paths.resource_dir(), resources);
+        assert_eq!(paths.bin_dir(), resources.join("bin"));
+        assert_eq!(paths.configs_dir(), resources.join("configs"));
+        assert_eq!(paths.lists_dir(), resources.join("lists"));
+        assert_eq!(paths.strategy_packs_dir(), resources.join("strategy-packs"));
+        assert_eq!(paths.icons_dir(), resources.join("icons"));
+        assert_eq!(paths.ranking_path(), resources.join("ranking.json"));
+
+        assert_eq!(paths.logs_dir(), user.join("logs"));
+        assert_eq!(paths.profiles_dir(), user.join("profiles"));
+        assert_eq!(paths.netcache_path(), user.join("netcache.json"));
+        assert_eq!(
+            paths.legacy_reliability_cache_path(),
+            user.join("legacy-reliability-cache.json")
+        );
+        assert_eq!(
+            paths.adaptive_strategy_cache_path(),
+            user.join("adaptive-strategies.json")
+        );
+    }
 }

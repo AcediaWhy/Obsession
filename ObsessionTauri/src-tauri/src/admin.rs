@@ -1,5 +1,8 @@
-//! Проверка прав администратора и перезапуск через UAC.
-//! Порт из `admin_local_datasource.dart` + логики в `main.dart`.
+//! Диагностическая проверка integrity level текущего процесса.
+//!
+//! Приложение намеренно не содержит UAC-релонч: обычный UI всегда запускается
+//! без повышения прав, а будущие привилегированные операции уйдут в отдельный
+//! защищённый helper/service.
 
 /// True, если текущий процесс запущен с повышенными правами.
 #[cfg(windows)]
@@ -33,32 +36,4 @@ pub fn is_elevated() -> bool {
 #[cfg(not(windows))]
 pub fn is_elevated() -> bool {
     true
-}
-
-/// Перезапускает приложение с правами администратора через UAC.
-/// Возвращает true, если пользователь принял UAC и elevated-инстанс запущен.
-/// Блокирует до ответа пользователя на запрос UAC.
-/// (В debug-сборке не вызывается — отсюда `allow(dead_code)`.)
-#[cfg(windows)]
-#[allow(dead_code)]
-pub fn relaunch_as_admin() -> bool {
-    let exe = match std::env::current_exe() {
-        Ok(p) => p,
-        Err(_) => return false,
-    };
-    // Экранируем одинарные кавычки для PowerShell single-quoted строки.
-    let exe_str = exe.display().to_string().replace('\'', "''");
-    let cmd = format!("Start-Process -FilePath '{exe_str}' -Verb RunAs");
-    match crate::util::std_command("powershell")
-        .args(["-NoProfile", "-Command", &cmd])
-        .status()
-    {
-        Ok(status) => status.success(),
-        Err(_) => false,
-    }
-}
-
-#[cfg(not(windows))]
-pub fn relaunch_as_admin() -> bool {
-    false
 }

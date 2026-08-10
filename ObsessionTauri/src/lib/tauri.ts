@@ -45,7 +45,7 @@ export interface RuntimeSnapshot {
 
 export interface HostsStatus {
   provider: string;
-  status: "installed" | "outdated" | "not_installed" | "offline";
+  status: "installed" | "outdated" | "not_installed" | "offline" | "external";
   local_version: string;
   remote_version: string;
   rollback_available: boolean;
@@ -56,10 +56,27 @@ export interface VersionedSection<T> {
   value: T;
 }
 
+export interface ProtectedRuntimeCapabilities {
+  serviceAvailable: boolean;
+  serviceVersion: string | null;
+  dpi: boolean;
+  zapret2: boolean;
+  adaptiveZapret2: boolean;
+  eyesEvents: boolean;
+  legacyReliabilityControls: boolean;
+  legacyReliability: boolean;
+  hosts: boolean;
+  proxyLanFirewall: boolean;
+}
+
 export interface BootstrapSettings {
   settings: Settings;
   elevated: boolean;
   autostart: boolean;
+  protectedRuntime: ProtectedRuntimeCapabilities;
+  protectedRuntimeAvailable: boolean;
+  protectedDpiAvailable: boolean;
+  protectedLegacyReliabilityAvailable: boolean;
 }
 
 export interface BootstrapSnapshot {

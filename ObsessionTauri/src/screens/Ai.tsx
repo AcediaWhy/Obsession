@@ -1,6 +1,7 @@
 import { useShallow } from "zustand/react/shallow";
 
 import { useHostsStore } from "../store/hostsStore";
+import { useSettingsStore } from "../store/settingsStore";
 import { GlassPanel } from "../design/components/GlassPanel";
 import { StaggerItem } from "../design/components/Stagger";
 import { LogStream } from "../design/components/LogStream";
@@ -21,6 +22,7 @@ const STATUS_LABEL: Record<string, string> = {
   outdated: "Установлено (есть обновление)",
   not_installed: "Не установлено",
   offline: "Установлено (нет сети для проверки)",
+  external: "Изменён другой программой",
 };
 
 const STATUS_COLOR: Record<string, string> = {
@@ -28,9 +30,13 @@ const STATUS_COLOR: Record<string, string> = {
   outdated: "text-warn",
   not_installed: "text-ink-muted",
   offline: "text-ink-soft",
+  external: "text-warn",
 };
 
 export function AiScreen() {
+  const protectedHostsAvailable = useSettingsStore(
+    (state) => state.protectedRuntime.hosts,
+  );
   const s = useHostsStore(useShallow((state) => ({
     provider: state.provider,
     status: state.status,
@@ -93,6 +99,13 @@ export function AiScreen() {
             </div>
           </div>
 
+          {!protectedHostsAvailable && (
+            <div className="rounded-xl border border-warn/40 bg-warn/10 px-3 py-2 text-xs leading-relaxed text-warn">
+              Защищённая служба hosts недоступна. Установка, обновление и
+              восстановление заблокированы до успешного service preflight.
+            </div>
+          )}
+
           <div className="rounded-xl border border-glass-border bg-white/5 p-4">
             <div className="flex items-center justify-between">
               <span className="text-sm text-ink-soft">Статус</span>
@@ -117,13 +130,17 @@ export function AiScreen() {
           )}
 
           <div className="flex flex-col gap-2">
-            <Button disabled={s.busy} onClick={() => s.install()} className="w-full">
+            <Button
+              disabled={s.busy || !protectedHostsAvailable}
+              onClick={() => s.install()}
+              className="w-full"
+            >
               {installed ? "Переустановить / Обновить" : "Установить"}
             </Button>
             <div className="flex gap-2">
               <Button
                 variant="ghost"
-                disabled={s.busy || !installed}
+                disabled={s.busy || !installed || !protectedHostsAvailable}
                 onClick={() => s.uninstall()}
                 className="flex-1"
               >
@@ -141,7 +158,7 @@ export function AiScreen() {
             {s.rollbackAvailable && (
               <Button
                 variant="ghost"
-                disabled={s.busy}
+                disabled={s.busy || !protectedHostsAvailable}
                 onClick={() => s.restore()}
                 className="w-full"
               >
