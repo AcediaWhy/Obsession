@@ -19,7 +19,7 @@ pub(super) async fn start(
     let (result, generation_after) = {
         let state = app.state::<AppState>();
         let _gate = state.dpi_gate.lock().await;
-        let result = crate::dpi::start_adaptive_candidate_locked(
+        let result = crate::protected_runtime::start_adaptive_candidate(
             app,
             original,
             expected_generation,
@@ -27,7 +27,7 @@ pub(super) async fn start(
             candidate,
         )
         .await;
-        let generation_after = crate::dpi::runtime_snapshot(app).generation;
+        let generation_after = crate::protected_runtime::adaptive_runtime_snapshot().generation;
         (result, generation_after)
     };
     CandidateStartOutcome {
@@ -36,9 +36,9 @@ pub(super) async fn start(
     }
 }
 
-pub(super) fn failed(app: &AppHandle, error: impl Into<String>) -> CandidateStartOutcome {
+pub(super) fn failed(_app: &AppHandle, error: impl Into<String>) -> CandidateStartOutcome {
     CandidateStartOutcome {
         result: Err(error.into()),
-        generation_after: crate::dpi::runtime_snapshot(app).generation,
+        generation_after: crate::protected_runtime::adaptive_runtime_snapshot().generation,
     }
 }

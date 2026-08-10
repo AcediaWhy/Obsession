@@ -141,45 +141,130 @@ impl ProbeSeries {
         self.evaluate_with_requirement(eyes, CoreRequirement::Any)
     }
 
-    pub fn stable_core_targets(
-        &self,
-        configured_targets: &[ProbeTarget],
-        eyes: &EyesProbeEvidence,
-    ) -> Vec<ProbeTarget> {
+    /// A failed TLS baseline may still be a trustworthy recovery starting
+    /// point.  In particular, DPI blocking often leaves DNS healthy and lets
+    /// at least one core target establish TCP before the peer resets the TLS
+    /// handshake.  Treating that shape as an "unreliable environment" makes
+    /// Adaptive refuse to search precisely when it is needed.
+    ///
+    /// Keep this deliberately stricter than the normal candidate evaluator.
+    /// Either every core host must repeatedly fail after DNS while one proves
+    /// an established TCP path, or one core host must remain stably healthy
+    /// while another stably fails. A DNS outage, a single transient failure,
+    /// or pure connect timeouts without independent control-path evidence
+    /// therefore remain fail-closed.
+    pub fn supports_tls_recovery(&self) -> bool {
+        self.supports_tls_recovery_with_control(false)
+    }
+
+    /// Accept stable, target-specific timeout evidence only after an unrelated
+    /// HTTPS control path has succeeded. This distinguishes the common DPI
+    /// blackhole shape from a machine-wide offline/upstream outage while still
+    /// preserving the stronger established-TCP path above.
+    pub fn supports_tls_recovery_with_control(&self, control_path_ok: bool) -> bool {
+        if self.transport != StrategyTransport::Tls {
+            return false;
+        }
         let required = self.required_successes.max(1) as usize;
-        configured_targets
+        let core_hosts = self
+            .rounds
             .iter()
-            .copied()
+            .flat_map(|batch| batch.targets.iter())
             .filter(|target| target.core)
-            .filter(|target| {
-                let direct_successes = self
+            .map(|target| target.host.as_str())
+            .collect::<BTreeSet<_>>();
+        if core_hosts.is_empty() {
+            return false;
+        }
+
+        let stable_core_successes = core_hosts
+            .iter()
+            .filter(|host| {
+                self.rounds
+                    .iter()
+                    .flat_map(|batch| batch.targets.iter())
+                    .filter(|target| target.core && target.host == ***host && target.final_ok())
+                    .count()
+                    >= required
+            })
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let stable_core_failures = core_hosts
+            .iter()
+            .filter(|host| {
+                let dns_successes = self
                     .rounds
                     .iter()
                     .flat_map(|batch| batch.targets.iter())
-                    .filter(|result| result.host == target.host && result.final_ok())
+                    .filter(|target| target.core && target.host == ***host && target.dns_ok)
                     .count();
-                let eyes_successes = if self.transport == StrategyTransport::Tls {
-                    eyes.working_by_host.get(target.host).copied().unwrap_or(0) as usize
-                } else {
-                    0
-                };
-                direct_successes.max(eyes_successes) >= required
+                let failed_after_dns = self
+                    .rounds
+                    .iter()
+                    .flat_map(|batch| batch.targets.iter())
+                    .filter(|target| target.core && target.host == ***host)
+                    .filter(|target| target.dns_ok && !target.final_ok())
+                    .count();
+                dns_successes >= required && failed_after_dns >= required
             })
-            .collect()
-    }
-
-    pub fn restricted_to(&self, targets: &[ProbeTarget]) -> Self {
-        let selected = targets
-            .iter()
-            .map(|target| target.host)
+            .copied()
             .collect::<BTreeSet<_>>();
-        let mut restricted = self.clone();
-        for batch in &mut restricted.rounds {
-            batch
-                .targets
-                .retain(|target| selected.contains(target.host.as_str()));
-        }
-        restricted
+        let stable_partial_outage = !stable_core_successes.is_empty()
+            && stable_core_failures
+                .iter()
+                .any(|host| !stable_core_successes.contains(host));
+
+        let every_core_is_stably_failing = core_hosts.iter().all(|host| {
+            let dns_successes = self
+                .rounds
+                .iter()
+                .flat_map(|batch| batch.targets.iter())
+                .filter(|target| target.core && target.host == **host && target.dns_ok)
+                .count();
+            let failed_after_dns = self
+                .rounds
+                .iter()
+                .flat_map(|batch| batch.targets.iter())
+                .filter(|target| target.core && target.host == **host)
+                .filter(|target| target.dns_ok && !target.final_ok())
+                .count();
+            dns_successes >= required && failed_after_dns >= required
+        });
+        let established_tcp_evidence = core_hosts.iter().any(|host| {
+            self.rounds
+                .iter()
+                .flat_map(|batch| batch.targets.iter())
+                .filter(|target| target.core && target.host == **host)
+                .filter(|target| target.dns_ok && target.tcp_ok && !target.final_ok())
+                .count()
+                >= required
+        });
+        let stable_timeout_evidence = control_path_ok
+            && core_hosts.iter().all(|host| {
+                self.rounds
+                    .iter()
+                    .flat_map(|batch| batch.targets.iter())
+                    .filter(|target| {
+                        target.core
+                            && target.host == **host
+                            && target.dns_ok
+                            && !target.final_ok()
+                            && matches!(
+                                target.failure_stage,
+                                FailureStage::Tcp | FailureStage::Tls | FailureStage::Https
+                            )
+                    })
+                    .filter(|target| {
+                        let detail = target.detail.to_ascii_lowercase();
+                        detail.contains("timeout") || detail.contains("timed out")
+                    })
+                    .count()
+                    >= required
+            });
+
+        stable_partial_outage
+            || (every_core_is_stably_failing
+                && (established_tcp_evidence || stable_timeout_evidence))
     }
 
     fn evaluate_with_requirement(
@@ -339,6 +424,12 @@ pub fn targets_for(category: AdaptiveCategory, transport: StrategyTransport) -> 
                 path: "/",
                 core: true,
             },
+            ProbeTarget {
+                host: "updates.discord.com",
+                port: 443,
+                path: "/distributions/app/manifests/latest",
+                core: true,
+            },
         ],
         AdaptiveCategory::Gaming => match transport {
             StrategyTransport::Tls => vec![
@@ -489,6 +580,49 @@ pub async fn run_probe_series(
         interval,
     )
     .await
+}
+
+/// Probes unrelated HTTPS endpoints before treating Discord-only timeouts as
+/// trustworthy recovery evidence. One successful endpoint is sufficient to
+/// prove that DNS plus the general TCP/TLS/HTTPS path is alive; Discord itself
+/// is intentionally absent from this set.
+pub async fn run_tls_control_probe(timeout: Duration) -> ProbeSeries {
+    let targets = [
+        ProbeTarget {
+            host: "example.com",
+            port: 443,
+            path: "/",
+            core: true,
+        },
+        ProbeTarget {
+            host: "www.microsoft.com",
+            port: 443,
+            path: "/",
+            core: true,
+        },
+        ProbeTarget {
+            host: "www.cloudflare.com",
+            port: 443,
+            path: "/cdn-cgi/trace",
+            core: true,
+        },
+    ];
+    let dns_cache = SessionDnsCache::new();
+    let batch = run_probe_round(
+        AdaptiveCategory::Discord,
+        StrategyTransport::Tls,
+        &targets,
+        1,
+        timeout,
+        dns_cache.inner.clone(),
+    )
+    .await;
+    ProbeSeries {
+        category: AdaptiveCategory::Discord,
+        transport: StrategyTransport::Tls,
+        required_successes: 1,
+        rounds: vec![batch],
+    }
 }
 
 pub async fn run_probe_series_for_targets(
@@ -1074,8 +1208,16 @@ mod tests {
         assert_eq!(youtube[0].host, "www.youtube.com");
         assert!(youtube.iter().any(|target| !target.core));
         let discord = targets_for(AdaptiveCategory::Discord, StrategyTransport::Tls);
-        assert_eq!(discord.len(), 2);
-        assert!(discord.iter().all(|target| target.core));
+        assert_eq!(discord.len(), 3);
+        assert!(discord
+            .iter()
+            .any(|target| target.host == "discord.com" && target.core));
+        assert!(discord
+            .iter()
+            .any(|target| target.host == "gateway.discord.gg" && target.core));
+        assert!(discord
+            .iter()
+            .any(|target| target.host == "updates.discord.com" && target.core));
 
         let gaming_tls = targets_for(AdaptiveCategory::Gaming, StrategyTransport::Tls);
         assert_eq!(gaming_tls.len(), 4);
@@ -1289,39 +1431,132 @@ mod tests {
     }
 
     #[test]
-    fn discord_calibration_keeps_only_stable_core_targets() {
+    fn discord_repeated_reset_and_timeout_is_reliable_tls_recovery_evidence() {
         let mut rounds = Vec::new();
-        for round in 1..=4 {
+        for round in 1..=3 {
             let mut batch = discord_failed_round(round, true);
+            let discord = batch
+                .targets
+                .iter_mut()
+                .find(|target| target.host == "discord.com")
+                .unwrap();
+            discord.tcp_ok = false;
+            discord.failure_stage = FailureStage::Tcp;
+            discord.detail = "operation timed out".into();
             let gateway = batch
                 .targets
                 .iter_mut()
                 .find(|target| target.host == "gateway.discord.gg")
                 .unwrap();
-            gateway.tls_ok = true;
-            gateway.https_ok = true;
-            gateway.http_status = Some(404);
-            gateway.failure_stage = FailureStage::None;
+            gateway.tcp_ok = true;
+            gateway.failure_stage = FailureStage::Tcp;
+            gateway.detail = "connection reset (os error 10054)".into();
             rounds.push(batch);
         }
         let series = ProbeSeries {
             category: AdaptiveCategory::Discord,
             transport: StrategyTransport::Tls,
-            required_successes: 3,
+            required_successes: 2,
             rounds,
         };
 
-        let stable = series.stable_core_targets(
-            &targets_for(AdaptiveCategory::Discord, StrategyTransport::Tls),
-            &EyesProbeEvidence::default(),
-        );
-        let restricted = series.restricted_to(&stable);
+        assert!(series.supports_tls_recovery());
+    }
 
-        assert_eq!(stable.len(), 1);
-        assert_eq!(stable[0].host, "gateway.discord.gg");
-        assert!(restricted
-            .evaluate(&EyesProbeEvidence::default())
-            .is_success());
+    #[test]
+    fn discord_partial_core_outage_is_reliable_recovery_evidence() {
+        let mut rounds = Vec::new();
+        for round in 1..=3 {
+            let healthy = TargetProbeResult {
+                host: "gateway.discord.gg".into(),
+                core: true,
+                round,
+                transport: StrategyTransport::Tls,
+                dns_ok: true,
+                tcp_ok: true,
+                tls_ok: true,
+                quic_ok: false,
+                https_ok: true,
+                http_status: Some(404),
+                latency_ms: 200,
+                failure_stage: FailureStage::None,
+                detail: "HTTPS 404".into(),
+            };
+            let failed = TargetProbeResult {
+                host: "updates.discord.com".into(),
+                core: true,
+                round,
+                transport: StrategyTransport::Tls,
+                dns_ok: true,
+                tcp_ok: true,
+                tls_ok: false,
+                quic_ok: false,
+                https_ok: false,
+                http_status: None,
+                latency_ms: 2_400,
+                failure_stage: FailureStage::Tls,
+                detail: "connection reset (os error 10054)".into(),
+            };
+            rounds.push(ProbeBatch {
+                category: AdaptiveCategory::Discord,
+                transport: StrategyTransport::Tls,
+                round,
+                targets: vec![healthy, failed],
+            });
+        }
+        let series = ProbeSeries {
+            category: AdaptiveCategory::Discord,
+            transport: StrategyTransport::Tls,
+            required_successes: 2,
+            rounds,
+        };
+
+        assert!(series.supports_tls_recovery());
+    }
+
+    #[test]
+    fn tls_recovery_rejects_dns_outage_and_timeout_only_environment() {
+        let dns_outage = ProbeSeries {
+            category: AdaptiveCategory::Discord,
+            transport: StrategyTransport::Tls,
+            required_successes: 2,
+            rounds: vec![
+                discord_failed_round(1, false),
+                discord_failed_round(2, false),
+                discord_failed_round(3, false),
+            ],
+        };
+        assert!(!dns_outage.supports_tls_recovery());
+        assert!(!dns_outage.supports_tls_recovery_with_control(true));
+
+        let mut timeout_rounds = Vec::new();
+        for round in 1..=3 {
+            let mut batch = discord_failed_round(round, true);
+            for target in &mut batch.targets {
+                target.tcp_ok = false;
+                target.failure_stage = FailureStage::Tcp;
+                target.detail = "operation timed out".into();
+            }
+            timeout_rounds.push(batch);
+        }
+        let timeout_only = ProbeSeries {
+            category: AdaptiveCategory::Discord,
+            transport: StrategyTransport::Tls,
+            required_successes: 2,
+            rounds: timeout_rounds,
+        };
+        assert!(!timeout_only.supports_tls_recovery());
+        assert!(timeout_only.supports_tls_recovery_with_control(true));
+
+        let mut refused = timeout_only;
+        for target in refused
+            .rounds
+            .iter_mut()
+            .flat_map(|batch| batch.targets.iter_mut())
+        {
+            target.detail = "connection refused".into();
+        }
+        assert!(!refused.supports_tls_recovery_with_control(true));
     }
 
     #[tokio::test]

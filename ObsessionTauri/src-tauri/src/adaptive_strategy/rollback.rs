@@ -46,8 +46,12 @@ pub(super) async fn run(app: AppHandle, request: RollbackRequest) -> RollbackOut
     let restored = if let Some(original) = request.original.as_ref() {
         let state = app.state::<AppState>();
         let _gate = state.dpi_gate.lock().await;
-        crate::dpi::restore_runtime_snapshot_locked(&app, original, request.expected_generation)
-            .await
+        crate::protected_runtime::restore_adaptive_snapshot(
+            &app,
+            original,
+            request.expected_generation,
+        )
+        .await
     } else {
         Err("Adaptive rollback snapshot отсутствует".to_string())
     };
@@ -127,7 +131,7 @@ pub(super) async fn run(app: AppHandle, request: RollbackRequest) -> RollbackOut
         }
     }
 
-    let generation_after = crate::dpi::runtime_snapshot(&app).generation;
+    let generation_after = crate::protected_runtime::adaptive_runtime_snapshot().generation;
     let restored = restored.is_ok_and(|generation| generation == generation_after);
     crate::util::emit_log(
         &app,

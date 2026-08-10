@@ -336,6 +336,13 @@ fn timestamp_fake(blob: &str, repeats: i64) -> StrategyStep {
         .with_arg("repeats", StrategyValue::Integer(repeats))
 }
 
+fn legacy_config_timestamp_fake(blob: &str, repeats: i64, timestamp: i64) -> StrategyStep {
+    StrategyStep::new(StrategyFunction::Fake)
+        .with_arg("blob", StrategyValue::Text(blob.into()))
+        .with_arg("tcp_ts", StrategyValue::Integer(timestamp))
+        .with_arg("repeats", StrategyValue::Integer(repeats))
+}
+
 fn discord_baseline_mutation(
     repeats: i64,
     split: StrategyFunction,
@@ -355,19 +362,6 @@ fn discord_tls_seeds() -> Vec<StrategyCandidate> {
     vec![
         // Exact pack 0.2.3 baseline. generate() excludes its effective fingerprint.
         discord_baseline_mutation(4, StrategyFunction::MultiSplit, "1"),
-        discord_baseline_mutation(2, StrategyFunction::MultiSplit, "1"),
-        discord_baseline_mutation(6, StrategyFunction::MultiSplit, "1"),
-        discord_baseline_mutation(4, StrategyFunction::MultiSplit, "2"),
-        discord_baseline_mutation(4, StrategyFunction::MultiSplit, "1,midsld"),
-        discord_baseline_mutation(4, StrategyFunction::MultiDisorder, "1,midsld"),
-        discord_baseline_mutation(4, StrategyFunction::MultiDisorderLegacy, "1,midsld"),
-        tls_candidate(
-            category,
-            vec![
-                timestamp_fake("fake_default_tls", 4),
-                split_step(StrategyFunction::MultiSplit, "1"),
-            ],
-        ),
         // Official blockcheck2 TLS seed.
         tls_candidate(
             category,
@@ -398,6 +392,8 @@ fn discord_tls_seeds() -> Vec<StrategyCandidate> {
                 split_step(StrategyFunction::MultiDisorder, "midsld"),
             ],
         ),
+        // Keep structurally different one-step mutations ahead of minor
+        // repeat/position tweaks so bounded modes cover the broadest ladder.
         tls_candidate(
             category,
             vec![StrategyStep::new(StrategyFunction::FakeDSplit)
@@ -414,6 +410,44 @@ fn discord_tls_seeds() -> Vec<StrategyCandidate> {
                 .with_arg("pos", StrategyValue::Text("1,midsld".into()))
                 .with_arg("tcp_ts", StrategyValue::Integer(-30_000))
                 .with_arg("tcp_ts_up", StrategyValue::Bool(true))
+                .with_arg("repeats", StrategyValue::Integer(4))],
+        ),
+        tls_candidate(
+            category,
+            vec![
+                timestamp_fake("fake_default_tls", 4),
+                split_step(StrategyFunction::MultiSplit, "1"),
+            ],
+        ),
+        discord_baseline_mutation(4, StrategyFunction::MultiDisorder, "1,midsld"),
+        discord_baseline_mutation(4, StrategyFunction::MultiDisorderLegacy, "1,midsld"),
+        // Safe Zapret2 translations of materially different TLS shapes from
+        // the bundled discord_*.conf ladder. Legacy timestamp fooling does not
+        // imply tcp_ts_up, so keep these distinct from the Zapret2 baseline.
+        tls_candidate(
+            category,
+            vec![
+                legacy_config_timestamp_fake("tls_google", 4, -30_000),
+                split_step(StrategyFunction::MultiSplit, "1"),
+            ],
+        ),
+        tls_candidate(
+            category,
+            vec![
+                legacy_config_timestamp_fake("tls_google", 6, -25_000),
+                split_step(StrategyFunction::MultiSplit, "sniext"),
+            ],
+        ),
+        tls_candidate(
+            category,
+            vec![legacy_config_timestamp_fake("tls_google", 6, -30_000)],
+        ),
+        tls_candidate(
+            category,
+            vec![StrategyStep::new(StrategyFunction::FakeDSplit)
+                .with_arg("blob", StrategyValue::Text("tls_google".into()))
+                .with_arg("pos", StrategyValue::Text("1,midsld".into()))
+                .with_arg("tcp_seq", StrategyValue::Integer(-10_000))
                 .with_arg("repeats", StrategyValue::Integer(4))],
         ),
     ]
@@ -605,17 +639,31 @@ mod tests {
             .iter()
             .all(|candidate| validator::validate(candidate).is_valid()));
 
+        assert_eq!(out[0].steps.len(), 1);
         assert_eq!(
-            out[0].steps[0].args.get("repeats"),
-            Some(&StrategyValue::Integer(2))
+            out[0].steps[0].args.get("tcp_ts"),
+            Some(&StrategyValue::Integer(-1_000))
         );
+        assert_eq!(out[1].steps[0].function, StrategyFunction::Fake);
         assert_eq!(
-            out[1].steps[0].args.get("repeats"),
-            Some(&StrategyValue::Integer(6))
+            out[1].steps[0].args.get("tcp_md5"),
+            Some(&StrategyValue::Bool(true))
         );
+        assert_eq!(out[3].steps[0].function, StrategyFunction::FakeDSplit);
+        assert_eq!(out[4].steps[0].function, StrategyFunction::FakeDDisorder);
         assert_eq!(
-            out[2].steps[1].args.get("pos"),
-            Some(&StrategyValue::Text("2".into()))
+            out[8].steps[0].args.get("tcp_ts"),
+            Some(&StrategyValue::Integer(-30_000))
+        );
+        assert!(!out[8].steps[0].args.contains_key("tcp_ts_up"));
+        assert_eq!(
+            out[9].steps[1].args.get("pos"),
+            Some(&StrategyValue::Text("sniext".into()))
+        );
+        assert_eq!(out[11].steps[0].function, StrategyFunction::FakeDSplit);
+        assert_eq!(
+            out[11].steps[0].args.get("tcp_seq"),
+            Some(&StrategyValue::Integer(-10_000))
         );
     }
 

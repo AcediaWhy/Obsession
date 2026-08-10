@@ -712,7 +712,10 @@ mod tests {
             .as_nanos();
         let base_dir = std::env::temp_dir().join(format!("obsession-adaptive-cache-{nonce}"));
         std::fs::create_dir_all(&base_dir).unwrap();
-        Paths { base_dir }
+        Paths {
+            resource_dir: base_dir.clone(),
+            base_dir,
+        }
     }
 
     fn youtube_candidate() -> StrategyCandidate {

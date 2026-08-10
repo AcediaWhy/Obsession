@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 // Tauri ожидает фиксированный порт и не должен падать при его занятости.
-const host = process.env.TAURI_DEV_HOST;
+const host = process.env.TAURI_DEV_HOST || "127.0.0.1";
 
 // Версия приложения — единый источник: tauri.conf.json (та же, что в бандле и
 // установщике). Инжектим как глобальную константу __APP_VERSION__, чтобы UI не
@@ -24,9 +24,9 @@ export default defineConfig({
   server: {
     port: 1420,
     strictPort: true,
-    host: host || false,
-    hmr: host ? { protocol: "ws", host, port: 1421 } : undefined,
-    watch: { ignored: ["**/src-tauri/**"] },
+    host,
+    hmr: { protocol: "ws", host, port: 1421 },
+    watch: { ignored: ["**/src-tauri/**", "**/target/**"] },
   },
   // Юнит-тесты редьюсеров сторов. Окружение node: тесты чистые (мокают ../lib/tauri),
   // DOM не нужен. Rust-тесты живут отдельно в src-tauri (cargo test).

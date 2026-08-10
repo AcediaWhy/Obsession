@@ -86,6 +86,22 @@ fn search_tuning_for(mode: &str) -> SearchTuning {
     }
 }
 
+fn candidate_budget_for_session(
+    category: AdaptiveCategory,
+    mode: SearchSessionMode,
+    configured_budget: usize,
+) -> usize {
+    if category == AdaptiveCategory::Discord && mode == SearchSessionMode::Recovery {
+        // A recovery search starts only after the Discord baseline has been
+        // proven broken while an unrelated HTTPS control path is healthy. In
+        // that state, returning "not found" before the finite safe ladder is
+        // exhausted is misleading and can omit the most distinct strategies.
+        generator::MAX_CANDIDATES
+    } else {
+        configured_budget.min(generator::MAX_CANDIDATES)
+    }
+}
+
 fn search_tuning(app: &AppHandle) -> SearchTuning {
     let mode = app
         .state::<AppState>()
@@ -424,6 +440,8 @@ struct PreparedSearch {
 fn classify_session_mode(
     transport: StrategyTransport,
     result: &super::model::CandidateProbeResult,
+    series: &probe::ProbeSeries,
+    control_path_ok: bool,
 ) -> Result<SearchSessionMode, PreparationFailure> {
     if result.is_success() {
         return Ok(SearchSessionMode::Comparison);
@@ -434,6 +452,22 @@ fn classify_session_mode(
             result.failure_stage,
             super::evidence::FailureStage::Quic | super::evidence::FailureStage::Https
         )
+    {
+        return Ok(SearchSessionMode::Recovery);
+    }
+    if transport == StrategyTransport::Tls
+        && result.dns_ok
+        && matches!(
+            result.failure_stage,
+            super::evidence::FailureStage::Tcp
+                | super::evidence::FailureStage::Tls
+                | super::evidence::FailureStage::Https
+                | super::evidence::FailureStage::EyesReset
+                | super::evidence::FailureStage::EyesBlackhole
+        )
+        && (series.supports_tls_recovery_with_control(control_path_ok)
+            || result.reset_count >= 2
+            || result.blackhole_count >= 2)
     {
         return Ok(SearchSessionMode::Recovery);
     }
@@ -749,14 +783,14 @@ pub async fn apply_gaming_recommendation(
         .and_then(|_| cache.save(&paths))
         .map_err(|error| error.to_string())?;
 
-    let snapshot = crate::dpi::runtime_snapshot(app);
+    let snapshot = crate::protected_runtime::adaptive_runtime_snapshot();
     let Some(DpiLaunchSpec::Zapret2 {
-        selections,
-        mut adaptive_overrides,
-    }) = snapshot.launch
+        adaptive_overrides, ..
+    }) = snapshot.launch.as_ref()
     else {
         return Err("Рекомендацию можно применить только при активном Zapret2".into());
     };
+    let mut adaptive_overrides = adaptive_overrides.clone();
     adaptive_overrides.insert(
         override_key(AdaptiveCategory::Gaming, transport),
         resolved.recommendation.candidate,
@@ -764,10 +798,16 @@ pub async fn apply_gaming_recommendation(
 
     let state = app.state::<AppState>();
     let _gate = state.dpi_gate.lock().await;
-    if crate::dpi::runtime_snapshot(app).generation != snapshot.generation {
+    if crate::protected_runtime::adaptive_runtime_snapshot().generation != snapshot.generation {
         return Err("Конфигурация Zapret2 изменилась во время применения рекомендации".into());
     }
-    crate::dpi::start_zapret2_with_overrides(app, &selections, &adaptive_overrides).await?;
+    crate::protected_runtime::replace_zapret2_overrides(
+        app,
+        &snapshot,
+        snapshot.generation,
+        &adaptive_overrides,
+    )
+    .await?;
     Ok(descriptor)
 }
 
@@ -875,7 +915,7 @@ async fn handle_event(
             let Some(category) = category_for_domain(&domain) else {
                 return Vec::new();
             };
-            if crate::dpi::runtime_snapshot(app).generation != generation {
+            if crate::protected_runtime::adaptive_runtime_snapshot().generation != generation {
                 return Vec::new();
             }
             if !zapret2_is_active(app) {
@@ -976,7 +1016,8 @@ async fn handle_event(
             context.tasks.finish_preparation();
             match result {
                 Ok(prepared) => {
-                    if crate::dpi::runtime_snapshot(app).generation != prepared.snapshot.generation
+                    if crate::protected_runtime::adaptive_runtime_snapshot().generation
+                        != prepared.snapshot.generation
                     {
                         return model.step(RecoveryEvent::PreparationFailed {
                             session_id,
@@ -1110,7 +1151,7 @@ async fn handle_event(
         } => {
             let status = model.status();
             if context.expected_generation != generation
-                || crate::dpi::runtime_snapshot(app).generation != generation
+                || crate::protected_runtime::adaptive_runtime_snapshot().generation != generation
                 || !probe_completion_matches_status(&status, session_id, attempt_id, &candidate_id)
             {
                 return Vec::new();
@@ -1185,7 +1226,7 @@ async fn prepare_search_data(
     transport: StrategyTransport,
     reason: DiagnosisReason,
 ) -> Result<PreparedSearch, PreparationFailure> {
-    let snapshot = crate::dpi::runtime_snapshot(app);
+    let snapshot = crate::protected_runtime::adaptive_runtime_snapshot();
     let Some(DpiLaunchSpec::Zapret2 {
         adaptive_overrides, ..
     }) = snapshot.launch.as_ref()
@@ -1288,8 +1329,8 @@ async fn prepare_search_data(
                 .await;
         }
         let eyes = evidence.snapshot();
-        let mut probe_targets = targets;
-        let mut calibration_result = calibration.evaluate(&eyes);
+        let probe_targets = targets;
+        let calibration_result = calibration.evaluate(&eyes);
         log_probe_series(
             app,
             "baseline_calibration",
@@ -1297,54 +1338,33 @@ async fn prepare_search_data(
             &calibration_result,
         );
 
-        if category == AdaptiveCategory::Discord
+        let control_path_ok = if category == AdaptiveCategory::Discord
             && transport == StrategyTransport::Tls
             && !calibration_result.is_success()
+            && !calibration.supports_tls_recovery()
         {
-            let stable_targets = calibration.stable_core_targets(&probe_targets, &eyes);
-            if !stable_targets.is_empty() && stable_targets.len() < probe_targets.len() {
-                let stable_hosts = stable_targets
-                    .iter()
-                    .map(|target| target.host)
-                    .collect::<Vec<_>>();
-                let excluded_hosts = probe_targets
-                    .iter()
-                    .filter(|target| !stable_hosts.contains(&target.host))
-                    .map(|target| target.host)
-                    .collect::<Vec<_>>();
-                let restricted = calibration.restricted_to(&stable_targets);
-                let restricted_result = restricted.evaluate(&eyes);
-                if restricted_result.is_success() {
-                    crate::util::emit_log(
-                        app,
-                        "warn",
-                        "adaptive",
-                        &format!(
-                            "discord_probe_targets_quarantined: excluded=[{}] active=[{}]",
-                            excluded_hosts.join(","),
-                            stable_hosts.join(",")
-                        ),
-                    );
-                    log_probe_series(
-                        app,
-                        "baseline_calibration_viable_targets",
-                        &restricted,
-                        &restricted_result,
-                    );
-                    probe_targets = stable_targets;
-                    calibration_result = restricted_result;
-                }
-            }
-        }
+            let control = probe::run_tls_control_probe(tuning.probe_timeout).await;
+            let control_result = control.evaluate_base(&probe::EyesProbeEvidence::default());
+            log_probe_series(app, "discord_recovery_control", &control, &control_result);
+            control_result.is_success()
+        } else {
+            false
+        };
 
-        let mode = match classify_session_mode(transport, &calibration_result) {
+        let mode = match classify_session_mode(
+            transport,
+            &calibration_result,
+            &calibration,
+            control_path_ok,
+        ) {
             Ok(SearchSessionMode::Recovery) => {
                 crate::util::emit_log(
                     app,
                     "warn",
                     "adaptive",
                     &format!(
-                        "baseline QUIC не работает ({}): recovery search разрешен",
+                        "baseline {:?} не работает ({}): recovery search разрешен",
+                        transport,
                         calibration_result.failure_stage.as_str()
                     ),
                 );
@@ -1369,6 +1389,7 @@ async fn prepare_search_data(
     };
     let (net, (probe_targets, dns_cache, mode, candidate_budget)) =
         tokio::try_join!(net_future, probe_future)?;
+    let candidate_budget = candidate_budget_for_session(category, mode, candidate_budget);
     let network_key = net.gateway_mac.filter(|value| value != "unknown");
     let cache = AdaptiveStrategyCache::load(&paths);
     let engine = engine_version();
@@ -1769,14 +1790,14 @@ async fn reset_saved(app: &AppHandle, category: AdaptiveCategory) {
         let _ = cache.save(&paths);
     }
 
-    let snapshot = crate::dpi::runtime_snapshot(app);
+    let snapshot = crate::protected_runtime::adaptive_runtime_snapshot();
     let Some(DpiLaunchSpec::Zapret2 {
-        selections,
-        mut adaptive_overrides,
-    }) = snapshot.launch
+        adaptive_overrides, ..
+    }) = snapshot.launch.as_ref()
     else {
         return;
     };
+    let mut adaptive_overrides = adaptive_overrides.clone();
     let before = adaptive_overrides.len();
     adaptive_overrides.retain(|_, candidate| candidate.category != category);
     if adaptive_overrides.len() == before {
@@ -1785,7 +1806,7 @@ async fn reset_saved(app: &AppHandle, category: AdaptiveCategory) {
 
     let state = app.state::<AppState>();
     let _gate = state.dpi_gate.lock().await;
-    if crate::dpi::runtime_snapshot(app).generation != snapshot.generation {
+    if crate::protected_runtime::adaptive_runtime_snapshot().generation != snapshot.generation {
         crate::util::emit_log(
             app,
             "warn",
@@ -1794,8 +1815,13 @@ async fn reset_saved(app: &AppHandle, category: AdaptiveCategory) {
         );
         return;
     }
-    if let Err(error) =
-        crate::dpi::start_zapret2_with_overrides(app, &selections, &adaptive_overrides).await
+    if let Err(error) = crate::protected_runtime::replace_zapret2_overrides(
+        app,
+        &snapshot,
+        snapshot.generation,
+        &adaptive_overrides,
+    )
+    .await
     {
         crate::util::emit_log(
             app,
@@ -1841,9 +1867,9 @@ fn probe_summary(context: &SessionContext, measured_at: u64) -> ProbeSummary {
     }
 }
 
-fn zapret2_is_active(app: &AppHandle) -> bool {
+fn zapret2_is_active(_app: &AppHandle) -> bool {
     matches!(
-        crate::dpi::runtime_snapshot(app).launch,
+        crate::protected_runtime::adaptive_runtime_snapshot().launch,
         Some(DpiLaunchSpec::Zapret2 { .. })
     )
 }
@@ -1969,6 +1995,35 @@ mod tests {
             assert!(tuning.eyes_quiet_window <= tuning.eyes_quiet_deadline);
             assert!(tuning.eyes_quiet_deadline <= tuning.probe_interval);
         }
+    }
+    #[test]
+    fn discord_recovery_exhausts_the_safe_ladder() {
+        for configured in [4, 8, 12] {
+            assert_eq!(
+                candidate_budget_for_session(
+                    AdaptiveCategory::Discord,
+                    SearchSessionMode::Recovery,
+                    configured,
+                ),
+                generator::MAX_CANDIDATES
+            );
+        }
+        assert_eq!(
+            candidate_budget_for_session(
+                AdaptiveCategory::Discord,
+                SearchSessionMode::Comparison,
+                8,
+            ),
+            8
+        );
+        assert_eq!(
+            candidate_budget_for_session(
+                AdaptiveCategory::YoutubeTwitch,
+                SearchSessionMode::Recovery,
+                8,
+            ),
+            8
+        );
     }
     #[test]
     fn domain_mapping_is_suffix_safe() {
@@ -2142,6 +2197,12 @@ mod tests {
     }
     #[test]
     fn quic_failure_enters_recovery_but_dns_failure_does_not() {
+        let series = crate::adaptive_strategy::probe::ProbeSeries {
+            category: AdaptiveCategory::Discord,
+            transport: StrategyTransport::Quic,
+            required_successes: 1,
+            rounds: Vec::new(),
+        };
         let mut result = crate::adaptive_strategy::model::CandidateProbeResult {
             transport: StrategyTransport::Quic,
             dns_ok: true,
@@ -2149,15 +2210,66 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            classify_session_mode(StrategyTransport::Quic, &result),
+            classify_session_mode(StrategyTransport::Quic, &result, &series, false),
             Ok(SearchSessionMode::Recovery)
         );
 
         result.dns_ok = false;
         result.failure_stage = crate::adaptive_strategy::evidence::FailureStage::Dns;
         assert_eq!(
-            classify_session_mode(StrategyTransport::Quic, &result),
+            classify_session_mode(StrategyTransport::Quic, &result, &series, false),
             Err(PreparationFailure::ProbeUnreliable)
+        );
+    }
+
+    #[test]
+    fn discord_partial_core_outage_enters_recovery() {
+        let target =
+            |round: u8, host: &str, ok: bool| crate::adaptive_strategy::probe::TargetProbeResult {
+                host: host.into(),
+                core: true,
+                round,
+                transport: StrategyTransport::Tls,
+                dns_ok: true,
+                tcp_ok: true,
+                tls_ok: ok,
+                quic_ok: false,
+                https_ok: ok,
+                http_status: ok.then_some(404),
+                latency_ms: if ok { 200 } else { 2_400 },
+                failure_stage: if ok {
+                    crate::adaptive_strategy::evidence::FailureStage::None
+                } else {
+                    crate::adaptive_strategy::evidence::FailureStage::Tls
+                },
+                detail: if ok {
+                    "HTTPS 404".into()
+                } else {
+                    "connection reset (os error 10054)".into()
+                },
+            };
+        let series = crate::adaptive_strategy::probe::ProbeSeries {
+            category: AdaptiveCategory::Discord,
+            transport: StrategyTransport::Tls,
+            required_successes: 2,
+            rounds: (1..=3)
+                .map(|round| crate::adaptive_strategy::probe::ProbeBatch {
+                    category: AdaptiveCategory::Discord,
+                    transport: StrategyTransport::Tls,
+                    round,
+                    targets: vec![
+                        target(round, "gateway.discord.gg", true),
+                        target(round, "updates.discord.com", false),
+                    ],
+                })
+                .collect(),
+        };
+        let result =
+            series.evaluate(&crate::adaptive_strategy::probe::EyesProbeEvidence::default());
+
+        assert_eq!(
+            classify_session_mode(StrategyTransport::Tls, &result, &series, false),
+            Ok(SearchSessionMode::Recovery)
         );
     }
 

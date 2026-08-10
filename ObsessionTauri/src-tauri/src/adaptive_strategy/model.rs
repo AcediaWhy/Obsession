@@ -553,6 +553,25 @@ impl RecoveryModel {
                     session.last_failure = result.failure_stage;
                 }
                 if result.is_success() {
+                    if self
+                        .session
+                        .as_ref()
+                        .is_some_and(|session| session.mode == SearchSessionMode::Recovery)
+                    {
+                        self.phase = RecoveryPhase::Applying;
+                        if let Some(session) = self.session.as_mut() {
+                            session.verification_deadline = None;
+                        }
+                        let candidate = self.current_candidate().unwrap().clone();
+                        return vec![
+                            RecoveryAction::PersistConfirmed {
+                                session_id,
+                                attempt_id,
+                                candidate,
+                            },
+                            self.emit_status(),
+                        ];
+                    }
                     let deadline = now.saturating_add(self.cfg.verification_ms);
                     if let Some(session) = self.session.as_mut() {
                         session.verification_deadline = Some(deadline);
@@ -1028,6 +1047,67 @@ mod tests {
             session_id: session,
             attempt_id: attempt,
             candidate_id: id,
+            ok: true,
+        });
+        assert_eq!(model.status().phase, RecoveryPhase::Applied);
+    }
+
+    #[test]
+    fn successful_recovery_candidate_is_persisted_after_automated_stability_probe() {
+        let value = candidate("1,midsld");
+        let mut model = RecoveryModel::new(RecoveryCfg::default());
+        model.step(RecoveryEvent::DiagnosisConfirmed {
+            category: AdaptiveCategory::YoutubeTwitch,
+            reason: DiagnosisReason::TlsBlackhole,
+        });
+        model.step(RecoveryEvent::PreparationStarted {
+            category: AdaptiveCategory::YoutubeTwitch,
+            transport: StrategyTransport::Tls,
+        });
+        let actions = model.step(RecoveryEvent::PreparationReady {
+            session_id: 1,
+            candidates: vec![value],
+            mode: SearchSessionMode::Recovery,
+        });
+        let RecoveryAction::StartCandidate {
+            session_id,
+            attempt_id,
+            candidate,
+            ..
+        } = &actions[0]
+        else {
+            panic!("expected StartCandidate")
+        };
+        let (session_id, attempt_id, candidate_id) =
+            (*session_id, *attempt_id, candidate.candidate_id());
+        model.step(RecoveryEvent::CandidateStarted {
+            session_id,
+            attempt_id,
+            candidate_id: candidate_id.clone(),
+            ok: true,
+        });
+
+        let actions = model.step(RecoveryEvent::ProbeFinished {
+            session_id,
+            attempt_id,
+            candidate_id: candidate_id.clone(),
+            result: successful_probe(),
+            now: 1_000,
+        });
+        assert_eq!(model.status().phase, RecoveryPhase::Applying);
+        assert_eq!(model.status().verification_deadline_ms, None);
+        assert!(matches!(
+            actions[0],
+            RecoveryAction::PersistConfirmed { .. }
+        ));
+        assert!(!actions
+            .iter()
+            .any(|action| matches!(action, RecoveryAction::BeginVerification { .. })));
+
+        model.step(RecoveryEvent::PersistFinished {
+            session_id,
+            attempt_id,
+            candidate_id,
             ok: true,
         });
         assert_eq!(model.status().phase, RecoveryPhase::Applied);
