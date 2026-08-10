@@ -1,15 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { open } from "@tauri-apps/plugin-dialog";
 
 import "./style.css";
-// Ассеты бренда — напрямую из основного приложения (единый источник, без копий).
 import eyeWebm from "../../src/assets/eye.webm";
 import eyePoster from "../../src/assets/eye-poster.png";
-
-// Классический визард в одном окне: welcome → options → installing → done,
-// error — боковая ветка из installing. Сама установка — тихий NSIS-движок
-// на Rust-стороне (см. src-tauri/src/lib.rs), сюда прилетают события прогресса.
 
 type Step = "welcome" | "options" | "installing" | "done" | "error";
 type InstallMode = "install" | "update" | "repair" | "blocked";
@@ -21,24 +15,52 @@ interface InstallerSnapshot {
   logPath: string;
 }
 
+interface ModeCopy {
+  badge: string;
+  eyebrow: string;
+  title: string;
+  description: string;
+  optionsTitle: string;
+  optionsDescription: string;
+  progressTitle: string;
+  action: string;
+  done: string;
+  doneDescription: string;
+}
+
 const VERSION = (import.meta.env.VITE_APP_VERSION as string | undefined) ?? "dev";
 const REDUCE_MOTION = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+const params = new URLSearchParams(window.location.search);
+const PREVIEW = import.meta.env.DEV && params.has("preview");
 
 const STAGE_TEXT: Record<string, string> = {
-  prepare: "подготовка…",
-  stop: "остановка установленной версии…",
-  stage: "подготовка staging-каталога…",
-  install: "распаковка проверенной версии…",
-  verify: "проверка целостности…",
-  commit: "атомарная замена файлов…",
-  registry: "фиксация системных записей…",
-  shortcuts: "настройка ярлыков…",
-  rollback: "восстановление предыдущей версии…",
-  cleanup: "очистка временных файлов…",
-  finish: "завершение…",
+  prepare: "Проверяем систему и свободное место",
+  stop: "Останавливаем запущенный Obsession",
+  stage: "Готовим безопасную область обновления",
+  install: "Распаковываем проверенную версию",
+  verify: "Проверяем целостность файлов",
+  commit: "Переключаемся на новую версию",
+  registry: "Обновляем системные записи",
+  shortcuts: "Синхронизируем ярлыки",
+  rollback: "Возвращаем предыдущую рабочую версию",
+  cleanup: "Удаляем временные файлы",
+  finish: "Завершаем настройку",
 };
-// Порядок точек степпера; error остаётся на точке установки, но красной.
-const DOT_INDEX: Record<Step, number> = { welcome: 0, options: 1, installing: 2, error: 2, done: 3 };
+
+const PHASES = [
+  { id: "prepare", label: "Подготовка", detail: "Система и процессы", stages: ["prepare", "stop", "stage"] },
+  { id: "files", label: "Файлы", detail: "Распаковка и проверка", stages: ["install", "verify"] },
+  { id: "switch", label: "Переключение", detail: "Версия и ярлыки", stages: ["commit", "registry", "shortcuts"] },
+  { id: "finish", label: "Готово", detail: "Финальная очистка", stages: ["cleanup", "finish"] },
+] as const;
+
+const STEP_INDEX: Record<Step, number> = {
+  welcome: 0,
+  options: 1,
+  installing: 2,
+  error: 2,
+  done: 3,
+};
 
 const state = {
   step: "welcome" as Step,
@@ -53,56 +75,121 @@ const state = {
   error: "",
 };
 
-const MODE_TEXT: Record<Exclude<InstallMode, "blocked">, { noun: string; action: string; done: string }> = {
-  install: { noun: "установки", action: "Установить", done: "Установка завершена" },
-  update: { noun: "обновления", action: "Обновить", done: "Обновление завершено" },
-  repair: { noun: "восстановления", action: "Восстановить", done: "Восстановление завершено" },
-};
-
 function activeMode(): Exclude<InstallMode, "blocked"> {
   return state.mode === "blocked" ? "repair" : state.mode;
 }
 
+function modeCopy(): ModeCopy {
+  const installed = state.installedVersion ? `v${state.installedVersion}` : "текущую версию";
+  const copies: Record<Exclude<InstallMode, "blocked">, ModeCopy> = {
+    install: {
+      badge: "Чистая установка",
+      eyebrow: "Добро пожаловать",
+      title: "Установим Obsession",
+      description: "Настроим приложение и ярлыки. Всё займёт меньше минуты — без лишних мастеров и перезагрузок.",
+      optionsTitle: "Настройте установку",
+      optionsDescription: "Приложение будет защищённо установлено в Program Files. Выберите удобные ярлыки.",
+      progressTitle: "Устанавливаем Obsession",
+      action: "Установить",
+      done: "Obsession установлен",
+      doneDescription: "Приложение готово к первому запуску.",
+    },
+    update: {
+      badge: state.installedVersion ? `Обновление с ${installed}` : "Обновление",
+      eyebrow: "Доступна новая версия",
+      title: `Обновим Obsession до v${VERSION}`,
+      description: "Настройки останутся на месте. Текущую версию сохраним до тех пор, пока новая не пройдёт проверку.",
+      optionsTitle: "Проверьте параметры обновления",
+      optionsDescription: "Папка установки зафиксирована, ярлыки можно синхронизировать заново.",
+      progressTitle: "Обновляем Obsession",
+      action: "Обновить",
+      done: "Obsession обновлён",
+      doneDescription: `Новая версия v${VERSION} установлена и проверена.`,
+    },
+    repair: {
+      badge: "Восстановление",
+      eyebrow: "Исправим установку",
+      title: "Восстановим Obsession",
+      description: "Заменим повреждённые файлы, проверим системные записи и заново синхронизируем ярлыки.",
+      optionsTitle: "Параметры восстановления",
+      optionsDescription: "Личные настройки не затрагиваются — восстанавливаются только файлы приложения.",
+      progressTitle: "Восстанавливаем Obsession",
+      action: "Восстановить",
+      done: "Obsession восстановлен",
+      doneDescription: "Файлы приложения проверены и готовы к работе.",
+    },
+  };
+  return copies[activeMode()];
+}
+
 const root = document.getElementById("app")!;
 root.innerHTML = `
-  <div class="glow" aria-hidden="true"></div>
+  <div class="ambient" aria-hidden="true">
+    <div class="ambient-orb ambient-orb-one"></div>
+    <div class="ambient-orb ambient-orb-two"></div>
+    <div class="grain"></div>
+  </div>
   <header class="titlebar" data-tauri-drag-region>
-    <span class="titlebar-label" data-tauri-drag-region>OBSESSION SETUP</span>
-    <div class="titlebar-btns">
-      <button class="tb-btn" id="btn-min" title="Свернуть" aria-label="Свернуть">–</button>
-      <button class="tb-btn tb-close" id="btn-close" title="Закрыть" aria-label="Закрыть">✕</button>
+    <div class="titlebar-brand" data-tauri-drag-region>
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span data-tauri-drag-region>OBSESSION</span>
+      <span class="titlebar-separator" aria-hidden="true"></span>
+      <span class="titlebar-context" data-tauri-drag-region>SETUP</span>
+    </div>
+    <div class="titlebar-actions">
+      <button class="window-button" id="btn-min" type="button" title="Свернуть" aria-label="Свернуть окно">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8.5h10" /></svg>
+      </button>
+      <button class="window-button window-close" id="btn-close" type="button" title="Закрыть" aria-label="Закрыть установщик">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 4 8 8m0-8-8 8" /></svg>
+      </button>
     </div>
   </header>
   <main class="stage" id="stage"></main>
   <footer class="footer">
-    <div class="foot-left" id="foot-left"></div>
-    <div class="dots" id="dots" aria-hidden="true"></div>
-    <div class="foot-right" id="foot-right"></div>
+    <div class="footer-actions footer-left" id="foot-left"></div>
+    <ol class="stepper" id="stepper" aria-label="Этапы установки"></ol>
+    <div class="footer-actions footer-right" id="foot-right"></div>
   </footer>
+  <div class="sr-only" id="announcer" aria-live="polite" aria-atomic="true"></div>
 `;
 
 const el = (id: string) => document.getElementById(id)!;
+
 function bind(id: string, fn: () => void) {
   el(id).addEventListener("click", fn);
 }
 
-// Живой глаз: video с альфой; при reduce-motion — статичный постер (как EyeLogo).
-function eyeHtml(size: number): string {
+function eyeHtml(size: number, quiet = false): string {
   const media = REDUCE_MOTION
     ? `<img src="${eyePoster}" alt="" />`
     : `<video src="${eyeWebm}" poster="${eyePoster}" muted loop playsinline autoplay></video>`;
-  return `<div class="eye-tile" style="width:${size}px;height:${size}px">${media}</div>`;
+  return `<div class="eye-tile${quiet ? " eye-quiet" : ""}" style="--eye-size:${size}px">${media}<span class="eye-ring" aria-hidden="true"></span></div>`;
 }
 
-function renderDots() {
-  const idx = DOT_INDEX[state.step];
-  el("dots").innerHTML = [0, 1, 2, 3]
-    .map((i) => {
-      const cls =
-        i === idx ? (state.step === "error" ? "dot error" : "dot active") : i < idx ? "dot done" : "dot";
-      return `<div class="${cls}"></div>`;
+function shieldIcon(): string {
+  return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 5.5 5.8v5.4c0 4.2 2.6 8 6.5 9.8 3.9-1.8 6.5-5.6 6.5-9.8V5.8L12 3Z"/><path d="m9 12 2 2 4-4"/></svg>`;
+}
+
+function folderIcon(): string {
+  return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 6.5h6l2 2h9v9a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2v-11Z"/></svg>`;
+}
+
+function renderStepper() {
+  const current = STEP_INDEX[state.step];
+  const labels = ["Начало", "Параметры", "Установка", "Готово"];
+  el("stepper").innerHTML = labels
+    .map((label, index) => {
+      const status = index < current ? "complete" : index === current ? (state.step === "error" ? "error" : "current") : "upcoming";
+      const currentAttr = index === current ? ` aria-current="step"` : "";
+      return `<li class="stepper-item is-${status}"${currentAttr}><span class="stepper-dot"></span><span class="stepper-label">${label}</span></li>`;
     })
     .join("");
+}
+
+function setText(id: string, value: string) {
+  const target = document.getElementById(id);
+  if (target) target.textContent = value;
 }
 
 function setPathView() {
@@ -113,153 +200,278 @@ function setPathView() {
   }
 }
 
+function currentPhaseIndex(stage: string): number {
+  // Rollback возможен только после атомарного переключения каталога, поэтому
+  // оставляем пользователя на соответствующей фазе, а не прыгаем в начало.
+  if (stage === "rollback") return 2;
+  const index = PHASES.findIndex((phase) => phase.stages.some((item) => item === stage));
+  return index === -1 ? 0 : index;
+}
+
+function timelineHtml(): string {
+  const current = currentPhaseIndex(state.stage);
+  return PHASES.map((phase, index) => {
+    const status = index < current ? "complete" : index === current ? "current" : "upcoming";
+    return `
+      <li class="timeline-item is-${status}" data-phase="${index}">
+        <span class="timeline-marker" aria-hidden="true"><span></span></span>
+        <span class="timeline-copy"><strong>${phase.label}</strong><small>${phase.detail}</small></span>
+      </li>`;
+  }).join("");
+}
+
+function syncProgressView() {
+  const progress = document.getElementById("install-progress");
+  if (progress) {
+    progress.setAttribute("aria-valuenow", String(state.pct));
+    progress.setAttribute("aria-valuetext", STAGE_TEXT[state.stage] ?? "Установка выполняется");
+  }
+  const bar = document.getElementById("bar");
+  if (bar) bar.style.width = `${Math.max(0, Math.min(100, state.pct))}%`;
+  setText("progress-pct", `${Math.round(state.pct)}%`);
+  setText("stage-line", STAGE_TEXT[state.stage] ?? "Продолжаем установку");
+
+  const current = currentPhaseIndex(state.stage);
+  document.querySelectorAll<HTMLElement>("[data-phase]").forEach((item) => {
+    const index = Number(item.dataset.phase);
+    item.className = `timeline-item is-${index < current ? "complete" : index === current ? "current" : "upcoming"}`;
+  });
+
+  const recovery = document.getElementById("recovery-note");
+  if (recovery) recovery.classList.toggle("visible", state.stage === "rollback");
+  el("announcer").textContent = STAGE_TEXT[state.stage] ?? "Установка выполняется";
+}
+
+let lastRenderedStep: Step | null = null;
+
+function focusScreenHeading() {
+  if (lastRenderedStep === state.step) return;
+  lastRenderedStep = state.step;
+  window.requestAnimationFrame(() => {
+    document.querySelector<HTMLElement>("[data-screen-title]")?.focus({ preventScroll: true });
+  });
+}
+
 function render() {
   const stage = el("stage");
   const left = el("foot-left");
   const right = el("foot-right");
+  const copy = modeCopy();
+
+  document.body.dataset.step = state.step;
+  document.body.dataset.mode = state.mode;
   left.innerHTML = "";
   right.innerHTML = "";
-  // Пока NSIS работает, прервать установку безопасно нельзя — прячем ✕
-  // (бэкенд дополнительно блокирует CloseRequested).
   el("btn-close").classList.toggle("hidden", state.step === "installing");
   el("btn-min").classList.toggle("hidden", state.step === "installing");
-  renderDots();
+  renderStepper();
 
   switch (state.step) {
     case "welcome":
-      {
-        const installed = state.installedVersion ? `Установлена v${state.installedVersion}` : "Инструмент обхода DPI-блокировок";
       stage.innerHTML = `
-        <section class="step step-center">
-          ${eyeHtml(96)}
-          <h1 class="wordmark">OBSESSION</h1>
-          <div class="version">v${VERSION} · x64</div>
-          <p class="tagline">${installed}</p>
+        <section class="screen welcome-screen">
+          <div class="welcome-copy">
+            <div class="mode-badge"><span></span>${copy.badge}</div>
+            <p class="eyebrow">${copy.eyebrow}</p>
+            <h1 class="hero-title" data-screen-title tabindex="-1">${copy.title}</h1>
+            <p class="hero-description">${copy.description}</p>
+            <div class="meta-row" aria-label="Информация о версии">
+              <span>v${VERSION}</span><i></i><span>Windows x64</span><i></i><span>~45 МБ</span>
+            </div>
+            <div class="trust-note">
+              <span class="trust-icon">${shieldIcon()}</span>
+              <span><strong>Безопасная замена файлов</strong><small>${state.mode === "repair" ? "При восстановлении рабочая версия сохраняется до успешной проверки." : state.mode === "update" ? "При обновлении рабочая версия сохраняется до успешной проверки." : "Файлы копируются только в выбранную папку Obsession."}</small></span>
+            </div>
+          </div>
+          <div class="brand-visual" aria-label="Obsession">
+            <div class="visual-halo" aria-hidden="true"></div>
+            ${eyeHtml(148)}
+            <div class="wordmark">OBSESSION</div>
+            <div class="visual-caption">PRIVATE NETWORK TOOLKIT</div>
+          </div>
         </section>`;
-      right.innerHTML = `<button class="btn btn-primary" id="go-options">${state.mode === "install" ? "Далее" : MODE_TEXT[activeMode()].action}</button>`;
+      right.innerHTML = `<button class="btn btn-primary" id="go-options" type="button">Продолжить<span class="btn-arrow" aria-hidden="true">→</span></button>`;
       bind("go-options", () => {
         state.step = "options";
         render();
       });
       break;
-      }
 
     case "options": {
-      const copy = MODE_TEXT[activeMode()];
-      const browse = state.mode === "install" ? `<button class="btn btn-ghost btn-sm" id="browse">Обзор…</button>` : "";
+      const browse = `<span class="path-lock" title="Защищённая установка использует Program Files">Зафиксирован</span>`;
       stage.innerHTML = `
-        <section class="step">
-          <h2 class="step-title">Параметры ${copy.noun}</h2>
-          <div class="glass options-panel">
-            <label class="field-label">Путь установки</label>
-            <div class="path-row">
-              <div class="path-input" id="path-view"></div>
-              ${browse}
+        <section class="screen options-screen">
+          <header class="screen-header">
+            <p class="eyebrow">Шаг 2 из 4</p>
+            <h1 class="screen-title" data-screen-title tabindex="-1">${copy.optionsTitle}</h1>
+            <p class="screen-description">${copy.optionsDescription}</p>
+          </header>
+          <div class="options-layout">
+            <div class="panel path-panel">
+              <div class="panel-heading">
+                <span class="panel-icon">${folderIcon()}</span>
+                <span><strong>Папка приложения</strong><small>Защищённая системная папка Program Files</small></span>
+              </div>
+              <div class="path-row">
+                <div class="path-input" id="path-view" aria-label="Путь установки"></div>
+                ${browse}
+              </div>
             </div>
-            <label class="check"><input type="checkbox" id="cb-desktop" ${state.desktop ? "checked" : ""}/><span>Ярлык на рабочем столе</span></label>
-            <label class="check"><input type="checkbox" id="cb-start" ${state.startMenu ? "checked" : ""}/><span>Ярлык в меню «Пуск»</span></label>
-            <div class="hint">${state.mode === "install" ? "Потребуется ~45 МБ свободного места." : "Текущая версия останется доступна до атомарной замены файлов."} Запущенный Obsession будет закрыт.</div>
+            <fieldset class="shortcut-fieldset">
+              <legend>Ярлыки</legend>
+              <div class="shortcut-grid">
+                <label class="choice-card" for="cb-desktop">
+                  <input type="checkbox" id="cb-desktop" ${state.desktop ? "checked" : ""}/>
+                  <span class="choice-control" aria-hidden="true"></span>
+                  <span class="choice-copy"><strong>Рабочий стол</strong><small>Быстрый запуск с рабочего стола</small></span>
+                </label>
+                <label class="choice-card" for="cb-start">
+                  <input type="checkbox" id="cb-start" ${state.startMenu ? "checked" : ""}/>
+                  <span class="choice-control" aria-hidden="true"></span>
+                  <span class="choice-copy"><strong>Меню «Пуск»</strong><small>Obsession появится в списке приложений</small></span>
+                </label>
+              </div>
+            </fieldset>
+            <div class="safety-callout">
+              <span class="safety-icon">${shieldIcon()}</span>
+              <p><strong>${state.mode === "install" ? "Готово к установке" : "Настройки останутся на месте"}</strong><span>${state.mode === "install" ? "Запущенный Obsession будет аккуратно закрыт перед копированием файлов." : "До успешного завершения можно автоматически вернуться к предыдущей рабочей версии."}</span></p>
+            </div>
           </div>
         </section>`;
       setPathView();
-      left.innerHTML = `<button class="btn btn-ghost" id="back">Назад</button>`;
-      right.innerHTML = `<button class="btn btn-primary" id="do-install">${copy.action}</button>`;
+      left.innerHTML = `<button class="btn btn-ghost" id="back" type="button"><span aria-hidden="true">←</span>Назад</button>`;
+      right.innerHTML = `<button class="btn btn-primary" id="do-install" type="button">${copy.action}<span class="btn-arrow" aria-hidden="true">→</span></button>`;
       bind("back", () => {
         state.step = "welcome";
         render();
       });
-      if (state.mode === "install") bind("browse", () => void pickDir());
       bind("do-install", () => void startInstall());
-      (el("cb-desktop") as HTMLInputElement).onchange = (e) =>
-        (state.desktop = (e.target as HTMLInputElement).checked);
-      (el("cb-start") as HTMLInputElement).onchange = (e) =>
-        (state.startMenu = (e.target as HTMLInputElement).checked);
+      (el("cb-desktop") as HTMLInputElement).onchange = (event) => {
+        state.desktop = (event.target as HTMLInputElement).checked;
+      };
+      (el("cb-start") as HTMLInputElement).onchange = (event) => {
+        state.startMenu = (event.target as HTMLInputElement).checked;
+      };
       break;
     }
 
     case "installing":
-      {
-        const copy = MODE_TEXT[activeMode()];
       stage.innerHTML = `
-        <section class="step step-center">
-          ${eyeHtml(84)}
-          <h2 class="step-title">${copy.action}</h2>
-          <div class="progress-track"><div class="progress-fill" id="bar" style="width:${state.pct}%"></div></div>
-          <div class="stage-line" id="stage-line">${STAGE_TEXT[state.stage] ?? "…"}</div>
+        <section class="screen progress-screen">
+          <div class="progress-heading">
+            ${eyeHtml(70, true)}
+            <div>
+              <p class="eyebrow">Шаг 3 из 4</p>
+              <h1 class="screen-title" data-screen-title tabindex="-1">${copy.progressTitle}</h1>
+              <p class="screen-description">Можно откинуться на спинку кресла — остальное сделаем сами.</p>
+            </div>
+            <strong class="progress-percent" id="progress-pct">${state.pct}%</strong>
+          </div>
+          <div class="progress-card panel">
+            <div class="progress-labels"><span id="stage-line" role="status" aria-live="polite">${STAGE_TEXT[state.stage]}</span><span>v${VERSION}</span></div>
+            <div class="progress-track" id="install-progress" role="progressbar" aria-label="Прогресс установки" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${state.pct}" aria-valuetext="${STAGE_TEXT[state.stage]}">
+              <div class="progress-fill" id="bar" style="width:${state.pct}%"><span></span></div>
+            </div>
+            <ol class="timeline">${timelineHtml()}</ol>
+            <div class="recovery-note" id="recovery-note">Не получилось применить новую версию. Возвращаем предыдущую установку — ваши данные в безопасности.</div>
+          </div>
+          <p class="do-not-close"><span aria-hidden="true"></span>Не выключайте компьютер и не закрывайте установщик</p>
         </section>`;
+      syncProgressView();
       break;
-      }
 
     case "done":
-      {
-        const copy = MODE_TEXT[activeMode()];
       stage.innerHTML = `
-        <section class="step step-center">
-          ${eyeHtml(84)}
-          <h2 class="step-title">${copy.done}</h2>
-          <div class="stage-line" id="done-path"></div>
+        <section class="screen done-screen">
+          <div class="done-visual">
+            ${eyeHtml(94, true)}
+            <span class="success-badge" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m6.5 12.5 3.5 3.5 7.5-8"/></svg></span>
+          </div>
+          <div class="mode-badge success"><span></span>Готово</div>
+          <h1 class="hero-title done-title" data-screen-title tabindex="-1">${copy.done}</h1>
+          <p class="hero-description done-description">${copy.doneDescription}</p>
+          <div class="result-path"><span>${folderIcon()}</span><code id="done-path"></code></div>
+          <div class="result-meta"><span>Версия v${VERSION}</span><i></i><span>Ярлыки синхронизированы</span></div>
         </section>`;
-      el("done-path").textContent = state.dir;
-      left.innerHTML = `<button class="btn btn-ghost" id="quit">Закрыть</button>`;
-      right.innerHTML = `<button class="btn btn-primary" id="launch">Запустить Obsession</button>`;
-      bind("quit", () => void invoke("close_setup"));
-      bind("launch", () => {
-        void invoke("launch_app", { dir: state.dir }).catch((e) => {
-          state.error = String(e);
-          state.step = "error";
-          render();
-        });
-      });
+      setText("done-path", state.dir);
+      left.innerHTML = `<button class="btn btn-ghost" id="quit" type="button">Закрыть</button>`;
+      right.innerHTML = `<button class="btn btn-primary" id="launch" type="button">Запустить Obsession<span class="btn-arrow" aria-hidden="true">→</span></button>`;
+      bind("quit", () => void closeSetup());
+      bind("launch", () => void launchApp());
       break;
-      }
 
-    case "error":
+    case "error": {
+      const blocked = state.mode === "blocked";
       stage.innerHTML = `
-        <section class="step step-center">
-          <div class="glass error-panel">
-            <div class="error-title">Операция не выполнена</div>
-            <div class="error-msg" id="err-msg"></div>
+        <section class="screen error-screen">
+          <div class="error-symbol" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 8v5m0 3.5v.1"/><path d="M10.2 4.5 3.4 17a2 2 0 0 0 1.8 3h13.6a2 2 0 0 0 1.8-3L13.8 4.5a2 2 0 0 0-3.6 0Z"/></svg></div>
+          <div class="error-content">
+            <p class="eyebrow">${blocked ? "Защита от понижения версии" : "Установка остановлена"}</p>
+            <h1 class="screen-title error-heading" data-screen-title tabindex="-1">${blocked ? "Установлена более новая версия" : "Не удалось завершить операцию"}</h1>
+            <p class="error-summary">${blocked ? "Этот установщик старее уже установленного Obsession. Файлы не изменялись." : "Мы остановились до небезопасных изменений или вернули предыдущую рабочую версию."}</p>
+            <div class="error-details panel">
+              <strong>Что произошло</strong>
+              <p id="err-msg"></p>
+            </div>
+            ${state.logPath ? `<div class="log-row"><span><small>Журнал установки</small><code id="log-path"></code></span><button class="btn btn-secondary btn-compact" id="copy-log" type="button">Скопировать путь</button></div>` : ""}
           </div>
         </section>`;
-      el("err-msg").textContent = state.error;
-      left.innerHTML = `<button class="btn btn-ghost" id="quit">Закрыть</button>`;
-      right.innerHTML = state.mode === "blocked" ? "" : `<button class="btn btn-primary" id="retry">Повторить</button>`;
-      bind("quit", () => void invoke("close_setup"));
-      if (state.mode !== "blocked") bind("retry", () => void startInstall());
+      setText("err-msg", state.error);
+      setText("log-path", state.logPath);
+      left.innerHTML = `<button class="btn btn-ghost" id="quit" type="button">Закрыть</button>`;
+      right.innerHTML = blocked ? "" : `<button class="btn btn-primary" id="retry" type="button">Попробовать снова<span class="btn-arrow" aria-hidden="true">↻</span></button>`;
+      bind("quit", () => void closeSetup());
+      if (state.logPath) bind("copy-log", () => void copyLogPath());
+      if (!blocked) bind("retry", () => void startInstall());
       break;
+    }
   }
-}
 
-async function pickDir() {
-  const sel = await open({
-    directory: true,
-    defaultPath: state.dir,
-    title: "Куда установить Obsession",
-  });
-  if (typeof sel === "string" && sel) {
-    // В выбранный «голый» каталог ставим подпапкой Obsession, чтобы не
-    // рассыпать файлы по чужой директории (NSIS кладёт прямо в /D=).
-    state.dir = /\\obsession\\?$/i.test(sel) ? sel.replace(/\\+$/, "") : sel.replace(/\\+$/, "") + "\\Obsession";
-    setPathView();
-  }
+  if (state.step === "error") el("announcer").textContent = "Установка остановлена";
+  else if (state.step === "done") el("announcer").textContent = copy.done;
+  else if (state.step !== "installing") el("announcer").textContent = "";
+  focusScreenHeading();
 }
 
 let installing = false;
+let previewTimer: number | undefined;
+
+async function runPreviewInstall() {
+  const sequence = [
+    [8, "prepare"], [18, "stop"], [28, "stage"], [43, "install"], [59, "verify"],
+    [72, "commit"], [82, "registry"], [89, "shortcuts"], [96, "cleanup"], [100, "finish"],
+  ] as const;
+  for (const [pct, stage] of sequence) {
+    await new Promise<void>((resolve) => {
+      previewTimer = window.setTimeout(resolve, REDUCE_MOTION ? 80 : 420);
+    });
+    state.pct = pct;
+    state.stage = stage;
+    syncProgressView();
+  }
+}
 
 async function startInstall() {
-  // Защита от двойного клика по «Повторить»: второй конкурентный invoke
-  // ударит по NSIS-движку, пока первый ещё работает.
   if (installing) return;
   installing = true;
+  if (previewTimer !== undefined) window.clearTimeout(previewTimer);
   state.step = "installing";
   state.pct = 0;
   state.stage = "prepare";
   render();
   try {
-    await invoke("install", { dir: state.dir, desktop: state.desktop, startMenu: state.startMenu });
+    if (PREVIEW) {
+      await runPreviewInstall();
+    } else {
+      state.dir = await invoke<string>("install", {
+        dir: state.dir,
+        desktop: state.desktop,
+        startMenu: state.startMenu,
+      });
+    }
     state.step = "done";
-  } catch (e) {
-    state.error = String(e);
+  } catch (error) {
+    state.error = String(error);
     state.step = "error";
   } finally {
     installing = false;
@@ -267,22 +479,89 @@ async function startInstall() {
   render();
 }
 
-// Прогресс от Rust: обновляем DOM точечно, без пере-рендера шага,
-// чтобы не перезапускать видео глаза на каждом событии.
-void listen<{ pct: number; stage: string }>("setup-progress", (ev) => {
-  state.pct = ev.payload.pct;
-  state.stage = ev.payload.stage;
-  const bar = document.getElementById("bar");
-  if (bar) bar.style.width = `${state.pct}%`;
-  const line = document.getElementById("stage-line");
-  if (line) line.textContent = STAGE_TEXT[state.stage] ?? "…";
-});
+async function closeSetup() {
+  if (PREVIEW) {
+    el("announcer").textContent = "В preview-режиме окно не закрывается";
+    return;
+  }
+  await invoke("close_setup");
+}
 
-bind("btn-min", () => void invoke("minimize_setup"));
-bind("btn-close", () => void invoke("close_setup"));
-document.addEventListener("contextmenu", (e) => e.preventDefault());
+async function launchApp() {
+  if (PREVIEW) {
+    el("announcer").textContent = "Запуск приложения доступен в собранном установщике";
+    return;
+  }
+  try {
+    await invoke("launch_app", { dir: state.dir });
+  } catch (error) {
+    state.error = String(error);
+    state.step = "error";
+    render();
+  }
+}
+
+async function copyLogPath() {
+  try {
+    await navigator.clipboard.writeText(state.logPath);
+    setText("copy-log", "Скопировано");
+    el("announcer").textContent = "Путь к журналу скопирован";
+  } catch {
+    setText("copy-log", "Выделите путь");
+    document.getElementById("log-path")?.classList.add("selectable");
+  }
+}
+
+function applyPreviewState() {
+  const preview = params.get("preview") ?? "welcome";
+  const requestedMode = params.get("mode");
+  const aliases: Record<string, Exclude<InstallMode, "blocked">> = { install: "install", update: "update", repair: "repair" };
+  state.mode = aliases[requestedMode ?? ""] ?? aliases[preview] ?? "install";
+  state.installedVersion = state.mode === "install" ? null : "1.0.4";
+  state.dir = "C:\\Program Files\\Obsession";
+  state.logPath = "C:\\Users\\User\\AppData\\Local\\Obsession\\installer.log";
+
+  if (preview === "options") state.step = "options";
+  else if (preview === "progress" || preview === "installing") {
+    state.step = "installing";
+    state.pct = Number(params.get("pct") ?? "59");
+    state.stage = params.get("stage") ?? "verify";
+  } else if (preview === "done") {
+    state.step = "done";
+    state.pct = 100;
+    state.stage = "finish";
+  } else if (preview === "error") {
+    state.step = "error";
+    state.error = "Не удалось проверить целостность одного из файлов. Предыдущая версия Obsession восстановлена автоматически.";
+  } else if (preview === "blocked") {
+    state.step = "error";
+    state.mode = "blocked";
+    state.installedVersion = "1.3.0";
+    state.error = `Установлена Obsession v1.3.0. Понижение до v${VERSION} заблокировано.`;
+  }
+}
+
+if (!PREVIEW) {
+  void listen<{ pct: number; stage: string }>("setup-progress", (event) => {
+    state.pct = event.payload.pct;
+    state.stage = event.payload.stage;
+    syncProgressView();
+  });
+}
+
+bind("btn-min", () => {
+  if (!PREVIEW) void invoke("minimize_setup");
+});
+bind("btn-close", () => void closeSetup());
+
+if (!PREVIEW) document.addEventListener("contextmenu", (event) => event.preventDefault());
 
 void (async () => {
+  if (PREVIEW) {
+    applyPreviewState();
+    render();
+    return;
+  }
   try {
     const snapshot = await invoke<InstallerSnapshot>("installer_snapshot");
     state.dir = snapshot.dir;

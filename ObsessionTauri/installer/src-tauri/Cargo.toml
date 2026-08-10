@@ -1,7 +1,7 @@
-# Оболочка инсталлера «Obsession Setup»: мини-Tauri-окно в стиле лаунчера,
-# внутри тихо (/S) отрабатывает вшитый NSIS-движок основного приложения.
-# ВАЖНО: имя крейта/бинаря НЕ «obsession» — hooks.nsh гасит Obsession.exe
-# по имени процесса, и сетап не должен убить сам себя.
+# Оболочка инсталлера «Obsession Setup»: medium Tauri UI и узкий native
+# per-machine worker с authenticated payload; вложенный NSIS не запускается.
+# ВАЖНО: имя крейта/бинаря НЕ «obsession» — setup и основное приложение
+# должны оставаться разными процессами и артефактами.
 
 [package]
 name = "obsession-setup"
@@ -20,10 +20,27 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
-# Известные папки (Desktop может быть перенесён OneDrive — env-путь врал бы).
-dirs = "6"
+serde_json = "1"
+semver = "1"
+sha2 = "0.10"
+obsession-runtime-service = { path = "../../runtime-service" }
+obsession-runtime-client = { path = "../../runtime-client" }
+obsession-runtime-protocol = { path = "../../runtime-protocol" }
 # Детект WebView2 по реестру для фолбэка на видимый стоковый NSIS.
 winreg = "0.55"
+# Именованные Windows mutex: одно окно setup и одна install-операция за раз.
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
+windows = { version = "0.61.3", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Com",
+    "Win32_System_Registry",
+    "Win32_System_Services",
+    "Win32_System_Threading",
+    "Win32_UI_Shell",
+] }
 
 [profile.release]
 panic = "abort"
