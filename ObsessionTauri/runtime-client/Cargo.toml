@@ -1,0 +1,23 @@
+[package]
+name = "obsession-runtime-client"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+obsession-runtime-protocol = { path = "../runtime-protocol" }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Com",
+    "Win32_System_IO",
+    "Win32_System_Pipes",
+    "Win32_System_Services",
+    "Win32_UI_Shell",
+] }
+
+[target.'cfg(windows)'.dev-dependencies]
+obsession-runtime-service = { path = "../runtime-service" }

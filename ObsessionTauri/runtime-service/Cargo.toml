@@ -1,0 +1,37 @@
+[package]
+name = "obsession-runtime-service"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+obsession-runtime-protocol = { path = "../runtime-protocol" }
+obsession-runtime-reliability = { path = "../runtime-reliability" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tokio = { version = "1", features = ["rt", "sync", "time"] }
+reqwest = { version = "0.12", features = ["blocking", "rustls-tls"], default-features = false }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_Networking_NetworkListManager",
+    "Win32_Networking_WinSock",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_WindowsFirewall",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Com",
+    "Win32_System_JobObjects",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_Pipes",
+    "Win32_System_Registry",
+    "Win32_System_Services",
+    "Win32_System_SystemInformation",
+    "Win32_System_SystemServices",
+    "Win32_System_Threading",
+    "Win32_System_Ole",
+] }

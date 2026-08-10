@@ -1,0 +1,1 @@
+# Empty protected seed for the service-owned Discord auto-hostlist.
