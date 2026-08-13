@@ -8,6 +8,7 @@ import {
   type QualityTier,
   type RenderLoop,
 } from "../render";
+import { CoreShell } from "./CoreShell";
 
 type Props = {
   active: boolean;
@@ -15,6 +16,7 @@ type Props = {
   onClick: () => void;
   size?: number;
   paused?: boolean;
+  interactive?: boolean;
 };
 
 // Пиксельное сердце SOUL — визитная карточка Undertale, нарисованное блоками по
@@ -33,19 +35,24 @@ const HEART: number[][] = [
 const COLS = HEART[0].length;
 const ROWS = HEART.length;
 
-export function FallenCore({ active, busy = false, onClick, size = 240, paused = false }: Props) {
+export function FallenCore({
+  active,
+  busy = false,
+  onClick,
+  size = 240,
+  paused = false,
+  interactive = true,
+}: Props) {
   // Ореолы гасим, когда окно скрыто ИЛИ это застывшее превью невыбранной темы
   // (paused): framer-motion гоняет их на компоновщике (WAAPI) и сам на скрытие не
   // реагирует — жёг бы CPU в трее и в Настройках (6 превью × 2 ореола).
   const renderOn = useRenderActive() && !paused;
   return (
-    <motion.button
+    <CoreShell
+      interactive={interactive}
       onClick={onClick}
-      disabled={busy}
-      whileHover={{ scale: 1.03 }}
-      whileTap={{ scale: 0.97 }}
-      className="no-drag relative flex items-center justify-center disabled:cursor-wait"
-      style={{ width: size, height: size }}
+      busy={busy}
+      size={size}
     >
       {/* Мягкий алый ореол — дышит, теплеет и ярче при активации. */}
       <motion.div
@@ -91,7 +98,7 @@ export function FallenCore({ active, busy = false, onClick, size = 240, paused =
           {busy ? "···" : active ? "ON" : "OFF"}
         </span>
       </div>
-    </motion.button>
+    </CoreShell>
   );
 }
 

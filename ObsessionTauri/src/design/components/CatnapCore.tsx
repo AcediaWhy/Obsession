@@ -9,6 +9,7 @@ import {
   type RenderLoop,
 } from "../render";
 import { createSpriteCache } from "./glowSprite";
+import { CoreShell } from "./CoreShell";
 
 type Props = {
   active: boolean;
@@ -16,24 +17,30 @@ type Props = {
   onClick: () => void;
   size?: number;
   paused?: boolean;
+  interactive?: boolean;
 };
 
 // Живое ядро «Catnap»: закат в окне вагона. Тёплый янтарный диск-солнце низко в
 // круге, медленно дышит — сонно, без нервного мерцания. Вверх лениво плывут
 // золотые пылинки в закатном свете. Активация — солнце теплее и ярче; busy —
 // дыхание чаще и мельче, «беспокойный сон».
-export function CatnapCore({ active, busy = false, onClick, size = 240, paused = false }: Props) {
+export function CatnapCore({
+  active,
+  busy = false,
+  onClick,
+  size = 240,
+  paused = false,
+  interactive = true,
+}: Props) {
   // Ореолы гасим, когда окно скрыто ИЛИ это застывшее превью (paused):
   // framer-motion гоняет их на компоновщике (WAAPI) и сам на скрытие не реагирует.
   const renderOn = useRenderActive() && !paused;
   return (
-    <motion.button
+    <CoreShell
+      interactive={interactive}
       onClick={onClick}
-      disabled={busy}
-      whileHover={{ scale: 1.03 }}
-      whileTap={{ scale: 0.97 }}
-      className="no-drag relative flex items-center justify-center disabled:cursor-wait"
-      style={{ width: size, height: size }}
+      busy={busy}
+      size={size}
     >
       {/* Внешнее свечение-ореол — тёплый закатный свет из окна. */}
       <motion.div
@@ -91,7 +98,7 @@ export function CatnapCore({ active, busy = false, onClick, size = 240, paused =
           {busy ? "···" : active ? "ON" : "OFF"}
         </span>
       </div>
-    </motion.button>
+    </CoreShell>
   );
 }
 

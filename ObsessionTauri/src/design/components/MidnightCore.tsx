@@ -9,6 +9,7 @@ import {
   type RenderLoop,
 } from "../render";
 import { createSpriteCache } from "./glowSprite";
+import { CoreShell } from "./CoreShell";
 
 type Props = {
   active: boolean;
@@ -16,23 +17,29 @@ type Props = {
   onClick: () => void;
   size?: number;
   paused?: boolean;
+  interactive?: boolean;
 };
 
 // Живое ядро «Midnight»: фонарь в ночном тумане. Холодная лампа в верхней трети,
 // вниз — конус света, в котором дрейфует морось. Активация — лампа разгорается,
 // конус плотнее; busy — лампа нервно фликерит, как перед перегоранием.
-export function MidnightCore({ active, busy = false, onClick, size = 240, paused = false }: Props) {
+export function MidnightCore({
+  active,
+  busy = false,
+  onClick,
+  size = 240,
+  paused = false,
+  interactive = true,
+}: Props) {
   // Ореолы гасим, когда окно скрыто ИЛИ это застывшее превью (paused):
   // framer-motion гоняет их на компоновщике (WAAPI) и сам на скрытие не реагирует.
   const renderOn = useRenderActive() && !paused;
   return (
-    <motion.button
+    <CoreShell
+      interactive={interactive}
       onClick={onClick}
-      disabled={busy}
-      whileHover={{ scale: 1.03 }}
-      whileTap={{ scale: 0.97 }}
-      className="no-drag relative flex items-center justify-center disabled:cursor-wait"
-      style={{ width: size, height: size }}
+      busy={busy}
+      size={size}
     >
       {/* Внешнее свечение-ореол — холодный свет, рассеянный туманом. */}
       <motion.div
@@ -90,7 +97,7 @@ export function MidnightCore({ active, busy = false, onClick, size = 240, paused
           {busy ? "···" : active ? "ON" : "OFF"}
         </span>
       </div>
-    </motion.button>
+    </CoreShell>
   );
 }
 

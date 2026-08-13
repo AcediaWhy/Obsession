@@ -10,6 +10,7 @@ import {
 } from "../render";
 import { createSpriteCache } from "./glowSprite";
 import { drawGreatEye } from "./ophanimEye";
+import { CoreShell } from "./CoreShell";
 
 type Props = {
   active: boolean;
@@ -17,6 +18,7 @@ type Props = {
   onClick: () => void;
   size?: number;
   paused?: boolean;
+  interactive?: boolean;
   // Реактивная телеметрия щита (передаёт только hero на экране DPI; превью — нет,
   // поэтому дефолт false): scanning = идёт тест/автоподбор конфигов (Око «ищет»),
   // alarm = среди результатов теста есть провал (тревога, прищур, красный обод).
@@ -28,19 +30,26 @@ type Props = {
 // друг друга под разными осями, усеянные глазами, в ореоле глориоли. В покое —
 // тускло-золотое, глаза прикрыты; при активации разгоняется, теплеет в магенту,
 // глаза раскрываются. Альтернативный hero к «Aurora», та же семантика состояний.
-export function OphanimCore({ active, busy = false, onClick, size = 240, paused = false, scanning = false, alarm = false }: Props) {
+export function OphanimCore({
+  active,
+  busy = false,
+  onClick,
+  size = 240,
+  paused = false,
+  interactive = true,
+  scanning = false,
+  alarm = false,
+}: Props) {
   // Ореолы гасим, когда окно скрыто ИЛИ это застывшее превью невыбранной темы
   // (paused): framer-motion гоняет их на компоновщике (WAAPI) и сам на скрытие не
   // реагирует — жёг бы CPU в трее и в Настройках (6 превью × 2 ореола).
   const renderOn = useRenderActive() && !paused;
   return (
-    <motion.button
+    <CoreShell
+      interactive={interactive}
       onClick={onClick}
-      disabled={busy}
-      whileHover={{ scale: 1.03 }}
-      whileTap={{ scale: 0.97 }}
-      className="no-drag relative flex items-center justify-center disabled:cursor-wait"
-      style={{ width: size, height: size }}
+      busy={busy}
+      size={size}
     >
       {/* Глориоль — внешний ореол святости, дышит и теплеет при активации. */}
       <motion.div
@@ -88,7 +97,7 @@ export function OphanimCore({ active, busy = false, onClick, size = 240, paused 
           сливалась с ним. Состояние несёт само Око (открыто+магента = вкл,
           дремотно-золото = выкл, рябь пробуждения на колёсах = busy), а на экране
           DPI под ядром уже есть текстовая подпись состояния. */}
-    </motion.button>
+    </CoreShell>
   );
 }
 

@@ -4,12 +4,7 @@ import { useSettingsStore } from "../store/settingsStore";
 import { useThemeStore, THEMES, type Theme } from "../store/themeStore";
 import { useSecretStore } from "../store/secretStore";
 import { GlassPanel } from "../design/components/GlassPanel";
-import { AuroraCore } from "../design/components/AuroraCore";
-import { RainLanternCore } from "../design/components/RainLanternCore";
-import { OphanimCore } from "../design/components/OphanimCore";
-import { FallenCore } from "../design/components/FallenCore";
-import { CatnapCore } from "../design/components/CatnapCore";
-import { MidnightCore } from "../design/components/MidnightCore";
+import { ThemePreview } from "../design/components/ThemePreview";
 import { Stagger, StaggerItem } from "../design/components/Stagger";
 import {
   Button,
@@ -311,29 +306,21 @@ function ThemeTile({
 }) {
   return (
     <button
+      type="button"
       onClick={onSelect}
+      aria-pressed={selected}
+      aria-label={`Тема «${label}»${selected ? ", выбрана" : ""}`}
       className={[
         "no-drag group relative flex flex-col items-center gap-2 rounded-xl border p-3 transition-[color,background-color,border-color,box-shadow,opacity]",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70",
         selected
           ? "border-accent/60 bg-accent/10 shadow-glow"
           : "border-glass-border bg-white/5 hover:bg-white/10",
       ].join(" ")}
     >
-      {/* Живое мини-превью hero (декоративное, клик проходит на плитку). */}
+      {/* Статичное декоративное preview: внутри плитки нет второй кнопки/canvas. */}
       <div className="pointer-events-none flex h-[104px] items-center justify-center">
-        {id === "ophanim" ? (
-          <OphanimCore active={selected} onClick={() => {}} size={104} />
-        ) : id === "fallendown" ? (
-          <FallenCore active={selected} onClick={() => {}} size={104} />
-        ) : id === "catnap" ? (
-          <CatnapCore active={selected} onClick={() => {}} size={104} />
-        ) : id === "midnight" ? (
-          <MidnightCore active={selected} onClick={() => {}} size={104} />
-        ) : id === "japan" ? (
-          <RainLanternCore active={selected} onClick={() => {}} size={104} variant="preview" />
-        ) : (
-          <AuroraCore active={selected} onClick={() => {}} size={104} />
-        )}
+        <ThemePreview theme={id} selected={selected} size={104} />
       </div>
       <div className="flex items-center gap-1.5">
         {selected && <Icon.Check size={14} />}
@@ -475,4 +462,3 @@ function HotkeyRow() {
     </Row>
   );
 }
-
