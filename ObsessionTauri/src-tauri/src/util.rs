@@ -317,7 +317,11 @@ fn append_log_file(app: &AppHandle, ts: &str, level: &str, source: &str, message
     static LOG_WRITER: Mutex<Option<std::io::BufWriter<std::fs::File>>> = Mutex::new(None);
     let mut guard = LOG_WRITER.lock_recover();
     if guard.is_none() {
-        match std::fs::OpenOptions::new().create(true).append(true).open(&file) {
+        match std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&file)
+        {
             Ok(f) => *guard = Some(std::io::BufWriter::with_capacity(8192, f)),
             Err(_) => return,
         }

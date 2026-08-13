@@ -284,9 +284,7 @@ fn atomic_replace_with_retry(source: &Path, destination: &Path) -> io::Result<()
     }
     // 50 попыток исчерпаны: возвращаем последнюю ошибку вместо unreachable!() —
     // при panic=abort это была бы гарантированная остановка приложения.
-    Err(last_error.unwrap_or_else(|| {
-        io::Error::other("atomic_replace: 50 attempts exhausted")
-    }))
+    Err(last_error.unwrap_or_else(|| io::Error::other("atomic_replace: 50 attempts exhausted")))
 }
 
 #[cfg(windows)]
