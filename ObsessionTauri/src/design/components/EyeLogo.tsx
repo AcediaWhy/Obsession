@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 
 import eyeWebm from "../../assets/eye.webm";
 import eyePoster from "../../assets/eye-poster.png";
+import { releaseMediaSource, restoreMediaSource } from "../mediaSource";
 import { onRenderActiveChange, renderActive, useRenderHidden } from "../render";
 import { useSettingsStore } from "../../store/settingsStore";
 
@@ -28,6 +29,7 @@ export function EyeLogo({ size = 40 }: { size?: number }) {
     if (off) return;
     const v = ref.current;
     if (!v) return;
+    restoreMediaSource(v, eyeWebm);
     const apply = (on: boolean) => {
       if (on) void v.play().catch(() => {});
       else v.pause();
@@ -38,9 +40,7 @@ export function EyeLogo({ size = 40 }: { size?: number }) {
       unsub();
       // Отпускаем видеодекодер при размонтировании/тогле off (тот же teardown,
       // что в VideoField) — иначе detached <video> течёт.
-      v.pause();
-      v.removeAttribute("src");
-      v.load();
+      releaseMediaSource(v);
     };
   }, [off]);
 

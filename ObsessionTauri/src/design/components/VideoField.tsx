@@ -1,4 +1,5 @@
 import { useEffect, useRef, type ReactNode } from "react";
+import { releaseMediaSource, restoreMediaSource } from "../mediaSource";
 import { onRenderActiveChange, renderActive } from "../render";
 
 // Полноэкранный видео-фон для видео-тем (Catnap, Midnight): <video> лупом на
@@ -24,6 +25,7 @@ export function VideoField({
   useEffect(() => {
     const video = ref.current;
     if (!video) return;
+    restoreMediaSource(video, src);
     const sync = (active: boolean) => {
       // play() возвращает промис и может быть отклонён (гонка с pause,
       // автоплей-политика) — глотаем, следующий sync всё поправит.
@@ -38,11 +40,9 @@ export function VideoField({
       // держит декодер+буфер дорожки (WebView2 не чистит без явного сброса),
       // а в трее GC не идёт → на каждой смене видео-темы копится по декодеру
       // (утечка 200-250 МБ). pause + снять src + load() отпускает ресурс.
-      video.pause();
-      video.removeAttribute("src");
-      video.load();
+      releaseMediaSource(video);
     };
-  }, []);
+  }, [src]);
 
   useEffect(() => {
     const video = ref.current;
