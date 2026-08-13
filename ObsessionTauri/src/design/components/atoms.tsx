@@ -29,6 +29,7 @@ export function Button({
   };
   return (
     <motion.button
+      type="button"
       // Подъём на hover + прижатие на tap — пружиной flick (чётко, без желе).
       // y вместо scale: кнопки бывают широкими, масштаб на них заметно «дышит»
       // по краям, а вертикальный сдвиг читается как честный физический подъём.
@@ -90,14 +91,24 @@ export function Chip({
   active,
   disabled = false,
   onClick,
+  className = "",
+  role,
+  ariaChecked,
 }: {
   label: string;
   active: boolean;
   disabled?: boolean;
   onClick: () => void;
+  className?: string;
+  // role/ariaChecked — чтобы chip мог служить радиокнопкой внутри radiogroup
+  // (выбор режима), не отращивая второй визуальный язык выбора.
+  role?: string;
+  ariaChecked?: boolean;
 }) {
   return (
     <button
+      role={role}
+      aria-checked={ariaChecked}
       onClick={onClick}
       disabled={disabled}
       className={[
@@ -105,6 +116,7 @@ export function Chip({
         active
           ? "bg-accent/20 text-ink border border-accent/50 shadow-glow"
           : "bg-white/5 text-ink-soft border border-glass-border hover:bg-white/10",
+        className,
       ].join(" ")}
     >
       {label}

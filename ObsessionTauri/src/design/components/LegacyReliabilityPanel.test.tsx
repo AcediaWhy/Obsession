@@ -146,10 +146,8 @@ describe("LegacyReliabilityPanel", () => {
         configuredEnabled={false}
         configuredMode="automatic"
         detailsExpanded
-        technicalDetailsExpanded
         onEnabledChange={() => {}}
         onDetailsExpandedChange={() => {}}
-        onTechnicalDetailsExpandedChange={() => {}}
       />,
     );
 
@@ -191,7 +189,7 @@ describe("LegacyReliabilityPanel", () => {
     expect(markup).not.toContain('role="radiogroup"');
   });
 
-  it("keeps historical diagnostics behind a second disclosure", () => {
+  it("shows historical diagnostics in the single expanded level", () => {
     const completion = {
       ...PROPOSAL,
       origin: { kind: "automatic" as const, controlGeneration: 9 },
@@ -199,32 +197,50 @@ describe("LegacyReliabilityPanel", () => {
       disposition: "candidate_applied" as const,
       finishedAtMonotonicMs: 74_000,
     };
-    const compactDetails = renderToStaticMarkup(
-      <LegacyReliabilityPanelView
-        status={status({ mode: "automatic", lastCompletion: completion })}
-        configuredEnabled
-        configuredMode="automatic"
-        detailsExpanded
-        technicalDetailsExpanded={false}
-        onTechnicalDetailsExpandedChange={() => {}}
-      />,
-    );
-    expect(compactDetails).toContain("Технические сведения");
-    expect(compactDetails).not.toContain("Последний результат");
-    expect(compactDetails).not.toContain("Замена завершена");
 
-    const technicalDetails = renderToStaticMarkup(
+    // Свёрнутая панель диагностику не показывает.
+    const collapsed = renderToStaticMarkup(
+      <LegacyReliabilityPanelView
+        status={status({ mode: "automatic", lastCompletion: completion })}
+        configuredEnabled
+        configuredMode="automatic"
+        detailsExpanded={false}
+        onDetailsExpandedChange={() => {}}
+      />,
+    );
+    expect(collapsed).not.toContain("Последний результат");
+    expect(collapsed).not.toContain("Замена завершена");
+
+    // Раскрытая — сразу, без второго тоггла.
+    const expanded = renderToStaticMarkup(
       <LegacyReliabilityPanelView
         status={status({ mode: "automatic", lastCompletion: completion })}
         configuredEnabled
         configuredMode="automatic"
         detailsExpanded
-        technicalDetailsExpanded
-        onTechnicalDetailsExpandedChange={() => {}}
+        onDetailsExpandedChange={() => {}}
       />,
     );
-    expect(technicalDetails).toContain("Последний результат");
-    expect(technicalDetails).toContain("Замена завершена");
+    expect(expanded).not.toContain("Технические сведения");
+    expect(expanded).toContain("Последний результат");
+    expect(expanded).toContain("Замена завершена");
+
+    // Нечего показать — блоков нет и в раскрытом виде.
+    const nothingToShow = renderToStaticMarkup(
+      <LegacyReliabilityPanelView
+        status={status({
+          mode: "automatic",
+          phase: "inactive",
+          lastCompletion: null,
+        })}
+        configuredEnabled
+        configuredMode="automatic"
+        detailsExpanded
+        onDetailsExpandedChange={() => {}}
+      />,
+    );
+    expect(nothingToShow).not.toContain("Последний результат");
+    expect(nothingToShow).not.toContain("Предполагаемое действие");
   });
 
   it.each<
@@ -542,6 +558,48 @@ describe("LegacyReliabilityPanel", () => {
     expect(assistedMarkup).toContain("С подтверждением");
   });
 
+  it("does not claim a mode change is in flight while the observer is inactive", () => {
+    // Пока наблюдатель не подключён, служба проецирует inactive() с
+    // ObserveOnly независимо от настройки, поэтому расхождение здесь — норма,
+    // а не незавершающийся спиннер.
+    const inactiveMarkup = renderToStaticMarkup(
+      <LegacyReliabilityPanelView
+        status={status({ phase: "inactive", mode: "observe_only" })}
+        configuredEnabled
+        configuredMode="automatic"
+        detailsExpanded
+        onModeChange={() => {}}
+      />,
+    );
+    expect(inactiveMarkup).toContain("Запустится вместе с обходом");
+    expect(inactiveMarkup).not.toContain("Применяется…");
+
+    // Наблюдатель активен и режимы расходятся — изменение действительно в полёте.
+    const observingMarkup = renderToStaticMarkup(
+      <LegacyReliabilityPanelView
+        status={status({ phase: "observing", mode: "observe_only" })}
+        configuredEnabled
+        configuredMode="automatic"
+        detailsExpanded
+        onModeChange={() => {}}
+      />,
+    );
+    expect(observingMarkup).toContain("Применяется…");
+
+    // Идущая запись настроек показывается всегда, даже без сессии.
+    const savingMarkup = renderToStaticMarkup(
+      <LegacyReliabilityPanelView
+        status={status({ phase: "inactive", mode: "observe_only" })}
+        configuredEnabled
+        configuredMode="observe_only"
+        detailsExpanded
+        modeChangePending
+        onModeChange={() => {}}
+      />,
+    );
+    expect(savingMarkup).toContain("Применяется…");
+  });
+
   it("requires an explicit second step before Automatic is enabled", () => {
     const markup = renderToStaticMarkup(
       <LegacyReliabilityPanelView
@@ -578,9 +636,7 @@ describe("LegacyReliabilityPanel", () => {
           },
         })}
         configuredMode="automatic"
-        configuredAutomaticPaused={false}
         onModeChange={() => {}}
-        onAutomaticPauseChange={() => {}}
       />,
     );
 
@@ -594,12 +650,11 @@ describe("LegacyReliabilityPanel", () => {
     );
   });
 
-  it("shows the global automatic pause without another large control card", () => {
+  it("offers no separate automatic-pause control", () => {
     const markup = renderToStaticMarkup(
       <LegacyReliabilityPanelView
         status={status({
           mode: "automatic",
-          automaticPaused: true,
           activeAttempt: {
             ...PROPOSAL,
             origin: { kind: "automatic", controlGeneration: 9 },
@@ -608,13 +663,20 @@ describe("LegacyReliabilityPanel", () => {
           },
         })}
         configuredMode="automatic"
-        configuredAutomaticPaused
-        onAutomaticPauseChange={() => {}}
       />,
     );
 
-    expect(markup).toContain("Новые попытки приостановлены");
-    expect(markup).toContain('aria-label="Возобновить автоматическую замену"');
+    // Режим уже выражает согласие на автозамену, поэтому второго переключателя
+    // для неё нет: глобальная остановка — смена режима, точечная — «Пауза» у
+    // категории.
+    expect(markup).not.toContain('aria-label="Возобновить автоматическую замену"');
+    expect(markup).not.toContain(
+      'aria-label="Приостановить автоматическую замену"',
+    );
+    expect(markup).not.toContain("Новые попытки приостановлены");
+    expect(markup).not.toContain("Включена для проблемных категорий");
+    // Питание контроля доступа — единственный switch в панели.
+    expect(markup.match(/role="switch"/g)).toHaveLength(1);
     expect(markup).toContain("Проверка доступа");
     expect(markup).not.toContain("Уже начатая операция будет безопасно завершена");
   });

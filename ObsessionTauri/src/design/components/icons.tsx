@@ -58,6 +58,14 @@ export const Icon = {
       <path d="M20 6 9 17l-5-5" />
     </svg>
   ),
+  // Указывает вниз. Раскрытое состояние — поворотом на 180° через CSS у
+  // вызывающего, чтобы стрелка доводилась transition-transform, а не подменялась
+  // вторым глифом.
+  Chevron: ({ size = 16, className = "" }: P) => (
+    <svg {...base(size, className)}>
+      <path d="m6 9 6 6 6-6" />
+    </svg>
+  ),
   Refresh: ({ size = 16, className = "" }: P) => (
     <svg {...base(size, className)}>
       <path d="M21 12a9 9 0 1 1-3-6.7L21 8M21 3v5h-5" />
