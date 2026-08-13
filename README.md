@@ -71,14 +71,14 @@ DPI-обход, ИИ-разблокировка и Telegram-прокси — в 
 
 ## Темы и атмосфера
 
-Интерфейс построен на **Aurora Glass** — тёмном glassmorphism с живыми фонами на голом WebGL2/Canvas 2D, без внешних 3D-движков. Три открытые темы (**Aurora · Ophanim · Rain**) и скрытые, которые нужно найти. Для слабых машин есть режим «меньше анимаций».
+Интерфейс построен на **Aurora Glass** — тёмном glassmorphism с живыми фонами на голом WebGL2/Canvas 2D, без внешних 3D-движков. Четыре открытые темы (**Aurora · Ophanim · Rain · Midnight**) и две скрытые (**Catnap · Fallen Down**), которые нужно найти. Для слабых машин есть режим «меньше анимаций».
 
 <div align="center">
 <table>
 <tr>
 <td align="center"><img src="ObsessionTauri/public/rain/poster.jpg" width="260" alt="Тема Rain — дом у пруда в тумане за мокрым стеклом" /><br/><sub><b>Rain</b></sub></td>
 <td align="center"><img src="ObsessionTauri/public/catnap/poster.jpg" width="260" alt="Скрытая тема Catnap — спящий кот в закатном вагоне" /><br/><sub><b>Catnap</b> · скрытая</sub></td>
-<td align="center"><img src="ObsessionTauri/public/midnight/poster.jpg" width="260" alt="Скрытая тема Midnight — фонарь в ночном тумане" /><br/><sub><b>Midnight</b> · скрытая</sub></td>
+<td align="center"><img src="ObsessionTauri/public/midnight/poster.jpg" width="260" alt="Тема Midnight — фонарь в ночном тумане" /><br/><sub><b>Midnight</b></sub></td>
 </tr>
 </table>
 <sub>Постеры выше — живые фоны тем, а не статичные экраны.</sub>
