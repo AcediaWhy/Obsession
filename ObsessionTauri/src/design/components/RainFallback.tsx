@@ -11,16 +11,48 @@ import {
 import { rainQualityProfile } from "./rain/quality";
 import { RainWeatherModel, type RainWeatherSnapshot } from "./rain/weather";
 
-/** Статичная подложка темы Rain: постер-кадр видео-фона (клип vibe, тёмный
- *  туманный лес) с лёгкой виньеткой. Показывается мгновенно, пока WebGL-сцена
- *  и видео поднимаются, и служит фоном 2D-фолбэка. */
+/** Мгновенная процедурная подложка темы Rain без изображений. Крупные мягкие
+ *  градиенты повторяют тональную карту WebGL-сцены, пока шейдер компилируется,
+ *  и остаются атмосферным фоном 2D-фолбэка. */
 export function RainBackdrop() {
   return (
     <div className="pointer-events-none absolute inset-0 overflow-hidden bg-[#04060a]">
-      <img
-        src="/rain/poster.jpg"
-        alt=""
-        className="absolute inset-0 h-full w-full object-cover"
+      <div
+        className="absolute inset-0"
+        style={{
+          background:
+            "radial-gradient(80% 46% at 69% 48%, rgba(127,88,45,0.16), transparent 48%), radial-gradient(95% 58% at 52% 52%, rgba(83,112,113,0.34), transparent 62%), linear-gradient(180deg, #071017 0%, #1d2d30 48%, #0b1a1b 62%, #03090a 100%)",
+        }}
+      />
+      <div
+        className="absolute inset-x-[-8%] top-[30%] h-[31%] blur-[7px]"
+        style={{
+          background:
+            "radial-gradient(34% 74% at 8% 100%, rgba(5,17,16,0.96), transparent 70%), radial-gradient(26% 68% at 94% 100%, rgba(4,14,13,0.94), transparent 72%), radial-gradient(64% 46% at 50% 100%, rgba(19,40,39,0.94), transparent 76%)",
+        }}
+      />
+      <div
+        className="absolute inset-x-0 top-[55.5%] bottom-0"
+        style={{
+          background:
+            "linear-gradient(180deg, rgba(70,105,106,0.44) 0%, rgba(16,42,43,0.82) 32%, rgba(3,12,13,0.98) 100%)",
+        }}
+      />
+      <div
+        className="absolute inset-x-0 top-[56%] h-[31%] opacity-30"
+        style={{
+          backgroundImage:
+            "repeating-linear-gradient(178deg, transparent 0 7px, rgba(139,171,166,0.13) 8px, transparent 9px 15px)",
+          maskImage: "linear-gradient(to bottom, black, transparent)",
+          WebkitMaskImage: "linear-gradient(to bottom, black, transparent)",
+        }}
+      />
+      <div
+        className="absolute inset-x-[-10%] top-[48%] h-[18%] blur-xl"
+        style={{
+          background:
+            "radial-gradient(ellipse at center, rgba(105,139,138,0.34), rgba(73,102,103,0.14) 45%, transparent 76%)",
+        }}
       />
       <div className="absolute inset-0 bg-[radial-gradient(120%_105%_at_50%_44%,transparent_38%,rgba(2,4,8,0.62)_100%)]" />
     </div>
@@ -29,7 +61,7 @@ export function RainBackdrop() {
 
 type FallbackDrop = { x: number; y: number; radius: number; speed: number; alpha: number };
 
-/** 2D-фолбэк темы Rain без WebGL: постер видео-фона + капли и зарницы,
+/** 2D-фолбэк темы Rain без WebGL: процедурная подложка + капли и зарницы,
  *  нарисованные Canvas2D поверх. */
 export function RainFallback({ paused = false }: { paused?: boolean }) {
   const dpiActive = useDpiStore((state) => state.active);

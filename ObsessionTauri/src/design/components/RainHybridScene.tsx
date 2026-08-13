@@ -12,15 +12,16 @@ import { rainQualityProfile } from "./rain/quality";
 import { RainSimulation, type RainDropSprites } from "./rain/simulation";
 import { RainWeatherModel, type RainWeatherSnapshot } from "./rain/weather";
 
-// Источник мира за стеклом. Статичное фото — как в оригинальном codrops-демо
-// (движение дают капли/конденсат/параллакс, а не фон); видео-режим сохранён:
-// поставь WORLD_IMAGE_SRC = null и верни /rain/loop.mp4 в public/rain.
-const WORLD_IMAGE_SRC: string | null = "/rain/world.jpg";
-const WORLD_VIDEO_SRC = "/rain/loop.mp4";
-
-// Спрайты капли codrops (фото-рефракционная карта + маска). Кэш на модуль:
+// Спрайты капли codrops (фото-рефракционная карта + маска), matcap блика
+// drop-shine2 из того же RainEffect и мир: плита ночной улицы плюс карта её
+// источников света (печёт scripts/bake-rain-plate.ps1). Кэш на модуль:
 // повторный маунт и восстановление GL-контекста не перекачивают картинки.
-let spritesPromise: Promise<RainDropSprites> | null = null;
+type RainTextures = RainDropSprites & {
+  dropShine: HTMLImageElement;
+  plate: HTMLImageElement;
+  emission: HTMLImageElement;
+};
+let texturesPromise: Promise<RainTextures> | null = null;
 function loadImage(src: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const image = new Image();
@@ -29,18 +30,26 @@ function loadImage(src: string): Promise<HTMLImageElement> {
     image.src = src;
   });
 }
-function loadDropSprites(): Promise<RainDropSprites> {
-  spritesPromise ??= Promise.all([
+function loadRainTextures(): Promise<RainTextures> {
+  texturesPromise ??= Promise.all([
     loadImage("/rain/drop-color.png"),
     loadImage("/rain/drop-alpha.png"),
-  ]).then(([dropColor, dropAlpha]) => ({ dropColor, dropAlpha }));
-  return spritesPromise;
+    loadImage("/rain/drop-shine2.png"),
+    loadImage("/rain/world-plate.jpg"),
+    loadImage("/rain/world-emission.png"),
+  ]).then(([dropColor, dropAlpha, dropShine, plate, emission]) => ({
+    dropColor,
+    dropAlpha,
+    dropShine,
+    plate,
+    emission,
+  }));
+  return texturesPromise;
 }
 
 export default function RainHybridScene({ paused = false }: { paused?: boolean }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const loopRef = useRef<ReturnType<typeof createRenderLoop> | null>(null);
-  const videoRef = useRef<HTMLVideoElement | null>(null);
   const dpiActive = useDpiStore((state) => state.active);
   const proxyRunning = useProxyStore((state) => state.running);
   const reducedMotion = useMotionOff();
@@ -55,52 +64,6 @@ export default function RainHybridScene({ paused = false }: { paused?: boolean }
     let disposed = false;
     let simulation: RainSimulation | null = null;
     let pipeline: RainPipeline | null = null;
-    // Мир за стеклом: фото (по умолчанию) или закольцованное видео.
-    // Элементы вне DOM — служат только источником текстуры.
-    let glReady = false;
-    let worldReady = false;
-    let worldImage: HTMLImageElement | null = null;
-    let video: HTMLVideoElement | null = null;
-    const maybeReady = () => {
-      if (glReady && worldReady && !disposed) setReady(true);
-    };
-    if (WORLD_IMAGE_SRC) {
-      const image = new Image();
-      image.onload = () => {
-        if (disposed) return;
-        worldImage = image;
-        worldReady = true;
-        pipeline?.updateWorldImage(image);
-        maybeReady();
-        loopRef.current?.invalidate();
-      };
-      image.onerror = () => {
-        if (!disposed) setFatalError(new Error("Rain: фото-мир не загрузилось"));
-      };
-      image.src = WORLD_IMAGE_SRC;
-    } else {
-      video = document.createElement("video");
-      videoRef.current = video;
-      video.muted = true;
-      video.loop = true;
-      video.playsInline = true;
-      video.preload = "auto";
-      const syncVideoPlayback = () => {
-        // play() может быть отклонён (гонка с pause) — следующий sync поправит.
-        if (!video) return;
-        if (stateRef.current.paused || stateRef.current.reducedMotion) video.pause();
-        else video.play().catch(() => {});
-      };
-      video.addEventListener("loadeddata", () => {
-        worldReady = true;
-        maybeReady();
-        syncVideoPlayback();
-      });
-      video.addEventListener("error", () => {
-        if (!disposed) setFatalError(new Error("Rain: видео-мир не загрузилось"));
-      });
-      video.src = WORLD_VIDEO_SRC;
-    }
     let resizeTimer: ReturnType<typeof setTimeout> | null = null;
     let restoreTimer: ReturnType<typeof setTimeout> | null = null;
     let restoreAttempts = 0;
@@ -154,7 +117,6 @@ export default function RainHybridScene({ paused = false }: { paused?: boolean }
         }
       },
       worldPass: () => {
-        if (video) pipeline?.updateVideoTexture(video);
         pipeline?.renderWorld({
           parallaxX: parallax.x,
           parallaxY: parallax.y,
@@ -179,7 +141,7 @@ export default function RainHybridScene({ paused = false }: { paused?: boolean }
     loopRef.current = loop;
     loop.start();
 
-    let sprites: RainDropSprites | null = null;
+    let sprites: RainTextures | null = null;
     const initializeScene = () => {
       if (disposed || !sprites) return;
       try {
@@ -195,9 +157,12 @@ export default function RainHybridScene({ paused = false }: { paused?: boolean }
           nextPipeline = new RainPipeline(canvas, canvas.width, canvas.height, quality);
           nextPipeline.updateWaterTexture(nextSimulation.waterMap);
           nextPipeline.updateMistTexture(nextSimulation.mistMap);
-          // Фото-мир мог загрузиться раньше пайплайна (или это ре-инит после
-          // потери контекста) — заливаем кадр сразу.
-          if (worldImage) nextPipeline.updateWorldImage(worldImage);
+          nextPipeline.updateShineTexture(sprites.dropShine);
+          nextPipeline.updateWorldTextures(
+            sprites.plate,
+            sprites.emission,
+            sprites.plate.naturalWidth / Math.max(1, sprites.plate.naturalHeight),
+          );
         } catch (error) {
           nextSimulation.destroy();
           throw error;
@@ -210,15 +175,14 @@ export default function RainHybridScene({ paused = false }: { paused?: boolean }
         if (import.meta.env.DEV) {
           (window as unknown as Record<string, unknown>).__rainSim = simulation;
         }
-        glReady = true;
-        maybeReady();
+        if (!disposed) setReady(true);
         loop.invalidate();
       } catch (error: unknown) {
         if (disposed) return;
         setFatalError(error instanceof Error ? error : new Error(String(error)));
       }
     };
-    loadDropSprites()
+    loadRainTextures()
       .then((loaded) => {
         if (disposed) return;
         sprites = loaded;
@@ -288,25 +252,12 @@ export default function RainHybridScene({ paused = false }: { paused?: boolean }
       simulation?.destroy();
       canvas.width = 0;
       canvas.height = 0;
-      // Освобождаем видеодекодер (WebView2 не чистит detached <video> сам).
-      videoRef.current = null;
-      if (video) {
-        video.pause();
-        video.removeAttribute("src");
-        video.load();
-      }
-      worldImage = null;
     };
   }, []);
 
   useEffect(() => {
     loopRef.current?.setPaused(paused);
     loopRef.current?.invalidate();
-    const video = videoRef.current;
-    if (video) {
-      if (paused || reducedMotion) video.pause();
-      else video.play().catch(() => {});
-    }
   }, [dpiActive, proxyRunning, paused, reducedMotion]);
 
   if (fatalError) throw fatalError;

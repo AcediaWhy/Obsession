@@ -120,14 +120,25 @@ export type Gl2Fbo = {
   texture: WebGLTexture;
   width: number;
   height: number;
+  /** true — RGBA16F: линейный свет без полос и с запасом выше единицы. */
+  hdr: boolean;
 };
 
-/** RGBA8-таргет с мип-цепочкой (LINEAR_MIPMAP_LINEAR); NPOT легален в WebGL2. */
+/** Полутоновый таргет с мип-цепочкой (LINEAR_MIPMAP_LINEAR); NPOT легален в
+ *  WebGL2. По возможности RGBA16F: мир пишется в линейном свете, а 8 бит на
+ *  линейный канал дают всего пару градаций на тёмных градиентах — отсюда
+ *  видимые полосы в небе. Половинная точность заодно оставляет запас выше
+ *  единицы для ярких источников (боке в каплях). */
 export function createFbo(gl: WebGL2RenderingContext, width: number, height: number): Gl2Fbo {
   const texture = gl.createTexture();
   const framebuffer = gl.createFramebuffer();
   if (!texture || !framebuffer) throw new Error("Rain GL2: FBO недоступен");
-  const fbo: Gl2Fbo = { framebuffer, texture, width: 0, height: 0 };
+  // Рендер в half-float требует расширения; фильтрация и мипы для RGBA16F в
+  // WebGL2 уже в ядре. Без расширения тихо падаем в RGBA8.
+  const hdr =
+    gl.getExtension("EXT_color_buffer_float") != null ||
+    gl.getExtension("EXT_color_buffer_half_float") != null;
+  const fbo: Gl2Fbo = { framebuffer, texture, width: 0, height: 0, hdr };
   gl.bindTexture(gl.TEXTURE_2D, texture);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
@@ -145,7 +156,11 @@ export function resizeFbo(gl: WebGL2RenderingContext, fbo: Gl2Fbo, width: number
   fbo.width = w;
   fbo.height = h;
   gl.bindTexture(gl.TEXTURE_2D, fbo.texture);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+  if (fbo.hdr) {
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, w, h, 0, gl.RGBA, gl.HALF_FLOAT, null);
+  } else {
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+  }
   gl.bindFramebuffer(gl.FRAMEBUFFER, fbo.framebuffer);
   gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, fbo.texture, 0);
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);

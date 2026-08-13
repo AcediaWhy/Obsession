@@ -1,11 +1,17 @@
 // Проход B (композит) — GLSL 300 es. Весь вьюпорт — запотевшее стекло ночью,
-// за ним видео-мир (FBO с мипами). Формула воды — дословно из codrops
-// RainEffect (water.frag): спрайт капли несёт фото-рефракционную карту
-// (G→x, R→y), B — толщину, A — маску-слезу; альфа раскручивается ×6−3,
-// нутро капли — сильно смещённый (256..512 px) сэмпл мягкого мипа мира с
-// лёгким подъёмом яркости. Роли крошечных статических текстур демо (fg 96px,
-// bg 384px) играют мипы видео-FBO: u_fgLod/u_bgLod. Поверх — конденсат
-// (mistSim): доп. блюр + молочная вуаль, протираемая каплями.
+// за ним мир (FBO с мипами, линейный свет).
+//
+// Модель воды портирована из codrops/RainEffect (src/shaders/water.frag) вместе
+// с её настроенными константами: жёсткий порог маски (alpha*6−3), смещение
+// рефракции в пикселях (150..512), matcap блика drop-shine2 и тень под каплей
+// из сдвинутой альфы. Отличия от референса — только там, где у нас есть WebGL2:
+// расфокусировка стекла берётся из мип-цепочки (в демо для этого держали
+// отдельную заранее размытую картинку), плюс наш конденсат, HDR-FBO и дизер.
+//
+// Референсы: codrops/RainEffect (Lucas Bebber) и Heartfelt (BigWings). Общий
+// для обоих инвариант: стекло вне капель НЕ в фокусе. Прежний композит держал
+// фон резким (LOD 0), а нутро капли размытым — из-за этого капли не читались:
+// замер A/B давал среднюю разницу 0.24/255 при максимуме 11/255.
 
 import { rainPassVert } from "./worldShaders";
 
@@ -17,73 +23,96 @@ precision highp float;
 uniform sampler2D u_world;
 uniform sampler2D u_water;
 uniform sampler2D u_mist;
+uniform sampler2D u_shine;
 uniform vec2 u_resolution;
 uniform float u_lightning;
 uniform float u_time;
-uniform float u_fgLod;
-uniform float u_bgLod;
+uniform float u_dropLod;
+uniform float u_glassLod;
+uniform float u_mistLod;
+uniform float u_scatterLod;
 
 in vec2 v_uv;
 out vec4 outColor;
+
+// Константы референса: alphaMultiply/alphaSubtract дают жёсткую кромку капли,
+// min/maxRefraction — смещение в пикселях, brightness — капля светлее стекла.
+const float ALPHA_MULTIPLY = 6.0;
+const float ALPHA_SUBTRACT = 3.0;
+const float MIN_REFRACTION = 150.0;
+const float REFRACTION_DELTA = 362.0;
+const float DROP_BRIGHTNESS = 1.10;
+const float MAX_SHINE = 490.0;
+const float WHITE_POINT = 3.2;
 
 vec3 toSrgb(vec3 color) {
   return pow(max(color, vec3(0.0)), vec3(1.0 / 2.2));
 }
 
-float hash21(vec2 value) {
-  value = fract(value * vec2(123.34, 456.21));
-  value += dot(value, value + 45.32);
-  return fract(value.x * value.y);
+// Дизер против полос на тёмных градиентах. Зависит только от координаты
+// пикселя, поэтому не мерцает между кадрами.
+float ditherNoise(vec2 fragCoord) {
+  return fract(sin(dot(fragCoord, vec2(12.9898, 78.233))) * 43758.5453);
 }
 
 void main() {
   // Экранные координаты (y=0 сверху) — водная карта рисуется Canvas2D в том
   // же порядке; мир из FBO сэмплится по v_uv (GL y-вверх).
   vec2 sUv = vec2(v_uv.x, 1.0 - v_uv.y);
+  vec2 pixel = 1.0 / u_resolution;
 
-  // Вода по codrops: G→x, R→y (фото-карта рефракции), B — толщина, A — маска.
   vec4 water = texture(u_water, sUv);
   float thickness = water.b;
-  float alpha = clamp(water.a * 6.0 - 3.0, 0.0, 1.0);
   vec2 refraction = (vec2(water.g, water.r) - 0.5) * 2.0;
+  float dropAlpha = clamp(water.a * ALPHA_MULTIPLY - ALPHA_SUBTRACT, 0.0, 1.0);
 
-  // Конденсат: сетка симуляции, равномерно по стеклу; тела капель и мокрые
-  // дорожки протирают его (в симе — wipes, тут — маска воды добивает).
+  // Конденсат: тела капель и мокрые дорожки протирают его.
   float mist = texture(u_mist, sUv).r;
-  mist *= 1.0 - smoothstep(0.10, 0.50, water.a) * 0.9;
+  mist *= 1.0 - dropAlpha * 0.92;
 
-  // Смещение рефракции — в «пикселях демо» (эталон 1080p), инвариантно к
-  // backing-разрешению и анизотропии кадра. Y канвасный (вниз) → в мир с минусом.
-  vec2 pixelN = vec2(u_resolution.y / u_resolution.x, 1.0) / 1080.0;
-  vec2 refrOff = refraction * (256.0 + thickness * 256.0) * pixelN;
-  vec2 dropUv = v_uv + vec2(refrOff.x, -refrOff.y);
+  // Стекло вне капель не в фокусе; конденсат добавляет размытия и вуали.
+  // Вуаль держим слабой: мир стал HDR, и широкий scatter несёт энергию фонарей,
+  // из-за которой кадр легко уходит в молочную дымку.
+  vec3 glass = textureLod(u_world, v_uv, u_glassLod + mist * u_mistLod).rgb;
+  vec3 scatter = textureLod(u_world, v_uv, u_scatterLod).rgb;
+  glass = mix(glass, scatter * 0.90 + vec3(0.0025, 0.0032, 0.0045), mist * 0.10);
 
-  // Базовое стекло почти резкое (видеофон сам мягкий — лишний блюр давал
-  // кашу); конденсат добавляет умеренную муть и лёгкую вуаль рассеяния.
-  vec3 world = textureLod(u_world, v_uv, u_bgLod + mist * 1.2).rgb;
-  vec3 scatter = textureLod(u_world, v_uv, 5.2).rgb;
-  world = mix(world, scatter * 1.5 + vec3(0.0050, 0.0060, 0.0090), mist * 0.24);
+  // Содержимое капли: смещение в пикселях, как в референсе. Капля показывает
+  // сильно сдвинутый и чуть более резкий, чем стекло, фрагмент мира.
+  vec2 refractionOffset = pixel * refraction * (MIN_REFRACTION + thickness * REFRACTION_DELTA);
+  vec2 dropUv = v_uv + vec2(refractionOffset.x, -refractionOffset.y);
+  vec3 drop = textureLod(u_world, dropUv, u_dropLod).rgb * DROP_BRIGHTNESS;
 
-  // Нутро капли: очень мягкий мип (эталон — fg 96px демо), сильный сдвиг,
-  // лёгкий подъём яркости — капля читается светящейся линзой на тёмном стекле.
-  vec3 dropWorld = textureLod(u_world, dropUv, u_fgLod).rgb * 1.06;
-  world = mix(world, dropWorld, alpha);
+  // Блик: matcap индексируется вектором рефракции, поэтому пятно света стоит
+  // на всех каплях согласованно, как от одного источника.
+  float minShine = MAX_SHINE * 0.18;
+  vec2 shineUv = vec2(0.5) + (refraction / 512.0) * -(minShine + (MAX_SHINE - minShine) * thickness);
+  float shine = texture(u_shine, shineUv).a;
+  drop += vec3(0.86, 0.91, 1.0) * shine * (0.045 + thickness * 0.20);
 
-  // Зарница мягко заливает всё стекло (рассеяние в самой воде/конденсате).
-  world *= 1.0 + u_lightning * 0.25;
+  // Тень под каплей: та же альфа, сдвинутая вверх на толщину — капля отбирает
+  // свет у стекла под собой и получает опору.
+  float shadowAlpha = texture(u_water, sUv - vec2(0.0, thickness * 6.0) * pixel).a;
+  shadowAlpha = clamp(shadowAlpha * ALPHA_MULTIPLY - (ALPHA_SUBTRACT + 0.5), 0.0, 1.0) * 0.26;
+
+  vec3 color = glass * (1.0 - shadowAlpha);
+  color = mix(color, drop, dropAlpha);
+
+  // Зарница мягко заливает всё стекло (рассеяние в воде и конденсате).
+  color *= 1.0 + u_lightning * 0.25;
 
   // ── Финальный грейд ────────────────────────────────────────────────
-  // Лёгкая симметричная кино-виньетка: держит читаемость стеклянных панелей.
-  vec2 vigPos = (sUv - vec2(0.5, 0.5)) * vec2(1.06, 1.0);
-  world *= 1.0 - smoothstep(0.52, 1.02, length(vigPos)) * 0.20;
-  // Ночной тонинг: едва заметный холодный сдвиг — тёплый фонарь клипа
-  // должен остаться янтарным, не глушим его синевой.
-  float luma = dot(world, vec3(0.299, 0.587, 0.114));
-  world = mix(world, luma * vec3(0.88, 0.98, 1.12), 0.06);
-  vec3 srgb = toSrgb(world);
-  // Живое плёночное зерно: рвёт бандинг тёмных градиентов, склеивает слои.
-  float grain = hash21(gl_FragCoord.xy + fract(u_time * 7.31) * 191.0) - 0.5;
-  srgb += grain * 0.009;
+  vec2 vignettePos = (sUv - vec2(0.5, 0.5)) * vec2(1.06, 1.0);
+  color *= 1.0 - smoothstep(0.52, 1.02, length(vignettePos)) * 0.20;
+  float luma = dot(color, vec3(0.299, 0.587, 0.114));
+  color = mix(color, luma * vec3(0.88, 0.98, 1.12), 0.06);
+
+  // Тонмап: мир HDR — ядра фонарей ярче единицы, и без сжатия боке в каплях
+  // просто клиппится в белое пятно. Расширенный Рейнхард с точкой белого.
+  color = color * (1.0 + color / (WHITE_POINT * WHITE_POINT)) / (1.0 + color);
+
+  vec3 srgb = toSrgb(color);
+  srgb += (ditherNoise(gl_FragCoord.xy) - 0.5) / 255.0;
   outColor = vec4(srgb, 1.0);
 }
 `;

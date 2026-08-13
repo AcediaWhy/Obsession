@@ -1,4 +1,4 @@
-// Двухпроходный WebGL2-пайплайн: видео-мир → FBO+мипы → композит.
+// Двухпроходный WebGL2-пайплайн: мир из плиты и эмиссии → FBO+мипы → композит.
 // Владеет контекстом, программами, FBO и текстурой водной карты; сцена
 // (RainHybridScene) гоняет его из фаз render-цикла.
 import {
@@ -13,7 +13,8 @@ import {
   type Gl2Fbo,
 } from "./gl2";
 import { compositeFrag, compositeVert } from "./compositeShaders";
-import { worldVideoFrag, rainPassVert } from "./worldShaders";
+import { rainFocusLods } from "./focus";
+import { worldPlateFrag, rainPassVert } from "./worldShaders";
 import type { RainQualityProfile } from "./quality";
 import type { RainWeatherSnapshot } from "./weather";
 
@@ -25,6 +26,9 @@ export type RainWorldFrame = {
   quality: RainQualityProfile;
 };
 
+/** Заглушка для текстур мира до загрузки картинок. */
+const BLANK_PIXEL = new Uint8Array([0, 0, 0, 255]);
+
 export class RainPipeline {
   private readonly canvas: HTMLCanvasElement;
   private readonly gl: WebGL2RenderingContext;
@@ -34,20 +38,22 @@ export class RainPipeline {
   private readonly worldFbo: Gl2Fbo;
   private readonly waterTexture: WebGLTexture;
   private readonly mistTexture: WebGLTexture;
-  private readonly videoTexture: WebGLTexture;
+  private readonly shineTexture: WebGLTexture;
+  private readonly plateTexture: WebGLTexture;
+  private readonly emissionTexture: WebGLTexture;
   private waterWidth = 0;
   private waterHeight = 0;
   private mistWidth = 0;
   private mistHeight = 0;
-  private videoWidth = 0;
-  private videoHeight = 0;
-  private lastVideoTime = -1;
+  private plateAspect = 16 / 9;
   private width: number;
   private height: number;
   private worldScale: number;
   private mipDepth: number;
-  private fgLod = 0;
-  private bgLod = 0;
+  private dropLod = 0;
+  private glassLod = 0;
+  private mistLod = 0;
+  private scatterLod = 0;
   private destroyed = false;
 
   constructor(canvas: HTMLCanvasElement, backingWidth: number, backingHeight: number, quality: RainQualityProfile) {
@@ -63,7 +69,7 @@ export class RainPipeline {
     canvas.height = this.height;
 
     try {
-      const world = createProgram2(gl, rainPassVert, worldVideoFrag);
+      const world = createProgram2(gl, rainPassVert, worldPlateFrag);
       const composite = createProgram2(gl, compositeVert, compositeFrag);
       if (!world || !composite) {
         if (world) gl.deleteProgram(world);
@@ -99,28 +105,62 @@ export class RainPipeline {
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
       gl.bindTexture(gl.TEXTURE_2D, null);
-
-      // Текстура кадра видео-мира: чёрный 1×1 до первого кадра, чтобы
-      // композит не читал мусор, пока видео грузится.
-      const videoTex = gl.createTexture();
-      if (!videoTex) throw new Error("Rain: текстура видео недоступна");
-      this.videoTexture = videoTex;
-      gl.bindTexture(gl.TEXTURE_2D, videoTex);
+      // Matcap блика капель (drop-shine2 из RainEffect): пока картинка не
+      // загружена — прозрачный 1×1, чтобы блика просто не было.
+      const shine = gl.createTexture();
+      if (!shine) throw new Error("Rain: текстура блика недоступна");
+      this.shineTexture = shine;
+      gl.bindTexture(gl.TEXTURE_2D, shine);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([4, 6, 10, 255]));
+      gl.texImage2D(
+        gl.TEXTURE_2D,
+        0,
+        gl.RGBA,
+        1,
+        1,
+        0,
+        gl.RGBA,
+        gl.UNSIGNED_BYTE,
+        new Uint8Array([255, 255, 255, 0]),
+      );
+      gl.bindTexture(gl.TEXTURE_2D, null);
+      // Плита мира и карта эмиссии: чёрный 1×1 до загрузки картинок, чтобы
+      // первый кадр не читал мусор. Эмиссии нужны мипы — из них берётся ореол.
+      const plate = gl.createTexture();
+      if (!plate) throw new Error("Rain: текстура подложки недоступна");
+      this.plateTexture = plate;
+      gl.bindTexture(gl.TEXTURE_2D, plate);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, BLANK_PIXEL);
+      const emission = gl.createTexture();
+      if (!emission) throw new Error("Rain: текстура эмиссии недоступна");
+      this.emissionTexture = emission;
+      gl.bindTexture(gl.TEXTURE_2D, emission);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, BLANK_PIXEL);
+      gl.generateMipmap(gl.TEXTURE_2D);
       gl.bindTexture(gl.TEXTURE_2D, null);
 
       this.worldProgram.use();
-      this.worldProgram.set1i("u_video", 3);
+      this.worldProgram.set1i("u_plate", 4);
+      this.worldProgram.set1i("u_emission", 5);
+      this.worldProgram.set1f("u_plateAspect", this.plateAspect);
 
       // Безопасные дефолты композита: валидный кадр до первого world pass.
       this.compositeProgram.use();
       this.compositeProgram.set1i("u_world", 0);
       this.compositeProgram.set1i("u_water", 1);
       this.compositeProgram.set1i("u_mist", 2);
+      this.compositeProgram.set1i("u_shine", 3);
       this.compositeProgram.set2f("u_resolution", this.width, this.height);
     } catch (error) {
       gl.getExtension("WEBGL_lose_context")?.loseContext();
@@ -144,13 +184,15 @@ export class RainPipeline {
     this.updateLods();
   }
 
-  /** Мипы: fg 96px — нутро капли как в демо codrops (мягкая светящаяся
-   *  линза); bg почти резкий (реф 1024px) — наш видеофон сам по себе мягкий,
-   *  дополнительное мыло 384px превращало его в кашу. Пересчёт при ресайзе FBO. */
+  /** Уровни мипов для композита: политика живёт в rain/focus.ts, чтобы
+   *  инвариант «внутри капли резче, чем стекло» проверялся юнит-тестом.
+   *  Пересчёт при ресайзе FBO. */
   private updateLods(): void {
-    const w = Math.max(1, this.worldFbo.width);
-    this.fgLod = Math.min(this.mipDepth, Math.max(0, Math.log2(w / 96)));
-    this.bgLod = Math.min(this.mipDepth, Math.max(0, Math.log2(w / 1024)));
+    const lods = rainFocusLods(this.worldFbo.width, this.mipDepth);
+    this.dropLod = lods.dropLod;
+    this.glassLod = lods.glassLod;
+    this.mistLod = lods.mistLod;
+    this.scatterLod = lods.scatterLod;
   }
 
   updateWaterTexture(source: HTMLCanvasElement): void {
@@ -181,43 +223,33 @@ export class RainPipeline {
     }
   }
 
-  /** Статичный фото-мир (режим codrops-демо): однократная загрузка кадра. */
-  updateWorldImage(image: HTMLImageElement): void {
+  /** Matcap блика капель. Однократная загрузка: картинка не меняется. */
+  updateShineTexture(source: TexImageSource): void {
     if (this.destroyed) return;
-    if (image.naturalWidth === 0) return;
     const gl = this.gl;
     gl.activeTexture(gl.TEXTURE0 + 3);
-    gl.bindTexture(gl.TEXTURE_2D, this.videoTexture);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
-    this.videoWidth = image.naturalWidth;
-    this.videoHeight = image.naturalHeight;
-    this.lastVideoTime = -1;
+    gl.bindTexture(gl.TEXTURE_2D, this.shineTexture);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
   }
 
-  /** Загрузка свежего кадра видео в текстуру мира (пропускает повторы). */
-  updateVideoTexture(video: HTMLVideoElement): void {
+  /** Плита мира и карта её источников света. Однократная загрузка. Пропорция
+   *  плиты нужна шейдеру для cover-fit. */
+  updateWorldTextures(plate: TexImageSource, emission: TexImageSource, plateAspect: number): void {
     if (this.destroyed) return;
-    if (video.readyState < 2 || video.videoWidth === 0) return;
-    if (
-      video.currentTime === this.lastVideoTime &&
-      video.videoWidth === this.videoWidth
-    ) {
-      return;
-    }
     const gl = this.gl;
-    gl.activeTexture(gl.TEXTURE0 + 3);
-    gl.bindTexture(gl.TEXTURE_2D, this.videoTexture);
-    if (video.videoWidth !== this.videoWidth || video.videoHeight !== this.videoHeight) {
-      this.videoWidth = video.videoWidth;
-      this.videoHeight = video.videoHeight;
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
-    } else {
-      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, video);
-    }
-    this.lastVideoTime = video.currentTime;
+    this.plateAspect = plateAspect > 0 ? plateAspect : 16 / 9;
+    gl.activeTexture(gl.TEXTURE0 + 4);
+    gl.bindTexture(gl.TEXTURE_2D, this.plateTexture);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, plate);
+    gl.activeTexture(gl.TEXTURE0 + 5);
+    gl.bindTexture(gl.TEXTURE_2D, this.emissionTexture);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, emission);
+    gl.generateMipmap(gl.TEXTURE_2D);
+    this.worldProgram.use();
+    this.worldProgram.set1f("u_plateAspect", this.plateAspect);
   }
 
-  /** Проход A: кадр видео (cover-fit, параллакс, зарницы) → FBO, затем мипы. */
+  /** Проход A: мир из плиты и эмиссии (параллакс, погода, время) → FBO, мипы. */
   renderWorld(frame: RainWorldFrame): void {
     if (this.destroyed) return;
     const gl = this.gl;
@@ -225,14 +257,15 @@ export class RainPipeline {
     gl.viewport(0, 0, this.worldFbo.width, this.worldFbo.height);
     this.worldProgram.use();
     this.worldProgram.set2f("u_resolution", this.worldFbo.width, this.worldFbo.height);
-    this.worldProgram.set1f(
-      "u_videoAspect",
-      this.videoWidth > 0 ? this.videoWidth / Math.max(1, this.videoHeight) : 16 / 9,
-    );
     this.worldProgram.set2f("u_parallax", frame.parallaxX, frame.parallaxY);
     this.worldProgram.set1f("u_lightning", frame.weather.lightning);
-    gl.activeTexture(gl.TEXTURE0 + 3);
-    gl.bindTexture(gl.TEXTURE_2D, this.videoTexture);
+    this.worldProgram.set1f("u_time", frame.elapsed);
+    this.worldProgram.set1f("u_activity", frame.weather.activity);
+    this.worldProgram.set1f("u_wind", frame.weather.wind);
+    gl.activeTexture(gl.TEXTURE0 + 5);
+    gl.bindTexture(gl.TEXTURE_2D, this.emissionTexture);
+    gl.activeTexture(gl.TEXTURE0 + 4);
+    gl.bindTexture(gl.TEXTURE_2D, this.plateTexture);
     gl.bindVertexArray(this.quad);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     gl.bindVertexArray(null);
@@ -249,9 +282,13 @@ export class RainPipeline {
     this.compositeProgram.use();
     this.compositeProgram.set2f("u_resolution", this.width, this.height);
     this.compositeProgram.set1f("u_lightning", lightning);
-    this.compositeProgram.set1f("u_fgLod", this.fgLod);
-    this.compositeProgram.set1f("u_bgLod", this.bgLod);
+    this.compositeProgram.set1f("u_dropLod", this.dropLod);
+    this.compositeProgram.set1f("u_glassLod", this.glassLod);
+    this.compositeProgram.set1f("u_mistLod", this.mistLod);
+    this.compositeProgram.set1f("u_scatterLod", this.scatterLod);
     this.compositeProgram.set1f("u_time", time);
+    gl.activeTexture(gl.TEXTURE0 + 3);
+    gl.bindTexture(gl.TEXTURE_2D, this.shineTexture);
     gl.activeTexture(gl.TEXTURE0 + 2);
     gl.bindTexture(gl.TEXTURE_2D, this.mistTexture);
     gl.activeTexture(gl.TEXTURE0 + 1);
@@ -269,7 +306,9 @@ export class RainPipeline {
     const gl = this.gl;
     gl.deleteTexture(this.waterTexture);
     gl.deleteTexture(this.mistTexture);
-    gl.deleteTexture(this.videoTexture);
+    gl.deleteTexture(this.shineTexture);
+    gl.deleteTexture(this.plateTexture);
+    gl.deleteTexture(this.emissionTexture);
     deleteFbo(gl, this.worldFbo);
     gl.deleteVertexArray(this.quad);
     this.worldProgram.dispose();
