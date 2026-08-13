@@ -34,10 +34,11 @@ DPI-обход, ИИ-разблокировка и Telegram-прокси — в 
 
 1. **Скачайте** [«Obsession Setup»](https://github.com/Aizenssk-ss/VlarpSu/releases/latest).
 2. **Запустите** `Obsession-Setup_<версия>_x64.exe` — установщик проведёт через 4 шага (Аврора и глаз прилагаются).
-3. **Разрешите запрос UAC.** Без прав администратора не работают winws (обход) и запись в `hosts` (ИИ).
+3. **Запустите Obsession.** Защитный hotfix запускает интерфейс без постоянного запроса UAC.
 4. **Готово.** Obsession живёт в трее — открывайте по клику на иконку-глаз.
 
-<sub>~22 МБ · Windows 10/11 x64. Всё внутри — winws, WinDivert, TgWsProxy, конфиги и списки распаковываются в <code>%APPDATA%\Obsession</code> при первом запуске.</sub>
+> [!IMPORTANT]
+> Защищённые возможности включаются независимо после preflight per-machine runtime. TgWsProxy работает локально из проверенной Program Files-установки; QR и доступ с телефона появляются только при доступном service-owned firewall lease.
 
 ---
 
@@ -117,10 +118,10 @@ npm run tauri dev      # dev-режим с hot-reload
 ```
 
 > [!WARNING]
-> В **dev**-сборке приложение не запрашивает права администратора, поэтому реальный обход winws и запись в `hosts` не работают. Для полной проверки собери release.
+> Приложение намеренно не запрашивает права администратора при старте. Привилегированные DPI/hosts/firewall-операции выполняет типизированная per-machine служба; недоступные capability остаются fail-closed независимо друг от друга.
 
 ```bash
-npm run tauri build    # release + NSIS-инсталлятор (при запуске запросит UAC)
+npm run tauri build    # release + NSIS-инсталлятор; само приложение стартует без UAC
 npm run build:setup    # фирменный установщик «Obsession Setup» → dist-release/
 ```
 
@@ -148,13 +149,14 @@ ObsessionTauri/
     ├── proxy.rs             TgWsProxy + tg://proxy + LAN-форвардер + кэш доменов
     ├── profiles.rs          профили настроек
     ├── lists.rs             доменные списки
-    ├── admin.rs             is_elevated + UAC-релонч
+    ├── admin.rs             диагностическая проверка is_elevated
+    ├── security.rs          fail-closed gate до защищённого helper/service
     ├── settings.rs          JSON-персист настроек
     ├── commands.rs          поверхность #[tauri::command]
     └── lib.rs               окно, трей, уведомления, shutdown-хук
 ```
 
-Ресурсы (winws, WinDivert, TgWsProxy, конфиги, списки, иконки) лежат в `ObsessionTauri/src-tauri/resources/` и при первом запуске распаковываются в `%APPDATA%\Obsession`.
+Ресурсы (winws, WinDivert, TgWsProxy, конфиги, списки, иконки) лежат в `ObsessionTauri/src-tauri/resources/`, хешируются при сборке и устанавливаются machine-wide в `%ProgramFiles%\Obsession`.
 
 </details>
 

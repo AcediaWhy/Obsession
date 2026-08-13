@@ -14,7 +14,7 @@
   выбор конфигов, тест/авто-подбор, лог реального времени, отлов orphan-процессов
 - **ИИ-разблокировка** (hosts): провайдеры Malw/GeoHide, install/uninstall/check,
   атомарная запись hosts + бэкап + flushdns
-- **Telegram-прокси** (TgWsProxy): старт/стоп, `tg://proxy` ссылка (copy/open)
+- **Telegram-прокси** (TgWsProxy): проверенный локальный старт/стоп, `tg://proxy` ссылка и защищённая LAN-публикация по service-owned firewall lease
 - Системный трей, кастомный титлбар, UAC-элевация, персист настроек
 
 Этап 2 (в планах): профили, редактор списков, темы, автозапуск, автообновление,
@@ -43,7 +43,7 @@ npm run tauri build    # release + NSIS-инсталлятор; при запу�
 src-tauri/src/
   paths.rs      appdata-папки + распаковка ресурсов
   dpi.rs        winws: spawn/kill, стрим лога, orphan, тест
-  proxy.rs      TgWsProxy + парсинг tg://
+  proxy.rs      TgWsProxy + manifest verification + tg:// + LAN lease client
   hosts.rs      atomic hosts write + бэкап + провайдеры
   net.rs        TCP/HTTP тест доступности
   admin.rs      is_elevated + UAC-релонч
@@ -58,5 +58,5 @@ src/
 ```
 
 Ресурсы (winws, WinDivert, TgWsProxy, конфиги, списки, иконки) лежат в
-`src-tauri/resources/` и при первом запуске распаковываются в
-`%APPDATA%\Obsession`.
+`src-tauri/resources/`, хешируются в runtime manifest и устанавливаются в
+`%ProgramFiles%\Obsession`.
