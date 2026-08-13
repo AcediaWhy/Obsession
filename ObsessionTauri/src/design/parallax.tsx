@@ -14,21 +14,30 @@ import {
 type Ctx = { px: MotionValue<number>; py: MotionValue<number> };
 const ParallaxContext = createContext<Ctx | null>(null);
 
-export function ParallaxProvider({ children }: { children: ReactNode }) {
+export function ParallaxProvider({
+  children,
+  paused = false,
+}: {
+  children: ReactNode;
+  paused?: boolean;
+}) {
   const rawX = useMotionValue(0);
   const rawY = useMotionValue(0);
   const cfg = { stiffness: 120, damping: 22, mass: 0.4 };
   const px = useSpring(rawX, cfg);
   const py = useSpring(rawY, cfg);
 
-  useEffect(
-    () =>
-      subscribePointerFrame((frame) => {
-        rawX.set(frame.viewportX);
-        rawY.set(frame.viewportY);
-      }),
-    [rawX, rawY],
-  );
+  useEffect(() => {
+    if (paused) {
+      rawX.set(0);
+      rawY.set(0);
+      return;
+    }
+    return subscribePointerFrame((frame) => {
+      rawX.set(frame.viewportX);
+      rawY.set(frame.viewportY);
+    });
+  }, [paused, rawX, rawY]);
 
   return <ParallaxContext.Provider value={{ px, py }}>{children}</ParallaxContext.Provider>;
 }

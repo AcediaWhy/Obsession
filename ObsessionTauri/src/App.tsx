@@ -4,7 +4,6 @@ import {
   motion,
   MotionConfig,
   useIsPresent,
-  type Variants,
 } from "framer-motion";
 
 import { HeroField } from "./design/components/HeroField";
@@ -27,25 +26,19 @@ import { Onboarding } from "./design/components/Onboarding";
 import { Toaster } from "./design/components/Toaster";
 import { on, win } from "./lib/tauri";
 import { setWindowShown, useMotionOff } from "./design/render";
+import { screenVariants } from "./design/screenTransition";
 import { dur, ease, spring } from "./design/tokens";
 import { toast } from "./store/toastStore";
 
-// Направленный слайд экранов: контент движется в сторону перехода по меню
-// (вниз по списку — уходит вверх, вверх — вниз). Направление приходит через
-// custom: у уходящего экрана пропсы заморожены AnimatePresence, и только
-// custom на самом AnimatePresence обновляется для его exit-варианта.
-// Обёртка transform-only (без opacity) — см. комментарий у <motion.div key={tab}>.
-const screenVariants: Variants = {
-  // 16px хода: под мягкую пружину rise меньший путь почти не читается.
-  enter: (dir: number) => ({ y: 16 * dir }),
-  center: { y: 0 },
-  exit: (dir: number) => ({
-    y: -12 * dir,
-    transition: { duration: dur.fast, ease: ease.exit },
-  }),
-};
-
-function ThemeScene({ theme, motionOff }: { theme: Theme; motionOff: boolean }) {
+function ThemeScene({
+  theme,
+  motionOff,
+  paused,
+}: {
+  theme: Theme;
+  motionOff: boolean;
+  paused: boolean;
+}) {
   const isPresent = useIsPresent();
   return (
     <motion.div
@@ -55,7 +48,7 @@ function ThemeScene({ theme, motionOff }: { theme: Theme; motionOff: boolean }) 
       exit={{ opacity: 0 }}
       transition={{ duration: motionOff ? 0 : dur.slow, ease: ease.xfade }}
     >
-      <HeroField theme={theme} frozen={!isPresent} />
+      <HeroField theme={theme} frozen={!isPresent || paused} />
     </motion.div>
   );
 }
@@ -81,6 +74,7 @@ export default function App() {
   // React-render на каждое переключение. CSS ограничивает переходы семантическими
   // поверхностями/контролами вместо universal selector по всему дереву.
   const shellRef = useRef<HTMLDivElement>(null);
+  const interactionShellRef = useRef<HTMLDivElement>(null);
   const prevTheme = useRef(theme);
   useLayoutEffect(() => {
     const shell = shellRef.current;
@@ -104,6 +98,21 @@ export default function App() {
       delete shell.dataset.themeMorph;
     };
   }, [theme, motionOff]);
+
+  // Modal onboarding — единственная интерактивная ветка. Inert убирает основной
+  // shell из tab/accessibility tree; атрибут ставим напрямую для совместимости
+  // с текущими React typings WebView2.
+  useLayoutEffect(() => {
+    const shell = interactionShellRef.current;
+    if (!shell) return;
+    if (showOnboarding) {
+      shell.setAttribute("inert", "");
+      shell.setAttribute("aria-hidden", "true");
+    } else {
+      shell.removeAttribute("inert");
+      shell.removeAttribute("aria-hidden");
+    }
+  }, [showOnboarding]);
 
   // Инициализация сторов и подписок — один раз при старте.
   useEffect(() => {
@@ -171,62 +180,75 @@ export default function App() {
         data-reduce-motion={reduceMotion}
         className="relative h-screen w-screen overflow-hidden"
       >
-        <ParallaxProvider>
-          {/* Дальний план: фон движется против курсора. Оверскан по краям, чтобы
-              сдвиг никогда не оголял углы. Смена темы — кроссфейд: обе сцены
-              живут ~0.42 с (тема уходящей ветки заморожена пропом, см.
-              HeroField), поверх старой проявляется новая. На холодном старте
-              initial-фейд даёт мягкое появление фона. */}
-          <Parallax depth={-12} className="absolute" style={{ inset: -32 }}>
-            <AnimatePresence mode="sync">
-              <ThemeScene key={theme} theme={theme} motionOff={motionOff} />
-            </AnimatePresence>
-          </Parallax>
-
-          {/* Титлбар — чистый хром, без параллакса. */}
-          <div className="absolute inset-x-0 top-0 z-20">
-            <CustomTitleBar />
-          </div>
-
-          {/* Контент. */}
-          <div className="absolute inset-0 top-10 flex">
-          <NavRail active={tab} onSelect={selectTab} />
-          <main className="flex-1 overflow-hidden px-6 pb-6 pt-2">
-            <div className="relative h-full">
-              <AnimatePresence mode="sync" custom={tabDir.current}>
-              {/* Обёртка экрана — transform-only: opacity у предка стекла
-                  образует backdrop root (Chromium), и панели теряли матовость
-                  на время перехода. Фейд делают сами панели/элементы через
-                  exit-пропагацию (GlassPanel, StaggerItem). Вход — пружиной
-                  rise (как у каскада детей), выход — коротким duration. */}
-              <motion.div
-                key={tab}
-                custom={tabDir.current}
-                variants={screenVariants}
-                initial="enter"
-                animate="center"
-                exit="exit"
-                transition={spring.rise}
-                className="absolute inset-0 h-full"
-              >
-                {tab === "overview" && <OverviewScreen />}
-                {tab === "dpi" && <DpiScreen />}
-                {tab === "ai" && <AiScreen />}
-                {tab === "telegram" && <TelegramScreen />}
-                {tab === "lists" && <ListsScreen />}
-                {tab === "profiles" && <ProfilesScreen />}
-                {tab === "settings" && <SettingsScreen />}
-              </motion.div>
+        <ParallaxProvider paused={showOnboarding}>
+          <div
+            ref={interactionShellRef}
+            data-app-shell
+            aria-hidden={showOnboarding || undefined}
+            className={`absolute inset-0 ${showOnboarding ? "pointer-events-none" : ""}`}
+          >
+            {/* Дальний план: фон движется против курсора. Оверскан по краям, чтобы
+                сдвиг никогда не оголял углы. Смена темы — кроссфейд: обе сцены
+                живут ~0.42 с (тема уходящей ветки заморожена пропом, см.
+                HeroField), поверх старой проявляется новая. На холодном старте
+                initial-фейд даёт мягкое появление фона. */}
+            <Parallax depth={-12} className="absolute" style={{ inset: -32 }}>
+              <AnimatePresence mode="sync">
+                <ThemeScene
+                  key={theme}
+                  theme={theme}
+                  motionOff={motionOff}
+                  paused={showOnboarding}
+                />
               </AnimatePresence>
+            </Parallax>
+
+            {/* Титлбар — чистый хром, без параллакса. */}
+            <div className="absolute inset-x-0 top-0 z-20">
+              <CustomTitleBar />
             </div>
-          </main>
+
+            {/* Контент. */}
+            <div className="absolute inset-0 top-10 flex">
+              <NavRail active={tab} onSelect={selectTab} />
+              <main className="flex-1 overflow-hidden px-6 pb-6 pt-2">
+                <div className="relative h-full">
+                  <AnimatePresence mode="sync" custom={tabDir.current}>
+                    {/* Обёртка экрана — transform-only: opacity у предка стекла
+                        образует backdrop root (Chromium), и панели теряли матовость
+                        на время перехода. Фейд делают сами панели/элементы через
+                        exit-пропагацию (GlassPanel, StaggerItem). Вход — пружиной
+                        rise (как у каскада детей), выход — коротким duration. */}
+                    <motion.div
+                      key={tab}
+                      custom={tabDir.current}
+                      variants={screenVariants}
+                      initial="enter"
+                      animate="center"
+                      exit="exit"
+                      transition={spring.rise}
+                      className="absolute inset-0 h-full"
+                    >
+                      {tab === "overview" && <OverviewScreen />}
+                      {tab === "dpi" && <DpiScreen />}
+                      {tab === "ai" && <AiScreen />}
+                      {tab === "telegram" && <TelegramScreen />}
+                      {tab === "lists" && <ListsScreen />}
+                      {tab === "profiles" && <ProfilesScreen />}
+                      {tab === "settings" && <SettingsScreen />}
+                    </motion.div>
+                  </AnimatePresence>
+                </div>
+              </main>
+            </div>
+
+            {/* Тосты основного приложения принадлежат inert shell. Ошибки
+                завершения onboarding показываются внутри самого dialog. */}
+            <Toaster />
           </div>
 
-          {/* Онбординг первого запуска — поверх всего, пока флаг не выставлен. */}
+          {/* Онбординг первого запуска — единственная активная modal-ветка. */}
           {showOnboarding && <Onboarding />}
-
-          {/* Тосты — единый канал коротких сообщений поверх всего. */}
-          <Toaster />
         </ParallaxProvider>
       </div>
     </MotionConfig>

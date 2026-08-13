@@ -28,6 +28,8 @@ interface SettingsState {
   failBootstrap: (error: string) => void;
   applyLocalPatch: (partial: Partial<Settings>) => void;
   patch: (partial: Partial<Settings>) => Promise<void>;
+  /** Persist first, then publish to the store. Used when optimistic UI would unmount the caller. */
+  patchConfirmed: (partial: Partial<Settings>) => Promise<boolean>;
   setAutostart: (enable: boolean) => Promise<void>;
 }
 
@@ -116,6 +118,35 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         set({ settings: authoritative, saving: false, error: String(e) });
       }
       toast.error("Не удалось сохранить настройки");
+    }
+  },
+
+  patchConfirmed: async (partial) => {
+    if (!get().settings) return false;
+    const sequence = ++settingsPatchSequence;
+    // В отличие от обычного patch, не публикуем partial заранее. Для флага
+    // онбординга optimistic update размонтировал бы dialog до ответа Rust.
+    set({ saving: true, error: "" });
+    const request = settingsWriteQueue.then(() => api.updateSettings(partial));
+    settingsWriteQueue = request.then(
+      () => undefined,
+      () => undefined,
+    );
+    try {
+      const savedSettings = await request;
+      if (sequence === settingsPatchSequence) {
+        set({ settings: savedSettings, saving: false, saved: true });
+        setTimeout(() => {
+          if (sequence === settingsPatchSequence) set({ saved: false });
+        }, 1600);
+      }
+      return true;
+    } catch (e) {
+      if (sequence === settingsPatchSequence) {
+        const authoritative = await api.getSettings().catch(() => get().settings);
+        set({ settings: authoritative, saving: false, error: String(e) });
+      }
+      return false;
     }
   },
 
