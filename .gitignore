@@ -69,3 +69,10 @@ RainEffect-master/
 # Локальная распаковка официального Zapret2 для сверки и отбора ресурсов.
 # В приложение входят только проверенные файлы из src-tauri/resources/bin/zapret2.
 zapret2-v1.0.2/
+
+# Локальная распаковка tg-ws-proxy 1.10.0 — референс Rust-порта (tgproxy-rs).
+tg-ws-proxy-1.10.0/
+
+# Артефакты локального сканера Mimosa.
+.mimosa/
+ObsessionTauri/.mimosa/
