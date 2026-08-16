@@ -17,9 +17,6 @@
     "core:webview:allow-webview-show",
     "core:webview:allow-webview-hide",
     "clipboard-manager:allow-write-text",
-    "clipboard-manager:allow-read-text",
-    "opener:default",
-    "opener:allow-open-url",
     "notification:default"
   ]
 }
