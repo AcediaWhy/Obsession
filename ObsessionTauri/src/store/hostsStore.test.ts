@@ -65,6 +65,7 @@ describe("hosts route health store", () => {
   });
 
   it("coalesces startup checks and forwards the service-owned TTL", async () => {
+    useHostsStore.setState({ status: "installed" });
     let resolve!: (value: HostsHealthSnapshot) => void;
     apiMock.hostsCheck.mockReturnValue(
       new Promise<HostsHealthSnapshot>((done) => {
@@ -83,6 +84,15 @@ describe("hosts route health store", () => {
     );
   });
 
+  it("skips a background check while the local health is still fresh", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(1_786_816_300_000);
+    useHostsStore.setState({ health, status: "installed" });
+
+    await useHostsStore.getState().checkRoutes(3600);
+
+    expect(apiMock.hostsCheck).not.toHaveBeenCalled();
+  });
+
   it("publishes the verified health returned by an explicit install", async () => {
     apiMock.hostsInstall.mockResolvedValue(health);
     apiMock.hostsStatus.mockResolvedValue({
@@ -99,7 +109,7 @@ describe("hosts route health store", () => {
     expect(useHostsStore.getState().health).toEqual(health);
   });
 
-  it("never keeps stale green routes after the protected service fails", async () => {
+  it("keeps the last result when a read-only check itself fails", async () => {
     useHostsStore.setState({ health, status: "installed" });
     apiMock.hostsCheck.mockRejectedValue(
       new Error("Windows runtime-client error: All pipe instances are busy"),
@@ -107,7 +117,7 @@ describe("hosts route health store", () => {
 
     await useHostsStore.getState().checkRoutes(0);
 
-    expect(useHostsStore.getState().health).toBeNull();
+    expect(useHostsStore.getState().health).toEqual(health);
     expect(useHostsStore.getState().error).toContain("pipe instances are busy");
   });
 });

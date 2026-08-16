@@ -167,7 +167,7 @@ export default function App() {
         if (disposed) return;
         if (refreshSnapshot) await launcherBootstrap.refresh();
         else await launcherBootstrap.whenReady();
-        if (!disposed) await useHostsStore.getState().checkRoutes(900);
+        if (!disposed) await useHostsStore.getState().checkRoutes(3600);
       });
     };
     // The runtime service intentionally serializes protected operations. Do not

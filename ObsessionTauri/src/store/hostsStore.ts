@@ -91,13 +91,29 @@ export const useHostsStore = create<HostsState>((set, get) => ({
   checkRoutes: async (maxAgeSeconds = 0) => {
     const existing = routeCheckInFlight;
     if (existing) return existing;
+    if (maxAgeSeconds > 0) {
+      const state = get();
+      if (state.status === "not_installed") return;
+      const checkedAt = state.health?.checkedAtUnix;
+      const ageSeconds = checkedAt == null
+        ? Number.POSITIVE_INFINITY
+        : Math.max(0, Math.floor(Date.now() / 1000) - checkedAt);
+      if (
+        state.health?.preferredProvider === state.provider &&
+        ageSeconds <= maxAgeSeconds
+      ) {
+        return;
+      }
+    }
     routeCheckInFlight = (async () => {
-      set({ busy: true, error: "", health: null });
+      set({ busy: true, error: "" });
       try {
         const health = await api.hostsCheck(maxAgeSeconds);
         set({ health, busy: false });
       } catch (e) {
-        set({ busy: false, error: String(e), health: null });
+        // A failed read-only check does not disprove the last confirmed route.
+        // Keep it visible and surface the check error separately.
+        set({ busy: false, error: String(e) });
       } finally {
         routeCheckInFlight = null;
       }

@@ -48,7 +48,6 @@ const HOSTS_BACKUPS_DIRECTORY: &str = "backups";
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const PROBE_BUDGET: Duration = Duration::from_secs(25);
-const PROBE_BODY_SAMPLE_BYTES: u64 = 16 * 1024;
 const MAX_PROBE_CANDIDATES_PER_DOMAIN: usize = 4;
 const MAX_PARALLEL_PROBES: usize = 6;
 const POST_WRITE_DNS_SETTLE_DELAY: Duration = Duration::from_secs(20);
@@ -141,43 +140,33 @@ impl HostsRouteProber for HttpsRouteProber {
             }
         };
         let url = format!("https://{host}{path}");
-        let attempts = if address.is_some() { 2 } else { 1 };
-        for _ in 0..attempts {
-            let response = match client.get(&url).send() {
-                Ok(response) => response,
-                Err(error) => {
+        let mut last_reason = AiRouteFailureReason::Timeout;
+        for _ in 0..2 {
+            match client.get(&url).send() {
+                // Any valid HTTP response proves that TCP, TLS/SNI and the
+                // selected route work. Reading a response body made slow or
+                // intentionally streaming endpoints produce false timeouts.
+                Ok(_) => {
                     return ProbeOutcome {
-                        working: false,
-                        reason: Some(if error.is_timeout() {
-                            AiRouteFailureReason::Timeout
-                        } else if error.is_connect() {
-                            AiRouteFailureReason::Tls
-                        } else {
-                            AiRouteFailureReason::Dns
-                        }),
+                        working: true,
+                        reason: None,
                         elapsed_millis: elapsed_millis(started),
                     };
                 }
-            };
-            let mut sample = response.take(PROBE_BODY_SAMPLE_BYTES);
-            let mut buffer = [0u8; 4 * 1024];
-            loop {
-                match sample.read(&mut buffer) {
-                    Ok(0) => break,
-                    Ok(_) => {}
-                    Err(_) => {
-                        return ProbeOutcome {
-                            working: false,
-                            reason: Some(AiRouteFailureReason::Timeout),
-                            elapsed_millis: elapsed_millis(started),
-                        };
-                    }
+                Err(error) => {
+                    last_reason = if error.is_timeout() {
+                        AiRouteFailureReason::Timeout
+                    } else if error.is_connect() {
+                        AiRouteFailureReason::Tls
+                    } else {
+                        AiRouteFailureReason::Dns
+                    };
                 }
             }
         }
         ProbeOutcome {
-            working: true,
-            reason: None,
+            working: false,
+            reason: Some(last_reason),
             elapsed_millis: elapsed_millis(started),
         }
     }
@@ -515,7 +504,10 @@ impl HostsController {
                 false,
             )
         } else {
-            check_system_routes(self.prober.clone(), preferred, &plans)
+            stabilize_route_health(
+                self.state.health.as_ref(),
+                check_system_routes(self.prober.clone(), preferred, &plans),
+            )
         };
         self.state.preferred_provider = preferred;
         self.state.health = Some(health.clone());
@@ -1497,6 +1489,38 @@ fn check_system_routes(
     }
 }
 
+fn stabilize_route_health(
+    previous: Option<&HostsHealthSnapshot>,
+    mut fresh: HostsHealthSnapshot,
+) -> HostsHealthSnapshot {
+    let Some(previous) = previous.filter(|snapshot| {
+        snapshot.installed == fresh.installed
+            && snapshot.preferred_provider == fresh.preferred_provider
+    }) else {
+        return fresh;
+    };
+
+    for service in &mut fresh.services {
+        if service.health != AiRouteHealth::Unavailable {
+            continue;
+        }
+        let was_working = previous.services.iter().any(|entry| {
+            entry.service == service.service
+                && entry.health == AiRouteHealth::Working
+                && entry.route == service.route
+                && entry.provider == service.provider
+        });
+        if was_working {
+            service.health = AiRouteHealth::Inconclusive;
+        }
+    }
+    fresh.repair_recommended = fresh
+        .services
+        .iter()
+        .any(|service| service.health == AiRouteHealth::Unavailable);
+    fresh
+}
+
 fn post_write_health_is_valid(plans: &[ServiceRoutePlan], health: &HostsHealthSnapshot) -> bool {
     plans.iter().all(|plan| {
         plan.provider.is_none()
@@ -1942,6 +1966,10 @@ mod tests {
         gemini_system_attempts: std::sync::atomic::AtomicUsize,
     }
 
+    struct SwitchableSystemProber {
+        fail_chatgpt: std::sync::atomic::AtomicBool,
+    }
+
     impl HostsRouteProber for TransientSystemProber {
         fn probe(&self, host: &str, _path: &str, address: Option<Ipv4Addr>) -> ProbeOutcome {
             if CONTROL_TARGETS.iter().any(|target| target.host == host) || address.is_some() {
@@ -1956,6 +1984,20 @@ mod tests {
             ProbeOutcome {
                 working: !transient_failure,
                 reason: transient_failure.then_some(AiRouteFailureReason::Timeout),
+                elapsed_millis: 1,
+            }
+        }
+    }
+
+    impl HostsRouteProber for SwitchableSystemProber {
+        fn probe(&self, host: &str, _path: &str, address: Option<Ipv4Addr>) -> ProbeOutcome {
+            let working = CONTROL_TARGETS.iter().any(|target| target.host == host)
+                || address.is_some()
+                || host != "chatgpt.com"
+                || !self.fail_chatgpt.load(Ordering::SeqCst);
+            ProbeOutcome {
+                working,
+                reason: (!working).then_some(AiRouteFailureReason::Timeout),
                 elapsed_millis: 1,
             }
         }
@@ -2437,6 +2479,53 @@ mod tests {
             .iter()
             .all(|service| service.health == AiRouteHealth::Working));
         assert!(controller.state.pending_rollback.is_none());
+    }
+
+    #[test]
+    fn a_single_failed_health_round_is_inconclusive_before_becoming_unavailable() {
+        let root = temp_root("hybrid-health-confirmation");
+        let address = Ipv4Addr::new(45, 155, 204, 190);
+        let hosts_path = root.join("hosts");
+        fs::write(&hosts_path, b"127.0.0.1 localhost\n").unwrap();
+        let feed = feed_for(address, address, address);
+        let prober = Arc::new(SwitchableSystemProber {
+            fail_chatgpt: std::sync::atomic::AtomicBool::new(false),
+        });
+        let mut controller = HostsController::from_paths(
+            hosts_path,
+            root.join("state/hosts-state.json"),
+            root.join("state/backups"),
+            Arc::new(ProviderDownloader {
+                malw: feed.clone(),
+                geohide: feed,
+            }),
+            prober.clone(),
+        )
+        .unwrap();
+        controller
+            .install(HostsMutationRequest {
+                provider: HostsProvider::Malw,
+            })
+            .unwrap();
+
+        prober.fail_chatgpt.store(true, Ordering::SeqCst);
+        let first = controller.check(0).unwrap();
+        let chatgpt = first
+            .services
+            .iter()
+            .find(|service| service.service == AiService::Chatgpt)
+            .unwrap();
+        assert_eq!(chatgpt.health, AiRouteHealth::Inconclusive);
+        assert!(!first.repair_recommended);
+
+        let second = controller.check(0).unwrap();
+        let chatgpt = second
+            .services
+            .iter()
+            .find(|service| service.service == AiService::Chatgpt)
+            .unwrap();
+        assert_eq!(chatgpt.health, AiRouteHealth::Unavailable);
+        assert!(second.repair_recommended);
     }
 
     #[test]
