@@ -1,64 +1,152 @@
-# Obsession (Tauri)
+# Obsession — руководство разработчика
 
-Порт Flutter-лаунчера **Obsession** на **Tauri** (Rust-бэкенд + React-фронтенд)
-с флагманской темой **Obsession: The Fixation** на чёрном оптическом стекле и пятью открытыми темами: Obsession, Aurora, Ophanim, Rain и Midnight.
+Этот каталог содержит desktop-приложение Obsession, защищённую Windows-службу, общий IPC-протокол и фирменный transactional setup.
+
+Пользовательское описание и ссылка на опубликованный установщик находятся в [корневом README](../README.md).
+
+## Workspace
+
+| Каталог | Назначение |
+|---|---|
+| `src/` | React-интерфейс, Zustand stores, onboarding и визуальные сцены тем. |
+| `src-tauri/` | Tauri host: окно, трей, команды frontend-моста и непривилегированная orchestration-логика. |
+| `runtime-protocol/` | Версионированные request/response/event типы для IPC. |
+| `runtime-client/` | Клиент named pipe с проверкой совместимости и ожиданием занятой службы. |
+| `runtime-service/` | Machine-wide Windows service, выполняющая allowlisted привилегированные операции. |
+| `runtime-reliability/` | Общая логика проверки и восстановления runtime-состояния. |
+| `installer/` | UI и Rust backend фирменного setup размером `720×500`. |
+| `scripts/` | Подготовка manifest/resources и сборка setup. |
+| `docs/` | Спецификации runtime, onboarding и темы Obsession. |
 
 ## Стек
 
-- **Backend:** Rust + Tauri v2 (`tokio`, `reqwest`, `windows`)
-- **Frontend:** React 18 + TypeScript + Vite + Tailwind + Framer Motion + Zustand
+- **Frontend:** React 18, TypeScript, Vite 6, Tailwind CSS, Framer Motion, Zustand.
+- **Desktop host:** Tauri 2 и Rust stable.
+- **Runtime:** Tokio, Windows API, named pipe IPC, WinDivert/winws и TgWsProxy.
+- **Графика:** собственные WebGL2 и Canvas 2D pipelines с SVG/CSS fallback.
+- **Тесты:** Vitest и Rust unit/integration tests для каждого crate.
 
-## Возможности (MVP, этап 1)
+## Требования
 
-- **DPI-обход** (Zapret/winws): категории Discord/YouTube-Twitch/Gaming/Universal,
-  выбор конфигов, тест/авто-подбор, лог реального времени, отлов orphan-процессов
-- **ИИ-разблокировка** (hosts): провайдеры Malw/GeoHide, install/uninstall/check,
-  атомарная запись hosts + бэкап + flushdns
-- **Telegram-прокси** (TgWsProxy): проверенный локальный старт/стоп, `tg://proxy` ссылка и защищённая LAN-публикация по service-owned firewall lease
-- Системный трей, кастомный титлбар, функциональный Onboarding V2 и защищённая
-  служба для привилегированных операций без постоянного UAC
+- Windows 10/11 x64.
+- Node.js 18+ и pnpm 11+.
+- Rust stable с MSVC toolchain.
+- Системные зависимости из [Tauri prerequisites](https://tauri.app/start/prerequisites/).
 
-Этап 2 (в планах): профили, редактор списков, темы, автозапуск, автообновление,
-локализация RU/EN, инсталлятор.
+Установите workspace-зависимости из корня репозитория:
 
-## Разработка
-
-```bash
-npm install
-npm run tauri dev      # dev-режим без self-elevation, работает hot-reload
+```powershell
+pnpm install --frozen-lockfile
 ```
 
-> UI никогда не повышает себя. Привилегированные DPI/hosts-действия доступны
-> только через совместимую службу ObsessionRuntime, установленную setup в
-> Program Files.
+## Запуск
+
+Полный Tauri dev build:
+
+```powershell
+pnpm --dir ObsessionTauri tauri dev
+```
+
+Только Vite поднимает frontend, но основной `App` ожидает Tauri API. Для изолированной работы над сценами используйте специальные harness-страницы, например:
+
+```text
+http://127.0.0.1:1420/obsession-choir-dev.html
+```
+
+> [!IMPORTANT]
+> Dev-приложение не повышает себя до администратора. DPI, `hosts` и firewall-команды доступны только через совместимую установленную службу ObsessionRuntime. Отсутствующая capability должна оставаться fail-closed.
+
+## Проверки
+
+Frontend:
+
+```powershell
+pnpm --dir ObsessionTauri test
+pnpm --dir ObsessionTauri build
+```
+
+Rust formatting и основные crates:
+
+```powershell
+cargo fmt --manifest-path ObsessionTauri/src-tauri/Cargo.toml --all -- --check
+cargo test --manifest-path ObsessionTauri/src-tauri/Cargo.toml
+cargo test --manifest-path ObsessionTauri/runtime-protocol/Cargo.toml
+cargo test --manifest-path ObsessionTauri/runtime-client/Cargo.toml
+cargo test --manifest-path ObsessionTauri/runtime-service/Cargo.toml
+cargo test --manifest-path ObsessionTauri/runtime-reliability/Cargo.toml
+cargo test --manifest-path ObsessionTauri/installer/src-tauri/Cargo.toml
+```
 
 ## Сборка
 
-```bash
-npm run tauri build    # release приложения без current-user setup
-npm run build:setup    # transactional setup + соседний SHA-256 checksum
+Production frontend и Tauri binary:
+
+```powershell
+pnpm --dir ObsessionTauri build
+pnpm --dir ObsessionTauri tauri build
 ```
 
-## Архитектура
+Фирменный setup:
 
-```
-src-tauri/src/
-  paths.rs      appdata-папки + распаковка ресурсов
-  dpi.rs        winws: spawn/kill, стрим лога, orphan, тест
-  proxy.rs      TgWsProxy + manifest verification + tg:// + LAN lease client
-  hosts.rs      atomic hosts write + бэкап + провайдеры
-  net.rs        TCP/HTTP тест доступности
-  onboarding.rs durable plan/apply/verify/rollback через защищённую службу
-  settings.rs   JSON-персист настроек
-  commands.rs   поверхность #[tauri::command]
-  lib.rs        окно, трей, shutdown-хук
-src/
-  lib/tauri.ts       типизированный мост invoke + события
-  store/             Zustand: dpi, proxy, hosts, log
-  design/            Aurora Glass токены + компоненты
-  screens/           Dpi, Ai, Telegram, Soon
+```powershell
+pnpm --dir ObsessionTauri build:setup
 ```
 
-Ресурсы (winws, WinDivert, TgWsProxy, конфиги, списки, иконки) лежат в
-`src-tauri/resources/`, хешируются в runtime manifest и устанавливаются в
-`%ProgramFiles%\Obsession`.
+Результат появляется в `ObsessionTauri/dist-release/`:
+
+```text
+Obsession-Setup_<version>_x64.exe
+Obsession-Setup_<version>_x64.exe.sha256
+```
+
+Setup собирает приложение, службу и проверенные runtime-ресурсы в единый payload. Большая часть размера установщика приходится именно на этот payload, а не на React-интерфейс.
+
+## Архитектурные границы
+
+```mermaid
+flowchart TB
+    FE["React frontend"] -->|"Tauri commands"| HOST["Tauri host"]
+    HOST -->|"runtime-client"| PIPE["versioned named pipe"]
+    PIPE --> SERVICE["ObsessionRuntime service"]
+    SERVICE --> DPI["DPI supervisor"]
+    SERVICE --> HOSTS["hosts transaction"]
+    SERVICE --> PROXY["Telegram / firewall lease"]
+    INSTALLER["Transactional setup"] --> SERVICE
+```
+
+Основные правила:
+
+- frontend не передаёт службе произвольные executable paths, URL, домены или команды оболочки;
+- protocol version и capabilities проверяются до privileged mutation;
+- длительные проверки могут занимать единственный pipe, поэтому runtime-client отличает занятую службу от недоступной;
+- progress events ускоряют UI, но snapshot остаётся источником истины;
+- фоновые health checks являются read-only;
+- установка `hosts` использует pre-operation snapshot, post-write verification и полный rollback при неожиданном отказе;
+- setup выполняет install/update/repair транзакционно и не продолжает обычный retry после неполного rollback.
+
+Подробнее см. [SECURE_RUNTIME_ARCHITECTURE.md](docs/SECURE_RUNTIME_ARCHITECTURE.md) и [ONBOARDING_OVERHAUL_SPEC.md](docs/ONBOARDING_OVERHAUL_SPEC.md).
+
+## Функциональные области
+
+- `src-tauri/src/dpi.rs` — управление Legacy/Zapret2, конфигурациями и логами.
+- `src-tauri/src/legacy_reliability/` — наблюдение, environment gate и подтверждение Legacy-стратегий.
+- `src-tauri/src/adaptive_strategy/` — генерация, проверка и кэш Zapret2-кандидатов.
+- `src-tauri/src/hosts.rs` — frontend-facing façade для protected hosts runtime.
+- `src-tauri/src/onboarding.rs` — durable plan/apply/verify/rollback flow.
+- `src-tauri/src/proxy.rs` — TgWsProxy и LAN lease client.
+- `src/design/components/obsessionChoir/` — Black Choir geometry, motion и WebGL pipeline.
+- `src/store/` — состояние экранов и синхронизация snapshot с UI.
+
+## Ресурсы и безопасность сборки
+
+winws, WinDivert, TgWsProxy, конфигурации и списки находятся в `src-tauri/resources/`. Скрипт подготовки создаёт manifest с хешами, а setup устанавливает payload в `%ProgramFiles%\Obsession`.
+
+Не добавляйте в frontend обходные пути для прямой записи системных файлов или запуска произвольных процессов. Если требуется новая привилегированная возможность, она должна получить отдельный тип протокола, backend-валидацию, capability и тесты отказа.
+
+## Документация
+
+- [Protected runtime architecture](docs/SECURE_RUNTIME_ARCHITECTURE.md)
+- [Onboarding V2 specification](docs/ONBOARDING_OVERHAUL_SPEC.md)
+- [Obsession theme specification](docs/OBSESSION_THEME_SPEC.md)
+
+Автор интерфейса и проекта: **AcediaWhy**.

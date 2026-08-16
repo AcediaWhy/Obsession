@@ -1,167 +1,125 @@
 <div align="center">
 
-<img src="ObsessionTauri/src-tauri/icons/128x128@2x.png" width="120" alt="Obsession — Око" />
+<img src="ObsessionTauri/src-tauri/icons/128x128@2x.png" width="112" alt="Логотип Obsession" />
 
 # Obsession
 
-### Око, которое смотрит на того, кто смотрит на тебя.
+### Сетевой набор для Windows — в одном живом интерфейсе
 
-DPI-обход, ИИ-разблокировка и Telegram-прокси — в одном окне.
+DPI-обход · проверяемые маршруты к ИИ · Telegram-прокси
 
-![Windows](https://img.shields.io/badge/Windows-10%2F11-0078D6?style=flat-square&logo=windows&logoColor=white)
-![Version](https://img.shields.io/badge/version-1.1.0-8a63d2?style=flat-square)
+![Windows](https://img.shields.io/badge/Windows-10%20%2F%2011-0078D6?style=flat-square&logo=windows&logoColor=white)
+![Architecture](https://img.shields.io/badge/architecture-x64-343842?style=flat-square)
+![Version](https://img.shields.io/badge/version-1.1.0-7c2340?style=flat-square)
 ![Tauri](https://img.shields.io/badge/Tauri-2-24C8DB?style=flat-square&logo=tauri&logoColor=white)
+![Development](https://img.shields.io/badge/status-active%20development-2f9e71?style=flat-square)
 
-<br/>
+<br />
 
-[![Скачать Obsession Setup](https://img.shields.io/badge/%E2%86%93-%D0%A1%D0%BA%D0%B0%D1%87%D0%B0%D1%82%D1%8C%20Obsession%20Setup-8a63d2?style=for-the-badge)](https://github.com/Aizenssk-ss/VlarpSu/releases/latest)
+[![Скачать Obsession Setup](https://img.shields.io/badge/%E2%86%93-%D0%A1%D0%BA%D0%B0%D1%87%D0%B0%D1%82%D1%8C%20Obsession%20Setup-7c2340?style=for-the-badge)](https://github.com/Aizenssk-ss/VlarpSu/releases/latest)
 
-<sub>Установщик ~22 МБ · Windows 10/11 · x64 · без зависимостей</sub>
+<sub>Windows 10/11 · x64 · установщик около 43 МиБ · интерфейс работает без постоянного UAC</sub>
 
 </div>
 
 ---
 
-## Что это
+<div align="center">
+  <img src="docs/assets/obsession-ai.png" width="920" alt="Obsession — экран проверяемых маршрутов ChatGPT, Claude и Gemini в теме The Black Choir" />
+  <br />
+  <sub>Obsession: The Black Choir · маршруты ChatGPT, Claude и Gemini проверяются независимо</sub>
+</div>
 
-**Obsession** — десктоп-приложение для Windows, которое возвращает доступ к заблокированному: обходит DPI-фильтрацию (ТСПУ), открывает ИИ-сервисы и поднимает Telegram-прокси. Один экран, один клик, всё в комплекте — отдельные утилиты ставить не нужно.
+## Что такое Obsession
 
-А главное — если ТСПУ подстраивается, Obsession замечает это сам и молча чинит обход. Отсюда и имя.
+**Obsession** объединяет инструменты восстановления сетевой связности в одном приложении для Windows. Оно управляет DPI-обходом, аккуратно устанавливает маршруты для поддерживаемых ИИ-сервисов и запускает локальный Telegram-прокси.
 
----
+Интерфейс не работает от имени администратора. Привилегированные операции выполняет отдельная защищённая служба с ограниченным протоколом: приложение не может передать ей произвольную команду, путь или URL.
 
-## Установка
-
-1. **Скачайте** [«Obsession Setup»](https://github.com/Aizenssk-ss/VlarpSu/releases/latest).
-2. **Запустите** `Obsession-Setup_<версия>_x64.exe` — установщик проведёт через 4 шага (Аврора и глаз прилагаются).
-3. **Запустите Obsession.** Защитный hotfix запускает интерфейс без постоянного запроса UAC.
-4. **Готово.** Obsession живёт в трее — открывайте по клику на иконку-глаз.
-
-> [!IMPORTANT]
-> Защищённые возможности включаются независимо после preflight per-machine runtime. TgWsProxy работает локально из проверенной Program Files-установки; QR и доступ с телефона появляются только при доступном service-owned firewall lease.
-
----
+Obsession — не VPN: приложение не скрывает IP-адрес и не перенаправляет весь трафик. Каждый механизм действует только в своей выбранной области.
 
 ## Возможности
 
-| | Возможность | Детали |
-|:--:|---|---|
-| `net` | **Самовосстановление обхода** | Контур **Глаза → Менеджер сети → Мозг**: наблюдает за трафиком, распознаёт вмешательство ТСПУ и сам переподбирает рабочую стратегию под текущую сеть. → [как это работает](#самовосстановление-обхода) |
-| `dpi` | **DPI-обход** | winws / Zapret. Категории Discord · YouTube/Twitch · Gaming · Universal. Выбор конфигов, тест и авто-подбор, рейтинг надёжности стратегий, лог в реальном времени. |
-| `ai` | **ИИ-разблокировка** | ChatGPT, Claude, Gemini, Perplexity, Poe, HuggingFace, Midjourney через системный `hosts`. Провайдеры Malw / GeoHide, атомарная запись + бэкап + flushdns, авто-проверка обновлений. |
-| `tg` | **Telegram-прокси** | MTProto-через-WebSocket в один клик (headless TgWsProxy). Ссылка `tg://proxy`, **QR для телефона** по LAN, пресеты Fake-TLS, диск-кэш CF-доменов. |
-| `hub` | **Обзор** | Сетевая идентичность и сводный статус обхода / прокси / ИИ на одном экране. |
-| `cfg` | **Профили и списки** | Наборы настроек и встроенный редактор доменных списков. |
-| `ui` | **Темы и атмосфера** | Флагманская Obsession и живые WebGL2/Canvas-фоны. Темы Obsession · Aurora · Ophanim · Rain · Midnight и скрытые. → [галерея](#темы-и-атмосфера) |
-| `sys` | **Система** | Динамическая иконка трея, нативные уведомления, тосты, кастомный титлбар, UAC-элевация, автозапуск, онбординг, персист настроек. |
+| Направление | Что умеет Obsession |
+|---|---|
+| **DPI-обход** | Zapret Legacy и экспериментальный Zapret2, отдельные категории Discord, YouTube/Twitch, Gaming и Universal, ручной выбор конфигурации, тестирование и автоподбор. |
+| **Надёжность** | Запоминает подтверждённую конфигурацию для текущей сети, оценивает состояние категорий и может последовательно проверить альтернативные стратегии. |
+| **ИИ-сервисы** | Отдельно проверяет HTTPS-маршруты к **ChatGPT, Claude и Gemini**. Для каждого сервиса выбирается отвечающий маршрут Malw или GeoHide; фоновая проверка не изменяет `hosts`. |
+| **Telegram** | Локальный TgWsProxy, ссылка `tg://proxy`, QR-код с прямым открытием клиента и опциональный доступ телефона по LAN через временное правило брандмауэра. |
+| **Профили и списки** | Профили настроек, встроенные доменные списки и раздельное управление категориями обхода. |
+| **Первый запуск** | Onboarding V2 проверяет готовность установленной службы, строит план выбранных функций, применяет его транзакционно и показывает раздельный результат проверки. |
+| **Интерфейс** | Трей, уведомления, собственный титлбар, режим уменьшенной анимации и пять открытых тем с WebGL2/Canvas-сценами и выразительными статичными fallback-кадрами. |
 
----
+> [!NOTE]
+> «Маршрут отвечает» означает успешное защищённое соединение без аккаунта, cookies и доступа к содержимому переписки. Это не обещание работоспособности каждой функции стороннего сервиса.
 
-## Самовосстановление обхода
+## Установка
 
-ТСПУ не статичны — они подстраиваются. Поэтому обход в Obsession замкнут в петлю: приложение смотрит на собственный трафик, замечает, когда соединение начинают «резать», и меняет стратегию, пока канал снова не станет чистым. Нажимать ничего не нужно.
+1. Скачайте последний `Obsession-Setup_<версия>_x64.exe` на странице [Releases](https://github.com/Aizenssk-ss/VlarpSu/releases/latest).
+2. При обновлении или восстановлении полностью выйдите из уже запущенной Obsession через меню трея. Установщик не перезаписывает занятые файлы молча.
+3. Запустите установщик и подтвердите UAC. Повышение прав требуется установщику и системной службе, но не обычному интерфейсу.
+4. После первого запуска выберите нужные функции в мастере настройки и дождитесь раздельной проверки результатов.
 
-```text
- Глаза  ──▶  Менеджер сети  ──▶  Мозг  ──▶  чистый канал
- смотрит     ловит ТСПУ          чинит обход
- └────────────────────  ↻ повтор  ─────────────────────┘
+> [!WARNING]
+> Установщик пока не подписан платным Authenticode-сертификатом. Windows SmartScreen может показать предупреждение «Неизвестный издатель». Скачивайте файл только из раздела Releases этого репозитория и сверяйте SHA-256.
+
+Рядом с установщиком публикуется файл `.sha256`. Проверить загрузку можно в PowerShell:
+
+```powershell
+Get-FileHash .\Obsession-Setup_1.1.0_x64.exe -Algorithm SHA256
 ```
 
----
+## Как устроена защищённая часть
 
-## Темы и атмосфера
+```mermaid
+flowchart LR
+    UI["Obsession UI<br/>без elevation"] -->|"типизированный IPC"| RT["ObsessionRuntime<br/>Windows service"]
+    RT --> DPI["DPI engines<br/>winws / WinDivert"]
+    RT --> HOSTS["hosts transaction<br/>snapshot / verify / rollback"]
+    RT --> TG["Telegram runtime<br/>proxy / LAN lease"]
+    SETUP["Transactional setup"] -->|"install / update / repair"| RT
+```
 
-Визуальное лицо приложения — **Obsession: The Fixation**: угольно-чёрное оптическое стекло, жемчужный свет и глубокий кармин вокруг точки фиксации. Интерфейс использует живые фоны на голом WebGL2/Canvas 2D без внешних 3D-движков. Пять открытых тем (**Obsession · Aurora · Ophanim · Rain · Midnight**) и две скрытые (**Catnap · Fallen Down**), которые нужно найти. Для слабых машин есть режим «меньше анимаций».
+- UI остаётся в пользовательской сессии и не получает административный токен.
+- Служба принимает только заранее определённые операции и проверяет совместимость версии протокола.
+- Бинарные ресурсы и конфигурации устанавливаются в `%ProgramFiles%\Obsession` и сверяются с манифестом.
+- Изменение `hosts` выполняется через точный снимок, проверку сети, атомарную запись и повторную проверку; неожиданный сбой возвращает предыдущий файл.
+- Установщик поддерживает установку, обновление, восстановление и откат. Технические подробности пишутся в локальный журнал.
+- Удалённая телеметрия не используется.
+
+Подробнее: [архитектура защищённой службы](ObsessionTauri/docs/SECURE_RUNTIME_ARCHITECTURE.md) и [Onboarding V2](ObsessionTauri/docs/ONBOARDING_OVERHAUL_SPEC.md).
+
+## Визуальная система
+
+Основная тема **Obsession: The Black Choir** строится из многослойной векторной гравировки, оптического стекла, карминовой глубины и глаз, скрытых в общей геометрии. Состояние сцены связано с реальной активностью приложения, но не заменяет текстовые и цветовые индикаторы.
+
+Открытый каталог также включает **Aurora, Ophanim, Rain и Midnight**. В приложении есть необязательные скрытые находки — README намеренно не раскрывает их названия и способ открытия.
 
 <div align="center">
 <table>
 <tr>
-<td align="center"><img src="ObsessionTauri/public/rain/poster.jpg" width="260" alt="Тема Rain — дом у пруда в тумане за мокрым стеклом" /><br/><sub><b>Rain</b></sub></td>
-<td align="center"><img src="ObsessionTauri/public/catnap/poster.jpg" width="260" alt="Скрытая тема Catnap — спящий кот в закатном вагоне" /><br/><sub><b>Catnap</b> · скрытая</sub></td>
-<td align="center"><img src="ObsessionTauri/public/midnight/poster.jpg" width="260" alt="Тема Midnight — фонарь в ночном тумане" /><br/><sub><b>Midnight</b></sub></td>
+<td align="center"><img src="ObsessionTauri/public/rain/poster.jpg" width="360" alt="Rain — дом у пруда за мокрым стеклом" /><br /><sub><b>Rain</b> · мокрое стекло и глубина сцены</sub></td>
+<td align="center"><img src="ObsessionTauri/public/midnight/poster.jpg" width="360" alt="Midnight — фонарь в ночном тумане" /><br /><sub><b>Midnight</b> · ночной туман и мягкий свет</sub></td>
 </tr>
 </table>
-<sub>Постеры выше — живые фоны тем, а не статичные экраны.</sub>
 </div>
 
----
+## Ограничения текущей версии
 
-<details>
-<summary><b>Для разработчиков — сборка из исходников</b></summary>
+- Поддерживаются только Windows 10/11 x64.
+- Доступность DPI-стратегий и сторонних маршрутов зависит от провайдера, региона и текущего состояния внешней инфраструктуры.
+- Zapret2 остаётся экспериментальным; Legacy — рекомендуемый стабильный движок.
+- Доступ телефона к Telegram-прокси требует подходящей LAN-сети и доступной функции управления брандмауэром.
+- README описывает текущую ветку разработки; опубликованная версия может отставать от неё.
 
-<br/>
+## Разработка
 
-Пользователю сборка не нужна — есть [инсталлер](#установка). Этот раздел для тех, кто хочет запустить проект из исходников.
+Команды сборки, устройство workspace, тестовые наборы и правила работы с защищённой службой находятся в [руководстве разработчика](ObsessionTauri/README.md).
 
-### Стек
-
-![Rust](https://img.shields.io/badge/Rust-stable-CE4A2F?style=flat-square&logo=rust&logoColor=white)
-![React](https://img.shields.io/badge/React-18-61DAFB?style=flat-square&logo=react&logoColor=black)
-![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?style=flat-square&logo=typescript&logoColor=white)
-
-| Слой | Технологии |
-|---|---|
-| **Backend** | Rust · Tauri 2 · `tokio` · `reqwest` · `windows` · WinDivert |
-| **Frontend** | React 18 · TypeScript · Vite · Tailwind CSS · Framer Motion · Zustand |
-| **Графика** | Голый WebGL2 + Canvas 2D — собственный конвейер, без 3D-движков |
-
-### Требования
-
-[Node.js](https://nodejs.org/) 18+ · [Rust](https://www.rust-lang.org/tools/install) (stable) · [зависимости Tauri](https://tauri.app/start/prerequisites/) для вашей ОС.
-
-### Запуск и сборка
-
-```bash
-cd ObsessionTauri
-npm install
-npm run tauri dev      # dev-режим с hot-reload
-```
-
-> [!WARNING]
-> Приложение намеренно не запрашивает права администратора при старте. Привилегированные DPI/hosts/firewall-операции выполняет типизированная per-machine служба; недоступные capability остаются fail-closed независимо друг от друга.
-
-```bash
-npm run tauri build    # release + NSIS-инсталлятор; само приложение стартует без UAC
-npm run build:setup    # фирменный установщик «Obsession Setup» → dist-release/
-```
-
-### Архитектура
-
-```
-ObsessionTauri/
-├── src/                     React-фронтенд (Aurora Glass)
-│   ├── screens/             Overview · Dpi · Ai · Telegram · Lists · Profiles · Settings
-│   ├── store/               Zustand: dpi · hosts · proxy · lists · profile · log · theme · …
-│   ├── design/              дизайн-токены, компоненты, WebGL2/Canvas-сцены тем
-│   │   └── components/rain/ конвейер Rain: мир → капли/конденсат → композит
-│   └── lib/tauri.ts         типизированный мост invoke + события
-│
-└── src-tauri/src/           Rust-бэкенд
-    ├── dpi.rs               winws: spawn/kill, стрим лога, orphan, тест
-    ├── eyes/                «Глаза» — наблюдатель трафика (WinDivert)
-    ├── brain/               «Мозг» — авто-восстановление стратегии обхода
-    ├── legacy_reliability/  надёжность Zapret1: оценка, Environment Gate, откат
-    ├── adaptive_strategy/   подбор Strategy Pack для Zapret2 (типизированный DSL)
-    ├── dpi_engine/          абстракция Zapret1/Zapret2 + манифесты паков
-    ├── netcache.rs          рейтинг надёжности конфигов по сети
-    ├── netid.rs             идентификация сети (MAC шлюза → ASN/регион)
-    ├── hosts.rs             атомарная запись hosts + бэкап + провайдеры
-    ├── proxy.rs             TgWsProxy + tg://proxy + LAN-форвардер + кэш доменов
-    ├── profiles.rs          профили настроек
-    ├── lists.rs             доменные списки
-    ├── admin.rs             диагностическая проверка is_elevated
-    ├── security.rs          fail-closed gate до защищённого helper/service
-    ├── settings.rs          JSON-персист настроек
-    ├── commands.rs          поверхность #[tauri::command]
-    └── lib.rs               окно, трей, уведомления, shutdown-хук
-```
-
-Ресурсы (winws, WinDivert, TgWsProxy, конфиги, списки, иконки) лежат в `ObsessionTauri/src-tauri/resources/`, хешируются при сборке и устанавливаются machine-wide в `%ProgramFiles%\Obsession`.
-
-</details>
+Ключевые технологии: **Rust · Tauri 2 · React 18 · TypeScript · Zustand · WebGL2 · Canvas 2D**.
 
 ---
 
 <div align="center">
-<sub>Сделано с одержимостью 👁️</sub>
+<sub>Made by <b>AcediaWhy</b> · сделано с одержимостью</sub>
 </div>
