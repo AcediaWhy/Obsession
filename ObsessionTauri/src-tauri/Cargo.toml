@@ -2,7 +2,7 @@
 name = "obsession"
 version = "1.1.0"
 description = "Obsession — DPI bypass launcher"
-authors = ["VlarpSu"]
+authors = ["AcediaWhy"]
 edition = "2021"
 
 [lib]
