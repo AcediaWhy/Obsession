@@ -18,6 +18,7 @@ import {
 } from "../design/components/atoms";
 import { Uptime } from "../design/components/Uptime";
 import { Icon } from "../design/components/icons";
+import { resolveTelegramQrLink } from "./telegramQrLink";
 
 const FAKE_TLS_PRESETS = ["", "www.google.com", "www.bing.com", "www.cloudflare.com"];
 
@@ -84,14 +85,11 @@ export function TelegramScreen() {
   const lanTimeoutSecs = settings?.lan_publish_secs ?? 0;
   const canStart = s.available;
 
-  // QR-код для телефона: LAN-ссылка (с LAN IP), не 127.0.0.1. В QR кладём
-  // УНИВЕРСАЛЬНУЮ ссылку https://t.me/proxy?... вместо кастомной схемы
-  // tg://proxy?...: её понимает любой сканер и открывает Telegram как deep-link.
-  // Кастомную tg:// многие сканеры не распознают и суют в браузер (симптом:
-  // «перебрасывает в браузер, а не в Telegram»). Кнопка «Открыть в Telegram»
-  // на ПК при этом остаётся на tg:// (s.link).
+  // QR-код для телефона: LAN-ссылка (с LAN IP), не 127.0.0.1. Сохраняем
+  // нативную tg://proxy-схему, чтобы совместимый сканер передал ссылку сразу
+  // установленному Telegram, не открывая промежуточную страницу t.me.
   const rawLink = s.lanLink ?? s.link;
-  const qrLink = rawLink ? rawLink.replace(/^tg:\/\/proxy\?/, "https://t.me/proxy?") : null;
+  const qrLink = resolveTelegramQrLink(rawLink);
   useEffect(() => {
     if (!qrLink) {
       setQr(null);
