@@ -536,7 +536,9 @@ pub async fn resolve(paths: &Paths) -> NetIdentity {
 }
 
 /// Определяет ASN_region через геоIP. Пробует ipinfo.io, при неудаче/недоборе —
-/// фолбэк ip-api.com (ipinfo часто заблокирован ТСПУ — тем же, что мы обходим).
+/// фолбэк ipwho.is (ipinfo часто заблокирован ТСПУ — тем же, что мы обходим).
+/// Оба источника — только HTTPS: подмена ASN/региона по plaintext-HTTP
+/// искажает подбор стратегий.
 /// Возвращает `(asn_region_key, org)`.
 #[cfg(windows)]
 async fn fetch_ipinfo() -> (Option<String>, Option<String>) {
@@ -559,10 +561,10 @@ async fn fetch_ipinfo() -> (Option<String>, Option<String>) {
         }
     }
 
-    // Фолбэк — ip-api.com (иная схема, обычно доступен из РФ).
-    if let Ok(resp) = client.get("http://ip-api.com/json/").send().await {
+    // Фолбэк — ipwho.is (иная схема, обычно доступен из РФ), только HTTPS.
+    if let Ok(resp) = client.get("https://ipwho.is/").send().await {
         if let Ok(body) = resp.text().await {
-            let (asn, region, org) = parse_ipapi(&body);
+            let (asn, region, org) = parse_ipwhois(&body);
             return (asn_region_key(asn.as_deref(), region.as_deref()), org);
         }
     }
@@ -570,37 +572,33 @@ async fn fetch_ipinfo() -> (Option<String>, Option<String>) {
     (None, None)
 }
 
-/// Разбор `ip-api.com/json` (фолбэк, другая схема): `(asn, region_code, org)`.
-/// Поля: `countryCode`="RU", `region`="MOW" (уже ISO-код субъекта), `as`="AS12389 …".
+/// Разбор `https://ipwho.is/` (фолбэк, другая схема): `(asn, region_code, org)`.
+/// Поля: `country_code`="RU", `region_code`="MOW" (уже код субъекта),
+/// `connection.asn`=12389 (число), `connection.org`/`isp`.
 #[cfg_attr(not(windows), allow(dead_code))]
-pub fn parse_ipapi(json: &str) -> (Option<String>, Option<String>, Option<String>) {
+pub fn parse_ipwhois(json: &str) -> (Option<String>, Option<String>, Option<String>) {
     let v: serde_json::Value = match serde_json::from_str(json) {
         Ok(v) => v,
         Err(_) => return (None, None, None),
     };
-    // ip-api сигналит успех строкой status.
-    if v.get("status").and_then(|s| s.as_str()) == Some("fail") {
+    // ipwho.is сигналит неуспех булевым success.
+    if v.get("success").and_then(|s| s.as_bool()) == Some(false) {
         return (None, None, None);
     }
-    let as_field = v.get("as").and_then(|x| x.as_str());
-    let org = v
-        .get("isp")
+    let conn = v.get("connection");
+    let org = conn
+        .and_then(|c| c.get("org"))
         .and_then(|x| x.as_str())
-        .or(as_field)
+        .or_else(|| conn.and_then(|c| c.get("isp")).and_then(|x| x.as_str()))
+        .filter(|s| !s.is_empty())
         .map(|s| s.to_string());
-    let asn = as_field.and_then(|s| {
-        let first = s.split_whitespace().next()?;
-        if first.starts_with("AS")
-            && first.len() > 2
-            && first[2..].chars().all(|c| c.is_ascii_digit())
-        {
-            Some(first.to_string())
-        } else {
-            None
-        }
-    });
-    let country = v.get("countryCode").and_then(|x| x.as_str());
-    let region = v.get("region").and_then(|x| x.as_str());
+    let asn = conn
+        .and_then(|c| c.get("asn"))
+        .and_then(|x| x.as_u64())
+        .filter(|n| *n > 0)
+        .map(|n| format!("AS{n}"));
+    let country = v.get("country_code").and_then(|x| x.as_str());
+    let region = v.get("region_code").and_then(|x| x.as_str());
     let region_code = match (country, region) {
         (Some(c), Some(r)) if !c.is_empty() && !r.is_empty() => {
             Some(format!("{}-{}", c.to_ascii_uppercase(), region_slug(r)))
@@ -732,19 +730,26 @@ Interface: 192.168.1.100 --- 0x2
     }
 
     #[test]
-    fn parses_ipapi_fallback_schema() {
-        let json = r#"{"status":"success","countryCode":"RU","region":"MOW","city":"Moscow","isp":"Rostelecom","as":"AS12389 PJSC Rostelecom"}"#;
-        let (asn, region, org) = parse_ipapi(json);
+    fn parses_ipwhois_fallback_schema() {
+        let json = r#"{"ip":"1.2.3.4","success":true,"country_code":"RU","region_code":"MOW","city":"Moscow","connection":{"asn":12389,"org":"PJSC Rostelecom","isp":"Rostelecom","domain":"rostelecom.ru"}}"#;
+        let (asn, region, org) = parse_ipwhois(json);
         assert_eq!(asn.as_deref(), Some("AS12389"));
         assert_eq!(region.as_deref(), Some("RU-MOW"));
-        assert_eq!(org.as_deref(), Some("Rostelecom"));
+        assert_eq!(org.as_deref(), Some("PJSC Rostelecom"));
         assert_eq!(
             asn_region_key(asn.as_deref(), region.as_deref()).as_deref(),
             Some("AS12389_RU-MOW")
         );
-        // status=fail → всё None.
+        // success=false → всё None.
         assert_eq!(
-            parse_ipapi(r#"{"status":"fail","message":"private range"}"#),
+            parse_ipwhois(r#"{"ip":"127.0.0.1","success":false,"message":"Reserved IP address"}"#),
+            (None, None, None)
+        );
+        // Битый JSON — без паники.
+        assert_eq!(parse_ipwhois("{not json"), (None, None, None));
+        // Нет connection — деградация без паники.
+        assert_eq!(
+            parse_ipwhois(r#"{"ip":"1.2.3.4","success":true,"country_code":"RU"}"#),
             (None, None, None)
         );
     }
