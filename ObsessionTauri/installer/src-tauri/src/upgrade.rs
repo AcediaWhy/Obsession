@@ -1165,6 +1165,24 @@ fn cleanup_legacy_user_install(log: &mut InstallerLog) -> Result<(), String> {
     }
 }
 
+fn record_legacy_cleanup_result(log: &mut InstallerLog, result: Result<(), String>) -> bool {
+    match result {
+        Ok(()) => true,
+        Err(error) => {
+            // The protected machine payload and every current-user launch
+            // pointer are already committed at this point. Legacy cleanup is
+            // post-commit hygiene: keep the successful installation usable and
+            // retry cleanup on a later repair instead of presenting a false
+            // full-install failure.
+            log.write(
+                "WARN",
+                format!("protected legacy cleanup deferred: {error}"),
+            );
+            false
+        }
+    }
+}
+
 pub(crate) fn finalize_machine_user_state(
     target: &Path,
     current_version: &str,
@@ -1211,13 +1229,19 @@ pub(crate) fn finalize_machine_user_state(
     // cleanup begins. At this point every user-facing pointer already targets
     // the protected Program Files installation; a cleanup failure is retryable
     // without restoring the vulnerable legacy launch path.
-    if let Err(error) = cleanup_legacy_user_install(&mut log) {
-        log.write("ERROR", format!("protected legacy cleanup failed: {error}"));
-        return Err(error);
-    }
+    let legacy_cleanup = cleanup_legacy_user_install(&mut log);
+    let legacy_cleanup_complete = record_legacy_cleanup_result(&mut log, legacy_cleanup);
     log.write(
         "INFO",
-        format!("machine user state finalized target={}", target.display()),
+        format!(
+            "machine user state finalized target={} legacy_cleanup={}",
+            target.display(),
+            if legacy_cleanup_complete {
+                "complete"
+            } else {
+                "deferred"
+            }
+        ),
     );
     Ok(())
 }
@@ -1977,6 +2001,22 @@ mod tests {
             .open(&path)
             .unwrap();
         InstallerLog { path, file }
+    }
+
+    #[test]
+    fn rejected_legacy_cleanup_is_logged_as_deferred_and_nonfatal() {
+        let root = TestRoot::new();
+        let mut log = test_log(&root);
+        assert!(!record_legacy_cleanup_result(
+            &mut log,
+            Err("ProtectedResourceInvalid".into())
+        ));
+        drop(log);
+
+        let contents = fs::read_to_string(root.0.join("test.log")).unwrap();
+        assert!(contents.contains("WARN"));
+        assert!(contents.contains("protected legacy cleanup deferred"));
+        assert!(contents.contains("ProtectedResourceInvalid"));
     }
 
     fn mark_owned(path: &Path, version: &str) {

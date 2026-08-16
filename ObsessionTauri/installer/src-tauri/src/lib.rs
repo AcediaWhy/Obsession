@@ -13,7 +13,7 @@ use std::os::windows::ffi::OsStrExt;
 use std::os::windows::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use tauri::{AppHandle, Emitter, Manager, WindowEvent};
 use windows_sys::Win32::Foundation::{
@@ -31,6 +31,7 @@ static PAYLOAD: &[u8] = &[];
 // Пока NSIS работает, прервать установку безопасно нельзя: блокируем закрытие
 // окна (фронт дополнительно прячет ✕).
 static INSTALLING: AtomicBool = AtomicBool::new(false);
+static PROGRESS_SEQUENCE: AtomicU32 = AtomicU32::new(0);
 
 const SETUP_INSTANCE_MUTEX: &str = "Local\\com.vlarpsu.obsession.setup.instance.v1";
 const INSTALL_OPERATION_MUTEX: &str = "Local\\com.vlarpsu.obsession.setup.install.v1";
@@ -44,8 +45,46 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 #[derive(Clone, serde::Serialize)]
 struct Progress {
+    sequence: u32,
     pct: u32,
     stage: &'static str,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+enum InstallerErrorCode {
+    Busy,
+    UacCancelled,
+    DowngradeBlocked,
+    PreflightFailed,
+    InstallFailed,
+    RollbackRestored,
+    RollbackIncomplete,
+    LaunchFailed,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InstallerFailure {
+    code: InstallerErrorCode,
+    retryable: bool,
+    message_code: &'static str,
+    log_path: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+enum InstallerOutcomeMode {
+    Install,
+    Update,
+    Repair,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct InstallerOutcome {
+    dir: String,
+    mode: InstallerOutcomeMode,
+    version: String,
 }
 
 struct NamedMutexGuard {
@@ -113,11 +152,108 @@ impl Drop for InstallingGuard {
 }
 
 fn emit_progress(app: &AppHandle, pct: u32, stage: &'static str) {
-    let _ = app.emit("setup-progress", Progress { pct, stage });
+    let sequence = PROGRESS_SEQUENCE.fetch_add(1, Ordering::SeqCst) + 1;
+    let _ = app.emit(
+        "setup-progress",
+        Progress {
+            sequence,
+            pct,
+            stage,
+        },
+    );
+}
+
+fn installer_failure(error: String, preferred: InstallerErrorCode) -> InstallerFailure {
+    let normalized = error.to_lowercase();
+    let (code, retryable, message_code) = if normalized.contains("отменён пользователем")
+        || normalized.contains("operation was canceled by the user")
+    {
+        (
+            InstallerErrorCode::UacCancelled,
+            true,
+            "installer.error.uac_cancelled",
+        )
+    } else if normalized.contains("более новая версия")
+        || normalized.contains("понижен") && normalized.contains("заблокирован")
+    {
+        (
+            InstallerErrorCode::DowngradeBlocked,
+            false,
+            "installer.error.downgrade_blocked",
+        )
+    } else if normalized.contains("recovery")
+        || normalized.contains("rollback remains pending")
+        || normalized.contains("rollback также завершился ошибкой")
+        || normalized.contains("восстановление не завершено")
+        || normalized.contains("возврат backup также не удался")
+    {
+        (
+            InstallerErrorCode::RollbackIncomplete,
+            false,
+            "installer.error.rollback_incomplete",
+        )
+    } else if normalized.contains("предыдущая версия восстановлена") {
+        (
+            InstallerErrorCode::RollbackRestored,
+            true,
+            "installer.error.rollback_restored",
+        )
+    } else if normalized.contains("уже запущена")
+        || normalized.contains("уже выполняется")
+        || normalized.contains("already running")
+    {
+        (InstallerErrorCode::Busy, true, "installer.error.busy")
+    } else {
+        match preferred {
+            InstallerErrorCode::PreflightFailed => (
+                InstallerErrorCode::PreflightFailed,
+                true,
+                "installer.error.preflight_failed",
+            ),
+            InstallerErrorCode::LaunchFailed => (
+                InstallerErrorCode::LaunchFailed,
+                true,
+                "installer.error.launch_failed",
+            ),
+            _ => (
+                InstallerErrorCode::InstallFailed,
+                true,
+                "installer.error.install_failed",
+            ),
+        }
+    };
+
+    let _ = upgrade::record_preflight_error(error);
+    InstallerFailure {
+        code,
+        retryable,
+        message_code,
+        log_path: Some(
+            upgrade::persistent_log_path()
+                .to_string_lossy()
+                .into_owned(),
+        ),
+    }
+}
+
+fn outcome_mode(mode: upgrade::InstallMode) -> Result<InstallerOutcomeMode, InstallerFailure> {
+    match mode {
+        upgrade::InstallMode::Install => Ok(InstallerOutcomeMode::Install),
+        upgrade::InstallMode::Update => Ok(InstallerOutcomeMode::Update),
+        upgrade::InstallMode::Repair => Ok(InstallerOutcomeMode::Repair),
+        upgrade::InstallMode::Blocked => Err(installer_failure(
+            "Понижение до версии этого setup заблокировано более новой установкой.".into(),
+            InstallerErrorCode::DowngradeBlocked,
+        )),
+    }
 }
 
 fn show_fallback_error(error: String) {
-    let message = upgrade::record_preflight_error(error);
+    let _ = upgrade::record_preflight_error(error);
+    let message = format!(
+        "Не удалось завершить безопасную установку. Технические подробности сохранены в локальном журнале:\n{}",
+        upgrade::persistent_log_path().display()
+    );
     let mut text: Vec<u16> = message.encode_utf16().collect();
     text.push(0);
     let mut title: Vec<u16> = "Obsession Setup".encode_utf16().collect();
@@ -359,9 +495,11 @@ fn validate_install_dir(raw: &str) -> Result<PathBuf, String> {
 }
 
 #[tauri::command]
-fn installer_snapshot(app: AppHandle) -> Result<upgrade::InstallerSnapshot, String> {
-    let mut snapshot = upgrade::installer_snapshot(&app.package_info().version.to_string())?;
-    let install_root = machine_worker::machine_install_root()?;
+fn installer_snapshot(app: AppHandle) -> Result<upgrade::InstallerSnapshot, InstallerFailure> {
+    let mut snapshot = upgrade::installer_snapshot(&app.package_info().version.to_string())
+        .map_err(|error| installer_failure(error, InstallerErrorCode::PreflightFailed))?;
+    let install_root = machine_worker::machine_install_root()
+        .map_err(|error| installer_failure(error, InstallerErrorCode::PreflightFailed))?;
     if install_root.exists() && snapshot.mode == upgrade::InstallMode::Install {
         snapshot.mode = upgrade::InstallMode::Repair;
     }
@@ -375,57 +513,81 @@ async fn install(
     dir: String,
     desktop: bool,
     start_menu: bool,
-) -> Result<String, String> {
-    let _installing = InstallingGuard::acquire()?;
-    let _operation_lock = NamedMutexGuard::acquire(INSTALL_OPERATION_MUTEX)?;
+) -> Result<InstallerOutcome, InstallerFailure> {
+    let _installing = InstallingGuard::acquire()
+        .map_err(|error| installer_failure(error, InstallerErrorCode::Busy))?;
+    let _operation_lock = NamedMutexGuard::acquire(INSTALL_OPERATION_MUTEX)
+        .map_err(|error| installer_failure(error, InstallerErrorCode::Busy))?;
     let current_version = app.package_info().version.to_string();
     if !cfg!(debug_assertions) {
-        let install_root = machine_worker::machine_install_root()?;
+        let install_root = machine_worker::machine_install_root()
+            .map_err(|error| installer_failure(error, InstallerErrorCode::PreflightFailed))?;
         if path_key(Path::new(&dir)) != path_key(&install_root) {
-            return Err(
+            return Err(installer_failure(
                 "Путь установки устарел: Obsession устанавливается только в Program Files.".into(),
-            );
+                InstallerErrorCode::PreflightFailed,
+            ));
         }
         let snapshot = upgrade::installer_snapshot(&current_version)
-            .map_err(upgrade::record_preflight_error)?;
-        if snapshot.mode == upgrade::InstallMode::Blocked {
-            return Err(upgrade::record_preflight_error(format!(
-                "Установлена более новая версия Obsession ({}). Понижение до {current_version} заблокировано.",
-                snapshot.installed_version.as_deref().unwrap_or("неизвестно")
-            )));
-        }
-        return tauri::async_runtime::spawn_blocking(move || {
+            .map_err(|error| installer_failure(error, InstallerErrorCode::PreflightFailed))?;
+        let mode = outcome_mode(snapshot.mode)?;
+        let result_dir = install_root.to_string_lossy().into_owned();
+        let installed_version = current_version.clone();
+        tauri::async_runtime::spawn_blocking(move || {
             emit_progress(&app, 2, "prepare");
             machine_handoff::provision_machine_runtime(desktop, start_menu, |pct, stage| {
                 emit_progress(&app, pct, stage);
             })?;
             emit_progress(&app, 94, "shortcuts");
-            upgrade::finalize_machine_user_state(&install_root, &current_version)?;
+            upgrade::finalize_machine_user_state(&install_root, &installed_version)?;
             emit_progress(&app, 100, "finish");
-            Ok(install_root.to_string_lossy().into_owned())
+            Ok(())
         })
         .await
-        .map_err(|error| format!("Внутренняя ошибка защищённой установки: {error}"))?
-        .map_err(upgrade::record_preflight_error);
+        .map_err(|error| {
+            installer_failure(
+                format!("Внутренняя ошибка защищённой установки: {error}"),
+                InstallerErrorCode::InstallFailed,
+            )
+        })?
+        .map_err(|error| installer_failure(error, InstallerErrorCode::InstallFailed))?;
+        return Ok(InstallerOutcome {
+            dir: result_dir,
+            mode,
+            version: current_version,
+        });
     }
-    let plan =
-        upgrade::prepare_plan(&dir, &current_version).map_err(upgrade::record_preflight_error)?;
+    let plan = upgrade::prepare_plan(&dir, &current_version)
+        .map_err(|error| installer_failure(error, InstallerErrorCode::PreflightFailed))?;
+    let mode = outcome_mode(plan.mode)?;
     // Блокирующая работа (fs, ожидание ребёнка) — строго через
     // tauri::async_runtime (см. историю с паникой tokio::spawn в этом репо).
     tauri::async_runtime::spawn_blocking(move || {
         upgrade::run_install(&app, plan, desktop, start_menu, PAYLOAD)
     })
     .await
-    .map_err(|e| format!("Внутренняя ошибка инсталлера: {e}"))
-    .and_then(|r| r)?;
-    Ok(dir)
+    .map_err(|error| {
+        installer_failure(
+            format!("Внутренняя ошибка инсталлера: {error}"),
+            InstallerErrorCode::InstallFailed,
+        )
+    })?
+    .map_err(|error| installer_failure(error, InstallerErrorCode::InstallFailed))?;
+    Ok(InstallerOutcome {
+        dir,
+        mode,
+        version: current_version,
+    })
 }
 
 #[tauri::command]
-fn launch_app(app: AppHandle, dir: String) -> Result<(), String> {
+fn launch_app(app: AppHandle, dir: String) -> Result<(), InstallerFailure> {
     let exe = Path::new(&dir).join("Obsession.exe");
     if !exe.exists() {
-        return Err(format!("Не найден {}", exe.display()));
+        return Err(installer_failure(
+            format!("Не найден {}", exe.display()),
+            InstallerErrorCode::LaunchFailed,
+        ));
     }
     // The UI must always launch at the caller's medium integrity. Do not turn
     // ERROR_ELEVATION_REQUIRED into a UAC prompt for an executable selected
@@ -433,7 +595,12 @@ fn launch_app(app: AppHandle, dir: String) -> Result<(), String> {
     Command::new(&exe)
         .current_dir(&dir)
         .spawn()
-        .map_err(|e| format!("Не удалось запустить Obsession: {e}"))?;
+        .map_err(|error| {
+            installer_failure(
+                format!("Не удалось запустить Obsession: {error}"),
+                InstallerErrorCode::LaunchFailed,
+            )
+        })?;
     app.exit(0);
     Ok(())
 }
@@ -591,7 +758,6 @@ pub fn run() {
     };
 
     tauri::Builder::default()
-        .plugin(tauri_plugin_dialog::init())
         .on_window_event(|_window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 if INSTALLING.load(Ordering::SeqCst) {

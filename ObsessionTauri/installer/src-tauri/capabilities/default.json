@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Окно инсталлера: базовые права + нативный диалог выбора папки",
+  "description": "Окно инсталлера с минимальным набором локальных разрешений",
   "windows": ["main"],
-  "permissions": ["core:default", "dialog:default"]
+  "permissions": ["core:default"]
 }

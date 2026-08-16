@@ -3,7 +3,8 @@
 //   1) основное приложение собирается без current-user bundle;
 //   2) exact release-layout упаковывается в authenticated machine payload;
 //   3) medium UI + native UAC worker собираются в один exe → dist-release/.
-// Флаг --skip-app: не пересобирать основное приложение, взять готовый layout.
+// Флаг --skip-app: не перелинковывать основной exe. Authenticated resources
+// всегда берутся из актуального src-tauri/resources, а не из старого target.
 
 import { spawnSync } from "node:child_process";
 import crypto from "node:crypto";
@@ -93,13 +94,18 @@ function prepareMachinePayload(conf, version) {
   const releaseDir = path.join(root, "src-tauri", "target", "release");
   const files = [];
   collectMachineFiles(path.join(releaseDir, "obsession.exe"), "obsession.exe", files);
-  const destinations = Object.values(conf.bundle?.resources ?? {});
-  if (destinations.length === 0) {
+  const resourceMappings = Object.entries(conf.bundle?.resources ?? {});
+  if (resourceMappings.length === 0) {
     throw new Error("Tauri bundle не содержит machine resources");
   }
-  for (const destination of destinations) {
+  for (const [source, destination] of resourceMappings) {
+    const sourceRelative = safeMachinePath(source);
     const relative = safeMachinePath(destination);
-    collectMachineFiles(path.join(releaseDir, ...relative.split("/")), relative, files);
+    collectMachineFiles(
+      path.join(root, "src-tauri", ...sourceRelative.split("/")),
+      relative,
+      files,
+    );
   }
   files.sort((left, right) => left.path.localeCompare(right.path, "en"));
   if (files.length === 0 || files.length > MAX_MACHINE_PAYLOAD_FILES) {
@@ -155,6 +161,13 @@ function prepareMachinePayload(conf, version) {
   );
 }
 
+function writeSha256File(file) {
+  const digest = crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+  const checksumFile = `${file}.sha256`;
+  fs.writeFileSync(checksumFile, `${digest}  ${path.basename(file)}\n`, "utf8");
+  return checksumFile;
+}
+
 // Версия — единственный источник: корневой tauri.conf.json.
 const conf = JSON.parse(fs.readFileSync(path.join(root, "src-tauri", "tauri.conf.json"), "utf8"));
 const version = conf.version;
@@ -203,4 +216,6 @@ const outDir = path.join(root, "dist-release");
 fs.mkdirSync(outDir, { recursive: true });
 const out = path.join(outDir, `Obsession-Setup_${version}_x64.exe`);
 fs.copyFileSync(built, out);
+const checksum = writeSha256File(out);
 console.log(`\n✔ Готово: ${path.relative(root, out)} (${mb(fs.statSync(out).size)})`);
+console.log(`✔ SHA-256: ${path.relative(root, checksum)}`);

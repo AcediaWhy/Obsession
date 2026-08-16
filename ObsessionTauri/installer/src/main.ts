@@ -4,9 +4,20 @@ import { listen } from "@tauri-apps/api/event";
 import "./style.css";
 import eyeWebm from "../../src/assets/eye.webm";
 import eyePoster from "../../src/assets/eye-poster.png";
+import {
+  applyProgressEvent,
+  escapeHtml,
+  initialProgressState,
+  installerFailureCopy,
+  normalizeInstallerFailure,
+  type InstallerFailure,
+  type InstallerOutcome,
+  type InstallerProgressEvent,
+} from "./installerState";
 
-type Step = "welcome" | "options" | "installing" | "done" | "error";
+type Step = "bootstrapping" | "welcome" | "options" | "installing" | "done" | "error";
 type InstallMode = "install" | "update" | "repair" | "blocked";
+type RetryAction = "snapshot" | "install" | "launch";
 
 interface InstallerSnapshot {
   dir: string;
@@ -55,6 +66,7 @@ const PHASES = [
 ] as const;
 
 const STEP_INDEX: Record<Step, number> = {
+  bootstrapping: 0,
   welcome: 0,
   options: 1,
   installing: 2,
@@ -63,7 +75,7 @@ const STEP_INDEX: Record<Step, number> = {
 };
 
 const state = {
-  step: "welcome" as Step,
+  step: "bootstrapping" as Step,
   mode: "install" as InstallMode,
   dir: "",
   installedVersion: null as string | null,
@@ -72,7 +84,9 @@ const state = {
   startMenu: true,
   pct: 0,
   stage: "prepare",
-  error: "",
+  progressSequence: initialProgressState.sequence,
+  failure: null as InstallerFailure | null,
+  retryAction: "snapshot" as RetryAction,
 };
 
 function activeMode(): Exclude<InstallMode, "blocked"> {
@@ -164,7 +178,15 @@ function eyeHtml(size: number, quiet = false): string {
   const media = REDUCE_MOTION
     ? `<img src="${eyePoster}" alt="" />`
     : `<video src="${eyeWebm}" poster="${eyePoster}" muted loop playsinline autoplay></video>`;
-  return `<div class="eye-tile${quiet ? " eye-quiet" : ""}" style="--eye-size:${size}px">${media}<span class="eye-ring" aria-hidden="true"></span></div>`;
+  return `<div class="eye-orbit${quiet ? " eye-quiet" : ""}" style="--eye-size:${size}px" aria-hidden="true">
+    <span class="eye-aura"></span>
+    <div class="eye-tile">
+      ${media}
+      <span class="eye-depth"></span>
+      <span class="eye-glint"></span>
+      <span class="eye-ring"></span>
+    </div>
+  </div>`;
 }
 
 function shieldIcon(): string {
@@ -256,7 +278,10 @@ function render() {
   const stage = el("stage");
   const left = el("foot-left");
   const right = el("foot-right");
-  const copy = modeCopy();
+  const copy = Object.fromEntries(
+    Object.entries(modeCopy()).map(([key, value]) => [key, escapeHtml(value)]),
+  ) as unknown as ModeCopy;
+  const safeVersion = escapeHtml(VERSION);
 
   document.body.dataset.step = state.step;
   document.body.dataset.mode = state.mode;
@@ -267,6 +292,17 @@ function render() {
   renderStepper();
 
   switch (state.step) {
+    case "bootstrapping":
+      stage.innerHTML = `
+        <section class="screen bootstrap-screen" aria-busy="true">
+          ${eyeHtml(118, true)}
+          <p class="eyebrow">Obsession Setup</p>
+          <h1 class="screen-title" data-screen-title tabindex="-1">Проверяем установленную версию</h1>
+          <p class="screen-description">Читаем только локальное состояние и завершаем незакрытое восстановление, если оно требуется.</p>
+          <span class="bootstrap-progress" role="progressbar" aria-label="Подготовка установщика"><i></i></span>
+        </section>`;
+      break;
+
     case "welcome":
       stage.innerHTML = `
         <section class="screen welcome-screen">
@@ -276,7 +312,7 @@ function render() {
             <h1 class="hero-title" data-screen-title tabindex="-1">${copy.title}</h1>
             <p class="hero-description">${copy.description}</p>
             <div class="meta-row" aria-label="Информация о версии">
-              <span>v${VERSION}</span><i></i><span>Windows x64</span><i></i><span>~45 МБ</span>
+              <span>v${safeVersion}</span><i></i><span>Windows x64</span><i></i><span>~45 МБ</span>
             </div>
             <div class="trust-note">
               <span class="trust-icon">${shieldIcon()}</span>
@@ -368,7 +404,7 @@ function render() {
             <strong class="progress-percent" id="progress-pct">${state.pct}%</strong>
           </div>
           <div class="progress-card panel">
-            <div class="progress-labels"><span id="stage-line" role="status" aria-live="polite">${STAGE_TEXT[state.stage]}</span><span>v${VERSION}</span></div>
+            <div class="progress-labels"><span id="stage-line" role="status" aria-live="polite">${STAGE_TEXT[state.stage]}</span><span>v${safeVersion}</span></div>
             <div class="progress-track" id="install-progress" role="progressbar" aria-label="Прогресс установки" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${state.pct}" aria-valuetext="${STAGE_TEXT[state.stage]}">
               <div class="progress-fill" id="bar" style="width:${state.pct}%"><span></span></div>
             </div>
@@ -391,7 +427,7 @@ function render() {
           <h1 class="hero-title done-title" data-screen-title tabindex="-1">${copy.done}</h1>
           <p class="hero-description done-description">${copy.doneDescription}</p>
           <div class="result-path"><span>${folderIcon()}</span><code id="done-path"></code></div>
-          <div class="result-meta"><span>Версия v${VERSION}</span><i></i><span>Ярлыки синхронизированы</span></div>
+          <div class="result-meta"><span>Версия v${safeVersion}</span><i></i><span>Ярлыки синхронизированы</span></div>
         </section>`;
       setText("done-path", state.dir);
       left.innerHTML = `<button class="btn btn-ghost" id="quit" type="button">Закрыть</button>`;
@@ -401,28 +437,34 @@ function render() {
       break;
 
     case "error": {
-      const blocked = state.mode === "blocked";
+      const failure = state.failure ?? normalizeInstallerFailure(null, "INSTALL_FAILED");
+      const failureCopy = installerFailureCopy(failure.code);
       stage.innerHTML = `
         <section class="screen error-screen">
           <div class="error-symbol" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 8v5m0 3.5v.1"/><path d="M10.2 4.5 3.4 17a2 2 0 0 0 1.8 3h13.6a2 2 0 0 0 1.8-3L13.8 4.5a2 2 0 0 0-3.6 0Z"/></svg></div>
           <div class="error-content">
-            <p class="eyebrow">${blocked ? "Защита от понижения версии" : "Установка остановлена"}</p>
-            <h1 class="screen-title error-heading" data-screen-title tabindex="-1">${blocked ? "Установлена более новая версия" : "Не удалось завершить операцию"}</h1>
-            <p class="error-summary">${blocked ? "Этот установщик старее уже установленного Obsession. Файлы не изменялись." : "Мы остановились до небезопасных изменений или вернули предыдущую рабочую версию."}</p>
+            <p class="eyebrow">${failureCopy.eyebrow}</p>
+            <h1 class="screen-title error-heading" data-screen-title tabindex="-1">${failureCopy.title}</h1>
+            <p class="error-summary">${failureCopy.summary}</p>
             <div class="error-details panel">
-              <strong>Что произошло</strong>
-              <p id="err-msg"></p>
+              <strong>Безопасное действие</strong>
+              <p>${failure.code === "ROLLBACK_INCOMPLETE" ? "Обычный retry отключён. Новый запуск setup сначала продолжит recovery по защищённому журналу." : "Можно закрыть setup. При допустимом повторе операция снова начнётся с предварительной проверки."}</p>
             </div>
             ${state.logPath ? `<div class="log-row"><span><small>Журнал установки</small><code id="log-path"></code></span><button class="btn btn-secondary btn-compact" id="copy-log" type="button">Скопировать путь</button></div>` : ""}
           </div>
         </section>`;
-      setText("err-msg", state.error);
       setText("log-path", state.logPath);
       left.innerHTML = `<button class="btn btn-ghost" id="quit" type="button">Закрыть</button>`;
-      right.innerHTML = blocked ? "" : `<button class="btn btn-primary" id="retry" type="button">Попробовать снова<span class="btn-arrow" aria-hidden="true">↻</span></button>`;
+      right.innerHTML = failure.retryable ? `<button class="btn btn-primary" id="retry" type="button">${failureCopy.action}<span class="btn-arrow" aria-hidden="true">↻</span></button>` : "";
       bind("quit", () => void closeSetup());
       if (state.logPath) bind("copy-log", () => void copyLogPath());
-      if (!blocked) bind("retry", () => void startInstall());
+      if (failure.retryable) {
+        bind("retry", () => {
+          if (state.retryAction === "snapshot") void loadSnapshot();
+          else if (state.retryAction === "launch") void launchApp();
+          else void startInstall();
+        });
+      }
       break;
     }
   }
@@ -458,20 +500,25 @@ async function startInstall() {
   state.step = "installing";
   state.pct = 0;
   state.stage = "prepare";
+  state.failure = null;
+  state.retryAction = "install";
   render();
   try {
     if (PREVIEW) {
       await runPreviewInstall();
     } else {
-      state.dir = await invoke<string>("install", {
+      const outcome = await invoke<InstallerOutcome>("install", {
         dir: state.dir,
         desktop: state.desktop,
         startMenu: state.startMenu,
       });
+      state.dir = outcome.dir;
+      state.mode = outcome.mode;
     }
     state.step = "done";
   } catch (error) {
-    state.error = String(error);
+    state.failure = normalizeInstallerFailure(error, "INSTALL_FAILED");
+    state.logPath = state.failure.logPath ?? state.logPath;
     state.step = "error";
   } finally {
     installing = false;
@@ -495,7 +542,9 @@ async function launchApp() {
   try {
     await invoke("launch_app", { dir: state.dir });
   } catch (error) {
-    state.error = String(error);
+    state.failure = normalizeInstallerFailure(error, "LAUNCH_FAILED");
+    state.logPath = state.failure.logPath ?? state.logPath;
+    state.retryAction = "launch";
     state.step = "error";
     render();
   }
@@ -532,19 +581,36 @@ function applyPreviewState() {
     state.stage = "finish";
   } else if (preview === "error") {
     state.step = "error";
-    state.error = "Не удалось проверить целостность одного из файлов. Предыдущая версия Obsession восстановлена автоматически.";
+    state.failure = normalizeInstallerFailure({
+      code: "ROLLBACK_RESTORED",
+      retryable: true,
+      messageCode: "installer.error.rollback_restored",
+      logPath: state.logPath,
+    }, "INSTALL_FAILED");
+    state.retryAction = "install";
   } else if (preview === "blocked") {
     state.step = "error";
     state.mode = "blocked";
     state.installedVersion = "1.3.0";
-    state.error = `Установлена Obsession v1.3.0. Понижение до v${VERSION} заблокировано.`;
+    state.failure = normalizeInstallerFailure({
+      code: "DOWNGRADE_BLOCKED",
+      retryable: false,
+      messageCode: "installer.error.downgrade_blocked",
+      logPath: state.logPath,
+    }, "DOWNGRADE_BLOCKED");
   }
 }
 
 if (!PREVIEW) {
-  void listen<{ pct: number; stage: string }>("setup-progress", (event) => {
-    state.pct = event.payload.pct;
-    state.stage = event.payload.stage;
+  void listen<InstallerProgressEvent>("setup-progress", (event) => {
+    const progress = applyProgressEvent(
+      { sequence: state.progressSequence, pct: state.pct, stage: state.stage },
+      event.payload,
+    );
+    if (progress.sequence === state.progressSequence) return;
+    state.progressSequence = progress.sequence;
+    state.pct = progress.pct;
+    state.stage = progress.stage;
     syncProgressView();
   });
 }
@@ -556,27 +622,42 @@ bind("btn-close", () => void closeSetup());
 
 if (!PREVIEW) document.addEventListener("contextmenu", (event) => event.preventDefault());
 
-void (async () => {
-  if (PREVIEW) {
-    applyPreviewState();
-    render();
-    return;
-  }
+async function loadSnapshot() {
+  state.step = "bootstrapping";
+  state.failure = null;
+  state.retryAction = "snapshot";
+  render();
   try {
     const snapshot = await invoke<InstallerSnapshot>("installer_snapshot");
     state.dir = snapshot.dir;
     state.mode = snapshot.mode;
     state.installedVersion = snapshot.installedVersion;
     state.logPath = snapshot.logPath;
+    state.step = "welcome";
     if (snapshot.mode === "blocked") {
-      state.error = `Установлена более новая версия Obsession (${snapshot.installedVersion ?? "неизвестно"}). Понижение до ${VERSION} заблокировано.`;
+      state.failure = {
+        code: "DOWNGRADE_BLOCKED",
+        retryable: false,
+        messageCode: "installer.error.downgrade_blocked",
+        logPath: snapshot.logPath,
+      };
       state.step = "error";
     }
   } catch (error) {
-    state.dir = "C:\\Obsession";
-    state.mode = "blocked";
-    state.error = String(error);
+    state.failure = normalizeInstallerFailure(error, "PREFLIGHT_FAILED");
+    state.logPath = state.failure.logPath ?? state.logPath;
     state.step = "error";
   }
   render();
+}
+
+render();
+
+void (async () => {
+  if (PREVIEW) {
+    applyPreviewState();
+    render();
+    return;
+  }
+  await loadSnapshot();
 })();

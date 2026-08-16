@@ -112,6 +112,8 @@ const MAX_MACHINE_RESULT_SCAN: usize = 4096;
 const MAX_RETAINED_MACHINE_RESULTS: usize = 32;
 const MAX_MACHINE_RESULT_AGE: Duration = Duration::from_secs(14 * 24 * 60 * 60);
 const SERVICE_TRANSITION_TIMEOUT: Duration = Duration::from_secs(30);
+const MACHINE_UPDATE_RENAME_TIMEOUT: Duration = Duration::from_secs(10);
+const MACHINE_UPDATE_RENAME_RETRY_INTERVAL: Duration = Duration::from_millis(100);
 const MACHINE_UPDATE_CLEANUP_TIMEOUT: Duration = Duration::from_secs(10);
 const MACHINE_UPDATE_CLEANUP_RETRY_INTERVAL: Duration = Duration::from_millis(100);
 
@@ -1724,32 +1726,82 @@ fn machine_update_paths(paths: &MachinePaths, transaction_id: &str) -> (PathBuf,
 }
 
 fn durable_rename(source: &Path, destination: &Path) -> Result<(), String> {
-    if !source.exists() || destination.exists() {
-        return Err(format!(
-            "unsafe machine directory rename state: {} -> {}",
-            source.display(),
-            destination.display()
-        ));
-    }
-    reject_reparse_tree(source)?;
     let source_wide = wide_path(source)?;
     let destination_wide = wide_path(destination)?;
-    // SAFETY: both paths are live NUL-terminated buffers and the destination
-    // was checked absent. WRITE_THROUGH asks Windows to flush the rename.
-    unsafe {
-        MoveFileExW(
-            PCWSTR(source_wide.as_ptr()),
-            PCWSTR(destination_wide.as_ptr()),
-            MOVEFILE_WRITE_THROUGH,
-        )
+    durable_rename_with_retry(
+        source,
+        destination,
+        MACHINE_UPDATE_RENAME_TIMEOUT,
+        MACHINE_UPDATE_RENAME_RETRY_INTERVAL,
+        || {
+            // SAFETY: both paths are live NUL-terminated buffers. The helper
+            // revalidates the source tree and absent destination immediately
+            // before every attempt. WRITE_THROUGH asks Windows to flush the
+            // rename before success is reported.
+            match unsafe {
+                MoveFileExW(
+                    PCWSTR(source_wide.as_ptr()),
+                    PCWSTR(destination_wide.as_ptr()),
+                    MOVEFILE_WRITE_THROUGH,
+                )
+            } {
+                Ok(()) => Ok(()),
+                Err(error) => Err((win32_code_from_hresult(error.code().0), error.to_string())),
+            }
+        },
+    )
+}
+
+fn win32_code_from_hresult(code: i32) -> Option<u32> {
+    let code = code as u32;
+    (code & 0xffff_0000 == 0x8007_0000).then_some(code & 0x0000_ffff)
+}
+
+fn durable_rename_with_retry<F>(
+    source: &Path,
+    destination: &Path,
+    timeout: Duration,
+    retry_interval: Duration,
+    mut rename: F,
+) -> Result<(), String>
+where
+    F: FnMut() -> Result<(), (Option<u32>, String)>,
+{
+    let deadline = Instant::now() + timeout;
+    loop {
+        if !source.exists() || destination.exists() {
+            return Err(format!(
+                "unsafe machine directory rename state: {} -> {}",
+                source.display(),
+                destination.display()
+            ));
+        }
+        // Do not trade path safety for availability: a delayed rename must
+        // still reject any reparse point introduced between attempts.
+        reject_reparse_tree(source)?;
+        match rename() {
+            Ok(()) => return Ok(()),
+            Err((code, _))
+                if code.is_some_and(retryable_machine_rename_code) && Instant::now() < deadline =>
+            {
+                std::thread::sleep(retry_interval);
+            }
+            Err((_, error)) => {
+                return Err(format!(
+                    "could not durably rename {} -> {}: {error}",
+                    source.display(),
+                    destination.display()
+                ));
+            }
+        }
     }
-    .map_err(|error| {
-        format!(
-            "could not durably rename {} -> {}: {error}",
-            source.display(),
-            destination.display()
-        )
-    })
+}
+
+fn retryable_machine_rename_code(code: u32) -> bool {
+    // SCM can publish SERVICE_STOPPED just before the service executable and
+    // its driver image sections are fully released. These are the bounded,
+    // transient Windows lock errors that are safe to retry after revalidation.
+    matches!(code, 5 | 32 | 33)
 }
 
 fn cleanup_machine_update_directory(
@@ -2417,7 +2469,7 @@ fn register_machine_uninstall(paths: &MachinePaths, version: &str) -> Result<(),
         .map_err(|error| format!("could not create HKLM uninstall registration: {error}"))?;
     key.set_value("DisplayName", &"Obsession")
         .and_then(|()| key.set_value("DisplayVersion", &version))
-        .and_then(|()| key.set_value("Publisher", &"VlarpSu"))
+        .and_then(|()| key.set_value("Publisher", &"AcediaWhy"))
         .and_then(|()| {
             key.set_value(
                 "InstallLocation",
@@ -3176,6 +3228,88 @@ mod tests {
             b"old app"
         );
         assert!(!stage.exists());
+        assert!(load_machine_update_journal(&paths).unwrap().is_none());
+        drop(test);
+    }
+
+    #[test]
+    fn durable_rename_retries_transient_windows_locks() {
+        let test = TestDirectory::new();
+        let source = test.0.join("source");
+        let destination = test.0.join("destination");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("payload.bin"), b"payload").unwrap();
+        let mut attempts = 0usize;
+
+        durable_rename_with_retry(
+            &source,
+            &destination,
+            Duration::from_secs(1),
+            Duration::ZERO,
+            || {
+                attempts += 1;
+                if attempts < 3 {
+                    return Err((Some(32), "simulated sharing violation".into()));
+                }
+                fs::rename(&source, &destination).map_err(|error| {
+                    (
+                        error.raw_os_error().map(|code| code as u32),
+                        error.to_string(),
+                    )
+                })
+            },
+        )
+        .unwrap();
+
+        assert_eq!(attempts, 3);
+        assert!(!source.exists());
+        assert_eq!(
+            fs::read(destination.join("payload.bin")).unwrap(),
+            b"payload"
+        );
+    }
+
+    #[test]
+    fn rename_retry_decodes_only_win32_hresult_values() {
+        assert_eq!(win32_code_from_hresult(0x8007_0020u32 as i32), Some(32));
+        assert_eq!(win32_code_from_hresult(0x8007_0005u32 as i32), Some(5));
+        assert_eq!(win32_code_from_hresult(0x8000_4005u32 as i32), None);
+    }
+
+    #[test]
+    fn persistent_target_lock_keeps_old_payload_and_rolls_back_safely() {
+        let (test, paths, _, new) = update_test_fixture();
+        let transaction_id = "c".repeat(32);
+        let (stage, backup) = machine_update_paths(&paths, &transaction_id);
+        fs::create_dir(&stage).unwrap();
+        let new_payload = parse_machine_payload(&new).unwrap();
+        materialize_machine_payload(&new_payload, &stage).unwrap();
+        let mut journal = MachineUpdateJournal::new(&transaction_id, true);
+        journal
+            .write_phase(&paths, MachineUpdatePhase::Prepared)
+            .unwrap();
+        journal
+            .write_phase(&paths, MachineUpdatePhase::Committing)
+            .unwrap();
+
+        let rename_error = durable_rename_with_retry(
+            &paths.install_root,
+            &backup,
+            Duration::ZERO,
+            Duration::ZERO,
+            || Err((Some(32), "persistent sharing violation".into())),
+        )
+        .unwrap_err();
+        assert!(rename_error.contains("persistent sharing violation"));
+
+        let mut service = TestMachineUpdateService;
+        rollback_machine_update(&paths, &journal, &mut service).unwrap();
+        assert_eq!(
+            fs::read(paths.install_root.join(MACHINE_MAIN_BINARY)).unwrap(),
+            b"old app"
+        );
+        assert!(!stage.exists());
+        assert!(!backup.exists());
         assert!(load_machine_update_journal(&paths).unwrap().is_none());
         drop(test);
     }
