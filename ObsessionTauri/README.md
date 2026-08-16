@@ -1,7 +1,7 @@
 # Obsession (Tauri)
 
 Порт Flutter-лаунчера **Obsession** на **Tauri** (Rust-бэкенд + React-фронтенд)
-с премиум-дизайном **Aurora Glass** (тёмный glassmorphism).
+с флагманской темой **Obsession: The Fixation** на чёрном оптическом стекле и пятью открытыми темами: Obsession, Aurora, Ophanim, Rain и Midnight.
 
 ## Стек
 
@@ -15,7 +15,8 @@
 - **ИИ-разблокировка** (hosts): провайдеры Malw/GeoHide, install/uninstall/check,
   атомарная запись hosts + бэкап + flushdns
 - **Telegram-прокси** (TgWsProxy): проверенный локальный старт/стоп, `tg://proxy` ссылка и защищённая LAN-публикация по service-owned firewall lease
-- Системный трей, кастомный титлбар, UAC-элевация, персист настроек
+- Системный трей, кастомный титлбар, функциональный Onboarding V2 и защищённая
+  служба для привилегированных операций без постоянного UAC
 
 Этап 2 (в планах): профили, редактор списков, темы, автозапуск, автообновление,
 локализация RU/EN, инсталлятор.
@@ -24,17 +25,18 @@
 
 ```bash
 npm install
-npm run tauri dev      # dev-режим (UAC-релонч отключён, работает hot-reload)
+npm run tauri dev      # dev-режим без self-elevation, работает hot-reload
 ```
 
-> ⚠️ В **dev**-сборке приложение НЕ запрашивает права администратора, поэтому
-> реальный обход winws и запись в hosts не работают (нужны права). Для проверки
-> обхода собери и запусти release-сборку.
+> UI никогда не повышает себя. Привилегированные DPI/hosts-действия доступны
+> только через совместимую службу ObsessionRuntime, установленную setup в
+> Program Files.
 
 ## Сборка
 
 ```bash
-npm run tauri build    # release + NSIS-инсталлятор; при запуске запросит UAC
+npm run tauri build    # release приложения без current-user setup
+npm run build:setup    # transactional setup + соседний SHA-256 checksum
 ```
 
 ## Архитектура
@@ -46,7 +48,7 @@ src-tauri/src/
   proxy.rs      TgWsProxy + manifest verification + tg:// + LAN lease client
   hosts.rs      atomic hosts write + бэкап + провайдеры
   net.rs        TCP/HTTP тест доступности
-  admin.rs      is_elevated + UAC-релонч
+  onboarding.rs durable plan/apply/verify/rollback через защищённую службу
   settings.rs   JSON-персист настроек
   commands.rs   поверхность #[tauri::command]
   lib.rs        окно, трей, shutdown-хук
