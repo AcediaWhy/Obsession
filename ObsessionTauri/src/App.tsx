@@ -160,7 +160,19 @@ export default function App() {
   useEffect(() => {
     const unlisten = initLogStream();
     const releaseBootstrap = launcherBootstrap.acquire();
-    void useHostsStore.getState().checkRoutes(900);
+    let disposed = false;
+    let protectedRefreshQueue = Promise.resolve();
+    const scheduleProtectedRefresh = (refreshSnapshot: boolean) => {
+      protectedRefreshQueue = protectedRefreshQueue.then(async () => {
+        if (disposed) return;
+        if (refreshSnapshot) await launcherBootstrap.refresh();
+        else await launcherBootstrap.whenReady();
+        if (!disposed) await useHostsStore.getState().checkRoutes(900);
+      });
+    };
+    // The runtime service intentionally serializes protected operations. Do not
+    // race the potentially long AI route probe against startup hydration.
+    scheduleProtectedRefresh(false);
 
     // Прогрев тяжёлой ленивой сцены (Rain/WebGL) — ТОЛЬКО когда окно впервые
     // становится видимым (вызывается из резюм-ветки ниже). При старте в трее
@@ -188,8 +200,7 @@ export default function App() {
       setWindowShown(visible);
       if (visible) {
         void win.showWebview();
-        void launcherBootstrap.refresh();
-        void useHostsStore.getState().checkRoutes(900);
+        scheduleProtectedRefresh(true);
         scheduleWarm();
       } else {
         void win.hideWebview();
@@ -208,6 +219,7 @@ export default function App() {
     });
 
     return () => {
+      disposed = true;
       releaseBootstrap();
       unlisten.then((fn) => fn()).catch(() => {});
       unlistenVis.then((fn) => fn()).catch(() => {});

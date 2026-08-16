@@ -13,7 +13,7 @@ use obsession_runtime_protocol::{
 use windows::core::{w, Error as WindowsError, HRESULT, PCWSTR};
 use windows::Win32::Foundation::{
     CloseHandle, GetLastError, ERROR_FILE_NOT_FOUND, ERROR_INSUFFICIENT_BUFFER, ERROR_PIPE_BUSY,
-    GENERIC_READ, GENERIC_WRITE, HANDLE,
+    ERROR_SEM_TIMEOUT, GENERIC_READ, GENERIC_WRITE, HANDLE,
 };
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, ReadFile, WriteFile, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_NONE, OPEN_EXISTING,
@@ -33,6 +33,10 @@ const SERVICE_RELATIVE_PATH: [&str; 3] = ["Obsession", "runtime", "Obsession.Run
 const SERVICE_NAME: PCWSTR = w!("ObsessionRuntime");
 const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
 const MAX_PROCESS_PATH_UTF16: usize = 32_768;
+/// The service deliberately owns one authenticated pipe instance and serializes
+/// protected operations. A route-health probe may hold it for up to 25 seconds,
+/// which is not evidence that the service disappeared.
+const MIN_BUSY_PIPE_WAIT: Duration = Duration::from_secs(30);
 
 #[derive(Debug)]
 pub enum ClientError {
@@ -103,29 +107,75 @@ impl RuntimeClient {
 
     fn open_authenticated_pipe(&self) -> Result<OwnedHandle, ClientError> {
         let pipe_name = runtime_pipe_name_wide();
-        wait_for_pipe(&pipe_name, self.timeout)?;
+        let started = Instant::now();
+        let unavailable_deadline = started + self.timeout;
+        let busy_deadline = started + self.timeout.max(MIN_BUSY_PIPE_WAIT);
+        let mut observed_busy = false;
 
-        let pipe = unsafe {
-            CreateFileW(
-                PCWSTR(pipe_name.as_ptr()),
-                GENERIC_READ.0 | GENERIC_WRITE.0,
-                FILE_SHARE_NONE,
-                None,
-                OPEN_EXISTING,
-                FILE_ATTRIBUTE_NORMAL | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION,
-                None,
-            )?
-        };
-        let pipe = OwnedHandle(pipe);
-        verify_pipe_server(pipe.0)?;
-        Ok(pipe)
+        loop {
+            wait_for_pipe(
+                &pipe_name,
+                unavailable_deadline,
+                busy_deadline,
+                self.timeout,
+                observed_busy,
+            )?;
+
+            let opened = unsafe {
+                CreateFileW(
+                    PCWSTR(pipe_name.as_ptr()),
+                    GENERIC_READ.0 | GENERIC_WRITE.0,
+                    FILE_SHARE_NONE,
+                    None,
+                    OPEN_EXISTING,
+                    FILE_ATTRIBUTE_NORMAL | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION,
+                    None,
+                )
+            };
+            match opened {
+                Ok(pipe) => {
+                    let pipe = OwnedHandle(pipe);
+                    verify_pipe_server(pipe.0)?;
+                    return Ok(pipe);
+                }
+                // Another authenticated client can win the narrow race between
+                // WaitNamedPipeW and CreateFileW. Keep the same absolute busy
+                // deadline instead of reporting that the service vanished.
+                Err(error) if is_busy_pipe_error(&error) => {
+                    observed_busy = true;
+                    if Instant::now() >= busy_deadline {
+                        return Err(ClientError::Windows(error));
+                    }
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(error)
+                    if is_missing_pipe_error(&error)
+                        && (Instant::now() < unavailable_deadline
+                            || (observed_busy && Instant::now() < busy_deadline)) =>
+                {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => return Err(ClientError::Windows(error)),
+            }
+        }
     }
 }
 
-fn wait_for_pipe(pipe_name: &[u16], timeout: Duration) -> Result<(), ClientError> {
-    let deadline = Instant::now() + timeout;
+fn wait_for_pipe(
+    pipe_name: &[u16],
+    unavailable_deadline: Instant,
+    busy_deadline: Instant,
+    republication_grace: Duration,
+    mut observed_busy: bool,
+) -> Result<(), ClientError> {
     let mut last_error = WindowsError::from_win32();
+    let mut missing_after_busy_deadline = None;
     loop {
+        let deadline = missing_after_busy_deadline.unwrap_or(if observed_busy {
+            busy_deadline
+        } else {
+            unavailable_deadline
+        });
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
             return Err(ClientError::Windows(last_error));
@@ -139,6 +189,17 @@ fn wait_for_pipe(pipe_name: &[u16], timeout: Duration) -> Result<(), ClientError
         if !matches_retryable_wait_error(&last_error) {
             return Err(ClientError::Windows(last_error));
         }
+        if is_busy_pipe_error(&last_error) {
+            observed_busy = true;
+            missing_after_busy_deadline = None;
+        } else if observed_busy && missing_after_busy_deadline.is_none() {
+            // Between serialized instances the well-known pipe can briefly be
+            // absent. Give the service its normal discovery window to publish
+            // the next listener, but do not wait the full busy budget after a
+            // service crash.
+            missing_after_busy_deadline =
+                Some((Instant::now() + republication_grace).min(busy_deadline));
+        }
         // A missing first instance fails immediately instead of honoring the
         // WaitNamedPipe timeout, so retry under the caller's total deadline.
         thread::sleep(Duration::from_millis(10));
@@ -146,8 +207,16 @@ fn wait_for_pipe(pipe_name: &[u16], timeout: Duration) -> Result<(), ClientError
 }
 
 fn matches_retryable_wait_error(error: &WindowsError) -> bool {
+    is_missing_pipe_error(error) || is_busy_pipe_error(error)
+}
+
+fn is_missing_pipe_error(error: &WindowsError) -> bool {
     error.code() == HRESULT::from_win32(ERROR_FILE_NOT_FOUND.0)
-        || error.code() == HRESULT::from_win32(ERROR_PIPE_BUSY.0)
+}
+
+fn is_busy_pipe_error(error: &WindowsError) -> bool {
+    error.code() == HRESULT::from_win32(ERROR_PIPE_BUSY.0)
+        || error.code() == HRESULT::from_win32(ERROR_SEM_TIMEOUT.0)
 }
 
 struct OwnedHandle(HANDLE);
@@ -418,6 +487,14 @@ mod tests {
             RuntimeClient::new(Duration::from_millis(u32::MAX as u64 + 1)),
             Err(ClientError::InvalidTimeout)
         ));
+    }
+
+    #[test]
+    fn semaphore_timeout_is_a_retryable_busy_pipe_signal() {
+        let error = WindowsError::from_hresult(HRESULT::from_win32(ERROR_SEM_TIMEOUT.0));
+        assert!(matches_retryable_wait_error(&error));
+        assert!(is_busy_pipe_error(&error));
+        assert!(!is_missing_pipe_error(&error));
     }
 
     #[test]
