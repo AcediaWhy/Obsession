@@ -12,6 +12,7 @@ import type {
   AiRouteHealth,
   AiRouteKind,
   AiService,
+  HostsRouteProvider,
 } from "../lib/tauri";
 
 const SERVICES: { id: AiService; name: string; owner: string }[] = [
@@ -38,6 +39,12 @@ const ROUTE_LABEL: Record<AiRouteKind, string> = {
   preferred: "основной",
   fallback: "резервный",
   direct: "прямой, без обхода",
+};
+
+const PROVIDER_LABEL: Record<HostsRouteProvider, string> = {
+  malw: "Malw",
+  geohide: "GeoHide",
+  comss: "Comss",
 };
 
 const REASON_LABEL: Record<AiRouteFailureReason, string> = {
@@ -121,8 +128,9 @@ export function AiScreen() {
               <strong>Malw:</strong> зеркала резолвятся через DNS Cloudflare.
               {" "}
               <strong>GeoHide:</strong> GeoIP-обход, иногда медленнее. Если
-              выбранный источник не отвечает для отдельного сервиса, runtime
-              подставляет проверенный маршрут второго источника.
+              выбранный источник не отвечает для ChatGPT или Claude, runtime
+              подставляет проверенный маршрут второго источника. Для Gemini
+              сначала используется быстрый маршрут Comss, затем GeoHide.
             </p>
           </div>
 
@@ -153,7 +161,7 @@ export function AiScreen() {
                     </div>
                     <div className="mt-1 min-w-0 break-words text-3xs leading-4 text-ink-muted">
                       {route
-                        ? `${ROUTE_LABEL[route.route]}${route.provider ? ` · ${route.provider === "malw" ? "Malw" : "GeoHide"}` : ""}`
+                        ? `${ROUTE_LABEL[route.route]}${route.provider ? ` · ${PROVIDER_LABEL[route.provider]}` : ""}`
                         : "источник пока не определён"}
                     </div>
                     {route?.reason && (

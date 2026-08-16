@@ -10,7 +10,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u16 = 2;
+pub const PROTOCOL_VERSION: u16 = 3;
 pub const RUNTIME_PIPE_NAME: &str = r"\\.\pipe\ObsessionRuntime.v1";
 pub const MAX_FRAME_BYTES: usize = 64 * 1024;
 pub const MAX_REQUEST_ID_BYTES: usize = 64;
@@ -627,6 +627,7 @@ impl DpiStopRequest {
 pub enum HostsProvider {
     Malw,
     Geohide,
+    Comss,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1884,6 +1885,16 @@ mod tests {
             }),
         );
         assert_eq!(request.validate(), Err(ProtocolError::InvalidHostsCheck));
+    }
+
+    #[test]
+    fn comss_route_provider_round_trips_in_camel_case_contract() {
+        let encoded = serde_json::to_string(&HostsProvider::Comss).unwrap();
+        assert_eq!(encoded, "\"comss\"");
+        assert_eq!(
+            serde_json::from_str::<HostsProvider>(&encoded).unwrap(),
+            HostsProvider::Comss
+        );
     }
 
     #[test]

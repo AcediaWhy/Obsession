@@ -58,6 +58,7 @@ export type AiRouteHealth =
   | "inconclusive"
   | "unchecked";
 export type AiRouteKind = "preferred" | "fallback" | "direct";
+export type HostsRouteProvider = "malw" | "geohide" | "comss";
 export type AiRouteFailureReason =
   | "timeout"
   | "tls"
@@ -70,12 +71,12 @@ export interface AiServiceRouteHealth {
   service: AiService;
   health: AiRouteHealth;
   route: AiRouteKind;
-  provider: "malw" | "geohide" | null;
+  provider: HostsRouteProvider | null;
   reason: AiRouteFailureReason | null;
 }
 
 export interface HostsHealthSnapshot {
-  preferredProvider: "malw" | "geohide";
+  preferredProvider: HostsRouteProvider;
   installed: boolean;
   checkedAtUnix: number | null;
   repairRecommended: boolean;

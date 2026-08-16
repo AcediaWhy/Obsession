@@ -46,6 +46,22 @@ const HOSTS_STATE_DIRECTORY: &str = "hosts";
 const HOSTS_STATE_FILE: &str = "hosts-state.json";
 const HOSTS_BACKUPS_DIRECTORY: &str = "backups";
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30);
+const COMSS_DOH_TIMEOUT: Duration = Duration::from_secs(4);
+const COMSS_DOH_HOST: &str = "dns.comss.one";
+const COMSS_DOH_PATH: &str = "/dns-query";
+const COMSS_DOH_BOOTSTRAP: Ipv4Addr = Ipv4Addr::new(195, 133, 25, 16);
+const MAX_DNS_RESPONSE_BYTES: usize = 64 * 1024;
+const COMSS_GEMINI_DOMAINS: [&str; 9] = [
+    "gemini.google.com",
+    "gemini.google",
+    "bard.google.com",
+    "aistudio.google.com",
+    "generativelanguage.googleapis.com",
+    "aisandbox-pa.googleapis.com",
+    "robinfrontend-pa.googleapis.com",
+    "alkalimakersuite-pa.clients6.google.com",
+    "webchannel-alkalimakersuite-pa.clients6.google.com",
+];
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const PROBE_BUDGET: Duration = Duration::from_secs(25);
 const MAX_PROBE_CANDIDATES_PER_DOMAIN: usize = 4;
@@ -57,6 +73,7 @@ const ATOMIC_WRITE_RETRY_DELAYS_MS: [u64; 3] = [40, 120, 360];
 const CREATE_NO_WINDOW_FLAG: u32 = CREATE_NO_WINDOW.0;
 
 static OPERATION_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+static DNS_QUERY_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 trait HostsDownloader: Send + Sync {
     fn download(&self, provider: HostsProvider) -> Result<Vec<u8>, BackendError>;
@@ -75,6 +92,7 @@ trait HostsRouteProber: Send + Sync {
 
 struct HttpHostsDownloader {
     client: reqwest::blocking::Client,
+    comss_client: reqwest::blocking::Client,
 }
 
 impl HttpHostsDownloader {
@@ -84,12 +102,90 @@ impl HttpHostsDownloader {
             .user_agent("Obsession-Runtime/1.1")
             .build()
             .map_err(|_| BackendError::ServiceUnavailable)?;
-        Ok(Self { client })
+        let comss_client = reqwest::blocking::Client::builder()
+            .timeout(COMSS_DOH_TIMEOUT)
+            .connect_timeout(COMSS_DOH_TIMEOUT)
+            .redirect(reqwest::redirect::Policy::none())
+            .no_proxy()
+            .resolve(COMSS_DOH_HOST, SocketAddr::from((COMSS_DOH_BOOTSTRAP, 443)))
+            .user_agent("Obsession-Runtime/1.1")
+            .build()
+            .map_err(|_| BackendError::ServiceUnavailable)?;
+        Ok(Self {
+            client,
+            comss_client,
+        })
+    }
+
+    fn download_comss_hosts(&self) -> Result<Vec<u8>, BackendError> {
+        let resolved = Mutex::new(BTreeMap::<&'static str, Vec<Ipv4Addr>>::new());
+        std::thread::scope(|scope| {
+            for domain in COMSS_GEMINI_DOMAINS {
+                let resolved = &resolved;
+                scope.spawn(move || {
+                    if let Ok(addresses) = self.resolve_comss_ipv4(domain) {
+                        if !addresses.is_empty() {
+                            resolved
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .insert(domain, addresses);
+                        }
+                    }
+                });
+            }
+        });
+        let resolved = resolved
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if resolved.is_empty() {
+            return Err(BackendError::RuntimeFailed);
+        }
+        let mut hosts =
+            String::from("# Comss.one DNS, resolved dynamically over authenticated DoH\n");
+        for (domain, addresses) in resolved {
+            for address in addresses {
+                hosts.push_str(&format!("{address} {domain}\n"));
+            }
+        }
+        Ok(hosts.into_bytes())
+    }
+
+    fn resolve_comss_ipv4(&self, domain: &str) -> Result<Vec<Ipv4Addr>, BackendError> {
+        let transaction_id = DNS_QUERY_SEQUENCE.fetch_add(1, Ordering::Relaxed) as u16;
+        let query = build_dns_query(domain, transaction_id)?;
+        let response = self
+            .comss_client
+            .post(format!("https://{COMSS_DOH_HOST}{COMSS_DOH_PATH}"))
+            .header(reqwest::header::ACCEPT, "application/dns-message")
+            .header(reqwest::header::CONTENT_TYPE, "application/dns-message")
+            .body(query)
+            .send()
+            .map_err(|_| BackendError::RuntimeFailed)?
+            .error_for_status()
+            .map_err(|_| BackendError::RuntimeFailed)?;
+        if response
+            .content_length()
+            .is_some_and(|length| length > MAX_DNS_RESPONSE_BYTES as u64)
+        {
+            return Err(BackendError::ProtectedResourceInvalid);
+        }
+        let mut bytes = Vec::new();
+        response
+            .take(MAX_DNS_RESPONSE_BYTES as u64 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|_| BackendError::RuntimeFailed)?;
+        if bytes.len() > MAX_DNS_RESPONSE_BYTES {
+            return Err(BackendError::ProtectedResourceInvalid);
+        }
+        parse_dns_a_response(&bytes, transaction_id, domain)
     }
 }
 
 impl HostsDownloader for HttpHostsDownloader {
     fn download(&self, provider: HostsProvider) -> Result<Vec<u8>, BackendError> {
+        if provider == HostsProvider::Comss {
+            return self.download_comss_hosts();
+        }
         let response = self
             .client
             .get(provider_url(provider))
@@ -146,12 +242,15 @@ impl HostsRouteProber for HttpsRouteProber {
                 // Any valid HTTP response proves that TCP, TLS/SNI and the
                 // selected route work. Reading a response body made slow or
                 // intentionally streaming endpoints produce false timeouts.
-                Ok(_) => {
+                Ok(response) if !is_google_sorry_redirect(host, &response) => {
                     return ProbeOutcome {
                         working: true,
                         reason: None,
                         elapsed_millis: elapsed_millis(started),
                     };
+                }
+                Ok(_) => {
+                    last_reason = AiRouteFailureReason::Tls;
                 }
                 Err(error) => {
                     last_reason = if error.is_timeout() {
@@ -170,6 +269,205 @@ impl HostsRouteProber for HttpsRouteProber {
             elapsed_millis: elapsed_millis(started),
         }
     }
+}
+
+fn build_dns_query(domain: &str, transaction_id: u16) -> Result<Vec<u8>, BackendError> {
+    let domain = domain.trim_end_matches('.');
+    if !valid_domain(domain) || domain.len() > 253 {
+        return Err(BackendError::ProtectedResourceInvalid);
+    }
+    let mut query = Vec::with_capacity(domain.len() + 18);
+    query.extend_from_slice(&transaction_id.to_be_bytes());
+    query.extend_from_slice(&0x0100u16.to_be_bytes());
+    query.extend_from_slice(&1u16.to_be_bytes());
+    query.extend_from_slice(&0u16.to_be_bytes());
+    query.extend_from_slice(&0u16.to_be_bytes());
+    query.extend_from_slice(&0u16.to_be_bytes());
+    for label in domain.split('.') {
+        let length =
+            u8::try_from(label.len()).map_err(|_| BackendError::ProtectedResourceInvalid)?;
+        if length == 0 || length > 63 {
+            return Err(BackendError::ProtectedResourceInvalid);
+        }
+        query.push(length);
+        query.extend_from_slice(label.as_bytes());
+    }
+    query.push(0);
+    query.extend_from_slice(&1u16.to_be_bytes());
+    query.extend_from_slice(&1u16.to_be_bytes());
+    Ok(query)
+}
+
+fn parse_dns_a_response(
+    message: &[u8],
+    transaction_id: u16,
+    expected_domain: &str,
+) -> Result<Vec<Ipv4Addr>, BackendError> {
+    if message.len() < 12
+        || dns_u16(message, 0) != Some(transaction_id)
+        || dns_u16(message, 2).is_none_or(|flags| flags & 0x8000 == 0 || flags & 0x000f != 0)
+        || dns_u16(message, 4) != Some(1)
+    {
+        return Err(BackendError::ProtectedResourceInvalid);
+    }
+    let record_count = usize::from(dns_u16(message, 6).unwrap_or(0))
+        + usize::from(dns_u16(message, 8).unwrap_or(0))
+        + usize::from(dns_u16(message, 10).unwrap_or(0));
+    if record_count > 512 {
+        return Err(BackendError::ProtectedResourceInvalid);
+    }
+    let expected_domain = expected_domain.trim_end_matches('.').to_ascii_lowercase();
+    let mut cursor = 12usize;
+    let question =
+        read_dns_name(message, &mut cursor).ok_or(BackendError::ProtectedResourceInvalid)?;
+    if question != expected_domain
+        || dns_u16(message, cursor) != Some(1)
+        || dns_u16(message, cursor + 2) != Some(1)
+    {
+        return Err(BackendError::ProtectedResourceInvalid);
+    }
+    cursor += 4;
+
+    let mut aliases = Vec::<(String, String)>::new();
+    let mut addresses = Vec::<(String, Ipv4Addr)>::new();
+    for _ in 0..record_count {
+        let owner =
+            read_dns_name(message, &mut cursor).ok_or(BackendError::ProtectedResourceInvalid)?;
+        let record_type = dns_u16(message, cursor).ok_or(BackendError::ProtectedResourceInvalid)?;
+        let class = dns_u16(message, cursor + 2).ok_or(BackendError::ProtectedResourceInvalid)?;
+        let data_length = usize::from(
+            dns_u16(message, cursor + 8).ok_or(BackendError::ProtectedResourceInvalid)?,
+        );
+        cursor = cursor
+            .checked_add(10)
+            .ok_or(BackendError::ProtectedResourceInvalid)?;
+        let data_end = cursor
+            .checked_add(data_length)
+            .filter(|end| *end <= message.len())
+            .ok_or(BackendError::ProtectedResourceInvalid)?;
+        if class == 1 && record_type == 1 && data_length == 4 {
+            addresses.push((
+                owner,
+                Ipv4Addr::new(
+                    message[cursor],
+                    message[cursor + 1],
+                    message[cursor + 2],
+                    message[cursor + 3],
+                ),
+            ));
+        } else if class == 1 && record_type == 5 {
+            let mut alias_cursor = cursor;
+            let target = read_dns_name(message, &mut alias_cursor)
+                .ok_or(BackendError::ProtectedResourceInvalid)?;
+            if alias_cursor > data_end && message[cursor] & 0xc0 != 0xc0 {
+                return Err(BackendError::ProtectedResourceInvalid);
+            }
+            aliases.push((owner, target));
+        }
+        cursor = data_end;
+    }
+
+    let mut allowed = BTreeSet::from([expected_domain]);
+    for _ in 0..=aliases.len() {
+        let mut changed = false;
+        for (owner, target) in &aliases {
+            if allowed.contains(owner) {
+                changed |= allowed.insert(target.clone());
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    let mut result = Vec::new();
+    for (owner, address) in addresses {
+        if allowed.contains(&owner) && is_probeable_ipv4(address) && !result.contains(&address) {
+            result.push(address);
+        }
+    }
+    if result.is_empty() {
+        Err(BackendError::RuntimeFailed)
+    } else {
+        Ok(result)
+    }
+}
+
+fn dns_u16(message: &[u8], offset: usize) -> Option<u16> {
+    Some(u16::from_be_bytes([
+        *message.get(offset)?,
+        *message.get(offset + 1)?,
+    ]))
+}
+
+fn read_dns_name(message: &[u8], cursor: &mut usize) -> Option<String> {
+    let mut position = *cursor;
+    let mut jumped = false;
+    let mut jumps = 0usize;
+    let mut labels = Vec::new();
+    loop {
+        let length = *message.get(position)?;
+        if length & 0xc0 == 0xc0 {
+            let next = *message.get(position + 1)?;
+            let pointer = (usize::from(length & 0x3f) << 8) | usize::from(next);
+            if pointer >= message.len() || jumps >= 32 {
+                return None;
+            }
+            if !jumped {
+                *cursor = position + 2;
+                jumped = true;
+            }
+            position = pointer;
+            jumps += 1;
+            continue;
+        }
+        if length & 0xc0 != 0 || length > 63 {
+            return None;
+        }
+        position += 1;
+        if length == 0 {
+            if !jumped {
+                *cursor = position;
+            }
+            return Some(labels.join("."));
+        }
+        let end = position.checked_add(usize::from(length))?;
+        let label = std::str::from_utf8(message.get(position..end)?).ok()?;
+        if label.is_empty() || !label.is_ascii() {
+            return None;
+        }
+        labels.push(label.to_ascii_lowercase());
+        position = end;
+    }
+}
+
+fn is_google_sorry_redirect(host: &str, response: &reqwest::blocking::Response) -> bool {
+    response.status().is_redirection()
+        && response
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|location| google_sorry_location(host, location))
+}
+
+fn google_sorry_location(request_host: &str, location: &str) -> bool {
+    let relative_path = location.split(['?', '#']).next().unwrap_or(location);
+    if relative_path == "/sorry" || relative_path.starts_with("/sorry/") {
+        return is_google_hostname(request_host);
+    }
+    let absolute = if location.starts_with("//") {
+        format!("https:{location}")
+    } else {
+        location.to_owned()
+    };
+    reqwest::Url::parse(&absolute).ok().is_some_and(|url| {
+        url.host_str().is_some_and(is_google_hostname)
+            && (url.path() == "/sorry" || url.path().starts_with("/sorry/"))
+    })
+}
+
+fn is_google_hostname(host: &str) -> bool {
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    host == "google.com" || host.ends_with(".google.com")
 }
 
 fn elapsed_millis(started: Instant) -> u64 {
@@ -364,6 +662,7 @@ fn other_provider(provider: HostsProvider) -> HostsProvider {
     match provider {
         HostsProvider::Malw => HostsProvider::Geohide,
         HostsProvider::Geohide => HostsProvider::Malw,
+        HostsProvider::Comss => HostsProvider::Geohide,
     }
 }
 
@@ -542,13 +841,23 @@ impl HostsController {
             fallback_provider,
             &self.downloader.download(fallback_provider)?,
         )?;
+        let comss_feed = if provider == HostsProvider::Comss {
+            Some(preferred_feed.clone())
+        } else {
+            self.downloader
+                .download(HostsProvider::Comss)
+                .ok()
+                .and_then(|payload| prepare_payload(HostsProvider::Comss, &payload).ok())
+        };
         let plans = plan_service_routes(
             self.prober.clone(),
             provider,
             &preferred_feed,
             &fallback_feed,
+            comss_feed.as_ref(),
         );
-        let managed_payload = render_hybrid_payload(&preferred_feed, &fallback_feed, &plans)?;
+        let managed_payload =
+            render_hybrid_payload(&preferred_feed, &fallback_feed, comss_feed.as_ref(), &plans)?;
         let prepared = merge_preserving_user_entries(
             &managed_payload,
             &current,
@@ -1071,6 +1380,7 @@ fn provider_url(provider: HostsProvider) -> &'static str {
         HostsProvider::Geohide => {
             "https://github.com/Internet-Helper/GeoHideDNS/raw/refs/heads/main/hosts/hosts"
         }
+        HostsProvider::Comss => "https://dns.comss.one/dns-query",
     }
 }
 
@@ -1078,6 +1388,7 @@ fn provider_key(provider: HostsProvider) -> &'static str {
     match provider {
         HostsProvider::Malw => "malw",
         HostsProvider::Geohide => "geohide",
+        HostsProvider::Comss => "comss",
     }
 }
 
@@ -1092,9 +1403,13 @@ fn contains_marker(bytes: &[u8], provider: HostsProvider) -> bool {
 }
 
 fn detect_managed_provider(bytes: &[u8]) -> Option<HostsProvider> {
-    [HostsProvider::Malw, HostsProvider::Geohide]
-        .into_iter()
-        .find(|provider| contains_marker(bytes, *provider))
+    [
+        HostsProvider::Malw,
+        HostsProvider::Geohide,
+        HostsProvider::Comss,
+    ]
+    .into_iter()
+    .find(|provider| contains_marker(bytes, *provider))
 }
 
 fn prepare_payload(
@@ -1241,9 +1556,13 @@ fn plan_service_routes(
     preferred_provider: HostsProvider,
     preferred: &PreparedFeed,
     fallback: &PreparedFeed,
+    comss: Option<&PreparedFeed>,
 ) -> Vec<ServiceRoutePlan> {
     let mut jobs = BTreeMap::<ProbeKey, ProbeJob>::new();
-    for feed in [preferred, fallback] {
+    for feed in [Some(preferred), Some(fallback), comss]
+        .into_iter()
+        .flatten()
+    {
         for service in all_services() {
             for target in probe_targets(service) {
                 if let Some(candidates) = feed.ipv4.get(target.host) {
@@ -1270,6 +1589,39 @@ fn plan_service_routes(
     all_services()
         .into_iter()
         .map(|service| {
+            if service == AiService::Gemini {
+                if let Some((feed, selected_candidates)) = comss.and_then(|feed| {
+                    viable_feed_candidates(feed, service, &results).map(|selected| (feed, selected))
+                }) {
+                    return ServiceRoutePlan {
+                        service,
+                        route: AiRouteKind::Preferred,
+                        provider: Some(feed.provider),
+                        selected_candidates,
+                    };
+                }
+                if let Some((feed, selected_candidates)) = [preferred, fallback]
+                    .into_iter()
+                    .find(|feed| feed.provider == HostsProvider::Geohide)
+                    .and_then(|feed| {
+                        viable_feed_candidates(feed, service, &results)
+                            .map(|selected| (feed, selected))
+                    })
+                {
+                    return ServiceRoutePlan {
+                        service,
+                        route: AiRouteKind::Fallback,
+                        provider: Some(feed.provider),
+                        selected_candidates,
+                    };
+                }
+                return ServiceRoutePlan {
+                    service,
+                    route: AiRouteKind::Direct,
+                    provider: None,
+                    selected_candidates: BTreeMap::new(),
+                };
+            }
             if let Some(selected_candidates) = viable_feed_candidates(preferred, service, &results)
             {
                 return ServiceRoutePlan {
@@ -1328,6 +1680,7 @@ fn viable_feed_candidates(
 fn render_hybrid_payload(
     preferred: &PreparedFeed,
     fallback: &PreparedFeed,
+    comss: Option<&PreparedFeed>,
     plans: &[ServiceRoutePlan],
 ) -> Result<Vec<u8>, BackendError> {
     let mut output = String::with_capacity(preferred.normalized.len());
@@ -1363,11 +1716,11 @@ fn render_hybrid_payload(
         let Some(provider) = plan.provider else {
             continue;
         };
-        let feed = if provider == preferred.provider {
-            preferred
-        } else {
-            fallback
-        };
+        let feed = [Some(preferred), Some(fallback), comss]
+            .into_iter()
+            .flatten()
+            .find(|feed| feed.provider == provider)
+            .ok_or(BackendError::ProtectedResourceInvalid)?;
         for (domain, candidates) in &feed.ipv4 {
             if service_for_domain(domain) != Some(plan.service) {
                 continue;
@@ -1935,6 +2288,7 @@ mod tests {
             Ok(match provider {
                 HostsProvider::Malw => self.malw.clone(),
                 HostsProvider::Geohide => self.geohide.clone(),
+                HostsProvider::Comss => return Err(BackendError::RuntimeFailed),
             })
         }
     }
@@ -2076,6 +2430,130 @@ mod tests {
             Arc::new(StaticProber),
         )
         .unwrap()
+    }
+
+    fn dns_a_response(domain: &str, transaction_id: u16, addresses: &[Ipv4Addr]) -> Vec<u8> {
+        let mut response = build_dns_query(domain, transaction_id).unwrap();
+        response[2..4].copy_from_slice(&0x8180u16.to_be_bytes());
+        response[6..8].copy_from_slice(&(addresses.len() as u16).to_be_bytes());
+        for address in addresses {
+            response.extend_from_slice(&[0xc0, 0x0c]);
+            response.extend_from_slice(&1u16.to_be_bytes());
+            response.extend_from_slice(&1u16.to_be_bytes());
+            response.extend_from_slice(&60u32.to_be_bytes());
+            response.extend_from_slice(&4u16.to_be_bytes());
+            response.extend_from_slice(&address.octets());
+        }
+        response
+    }
+
+    #[test]
+    fn comss_dns_response_keeps_dynamic_public_candidates() {
+        let first = Ipv4Addr::new(45, 88, 174, 254);
+        let second = Ipv4Addr::new(45, 88, 175, 10);
+        let private = Ipv4Addr::new(10, 0, 0, 7);
+        let response = dns_a_response(
+            "gemini.google.com",
+            0x1234,
+            &[first, second, first, private],
+        );
+
+        assert_eq!(
+            parse_dns_a_response(&response, 0x1234, "gemini.google.com").unwrap(),
+            vec![first, second]
+        );
+        assert_eq!(
+            parse_dns_a_response(&response, 0x4321, "gemini.google.com"),
+            Err(BackendError::ProtectedResourceInvalid)
+        );
+    }
+
+    #[test]
+    fn google_sorry_redirect_is_rejected_but_aistudio_welcome_is_allowed() {
+        assert!(google_sorry_location(
+            "gemini.google.com",
+            "https://www.google.com/sorry/index?continue=gemini"
+        ));
+        assert!(google_sorry_location("aistudio.google.com", "/sorry/index"));
+        assert!(!google_sorry_location(
+            "aistudio.google.com",
+            "https://aistudio.google.com/welcome"
+        ));
+        assert!(!google_sorry_location("chatgpt.com", "/sorry/index"));
+    }
+
+    #[test]
+    fn gemini_prefers_comss_before_a_faster_geohide_route() {
+        let malw = Ipv4Addr::new(62, 133, 62, 97);
+        let geohide = Ipv4Addr::new(37, 230, 192, 51);
+        let comss_address = Ipv4Addr::new(45, 88, 174, 254);
+        let preferred = prepare_payload(HostsProvider::Malw, &feed_for(malw, malw, malw)).unwrap();
+        let fallback =
+            prepare_payload(HostsProvider::Geohide, &feed_for(geohide, geohide, geohide)).unwrap();
+        let comss = prepare_payload(
+            HostsProvider::Comss,
+            &feed_for(comss_address, comss_address, comss_address),
+        )
+        .unwrap();
+
+        let plans = plan_service_routes(
+            Arc::new(RankedProber(BTreeMap::from([
+                (malw, 100),
+                (geohide, 200),
+                (comss_address, 900),
+            ]))),
+            HostsProvider::Malw,
+            &preferred,
+            &fallback,
+            Some(&comss),
+        );
+        let gemini = plans
+            .iter()
+            .find(|plan| plan.service == AiService::Gemini)
+            .unwrap();
+
+        assert_eq!(gemini.route, AiRouteKind::Preferred);
+        assert_eq!(gemini.provider, Some(HostsProvider::Comss));
+        assert!(gemini
+            .selected_candidates
+            .values()
+            .all(|address| *address == comss_address));
+        let rendered = String::from_utf8(
+            render_hybrid_payload(&preferred, &fallback, Some(&comss), &plans).unwrap(),
+        )
+        .unwrap();
+        assert!(rendered.contains("45.88.174.254 gemini.google.com"));
+        assert!(!rendered.contains("37.230.192.51 gemini.google.com"));
+    }
+
+    #[test]
+    fn gemini_falls_back_to_geohide_when_comss_is_unreachable() {
+        let malw = Ipv4Addr::new(62, 133, 62, 97);
+        let geohide = Ipv4Addr::new(37, 230, 192, 51);
+        let comss_address = Ipv4Addr::new(45, 88, 174, 254);
+        let preferred = prepare_payload(HostsProvider::Malw, &feed_for(malw, malw, malw)).unwrap();
+        let fallback =
+            prepare_payload(HostsProvider::Geohide, &feed_for(geohide, geohide, geohide)).unwrap();
+        let comss = prepare_payload(
+            HostsProvider::Comss,
+            &feed_for(comss_address, comss_address, comss_address),
+        )
+        .unwrap();
+
+        let plans = plan_service_routes(
+            Arc::new(RankedProber(BTreeMap::from([(geohide, 400)]))),
+            HostsProvider::Malw,
+            &preferred,
+            &fallback,
+            Some(&comss),
+        );
+        let gemini = plans
+            .iter()
+            .find(|plan| plan.service == AiService::Gemini)
+            .unwrap();
+
+        assert_eq!(gemini.route, AiRouteKind::Fallback);
+        assert_eq!(gemini.provider, Some(HostsProvider::Geohide));
     }
 
     #[test]
@@ -2300,6 +2778,7 @@ mod tests {
             HostsProvider::Malw,
             &preferred,
             &fallback,
+            None,
         );
         let gemini = plans
             .iter()
