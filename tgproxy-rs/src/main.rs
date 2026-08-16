@@ -19,9 +19,13 @@ mod splitter;
 mod ws;
 
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use tokio::net::TcpListener;
+use tokio::sync::Semaphore;
+
+const MAX_CONCURRENT_CLIENTS: usize = 512;
 
 fn main() -> ExitCode {
     let argv: Vec<String> = std::env::args().skip(1).collect();
@@ -74,13 +78,15 @@ async fn run(args: cli::Args, secret: [u8; 16]) -> Result<(), String> {
     let cf_relay: Option<Arc<cfrelay::CfRelay>> = if args.no_cfproxy {
         None
     } else {
-        Some(Arc::new(cfrelay::CfRelay::new(args.cfproxy_cache.as_deref())))
+        Some(Arc::new(cfrelay::CfRelay::new(
+            args.cfproxy_cache.as_deref(),
+        )))
     };
     let worker_domains = Arc::new(args.cfproxy_worker_domains.clone());
 
     logger::info("  Telegram MTProto WS Bridge Proxy (obsession, rust)");
     logger::info(format!("  Listening on   {}:{}", args.host, args.port));
-    logger::info(format!("  Secret:        {}", args.secret));
+    logger::info("  Secret:        [redacted]");
     if let Some(domain) = &args.fake_tls_domain {
         logger::info(format!("  Fake TLS:      {domain}"));
     }
@@ -123,13 +129,33 @@ async fn run(args: cli::Args, secret: [u8; 16]) -> Result<(), String> {
         no_direct: args.no_direct,
         masking: args.fake_tls_domain.clone(),
     });
+    let client_slots = Arc::new(Semaphore::new(MAX_CONCURRENT_CLIENTS));
+    let rejected_clients = Arc::new(AtomicU64::new(0));
 
     loop {
         tokio::select! {
             accepted = listener.accept() => match accepted {
                 Ok((stream, _)) => {
-                    let ctx = ctx.clone();
-                    tokio::spawn(bridge::handle_client(stream, ctx));
+                    match client_slots.clone().try_acquire_owned() {
+                        Ok(permit) => {
+                            let ctx = ctx.clone();
+                            tokio::spawn(async move {
+                                let _permit = permit;
+                                bridge::handle_client(stream, ctx).await;
+                            });
+                        }
+                        Err(_) => {
+                            // Drop закрывает принятый сокет немедленно. Логируем
+                            // первый и каждый 128-й отказ, чтобы флуд не раздувал лог.
+                            let rejected = rejected_clients.fetch_add(1, Ordering::Relaxed) + 1;
+                            if rejected == 1 || rejected.is_multiple_of(128) {
+                                logger::warn(format!(
+                                    "connection limit reached ({MAX_CONCURRENT_CLIENTS}); rejected {rejected} clients"
+                                ));
+                            }
+                            drop(stream);
+                        }
+                    }
                 }
                 Err(error) => logger::warn(format!("accept: {error}")),
             },

@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use base64::Engine;
 use rand::RngCore;
+use sha1::{Digest, Sha1};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader, ReadHalf, WriteHalf};
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
@@ -14,6 +15,7 @@ use tokio_rustls::client::TlsStream;
 use tokio_rustls::TlsConnector;
 
 pub const MAX_MESSAGE_LEN: usize = 16 * 1024 * 1024;
+const WS_GUID: &[u8] = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
 const OP_CONT: u8 = 0x0;
 const OP_BINARY: u8 = 0x2;
@@ -108,19 +110,24 @@ impl WsReader {
     /// ответом на пинги). `None` — соединение закрыто любой из сторон.
     pub async fn recv(&mut self) -> Option<Vec<u8>> {
         let mut fragment = Vec::new();
+        let mut fragmenting = false;
         loop {
             let frame = read_frame(&mut self.read).await?;
             match frame.opcode {
                 OP_BINARY => {
-                    if !fragment.is_empty() {
+                    if fragmenting {
                         return None; // новый дата-фрейм посреди фрагментации
                     }
                     if frame.fin {
                         return Some(frame.payload);
                     }
+                    fragmenting = true;
                     fragment = frame.payload;
                 }
                 OP_CONT => {
+                    if !fragmenting {
+                        return None; // continuation без начального data frame
+                    }
                     fragment.extend_from_slice(&frame.payload);
                     if fragment.len() > MAX_MESSAGE_LEN {
                         return None;
@@ -159,20 +166,21 @@ pub async fn connect(
     timeout: std::time::Duration,
     connector: &TlsConnector,
 ) -> Result<(WsReader, Arc<WsWriter>), ConnectError> {
-    let tcp = tokio::time::timeout(timeout, TcpStream::connect((ip, 443)))
+    let deadline = tokio::time::Instant::now() + timeout;
+    let tcp = tokio::time::timeout_at(deadline, TcpStream::connect((ip, 443)))
         .await
         .map_err(|_| ConnectError::Timeout)?
         .map_err(ConnectError::Io)?;
     let _ = tcp.set_nodelay(true);
 
-    let server_name = rustls::pki_types::ServerName::try_from(domain.to_string())
-        .map_err(|error| {
+    let server_name =
+        rustls::pki_types::ServerName::try_from(domain.to_string()).map_err(|error| {
             ConnectError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 format!("invalid server name: {error}"),
             ))
         })?;
-    let tls = tokio::time::timeout(timeout, connector.connect(server_name, tcp))
+    let tls = tokio::time::timeout_at(deadline, connector.connect(server_name, tcp))
         .await
         .map_err(|_| ConnectError::Timeout)?
         .map_err(ConnectError::Tls)?;
@@ -195,7 +203,7 @@ pub async fn connect(
          \r\n"
     );
 
-    let headers_raw = tokio::time::timeout(timeout, async {
+    let headers_raw = tokio::time::timeout_at(deadline, async {
         write.write_all(request.as_bytes()).await?;
         write.flush().await?;
 
@@ -227,26 +235,7 @@ pub async fn connect(
     .map_err(|_| ConnectError::Timeout)?
     .map_err(ConnectError::Io)?;
 
-    let text = String::from_utf8_lossy(&headers_raw);
-    let mut lines = text.lines();
-    let first_line = lines.next().unwrap_or_default();
-    let status_code: u16 = first_line
-        .split(' ')
-        .nth(1)
-        .and_then(|code| code.parse().ok())
-        .unwrap_or(0);
-    if status_code != 101 {
-        let location = lines.find_map(|line| {
-            let (name, value) = line.split_once(':')?;
-            (name.trim().eq_ignore_ascii_case("location"))
-                .then(|| value.trim().to_string())
-        });
-        return Err(ConnectError::Handshake(WsHandshakeError {
-            status_code,
-            status_line: first_line.to_string(),
-            location,
-        }));
-    }
+    validate_server_handshake(&headers_raw, &ws_key)?;
 
     let writer = Arc::new(WsWriter {
         write: Mutex::new(write),
@@ -258,6 +247,91 @@ pub async fn connect(
         },
         writer,
     ))
+}
+
+fn validate_server_handshake(headers_raw: &[u8], ws_key: &str) -> Result<(), ConnectError> {
+    let text = std::str::from_utf8(headers_raw).map_err(|error| {
+        ConnectError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("non-UTF8 websocket response: {error}"),
+        ))
+    })?;
+    let mut lines = text.split("\r\n");
+    let first_line = lines.next().unwrap_or_default();
+    let status_code: u16 = first_line
+        .split_ascii_whitespace()
+        .nth(1)
+        .and_then(|code| code.parse().ok())
+        .unwrap_or(0);
+    let mut location = None;
+    let mut upgrade = None;
+    let mut connection = None;
+    let mut accept = None;
+    let mut protocol = None;
+    for line in lines.filter(|line| !line.is_empty()) {
+        let Some((name, value)) = line.split_once(':') else {
+            return Err(invalid_handshake("malformed HTTP header"));
+        };
+        let value = value.trim();
+        if name.eq_ignore_ascii_case("location") {
+            location = Some(value.to_string());
+        } else if name.eq_ignore_ascii_case("upgrade") {
+            upgrade = Some(value);
+        } else if name.eq_ignore_ascii_case("connection") {
+            connection = Some(value);
+        } else if name.eq_ignore_ascii_case("sec-websocket-accept") {
+            accept = Some(value);
+        } else if name.eq_ignore_ascii_case("sec-websocket-protocol") {
+            protocol = Some(value);
+        }
+    }
+    if status_code != 101 {
+        return Err(ConnectError::Handshake(WsHandshakeError {
+            status_code,
+            status_line: first_line.to_string(),
+            location,
+        }));
+    }
+    if !first_line.starts_with("HTTP/1.1 ") {
+        return Err(invalid_handshake("websocket response is not HTTP/1.1"));
+    }
+    let has_token = |value: Option<&str>, expected: &str| {
+        value.is_some_and(|value| {
+            value
+                .split(',')
+                .any(|token| token.trim().eq_ignore_ascii_case(expected))
+        })
+    };
+    if !has_token(upgrade, "websocket") {
+        return Err(invalid_handshake("missing Upgrade: websocket"));
+    }
+    if !has_token(connection, "upgrade") {
+        return Err(invalid_handshake("missing Connection: Upgrade"));
+    }
+    let expected_accept = websocket_accept(ws_key);
+    if accept != Some(expected_accept.as_str()) {
+        return Err(invalid_handshake("invalid Sec-WebSocket-Accept"));
+    }
+    if !protocol.is_some_and(|value| value.eq_ignore_ascii_case("binary")) {
+        return Err(invalid_handshake(
+            "server did not select binary subprotocol",
+        ));
+    }
+    Ok(())
+}
+
+fn invalid_handshake(message: &str) -> ConnectError {
+    ConnectError::Io(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        message.to_string(),
+    ))
+}
+
+fn websocket_accept(ws_key: &str) -> String {
+    let mut sha1 = Sha1::new();
+    sha1.update(ws_key.as_bytes());
+    sha1.update(WS_GUID);
+    base64::engine::general_purpose::STANDARD.encode(sha1.finalize())
 }
 
 struct Frame {
@@ -313,6 +387,9 @@ where
     }
     let opcode = header[0] & 0x0f;
     let masked = header[1] & 0x80 != 0;
+    if masked {
+        return None; // сервер не имеет права маскировать свои фреймы
+    }
     let len7 = (header[1] & 0x7f) as usize;
 
     let payload_len = match len7 {
@@ -324,7 +401,10 @@ where
         127 => {
             let mut extended = [0u8; 8];
             read.read_exact(&mut extended).await.ok()?;
-            let len = u64::from_be_bytes(extended) as usize;
+            if extended[0] & 0x80 != 0 {
+                return None;
+            }
+            let len = usize::try_from(u64::from_be_bytes(extended)).ok()?;
             if len > MAX_MESSAGE_LEN {
                 return None;
             }
@@ -337,22 +417,11 @@ where
         return None;
     }
 
-    let mut mask = [0u8; 4];
-    if masked {
-        read.read_exact(&mut mask).await.ok()?;
-    }
-
     if payload_len > MAX_MESSAGE_LEN {
         return None;
     }
     let mut payload = vec![0u8; payload_len];
     read.read_exact(&mut payload).await.ok()?;
-    if masked {
-        for (i, byte) in payload.iter_mut().enumerate() {
-            *byte ^= mask[i % 4];
-        }
-    }
-
     Some(Frame {
         fin,
         opcode,
@@ -363,6 +432,33 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn encrypted_req_pq(relay: &[u8; crate::obf2::HANDSHAKE_LEN]) -> Vec<u8> {
+        use rand::RngCore as _;
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock before Unix epoch");
+        let fraction = ((u64::from(now.subsec_nanos())) << 32) / 1_000_000_000;
+        let message_id = ((now.as_secs() << 32) | fraction) & !3;
+
+        let mut packet = Vec::with_capacity(41);
+        packet.push(0x0a); // abridged length: 40 bytes / 4
+        packet.extend_from_slice(&0u64.to_le_bytes()); // auth_key_id: unencrypted
+        packet.extend_from_slice(&message_id.to_le_bytes());
+        packet.extend_from_slice(&20u32.to_le_bytes());
+        packet.extend_from_slice(&0xbe7e8ef1u32.to_le_bytes());
+        let mut nonce = [0u8; 16];
+        rand::rngs::OsRng.fill_bytes(&mut nonce);
+        packet.extend_from_slice(&nonce);
+
+        let key: [u8; 32] = relay[8..40].try_into().unwrap();
+        let iv: [u8; 16] = relay[40..56].try_into().unwrap();
+        let mut cipher = crate::crypto::CtrCipher::new(&key, &iv);
+        cipher.skip_64();
+        cipher.apply(&mut packet);
+        packet
+    }
 
     /// Синхронное декодирование полного набора фреймов из буфера.
     fn decode_frames(buffer: &[u8]) -> Vec<Frame> {
@@ -376,16 +472,14 @@ mod tests {
             let mut cursor = offset + 2;
             let payload_len = match len7 {
                 126 => {
-                    let len = u16::from_be_bytes(
-                        buffer[cursor..cursor + 2].try_into().unwrap(),
-                    ) as usize;
+                    let len =
+                        u16::from_be_bytes(buffer[cursor..cursor + 2].try_into().unwrap()) as usize;
                     cursor += 2;
                     len
                 }
                 127 => {
-                    let len = u64::from_be_bytes(
-                        buffer[cursor..cursor + 8].try_into().unwrap(),
-                    ) as usize;
+                    let len =
+                        u64::from_be_bytes(buffer[cursor..cursor + 8].try_into().unwrap()) as usize;
                     cursor += 8;
                     len
                 }
@@ -459,9 +553,38 @@ mod tests {
         assert_eq!(frames[0].payload, payload);
     }
 
+    #[test]
+    fn validates_rfc6455_upgrade_headers() {
+        let key = "dGhlIHNhbXBsZSBub25jZQ==";
+        let valid = b"HTTP/1.1 101 Switching Protocols\r\n\
+Upgrade: websocket\r\n\
+Connection: keep-alive, Upgrade\r\n\
+Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\
+Sec-WebSocket-Protocol: binary\r\n\r\n";
+        assert!(validate_server_handshake(valid, key).is_ok());
+
+        let invalid = b"HTTP/1.1 101 Switching Protocols\r\n\
+Upgrade: websocket\r\n\
+Connection: Upgrade\r\n\
+Sec-WebSocket-Accept: wrong\r\n\
+Sec-WebSocket-Protocol: binary\r\n\r\n";
+        let error = validate_server_handshake(invalid, key).unwrap_err();
+        assert!(error.to_string().contains("Sec-WebSocket-Accept"));
+    }
+
+    #[tokio::test]
+    async fn rejects_masked_server_frames() {
+        let (mut write, mut read) = tokio::io::duplex(128);
+        let mut masked = Vec::new();
+        encode_frame(&mut masked, OP_BINARY, b"masked");
+        write.write_all(&masked).await.unwrap();
+        drop(write);
+        assert!(read_frame(&mut read).await.is_none());
+    }
+
     /// Живая проверка против настоящего DC2 Telegram: WS-хендшейк с
-    /// верифицированным TLS, отправка relay init, ожидание 64-байтного
-    /// ответа DC. Требует сеть — запускать явно:
+    /// верифицированным TLS, отправка relay init + настоящего req_pq_multi,
+    /// ожидание непустого ответа DC. Требует сеть — запускать явно:
     /// `cargo test live_dc -- --ignored --nocapture`
     #[tokio::test]
     #[ignore = "requires network access to Telegram DC"]
@@ -477,25 +600,22 @@ mod tests {
         .await
         .expect("ws connect to DC2 with verified TLS");
 
-        let mut relay = crate::obf2::make_relay_init(
+        let relay = crate::obf2::make_relay_init(
             crate::obf2::ProtoTag::Abridged,
             2,
             &mut rand::rngs::OsRng,
         );
         writer.send(&relay).await.expect("send relay init");
+        writer
+            .send(&encrypted_req_pq(&relay))
+            .await
+            .expect("send req_pq_multi");
 
         let response = tokio::time::timeout(std::time::Duration::from_secs(10), reader.recv())
             .await
-            .expect("timeout waiting for DC init")
-            .expect("DC closed connection without init");
-        assert_eq!(response.len(), 64, "DC must answer with 64-byte init");
-
-        let key: [u8; 32] = relay[8..40].try_into().unwrap();
-        let iv: [u8; 16] = relay[40..56].try_into().unwrap();
-        let mut decipher = crate::crypto::CtrCipher::new(&key, &iv);
-        decipher.apply(&mut relay);
-        // Ответ DC не расшифровывается нашими ключами (это его собственный
-        // init), важен только размер — валидация завершена.
+            .expect("timeout waiting for resPQ")
+            .expect("DC closed connection without resPQ");
+        assert!(!response.is_empty(), "DC returned an empty response");
         writer.close().await;
     }
 }

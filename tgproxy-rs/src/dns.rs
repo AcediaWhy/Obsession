@@ -12,10 +12,12 @@ use tokio::net::UdpSocket;
 
 pub const PUBLIC_RESOLVERS: [&str; 2] = ["8.8.8.8", "1.1.1.1"];
 const QUERY_TIMEOUT: Duration = Duration::from_secs(3);
+const SYSTEM_RESOLVE_TIMEOUT: Duration = Duration::from_secs(3);
 const MAX_RESPONSE: usize = 512;
 
 /// Резолв через конкретный сервер. Возвращает первый A-ответ.
 pub async fn resolve_via(host: &str, resolver: &str) -> Result<Ipv4Addr, String> {
+    validate_hostname(host)?;
     let query = build_query(host);
     let socket = UdpSocket::bind("0.0.0.0:0")
         .await
@@ -36,28 +38,97 @@ pub async fn resolve_via(host: &str, resolver: &str) -> Result<Ipv4Addr, String>
         .map_err(|error| format!("recv: {error}"))?;
     buffer.truncate(len);
 
-    parse_a_answer(&query, &buffer)
+    let ip = parse_a_answer(&query, &buffer)?;
+    if usable_public_ipv4(ip) {
+        Ok(ip)
+    } else {
+        Err(format!("{resolver}: rejected non-public A record {ip}"))
+    }
 }
 
 /// Сначала системный резолвер, затем публичные — если провайдерский
 /// DNS молчит или врёт.
 pub async fn resolve(host: &str) -> Result<Ipv4Addr, String> {
-    match tokio::net::lookup_host((host, 443)).await {
-        Ok(addrs) => {
-            for addr in addrs {
-                if let std::net::IpAddr::V4(ip) = addr.ip() {
-                    return Ok(ip);
-                }
-            }
+    validate_hostname(host)?;
+
+    let system = async {
+        let addrs =
+            tokio::time::timeout(SYSTEM_RESOLVE_TIMEOUT, tokio::net::lookup_host((host, 443)))
+                .await
+                .ok()?
+                .ok()?;
+        addrs
+            .filter_map(|addr| match addr.ip() {
+                std::net::IpAddr::V4(ip) if usable_public_ipv4(ip) => Some(ip),
+                _ => None,
+            })
+            .next()
+    };
+    let public = async {
+        let google = resolve_via(host, PUBLIC_RESOLVERS[0]);
+        let cloudflare = resolve_via(host, PUBLIC_RESOLVERS[1]);
+        tokio::pin!(google, cloudflare);
+        tokio::select! {
+            result = &mut google => match result {
+                Ok(ip) => Some(ip),
+                Err(_) => cloudflare.await.ok(),
+            },
+            result = &mut cloudflare => match result {
+                Ok(ip) => Some(ip),
+                Err(_) => google.await.ok(),
+            },
         }
-        Err(_) => {}
+    };
+    tokio::pin!(system, public);
+
+    // Успешный публичный ответ возвращаем сразу, не ожидая медленный системный
+    // resolver. Если системный ответ пришёл первым, всё равно дожидаемся
+    // независимой проверки, чтобы poisoned-ответ не блокировал fallback.
+    tokio::select! {
+        public_ip = &mut public => match public_ip.or(system.await) {
+            Some(ip) => Ok(ip),
+            None => Err(format!("no A record for {host}")),
+        },
+        system_ip = &mut system => match public.await.or(system_ip) {
+            Some(ip) => Ok(ip),
+            None => Err(format!("no A record for {host}")),
+        },
     }
-    for resolver in PUBLIC_RESOLVERS {
-        if let Ok(ip) = resolve_via(host, resolver).await {
-            return Ok(ip);
-        }
+}
+
+fn validate_hostname(host: &str) -> Result<(), String> {
+    let valid = !host.is_empty()
+        && host.len() <= 253
+        && host.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && label
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+        });
+    if valid {
+        Ok(())
+    } else {
+        Err(format!("invalid DNS hostname `{host}`"))
     }
-    Err(format!("no A record for {host}"))
+}
+
+fn usable_public_ipv4(ip: Ipv4Addr) -> bool {
+    let [a, b, _, _] = ip.octets();
+    !(ip.is_unspecified()
+        || ip.is_private()
+        || ip.is_loopback()
+        || ip.is_link_local()
+        || ip.is_broadcast()
+        || ip.is_documentation()
+        || ip.is_multicast()
+        || a == 0
+        || a >= 240
+        || (a == 100 && (64..=127).contains(&b))
+        || (a == 192 && b == 0)
+        || (a == 198 && (b == 18 || b == 19)))
 }
 
 /// Запрос: header (RD=1) + QNAME + type A + class IN.
@@ -184,7 +255,10 @@ mod tests {
     fn parses_a_record_without_compression() {
         let query = build_query("example.com");
         let response = response_for(&query, [1, 2, 3, 4], false);
-        assert_eq!(parse_a_answer(&query, &response), Ok(Ipv4Addr::new(1, 2, 3, 4)));
+        assert_eq!(
+            parse_a_answer(&query, &response),
+            Ok(Ipv4Addr::new(1, 2, 3, 4))
+        );
     }
 
     #[test]
@@ -219,5 +293,16 @@ mod tests {
         assert_eq!(&query[16..24], b"\x07example");
         assert_eq!(query[24], 0);
         assert_eq!(&query[25..29], &[0, 1, 0, 1]);
+    }
+
+    #[test]
+    fn rejects_invalid_dns_names_and_non_public_answers() {
+        for host in ["", ".example", "a..b", "-bad.example", "bad_.example"] {
+            assert!(validate_hostname(host).is_err(), "host {host:?}");
+        }
+        assert!(validate_hostname(&format!("{}.example", "a".repeat(64))).is_err());
+        assert!(!usable_public_ipv4(Ipv4Addr::new(127, 0, 0, 1)));
+        assert!(!usable_public_ipv4(Ipv4Addr::new(100, 64, 0, 1)));
+        assert!(usable_public_ipv4(Ipv4Addr::new(104, 21, 64, 155)));
     }
 }

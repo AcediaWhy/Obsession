@@ -25,6 +25,7 @@ const CLIENT_INIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(
 const DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 const WS_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 const READ_CHUNK: usize = 65536;
+const MAX_FAKE_TLS_HELLO_LEN: usize = 18 * 1024;
 
 /// Общий контекст моста (один на процесс, раздаётся в задачи соединений).
 pub struct BridgeContext {
@@ -242,16 +243,37 @@ async fn read_client_init(
 
     if let Some(masking) = ctx.masking.clone() {
         if first[0] == fake_tls::TLS_RECORD_HANDSHAKE {
+            let tls_deadline = tokio::time::Instant::now() + CLIENT_INIT_TIMEOUT;
             let mut rest = [0u8; 4];
-            if raw_read.read_exact(&mut rest).await.is_err() {
-                logger::info(format!("[{peer}] incomplete TLS record header"));
-                return None;
+            match tokio::time::timeout_at(tls_deadline, raw_read.read_exact(&mut rest)).await {
+                Ok(Ok(_)) => {}
+                Ok(Err(_)) => {
+                    logger::info(format!("[{peer}] incomplete TLS record header"));
+                    return None;
+                }
+                Err(_) => {
+                    logger::warn(format!("[{peer}] TLS record header timeout"));
+                    return None;
+                }
             }
             let record_len = u16::from_be_bytes([rest[2], rest[3]]) as usize;
-            let mut body = vec![0u8; record_len];
-            if raw_read.read_exact(&mut body).await.is_err() {
-                logger::info(format!("[{peer}] incomplete TLS record body"));
+            if record_len > MAX_FAKE_TLS_HELLO_LEN {
+                logger::warn(format!(
+                    "[{peer}] oversized TLS ClientHello record ({record_len} bytes)"
+                ));
                 return None;
+            }
+            let mut body = vec![0u8; record_len];
+            match tokio::time::timeout_at(tls_deadline, raw_read.read_exact(&mut body)).await {
+                Ok(Ok(_)) => {}
+                Ok(Err(_)) => {
+                    logger::info(format!("[{peer}] incomplete TLS record body"));
+                    return None;
+                }
+                Err(_) => {
+                    logger::warn(format!("[{peer}] TLS record body timeout"));
+                    return None;
+                }
             }
             let mut hello = Vec::with_capacity(5 + body.len());
             hello.push(first[0]);
@@ -295,9 +317,7 @@ async fn read_client_init(
                             ));
                         }
                         Ok(Err(_)) => {
-                            logger::info(format!(
-                                "[{peer}] incomplete obfs2 init inside TLS"
-                            ));
+                            logger::info(format!("[{peer}] incomplete obfs2 init inside TLS"));
                             return None;
                         }
                         Err(_) => {
@@ -326,11 +346,7 @@ async fn read_client_init(
     let mut init = [0u8; obf2::HANDSHAKE_LEN];
     init[0] = first[0];
     match tokio::time::timeout(CLIENT_INIT_TIMEOUT, raw_read.read_exact(&mut init[1..])).await {
-        Ok(Ok(_)) => Some((
-            ClientRead::Raw(raw_read),
-            ClientWrite::Raw(raw_write),
-            init,
-        )),
+        Ok(Ok(_)) => Some((ClientRead::Raw(raw_read), ClientWrite::Raw(raw_write), init)),
         Ok(Err(_)) => {
             logger::info(format!("[{peer}] client disconnected before handshake"));
             None
@@ -364,9 +380,7 @@ async fn dial_dc(
             }
         }
     }
-    logger::warn(format!(
-        "[{peer}] DC{dc}{media_tag} direct WS unavailable"
-    ));
+    logger::warn(format!("[{peer}] DC{dc}{media_tag} direct WS unavailable"));
     None
 }
 

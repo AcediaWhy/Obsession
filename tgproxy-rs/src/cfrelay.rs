@@ -5,7 +5,10 @@
 //! Цезарь-обфускации; кэш `--cfproxy-cache` хранит порядок последних
 //! рабочих доменов и обновляется при успешном соединении.
 
+use std::fs::OpenOptions;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use tokio_rustls::TlsConnector;
@@ -40,6 +43,12 @@ pub const CFPROXY_DEFAULT_DOMAINS: [&str; 20] = [
 ];
 
 const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+const FALLBACK_BUDGET: std::time::Duration = std::time::Duration::from_secs(25);
+const MAX_RELAY_ATTEMPTS: usize = 4;
+const MAX_WORKER_ATTEMPTS: usize = 3;
+const MAX_CACHE_BYTES: u64 = 64 * 1024;
+static CACHE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static CACHE_SERIAL: AtomicU64 = AtomicU64::new(0);
 
 /// Состояние фолбэка: порядок доменов (кэш вперёд) и путь кэша.
 pub struct CfRelay {
@@ -97,34 +106,47 @@ impl CfRelay {
         } else {
             format!("kws{sub_dc}")
         };
-        for base in self.attempt_order(dc) {
-            let host = format!("{subdomain}.{base}");
-            let media_tag = if is_media { " media" } else { "" };
-            let ip = match dns::resolve(&host).await {
-                Ok(ip) => ip,
-                Err(error) => {
-                    logger::warn(format!(
-                        "[{peer}] DC{dc}{media_tag} relay {host}: dns: {error}"
-                    ));
-                    continue;
-                }
-            };
-            logger::info(format!(
-                "[{peer}] DC{dc}{media_tag} -> wss://{host}/apiws via {ip} (cf relay)"
-            ));
-            match ws::connect(&ip.to_string(), &host, "/apiws", CONNECT_TIMEOUT, connector).await {
-                Ok((reader, writer)) => {
-                    self.remember_working_domain(&base);
-                    return Some((reader, writer, host));
-                }
-                Err(error) => {
-                    logger::warn(format!(
-                        "[{peer}] DC{dc}{media_tag} relay {host} failed: {error}"
-                    ));
+        let media_tag = if is_media { " media" } else { "" };
+        let attempts = async {
+            for base in self.attempt_order(dc).into_iter().take(MAX_RELAY_ATTEMPTS) {
+                let host = format!("{subdomain}.{base}");
+                let ip = match dns::resolve(&host).await {
+                    Ok(ip) => ip,
+                    Err(error) => {
+                        logger::warn(format!(
+                            "[{peer}] DC{dc}{media_tag} relay {host}: dns: {error}"
+                        ));
+                        continue;
+                    }
+                };
+                logger::info(format!(
+                    "[{peer}] DC{dc}{media_tag} -> wss://{host}/apiws via {ip} (cf relay)"
+                ));
+                match ws::connect(&ip.to_string(), &host, "/apiws", CONNECT_TIMEOUT, connector)
+                    .await
+                {
+                    Ok((reader, writer)) => {
+                        self.remember_working_domain(&base);
+                        return Some((reader, writer, host));
+                    }
+                    Err(error) => {
+                        logger::warn(format!(
+                            "[{peer}] DC{dc}{media_tag} relay {host} failed: {error}"
+                        ));
+                    }
                 }
             }
+            None
+        };
+        match tokio::time::timeout(FALLBACK_BUDGET, attempts).await {
+            Ok(result) => result,
+            Err(_) => {
+                logger::warn(format!(
+                    "[{peer}] DC{dc}{media_tag} public relay fallback timed out"
+                ));
+                None
+            }
         }
-        None
     }
 
     /// Продвинуть сработавший домен в начало и сохранить кэш (best-effort).
@@ -132,14 +154,29 @@ impl CfRelay {
         let Some(path) = &self.cache_path else {
             return;
         };
+        if !is_default_domain(domain) {
+            return;
+        }
+        let _guard = CACHE_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut order: Vec<String> = vec![domain.to_string()];
+        if let Some(cached) = load_cached_domains_unlocked(path) {
+            order.extend(cached.into_iter().filter(|existing| existing != domain));
+        }
         order.extend(
             self.domains
                 .iter()
                 .filter(|existing| *existing != domain)
                 .cloned(),
         );
-        let _ = save_cached_domains(path, &order);
+        let mut unique = Vec::with_capacity(order.len());
+        for candidate in order {
+            if !unique.contains(&candidate) {
+                unique.push(candidate);
+            }
+        }
+        let _ = save_cached_domains_unlocked(path, &unique);
     }
 }
 
@@ -156,45 +193,69 @@ pub async fn connect_worker(
     peer: &str,
 ) -> Option<(ws::WsReader, Arc<ws::WsWriter>, String)> {
     let path = format!("/apiws?dc={dc}&m={}", if is_media { 1 } else { 0 });
-    for domain in domains {
-        let ip = match dns::resolve(domain).await {
-            Ok(ip) => ip,
-            Err(error) => {
-                logger::warn(format!("[{peer}] DC{dc} worker {domain}: dns: {error}"));
-                continue;
-            }
-        };
-        logger::info(format!(
-            "[{peer}] DC{dc} -> wss://{domain}{path} via {ip} (cf worker)"
-        ));
-        match ws::connect(&ip.to_string(), domain, &path, CONNECT_TIMEOUT, connector).await {
-            Ok((reader, writer)) => return Some((reader, writer, domain.to_string())),
-            Err(error) => {
-                logger::warn(format!(
-                    "[{peer}] DC{dc} worker {domain} failed: {error}"
-                ));
+    let attempts = async {
+        for domain in domains.iter().take(MAX_WORKER_ATTEMPTS) {
+            let ip = match dns::resolve(domain).await {
+                Ok(ip) => ip,
+                Err(error) => {
+                    logger::warn(format!("[{peer}] DC{dc} worker {domain}: dns: {error}"));
+                    continue;
+                }
+            };
+            logger::info(format!(
+                "[{peer}] DC{dc} -> wss://{domain}{path} via {ip} (cf worker)"
+            ));
+            match ws::connect(&ip.to_string(), domain, &path, CONNECT_TIMEOUT, connector).await {
+                Ok((reader, writer)) => return Some((reader, writer, domain.to_string())),
+                Err(error) => {
+                    logger::warn(format!("[{peer}] DC{dc} worker {domain} failed: {error}"));
+                }
             }
         }
+        None
+    };
+    match tokio::time::timeout(FALLBACK_BUDGET, attempts).await {
+        Ok(result) => result,
+        Err(_) => {
+            logger::warn(format!("[{peer}] DC{dc} worker fallback timed out"));
+            None
+        }
     }
-    None
 }
 
 fn load_cached_domains(path: &Path) -> Option<Vec<String>> {
-    let text = std::fs::read_to_string(path).ok()?;
+    let _guard = CACHE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    load_cached_domains_unlocked(path)
+}
+
+fn load_cached_domains_unlocked(path: &Path) -> Option<Vec<String>> {
+    let metadata = std::fs::symlink_metadata(path).ok()?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() > MAX_CACHE_BYTES
+    {
+        return None;
+    }
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    std::fs::File::open(path)
+        .ok()?
+        .take(MAX_CACHE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() as u64 > MAX_CACHE_BYTES {
+        return None;
+    }
+    let text = String::from_utf8(bytes).ok()?;
     let parsed: Vec<String> = serde_lite(&text)?;
-    let valid: Vec<String> = parsed
-        .into_iter()
-        .filter(|domain| {
-            !domain.is_empty()
-                && domain.len() <= 253
-                && domain
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-'))
-        })
-        .take(64)
-        .collect();
-    // Кэшу достаточно одного валидного домена: он лишь задаёт порядок,
-    // итоговый список всегда объединяется со встроенным.
+    let mut valid = Vec::new();
+    for domain in parsed {
+        if is_default_domain(&domain) && !valid.contains(&domain) {
+            valid.push(domain);
+        }
+        if valid.len() == CFPROXY_DEFAULT_DOMAINS.len() {
+            break;
+        }
+    }
     if valid.is_empty() {
         None
     } else {
@@ -202,25 +263,85 @@ fn load_cached_domains(path: &Path) -> Option<Vec<String>> {
     }
 }
 
+#[cfg(test)]
 fn save_cached_domains(path: &Path, domains: &[String]) -> std::io::Result<()> {
+    let _guard = CACHE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    save_cached_domains_unlocked(path, domains)
+}
+
+fn save_cached_domains_unlocked(path: &Path, domains: &[String]) -> std::io::Result<()> {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut allowed = Vec::new();
+    for domain in domains {
+        if is_default_domain(domain) && !allowed.contains(&domain) {
+            allowed.push(domain);
+        }
+        if allowed.len() == CFPROXY_DEFAULT_DOMAINS.len() {
+            break;
+        }
+    }
     let json = format!(
         "{{\"domains\":[{}]}}",
-        domains
+        allowed
             .iter()
             .map(|d| format!("\"{d}\""))
             .collect::<Vec<_>>()
             .join(",")
     );
-    let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, json)?;
-    std::fs::rename(&tmp, path)
+    let file_name = path.file_name().unwrap_or_default().to_string_lossy();
+    let serial = CACHE_SERIAL.fetch_add(1, Ordering::Relaxed);
+    let tmp = path.with_file_name(format!(
+        ".{file_name}.{}.{}.tmp",
+        std::process::id(),
+        serial
+    ));
+    let write_result = (|| {
+        let mut file = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
+        file.write_all(json.as_bytes())?;
+        file.sync_all()
+    })();
+    if let Err(error) = write_result {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(error);
+    }
+
+    #[cfg(windows)]
+    let replace_result = {
+        match std::fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                let _ = std::fs::remove_file(&tmp);
+                return Err(error);
+            }
+        }
+        std::fs::rename(&tmp, path)
+    };
+    #[cfg(not(windows))]
+    let replace_result = std::fs::rename(&tmp, path);
+
+    if replace_result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    replace_result
+}
+
+fn is_default_domain(domain: &str) -> bool {
+    CFPROXY_DEFAULT_DOMAINS.contains(&domain)
 }
 
 /// Мини-парсер `"domains": ["a", "b"]` без зависимости от serde_json.
 fn serde_lite(text: &str) -> Option<Vec<String>> {
     let start = text.find("\"domains\"")?;
     let open = text[start..].find('[')? + start;
-    let close = text.find(']')?;
+    let close = text[open + 1..].find(']')? + open + 1;
     if close <= open {
         return None;
     }
@@ -238,6 +359,38 @@ fn serde_lite(text: &str) -> Option<Vec<String>> {
 mod tests {
     use super::*;
 
+    fn req_pq_multi_packet(rng: &mut impl rand::RngCore) -> Vec<u8> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock before Unix epoch");
+        let fraction = ((u64::from(now.subsec_nanos())) << 32) / 1_000_000_000;
+        let message_id = ((now.as_secs() << 32) | fraction) & !3;
+
+        let mut packet = Vec::with_capacity(41);
+        packet.push(0x0a); // abridged length: 40 bytes / 4
+        packet.extend_from_slice(&0u64.to_le_bytes()); // auth_key_id: unencrypted
+        packet.extend_from_slice(&message_id.to_le_bytes());
+        packet.extend_from_slice(&20u32.to_le_bytes());
+        packet.extend_from_slice(&0xbe7e8ef1u32.to_le_bytes());
+        let mut nonce = [0u8; 16];
+        rng.fill_bytes(&mut nonce);
+        packet.extend_from_slice(&nonce);
+        packet
+    }
+
+    #[test]
+    fn req_pq_multi_has_unencrypted_mtproto_envelope() {
+        let packet = req_pq_multi_packet(&mut rand::rngs::OsRng);
+        assert_eq!(packet.len(), 41);
+        assert_eq!(packet[0], 0x0a);
+        assert_eq!(&packet[1..9], &[0; 8]);
+        assert_eq!(u32::from_le_bytes(packet[17..21].try_into().unwrap()), 20);
+        assert_eq!(
+            u32::from_le_bytes(packet[21..25].try_into().unwrap()),
+            0xbe7e8ef1
+        );
+    }
+
     #[test]
     fn default_list_has_no_duplicates() {
         let mut sorted = CFPROXY_DEFAULT_DOMAINS.to_vec();
@@ -253,7 +406,7 @@ mod tests {
         let order4 = relay.attempt_order(4);
         assert_eq!(order2[0], "cakeisalie.co.uk"); // индекс 2
         assert_eq!(order4[0], "lovetrue.co.uk"); // индекс 4
-        // Полный набор сохраняется при любом смещении.
+                                                 // Полный набор сохраняется при любом смещении.
         let mut sorted = order2.clone();
         sorted.sort_unstable();
         let mut expected = CFPROXY_DEFAULT_DOMAINS.to_vec();
@@ -281,8 +434,19 @@ mod tests {
             ])
         );
 
+        // Повторная запись заменяет существующий файл и на Windows.
+        save_cached_domains(&path, &["sadnews.co.uk".to_string()]).unwrap();
+        assert_eq!(
+            load_cached_domains(&path),
+            Some(vec!["sadnews.co.uk".to_string()])
+        );
+
         // Битый кэш игнорируется.
         std::fs::write(&path, "not json").unwrap();
+        assert_eq!(load_cached_domains(&path), None);
+
+        // Слишком большой файл не читается целиком.
+        std::fs::write(&path, vec![b'x'; MAX_CACHE_BYTES as usize + 1]).unwrap();
         assert_eq!(load_cached_domains(&path), None);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -305,16 +469,18 @@ mod tests {
         let dir = std::env::temp_dir().join("tgproxy_rs_test_single");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("cfproxy_cache.json");
-        save_cached_domains(&path, &["only-one.co.uk".to_string()]).unwrap();
+        // Кэш не является источником доверия: произвольный домен отбрасывается.
+        std::fs::write(&path, r#"{"domains":["only-one.co.uk"]}"#).unwrap();
 
         let relay = CfRelay::new(Some(&path));
-        assert_eq!(relay.domains[0], "only-one.co.uk");
+        assert_eq!(relay.domains[0], CFPROXY_DEFAULT_DOMAINS[0]);
+        assert_eq!(relay.domains.len(), CFPROXY_DEFAULT_DOMAINS.len());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Живая сквозная проверка: наш DNS-резолв -> верифицированный TLS ->
-    /// WS-upgrade -> obfuscated2 relay init -> настоящий Telegram DC за
-    /// relay отвечает 64-байтным init. Запускать явно:
+    /// WS-upgrade -> obfuscated2 relay init + req_pq_multi -> настоящий
+    /// Telegram DC за relay возвращает непустой ответ. Запускать явно:
     /// `cargo test live_cf -- --ignored --nocapture`
     #[tokio::test]
     #[ignore = "requires network access to CF relays"]
@@ -339,16 +505,21 @@ mod tests {
                     continue;
                 }
             };
-            let (mut reader, writer) =
-                match crate::ws::connect(&ip.to_string(), &host, "/apiws", std::time::Duration::from_secs(8), &connector)
-                    .await
-                {
-                    Ok(pair) => pair,
-                    Err(error) => {
-                        println!("{host}: ws connect failed: {error}");
-                        continue;
-                    }
-                };
+            let (mut reader, writer) = match crate::ws::connect(
+                &ip.to_string(),
+                &host,
+                "/apiws",
+                std::time::Duration::from_secs(8),
+                &connector,
+            )
+            .await
+            {
+                Ok(pair) => pair,
+                Err(error) => {
+                    println!("{host}: ws connect failed: {error}");
+                    continue;
+                }
+            };
 
             let init = crate::obf2::make_relay_init(
                 crate::obf2::ProtoTag::Abridged,
@@ -359,10 +530,20 @@ mod tests {
                 println!("{host}: send failed: {error}");
                 continue;
             }
+            let mut packet = req_pq_multi_packet(&mut rand::rngs::OsRng);
+            let key: [u8; 32] = init[8..40].try_into().unwrap();
+            let iv: [u8; 16] = init[40..56].try_into().unwrap();
+            let mut tg_enc = crate::crypto::CtrCipher::new(&key, &iv);
+            tg_enc.skip_64();
+            tg_enc.apply(&mut packet);
+            if let Err(error) = writer.send(&packet).await {
+                println!("{host}: req_pq_multi send failed: {error}");
+                continue;
+            }
             match tokio::time::timeout(std::time::Duration::from_secs(8), reader.recv()).await {
                 Ok(Some(response)) => {
                     println!("{host}: RESPONSE {} bytes", response.len());
-                    if response.len() == 64 {
+                    if !response.is_empty() {
                         any_ok = true;
                         writer.close().await;
                         break;
@@ -373,7 +554,7 @@ mod tests {
             }
             writer.close().await;
         }
-        assert!(any_ok, "no relay answered with a 64-byte DC init");
+        assert!(any_ok, "no relay returned data for req_pq_multi");
     }
 
     /// Синтетический obfuscated2-клиент для внешнего прокси: прокси должен
@@ -387,16 +568,14 @@ mod tests {
     #[ignore = "requires a proxy listening on 127.0.0.1:24445"]
     async fn synthetic_client_probe() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        use rand::RngCore as _;
 
         let secret_hex = "5a5a1133445566778899aabbccddeeff";
         let mut secret = [0u8; 16];
         for i in 0..16 {
-            secret[i] =
-                u8::from_str_radix(&secret_hex[i * 2..i * 2 + 2], 16).expect("secret hex");
+            secret[i] = u8::from_str_radix(&secret_hex[i * 2..i * 2 + 2], 16).expect("secret hex");
         }
-        let target = std::env::var("TGPROXY_PROBE_ADDR")
-            .unwrap_or_else(|_| "127.0.0.1:24445".to_string());
+        let target =
+            std::env::var("TGPROXY_PROBE_ADDR").unwrap_or_else(|_| "127.0.0.1:24445".to_string());
 
         let mut client = tokio::net::TcpStream::connect(&target)
             .await
@@ -404,23 +583,12 @@ mod tests {
         println!("connected to {target}, sending synthetic client init");
 
         let mut rng = rand::rngs::OsRng;
-        let init = crate::obf2::build_client_init(
-            2,
-            crate::obf2::ProtoTag::Abridged,
-            &secret,
-            &mut rng,
-        );
+        let init =
+            crate::obf2::build_client_init(2, crate::obf2::ProtoTag::Abridged, &secret, &mut rng);
         client.write_all(&init).await.expect("send client init");
 
-        // Первый MTProto-пакет настоящего клиента: req_pq (abridged).
-        // payload = конструктор 0x60469778 (LE) + 16 байт nonce,
-        // abridged-заголовок = payload_len / 4 (20 -> 0x05).
-        let mut req_pq = Vec::with_capacity(21);
-        req_pq.push(0x05);
-        req_pq.extend_from_slice(&0x60469778u32.to_le_bytes());
-        let mut nonce = [0u8; 16];
-        rng.fill_bytes(&mut nonce);
-        req_pq.extend_from_slice(&nonce);
+        // Первый MTProto-пакет настоящего клиента: req_pq_multi (abridged).
+        let mut req_pq = req_pq_multi_packet(&mut rng);
 
         // Шифруем продолжением клиентского c2s-потока (после init).
         use crate::crypto::CtrCipher;
@@ -440,36 +608,27 @@ mod tests {
         println!("req_pq sent ({} bytes)", req_pq.len());
 
         let mut response = vec![0u8; 4096];
-        match tokio::time::timeout(
+        let received = tokio::time::timeout(
             std::time::Duration::from_secs(20),
             client.read(&mut response),
         )
         .await
-        {
-            Ok(Ok(0)) => println!("connection closed by proxy without data"),
-            Ok(Ok(n)) => println!("SUCCESS: {n} bytes from DC (first byte 0x{:02x})", response[0]),
-            Ok(Err(error)) => println!("read error: {error}"),
-            Err(_) => println!("silence: no data in 20s"),
-        }
+        .expect("silence: no data in 20s")
+        .expect("read response from proxy");
+        assert!(received > 0, "connection closed by proxy without data");
+        println!(
+            "SUCCESS: {received} bytes from DC (first byte 0x{:02x})",
+            response[0]
+        );
     }
 
     /// Печать hex пары init+packet (Rust-генерация) для скармливания
     /// воркер-эндпоинту /probe3 — контроль JS-крипты.
     #[test]
     fn print_probe_hex() {
-        use rand::RngCore as _;
-
         let mut rng = rand::rngs::OsRng;
-        let init = crate::obf2::make_relay_init(
-            crate::obf2::ProtoTag::Abridged,
-            2,
-            &mut rng,
-        );
-        let mut packet = vec![0x05u8];
-        packet.extend_from_slice(&0x60469778u32.to_le_bytes());
-        let mut nonce = [0u8; 16];
-        rng.fill_bytes(&mut nonce);
-        packet.extend_from_slice(&nonce);
+        let init = crate::obf2::make_relay_init(crate::obf2::ProtoTag::Abridged, 2, &mut rng);
+        let mut packet = req_pq_multi_packet(&mut rng);
 
         let key: [u8; 32] = init[8..40].try_into().unwrap();
         let iv: [u8; 16] = init[40..56].try_into().unwrap();
@@ -489,14 +648,14 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires TGPROXY_WORKER env var with deployed worker domain"]
     async fn live_worker_handshake() {
-        use rand::RngCore as _;
-
         let domain =
             std::env::var("TGPROXY_WORKER").expect("set TGPROXY_WORKER=<your>.workers.dev");
         let connector = crate::ws::tls_connector();
         let path = "/apiws?dc=2&m=0".to_string();
 
-        let ip = crate::dns::resolve(&domain).await.expect("resolve worker domain");
+        let ip = crate::dns::resolve(&domain)
+            .await
+            .expect("resolve worker domain");
         let (mut reader, writer) = crate::ws::connect(
             &ip.to_string(),
             &domain,
@@ -515,31 +674,26 @@ mod tests {
         );
         writer.send(&init).await.expect("send relay init");
 
-        // Первый MTProto-пакет (req_pq) продолжением tg-потока — как
+        // Первый MTProto-пакет (req_pq_multi) продолжением tg-потока — как
         // настоящий клиент.
-        let mut packet = vec![0x05u8];
-        packet.extend_from_slice(&0x60469778u32.to_le_bytes());
-        let mut nonce = [0u8; 16];
-        rand::rngs::OsRng.fill_bytes(&mut nonce);
-        packet.extend_from_slice(&nonce);
+        let mut packet = req_pq_multi_packet(&mut rand::rngs::OsRng);
         let key: [u8; 32] = init[8..40].try_into().unwrap();
         let iv: [u8; 16] = init[40..56].try_into().unwrap();
         let mut tg_enc = crate::crypto::CtrCipher::new(&key, &iv);
         tg_enc.skip_64();
         tg_enc.apply(&mut packet);
-        writer.send(&packet).await.expect("send req_pq");
+        writer.send(&packet).await.expect("send req_pq_multi");
 
-        match tokio::time::timeout(std::time::Duration::from_secs(10), reader.recv()).await {
-            Ok(Some(data)) => {
-                println!(
-                    "worker SUCCESS: {} bytes back (first byte 0x{:02x})",
-                    data.len(),
-                    data[0]
-                );
-            }
-            Ok(None) => println!("worker: closed without data"),
-            Err(_) => println!("worker: silence"),
-        }
+        let data = tokio::time::timeout(std::time::Duration::from_secs(10), reader.recv())
+            .await
+            .expect("worker: silence")
+            .expect("worker: closed without data");
+        assert!(!data.is_empty(), "worker returned an empty response");
+        println!(
+            "worker SUCCESS: {} bytes back (first byte 0x{:02x})",
+            data.len(),
+            data[0]
+        );
         writer.close().await;
     }
 }

@@ -83,10 +83,7 @@ pub fn verify_client_hello(data: &[u8], secret: &[u8; 16]) -> Option<VerifiedHel
         ts_bytes[i] = client_random[28 + i] ^ expected[28 + i];
     }
     let timestamp = u32::from_le_bytes(ts_bytes);
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .ok()?
-        .as_secs() as i64;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs() as i64;
     if (now - timestamp as i64).abs() > TIMESTAMP_TOLERANCE {
         return None;
     }
@@ -260,7 +257,9 @@ pub async fn proxy_to_masking_domain(
             return;
         }
         Err(_) => {
-            logger::warn(format!("[{peer}] masking: connect to {domain}:443 timed out"));
+            logger::warn(format!(
+                "[{peer}] masking: connect to {domain}:443 timed out"
+            ));
             return;
         }
     };
@@ -307,11 +306,7 @@ mod tests {
     const SECRET: [u8; 16] = [0x77; 16];
 
     /// Строит ClientHello так, как его строит клиент Telegram (mtg-схема).
-    fn build_client_hello(
-        secret: &[u8; 16],
-        session_id: &[u8; 32],
-        timestamp: u32,
-    ) -> Vec<u8> {
+    fn build_client_hello(secret: &[u8; 16], session_id: &[u8; 32], timestamp: u32) -> Vec<u8> {
         let mut hello = vec![0u8; 128];
         hello[0] = TLS_RECORD_HANDSHAKE;
         hello[1..3].copy_from_slice(&[0x03, 0x03]);
@@ -382,7 +377,8 @@ mod tests {
     fn server_hello_is_self_consistent() {
         let client_random = [0x11u8; 32];
         let session_id = [0x22u8; 32];
-        let response = build_server_hello(&SECRET, &client_random, &session_id, &mut rand::rngs::OsRng);
+        let response =
+            build_server_hello(&SECRET, &client_random, &session_id, &mut rand::rngs::OsRng);
 
         // Структура: ServerHello-запись (127B) + CCS + appdata.
         assert_eq!(response[0], 0x16);
@@ -407,10 +403,7 @@ mod tests {
         let data = vec![0xabu8; TLS_APPDATA_MAX * 2 + 100];
         let wrapped = wrap_tls_record(&data);
         // Три записи: 16384 + 16384 + 100 + заголовки.
-        assert_eq!(
-            wrapped.len(),
-            (16384 + 5) + (16384 + 5) + (100 + 5)
-        );
+        assert_eq!(wrapped.len(), (16384 + 5) + (16384 + 5) + (100 + 5));
         assert_eq!(wrapped[0], 0x17);
         assert_eq!(&wrapped[1..3], &[0x03, 0x03]);
         assert_eq!(u16::from_be_bytes([wrapped[3], wrapped[4]]), 16384);

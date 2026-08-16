@@ -156,7 +156,10 @@ mod tests {
         for chunk in plain {
             // Шифрованный вид эмулируем инкрементом байта — важно только
             // соответствие длин и позиций.
-            let cipher: Vec<u8> = chunk.iter().map(|b| b.wrapping_add(cipher_marker)).collect();
+            let cipher: Vec<u8> = chunk
+                .iter()
+                .map(|b| b.wrapping_add(cipher_marker))
+                .collect();
             out.extend(splitter.split(chunk, &cipher));
         }
         out
@@ -168,7 +171,10 @@ mod tests {
         let packet: &[u8] = &[&[0x02][..], &[0xaa; 8][..]].concat();
         let parts = run(Proto::Abridged, &[packet], 1);
         assert_eq!(parts.len(), 1);
-        assert_eq!(parts[0], packet.iter().map(|b| b.wrapping_add(1)).collect::<Vec<_>>());
+        assert_eq!(
+            parts[0],
+            packet.iter().map(|b| b.wrapping_add(1)).collect::<Vec<_>>()
+        );
     }
 
     #[test]

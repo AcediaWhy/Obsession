@@ -4,12 +4,16 @@ version = "0.1.0"
 edition = "2021"
 description = "Headless MTProto<->WebSocket Telegram proxy for Obsession (Rust rewrite of FlowSeal tg-ws-proxy CLI)"
 license = "MIT"
+authors = ["Flowseal contributors", "Obsession contributors"]
+readme = "README.md"
+publish = false
 
 [dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync", "signal"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 aes = "0.8"
 sha2 = "0.10"
+sha1 = "0.10"
 hmac = "0.12"
 rand = "0.8"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }

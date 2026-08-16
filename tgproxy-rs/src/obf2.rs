@@ -18,8 +18,12 @@ pub const DC_IDX_POS: usize = 60;
 
 const RESERVED_FIRST_BYTES: [u8; 1] = [0xEF];
 const RESERVED_STARTS: [&[u8]; 6] = [
-    b"HEAD", b"POST", b"GET ", &[0xee, 0xee, 0xee, 0xee],
-    &[0xdd, 0xdd, 0xdd, 0xdd], &[0x16, 0x03, 0x01, 0x02],
+    b"HEAD",
+    b"POST",
+    b"GET ",
+    &[0xee, 0xee, 0xee, 0xee],
+    &[0xdd, 0xdd, 0xdd, 0xdd],
+    &[0x16, 0x03, 0x01, 0x02],
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,10 +74,7 @@ pub fn parse_client_init(handshake: &[u8; HANDSHAKE_LEN], secret: &[u8; 16]) -> 
 
     let proto_tag = ProtoTag::from_bytes(&decrypted[PROTO_TAG_POS..PROTO_TAG_POS + 4])?;
 
-    let dc_idx = i16::from_le_bytes([
-        decrypted[DC_IDX_POS],
-        decrypted[DC_IDX_POS + 1],
-    ]);
+    let dc_idx = i16::from_le_bytes([decrypted[DC_IDX_POS], decrypted[DC_IDX_POS + 1]]);
 
     Some(ClientInit {
         dc: dc_idx.unsigned_abs(),
@@ -130,7 +131,11 @@ pub(crate) fn build_client_init(
 /// Генерация 64-байтного relay init для DC (webk-схема: ключ — сырой
 /// prekey). Хвост шифруется тем же CTR-потоком, которым позже пойдёт
 /// трафик к DC, поэтому его содержимое интегрировано в init.
-pub fn make_relay_init(proto_tag: ProtoTag, dc_idx: i16, rng: &mut impl RngCore) -> [u8; HANDSHAKE_LEN] {
+pub fn make_relay_init(
+    proto_tag: ProtoTag,
+    dc_idx: i16,
+    rng: &mut impl RngCore,
+) -> [u8; HANDSHAKE_LEN] {
     loop {
         let mut rnd = [0u8; HANDSHAKE_LEN];
         rng.fill_bytes(&mut rnd);
@@ -192,19 +197,25 @@ impl CryptoCtx {
     ) -> Self {
         // Клиентская сторона: ключи с хешем секрета.
         let clt_dec_key = sha256_concat(&client_dec_prekey_iv[..PREKEY_LEN], secret);
-        let clt_dec_iv: [u8; 16] =
-            client_dec_prekey_iv[PREKEY_LEN..PREKEY_LEN + IV_LEN].try_into().unwrap();
+        let clt_dec_iv: [u8; 16] = client_dec_prekey_iv[PREKEY_LEN..PREKEY_LEN + IV_LEN]
+            .try_into()
+            .unwrap();
         let mut clt_dec = CtrCipher::new(&clt_dec_key, &clt_dec_iv);
         clt_dec.skip_64();
 
         let reversed: Vec<u8> = client_dec_prekey_iv.iter().rev().copied().collect();
         let clt_enc_key = sha256_concat(&reversed[..PREKEY_LEN], secret);
-        let clt_enc_iv: [u8; 16] = reversed[PREKEY_LEN..PREKEY_LEN + IV_LEN].try_into().unwrap();
+        let clt_enc_iv: [u8; 16] = reversed[PREKEY_LEN..PREKEY_LEN + IV_LEN]
+            .try_into()
+            .unwrap();
         let clt_enc = CtrCipher::new(&clt_enc_key, &clt_enc_iv);
 
         // Релейная сторона (webk): сырые ключи без секрета.
-        let relay_enc_key: [u8; 32] = relay_init[SKIP_LEN..SKIP_LEN + PREKEY_LEN].try_into().unwrap();
-        let relay_enc_iv: [u8; 16] = relay_init[SKIP_LEN + PREKEY_LEN..SKIP_LEN + PREKEY_LEN + IV_LEN]
+        let relay_enc_key: [u8; 32] = relay_init[SKIP_LEN..SKIP_LEN + PREKEY_LEN]
+            .try_into()
+            .unwrap();
+        let relay_enc_iv: [u8; 16] = relay_init
+            [SKIP_LEN + PREKEY_LEN..SKIP_LEN + PREKEY_LEN + IV_LEN]
             .try_into()
             .unwrap();
         let mut tg_enc = CtrCipher::new(&relay_enc_key, &relay_enc_iv);
@@ -216,7 +227,9 @@ impl CryptoCtx {
             .copied()
             .collect();
         let tg_dec_key: [u8; 32] = relay_reversed[..PREKEY_LEN].try_into().unwrap();
-        let tg_dec_iv: [u8; 16] = relay_reversed[PREKEY_LEN..PREKEY_LEN + IV_LEN].try_into().unwrap();
+        let tg_dec_iv: [u8; 16] = relay_reversed[PREKEY_LEN..PREKEY_LEN + IV_LEN]
+            .try_into()
+            .unwrap();
         let tg_dec = CtrCipher::new(&tg_dec_key, &tg_dec_iv);
 
         CryptoCtx {
@@ -240,13 +253,21 @@ mod tests {
         let init = build_client_init(2, ProtoTag::Abridged, &SECRET, &mut OsRng);
         assert_eq!(
             parse_client_init(&init, &SECRET),
-            Some(ClientInit { dc: 2, is_media: false, proto_tag: ProtoTag::Abridged })
+            Some(ClientInit {
+                dc: 2,
+                is_media: false,
+                proto_tag: ProtoTag::Abridged
+            })
         );
 
         let init = build_client_init(-2, ProtoTag::Intermediate, &SECRET, &mut OsRng);
         assert_eq!(
             parse_client_init(&init, &SECRET),
-            Some(ClientInit { dc: 2, is_media: true, proto_tag: ProtoTag::Intermediate })
+            Some(ClientInit {
+                dc: 2,
+                is_media: true,
+                proto_tag: ProtoTag::Intermediate
+            })
         );
     }
 

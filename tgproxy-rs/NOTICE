@@ -1,0 +1,8 @@
+tgproxy-rs / tg_ws_proxy
+
+This component is an independent Rust rewrite derived from the design and
+behavior of Flowseal's tg-ws-proxy project. The upstream work is distributed
+under the MIT License and is credited to Flowseal.
+
+The Rust implementation and Obsession integration contain additional changes
+by the Obsession contributors. See LICENSE for the applicable MIT terms.
