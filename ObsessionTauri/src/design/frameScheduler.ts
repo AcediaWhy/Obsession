@@ -83,6 +83,10 @@ const QUALITY_CAPS: Record<QualityTier, number> = {
 };
 const QUALITY_ORDER: readonly QualityTier[] = ["low", "balanced", "high"];
 const HISTOGRAM_LIMITS = [8, 12, 17, 25, 34, 50] as const;
+// rAF may stay alive without a visibility event while WebView2 is suspended,
+// the machine sleeps, or Windows throttles the window in the background. A
+// gap this large is a new render session, not a slow frame to simulate.
+const SUSPENDED_FRAME_GAP_MS = 500;
 
 const DEFAULT_OPTIONS: Required<FrameSchedulerOptions> = {
   initialRefreshHz: 60,
@@ -482,7 +486,15 @@ export class FrameScheduler {
 
     const continuous = this.hasContinuousWork();
     const intervalMs = this.lastRaf ? now - this.lastRaf : 0;
-    if (continuous && intervalMs > 0) this.observeRefresh(intervalMs);
+    const resumedAfterSuspension = continuous && intervalMs >= SUSPENDED_FRAME_GAP_MS;
+    if (resumedAfterSuspension) {
+      this.resetTiming();
+      this.resetRefreshMeasurement();
+      this.telemetryIntervals.length = 0;
+      this.telemetryCosts.length = 0;
+    } else if (continuous && intervalMs > 0) {
+      this.observeRefresh(intervalMs);
+    }
     this.lastRaf = now;
 
     const startedAt = this.host.now();
@@ -492,7 +504,7 @@ export class FrameScheduler {
       }
     }
     const costMs = Math.max(0, this.host.now() - startedAt);
-    if (continuous && intervalMs > 0) {
+    if (continuous && intervalMs > 0 && !resumedAfterSuspension) {
       this.recordFrameSample(intervalMs, costMs, this.host.now());
     }
     if (this.hasFrameWork()) {

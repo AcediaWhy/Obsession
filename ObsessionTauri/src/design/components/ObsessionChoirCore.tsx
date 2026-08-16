@@ -58,9 +58,10 @@ export function ObsessionChoirCore({
     const baseDpr = role === "hero" ? Math.min(window.devicePixelRatio || 1, 2) : 1;
     let dpr = 0;
     let previousPhase = stateRef.current.phase;
-    let phaseStartedAt = performance.now();
+    let phaseAge = 0;
+    let animationTime = 0;
     let displayedMotion = sampleObsessionChoirMotion({
-      time: phaseStartedAt / 1000,
+      time: animationTime,
       phase: previousPhase,
       phaseAge: 0,
       forceRitual: stateRef.current.forceRitual,
@@ -80,19 +81,23 @@ export function ObsessionChoirCore({
     };
     resize("high");
 
-    const loop = createRenderLoop((dt, now) => {
+    const loop = createRenderLoop((dt) => {
       const state = stateRef.current;
+      const stillFrame = state.paused || state.motionOff;
+      const effectiveDt = stillFrame ? 0 : dt;
+      animationTime += effectiveDt;
       if (state.phase !== previousPhase) {
         previousPhase = state.phase;
-        phaseStartedAt = now;
+        phaseAge = 0;
+      } else {
+        phaseAge += effectiveDt;
       }
       const targetMotion = sampleObsessionChoirMotion({
-        time: now / 1000,
+        time: animationTime,
         phase: state.phase,
-        phaseAge: Math.max(0, now - phaseStartedAt) / 1000,
+        phaseAge,
         forceRitual: state.forceRitual,
       });
-      const stillFrame = state.paused || state.motionOff;
       displayedMotion = stillFrame
         ? targetMotion
         : smoothObsessionChoirMotion(

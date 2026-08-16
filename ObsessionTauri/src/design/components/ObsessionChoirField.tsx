@@ -49,16 +49,17 @@ export function ObsessionChoirField({
     let pointerX = 0;
     let pointerY = 0;
     let previousPhase = stateRef.current.phase;
-    let phaseStartedAt = performance.now();
+    let phaseAge = 0;
+    let animationTime = 0;
     let displayedMotion = sampleObsessionChoirMotion({
-      time: phaseStartedAt / 1000,
+      time: animationTime,
       phase: previousPhase,
       phaseAge: 0,
       forceRitual: stateRef.current.forceRitual,
     });
     let schedulerQuality: QualityTier = "high";
     let appliedQuality = stateRef.current.forcedQualityTier ?? schedulerQuality;
-    let renderBudget = 1;
+    let renderBudget = 1 / obsessionChoirQuality(appliedQuality).targetFps;
     let panels = readPanelLenses(stateRef.current.lensRoot ?? document, canvas.getBoundingClientRect(), 12);
 
     const resize = () => {
@@ -100,7 +101,7 @@ export function ObsessionChoirField({
       if (pointer.layoutChanged) resize();
     });
 
-    loop = createRenderLoop((dt, now) => {
+    loop = createRenderLoop((dt) => {
       const state = stateRef.current;
       const nextQuality = state.forcedQualityTier ?? schedulerQuality;
       if (nextQuality !== appliedQuality) {
@@ -113,15 +114,20 @@ export function ObsessionChoirField({
       if (renderBudget + 0.0001 < 1 / quality.targetFps) return;
       const frameDt = renderBudget;
       renderBudget = 0;
+      const still = state.paused || state.motionOff;
+      const effectiveDt = still ? 0 : frameDt;
+      animationTime += effectiveDt;
       if (state.phase !== previousPhase) {
         previousPhase = state.phase;
-        phaseStartedAt = now;
+        phaseAge = 0;
+      } else {
+        phaseAge += effectiveDt;
       }
       const focus = obsessionChoirFocusForScreen(state.screen);
       const targetMotion = sampleObsessionChoirMotion({
-        time: now / 1000,
+        time: animationTime,
         phase: state.phase,
-        phaseAge: Math.max(0, now - phaseStartedAt) / 1000,
+        phaseAge,
         forceRitual: state.forceRitual,
       });
       displayedMotion = state.paused || state.motionOff
@@ -134,7 +140,7 @@ export function ObsessionChoirField({
         );
       pipeline.render(width, height, {
         ...displayedMotion,
-        time: now / 1000,
+        time: animationTime,
         phase: state.phase,
         focusX: focus.x,
         focusY: focus.y,

@@ -137,6 +137,28 @@ describe("FrameScheduler", () => {
     expect(scheduler.getSnapshot().telemetry.samples).toBe(0);
   });
 
+  it("resumes after a long frame gap without advancing animation or telemetry", () => {
+    const host = new FakeFrameHost();
+    const scheduler = new FrameScheduler(host, {
+      initialRefreshHz: 60,
+      telemetryWindowSize: 1,
+      qualityGraceMs: 0,
+    });
+    const deltas: number[] = [];
+    scheduler.createLoop((dt) => deltas.push(dt)).start();
+
+    host.step(1000 / 60);
+    host.step(120_000);
+
+    expect(deltas).toHaveLength(2);
+    expect(deltas[1]).toBeCloseTo(1 / 60, 4);
+    expect(scheduler.getSnapshot().qualityTier).toBe("high");
+    expect(scheduler.getSnapshot().telemetry.samples).toBe(0);
+
+    host.step(1000 / 60);
+    expect(scheduler.getSnapshot().telemetry.samples).toBe(1);
+  });
+
   it("applies quality hysteresis and cooldown without tier flapping", () => {
     const host = new FakeFrameHost();
     const scheduler = new FrameScheduler(host, {

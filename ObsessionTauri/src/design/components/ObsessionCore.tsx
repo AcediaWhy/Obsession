@@ -53,7 +53,8 @@ export function ObsessionCore({
     const baseDpr = role === "hero" ? Math.min(window.devicePixelRatio || 1, 2) : 1;
     let backingDpr = 0;
     let previousPhase = stateRef.current.phase;
-    let phaseStartedAt = performance.now();
+    let phaseAge = 0;
+    let animationTime = 0;
     let pointerX = 0;
     let pointerY = 0;
 
@@ -70,16 +71,20 @@ export function ObsessionCore({
     };
     resizeBacking("high");
 
-    const draw = (_dt: number, now: number) => {
+    const draw = (dt: number) => {
       const state = stateRef.current;
+      const effectiveDt = state.paused ? 0 : dt;
+      animationTime += effectiveDt;
       if (state.phase !== previousPhase) {
         previousPhase = state.phase;
-        phaseStartedAt = now;
+        phaseAge = 0;
+      } else {
+        phaseAge += effectiveDt;
       }
       const motion = sampleObsessionEyeMotion({
-        time: now / 1000,
+        time: animationTime,
         phase: state.phase,
-        phaseAge: Math.max(0, now - phaseStartedAt) / 1000,
+        phaseAge,
         pointerX,
         pointerY,
       });

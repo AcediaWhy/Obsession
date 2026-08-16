@@ -49,16 +49,18 @@ export function ObsessionField({ paused = false, phase, screen }: ObsessionScene
     let width = 1;
     let height = 1;
     let phaseAge = 0;
+    let animationTime = 0;
     let previousPhase = stateRef.current.phase;
-    let renderBudget = 1;
+    let renderBudget = 1 / quality.targetFps;
     let focus = obsessionFocusForScreen(stateRef.current.screen);
     let pointerX = 0;
     let pointerY = 0;
 
-    const renderFrame = (dt: number, now = performance.now()) => {
+    const renderFrame = (dt: number) => {
       const state = stateRef.current;
       const still = state.reducedMotion || state.paused;
       const effectiveDt = still ? 0 : dt;
+      animationTime += effectiveDt;
       renderBudget += dt;
       const interval = 1 / quality.targetFps;
       if (!still && renderBudget + 0.0001 < interval) return;
@@ -71,21 +73,20 @@ export function ObsessionField({ paused = false, phase, screen }: ObsessionScene
         phaseAge += step;
       }
       const target = obsessionFocusForScreen(state.screen);
-      const absoluteTime = now / 1000;
-      const scan = state.phase === "scanning" && !still ? scanningOffset(absoluteTime) : { x: 0, y: 0 };
+      const scan = state.phase === "scanning" && !still ? scanningOffset(animationTime) : { x: 0, y: 0 };
       focus = {
         x: damp(focus.x, target.x + scan.x, 2.4, Math.max(effectiveDt, 1 / 60)),
         y: damp(focus.y, target.y + scan.y, 2.4, Math.max(effectiveDt, 1 / 60)),
       };
       const motion = sampleObsessionEyeMotion({
-        time: absoluteTime,
+        time: animationTime,
         phase: state.phase,
         phaseAge,
         pointerX,
         pointerY,
       });
       pipeline?.render(width, height, {
-        time: absoluteTime,
+        time: animationTime,
         phase: obsessionPhaseValue(state.phase),
         phaseAge,
         focusX: focus.x,
