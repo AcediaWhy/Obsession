@@ -124,13 +124,26 @@ export function AiScreen() {
                 onClick={() => s.setProvider("geohide")}
               />
             </div>
-            <p className="text-xs text-ink-muted mt-2">
-              <strong>Malw:</strong> зеркала резолвятся через DNS Cloudflare.
-              {" "}
-              <strong>GeoHide:</strong> GeoIP-обход, иногда медленнее. Если
-              выбранный источник не отвечает для ChatGPT или Claude, runtime
-              подставляет проверенный маршрут второго источника. Для Gemini
-              сначала используется быстрый маршрут Comss, затем GeoHide.
+            <div className="mt-3 flex items-center justify-between gap-3 rounded-xl border border-accent/30 bg-accent/10 px-3 py-2.5">
+              <div className="min-w-0">
+                <div className="font-mono text-3xs uppercase tracking-[0.14em] text-accent-cyan">
+                  Gemini · автоматический маршрут
+                </div>
+                <div className="mt-1 flex flex-wrap items-center gap-x-1.5 text-xs text-ink-soft">
+                  <strong className="text-ink">Comss</strong>
+                  <span>основной</span>
+                  <span className="text-ink-muted">→</span>
+                  <strong className="text-ink">GeoHide</strong>
+                  <span>резервный</span>
+                </div>
+              </div>
+              <span className="shrink-0 rounded-full border border-ok/30 bg-ok/10 px-2 py-1 font-mono text-3xs font-semibold uppercase tracking-wide text-ok">
+                авто
+              </span>
+            </div>
+            <p className="mt-2 text-xs leading-5 text-ink-muted">
+              Выбор выше применяется к ChatGPT и Claude. Если источник не
+              отвечает, runtime проверяет второй автоматически.
             </p>
           </div>
 
