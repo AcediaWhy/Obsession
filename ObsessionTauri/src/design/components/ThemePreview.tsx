@@ -5,6 +5,7 @@ import { FallenCore } from "./FallenCore";
 import { MidnightCore } from "./MidnightCore";
 import { OphanimCore } from "./OphanimCore";
 import { RainLanternCore } from "./RainLanternCore";
+import { ObsessionChoirCore } from "./ObsessionChoirCore";
 
 const noop = () => {};
 
@@ -29,6 +30,7 @@ export function ThemePreview({
 
   return (
     <div aria-hidden="true" className="relative shrink-0" style={{ width: size, height: size }}>
+      {theme === "obsession" && <ObsessionChoirCore {...shared} interactive={false} />}
       {theme === "aurora" && <AuroraCore {...shared} interactive={false} />}
       {theme === "ophanim" && <OphanimCore {...shared} interactive={false} />}
       {theme === "japan" && <RainLanternCore {...shared} variant="preview" />}

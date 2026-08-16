@@ -7,6 +7,9 @@ import { FallenField } from "./FallenField";
 import { RainFallback } from "./RainFallback";
 import { CatnapField } from "./CatnapField";
 import { MidnightField } from "./MidnightField";
+import { ObsessionChoirField } from "./ObsessionChoirField";
+import { ObsessionChoirFallback } from "./ObsessionChoirFallback";
+import type { ObsessionVisualPhase } from "../obsessionVisualState";
 
 // Гибридная WebGL-сцена Rain грузится только после выбора темы. Suspense и
 // любая sync/async ошибка показывают композиционно совпадающий 2D-fallback.
@@ -24,6 +27,35 @@ function webglSupported(): boolean {
   }
 }
 const WEBGL = webglSupported();
+
+function webgl2Supported(): boolean {
+  try {
+    const canvas = document.createElement("canvas");
+    const gl = canvas.getContext("webgl2");
+    if (!gl) return false;
+    gl.getExtension("WEBGL_lose_context")?.loseContext();
+    return true;
+  } catch {
+    return false;
+  }
+}
+const WEBGL2 = webgl2Supported();
+
+class ObsessionBoundary extends Component<
+  { children: ReactNode; fallback: ReactNode },
+  { failed: boolean }
+> {
+  state = { failed: false };
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+  componentDidCatch(error: unknown) {
+    console.warn("Obsession WebGL scene failed, using the optical fallback:", error);
+  }
+  render() {
+    return this.state.failed ? this.props.fallback : this.props.children;
+  }
+}
 
 // Ловим сбои 3D-сцены (драйвер/WebGL/шейдер) и показываем 2D-версию.
 class Fallback3D extends Component<{ children: ReactNode; fallback: ReactNode }, { failed: boolean }> {
@@ -46,9 +78,13 @@ class Fallback3D extends Component<{ children: ReactNode; fallback: ReactNode },
 export function HeroField({
   theme,
   frozen = false,
+  phase = "idle",
+  screen = "overview",
 }: {
   theme: Theme;
   frozen?: boolean;
+  phase?: ObsessionVisualPhase;
+  screen?: string;
 }) {
   // Пока окно скрыто (трей/сворачивание) — размонтируем тяжёлую сцену целиком.
   const hidden = useRenderHidden();
@@ -62,7 +98,14 @@ export function HeroField({
   }
 
   let scene: ReactNode;
-  if (theme === "ophanim") {
+  if (theme === "obsession") {
+    const fallback = <ObsessionChoirFallback paused={frozen} phase={phase} screen={screen} />;
+    scene = WEBGL2 ? (
+      <ObsessionBoundary fallback={fallback}>
+        <ObsessionChoirField paused={frozen} phase={phase} screen={screen} />
+      </ObsessionBoundary>
+    ) : fallback;
+  } else if (theme === "ophanim") {
     scene = <OphanimField paused={frozen} />;
   } else if (theme === "fallendown") {
     scene = <FallenField paused={frozen} />;

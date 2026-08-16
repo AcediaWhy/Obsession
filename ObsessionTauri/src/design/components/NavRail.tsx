@@ -54,7 +54,7 @@ export function NavRail({
               {isActive && (
                 <motion.div
                   layoutId="nav-active"
-                  className="absolute inset-0 rounded-xl border border-accent/40 bg-accent/15 shadow-glow"
+                  className="nav-active-plate absolute inset-0 rounded-xl border border-accent/40 bg-accent/15 shadow-glow"
                   transition={spring.snappy}
                 />
               )}
@@ -88,7 +88,7 @@ export function NavRail({
         })}
       </div>
 
-      <div className="mt-auto px-2 text-3xs text-ink-muted opacity-70">made by VlarpSu</div>
+      <div className="mt-auto px-2 text-3xs text-ink-muted opacity-70">made by AcediaWhy</div>
     </nav>
   );
 }

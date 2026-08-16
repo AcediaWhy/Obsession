@@ -2,13 +2,29 @@ import { create } from "zustand";
 
 // Визуальная тема hero-элемента и фона. Чисто фронтовая настройка (не трогает
 // Rust-Settings): храним в localStorage, применяем мгновенно.
-export type Theme = "aurora" | "ophanim" | "japan" | "midnight" | "catnap" | "fallendown";
+export type Theme =
+  | "obsession"
+  | "aurora"
+  | "ophanim"
+  | "japan"
+  | "midnight"
+  | "catnap"
+  | "fallendown";
 
-const THEME_IDS: Theme[] = ["aurora", "ophanim", "japan", "midnight", "catnap", "fallendown"];
+const THEME_IDS: Theme[] = [
+  "obsession",
+  "aurora",
+  "ophanim",
+  "japan",
+  "midnight",
+  "catnap",
+  "fallendown",
+];
 
 // `secret` — id пасхалки в secretStore; такая тема появляется в выборе только
 // после разблокировки (см. окошко пасхалок в Настройках).
 export const THEMES: { id: Theme; label: string; secret?: string }[] = [
+  { id: "obsession", label: "Obsession" },
   { id: "aurora", label: "Aurora" },
   { id: "ophanim", label: "Ophanim" },
   { id: "japan", label: "Rain" },
@@ -19,14 +35,19 @@ export const THEMES: { id: Theme; label: string; secret?: string }[] = [
 
 const KEY = "obsession.theme";
 
+export function resolveStoredTheme(value: string | null): Theme {
+  return value && THEME_IDS.includes(value as Theme)
+    ? (value as Theme)
+    : "obsession";
+}
+
 function load(): Theme {
   try {
-    const v = localStorage.getItem(KEY) as Theme | null;
-    if (v && THEME_IDS.includes(v)) return v;
+    return resolveStoredTheme(localStorage.getItem(KEY));
   } catch {
     /* localStorage может быть недоступен — молча откатываемся к дефолту */
   }
-  return "aurora";
+  return "obsession";
 }
 
 interface ThemeState {
