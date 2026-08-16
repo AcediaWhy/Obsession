@@ -129,10 +129,10 @@ impl<B: RuntimeBackend + Send> SecureNamedPipeServer<B> {
         self.serve_one_with_timeout(DEFAULT_CLIENT_IO_TIMEOUT)
     }
 
-    /// Applies one total deadline to all client-controlled I/O after connect.
-    /// `ConnectNamedPipe` itself remains an idle blocking listener. Once a
-    /// client owns the instance, however, it cannot hold a read, write or
-    /// response flush forever.
+    /// Applies the deadline independently to request input and response output.
+    /// Authenticated backend work runs between those two client-I/O windows and
+    /// owns its own operation-specific bounds. A slow protected operation must
+    /// not be mistaken for a client that is holding the pipe open.
     pub fn serve_one_with_timeout(&self, timeout: Duration) -> Result<(), NamedPipeError> {
         if timeout.is_zero() {
             return Err(NamedPipeError::InvalidTimeout);
@@ -188,60 +188,72 @@ impl<B: RuntimeBackend + Send> SecureNamedPipeServer<B> {
         pipe: HANDLE,
         timeout: Duration,
     ) -> Result<(), NamedPipeError> {
-        let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
-        let (result_sender, result_receiver) = mpsc::sync_channel(1);
-        // windows::HANDLE intentionally does not implement Send. The scoped
-        // worker cannot outlive `pipe`, so transfer only its stable numeric
-        // value and reconstruct the non-owning view inside that scope.
         let pipe_value = pipe.0 as usize;
+        let (request, client) = run_bounded_pipe_io(timeout, move || {
+            let pipe = HANDLE(pipe_value as *mut std::ffi::c_void);
+            // Windows permits impersonation only after the server has consumed
+            // client data. The strict size-capped frame is parsed first, but it
+            // cannot reach dispatch until the captured token is accepted.
+            let request = read_request(pipe)?;
+            let client = client_identity(pipe)?;
+            Ok((request, client))
+        })?;
 
-        thread::scope(|scope| {
-            let worker = scope.spawn(move || {
-                let pipe = HANDLE(pipe_value as *mut std::ffi::c_void);
-                let thread_id = unsafe { GetCurrentThreadId() };
-                if ready_sender.send(thread_id).is_err() {
-                    return;
-                }
-                let _ = result_sender.send(self.serve_connected_client(pipe));
-            });
-
-            let thread_id = ready_receiver
-                .recv()
-                .map_err(|_| NamedPipeError::WorkerFailed)?;
-            let result = match result_receiver.recv_timeout(timeout) {
-                Ok(result) => result,
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    cancel_synchronous_worker_io(thread_id)?;
-                    // Cancellation converts the active synchronous pipe call
-                    // into an error and lets the scoped worker unwind before
-                    // its borrowed server/pipe references can leave scope.
-                    let _cancelled_result = result_receiver
-                        .recv()
-                        .map_err(|_| NamedPipeError::WorkerFailed)?;
-                    Err(NamedPipeError::ClientIoTimedOut)
-                }
-                Err(mpsc::RecvTimeoutError::Disconnected) => Err(NamedPipeError::WorkerFailed),
-            };
-
-            worker.join().map_err(|_| NamedPipeError::WorkerFailed)?;
-            result
-        })
-    }
-
-    fn serve_connected_client(&self, pipe: HANDLE) -> Result<(), NamedPipeError> {
-        // Windows permits named-pipe impersonation only after the server has
-        // consumed client data. Parsing a single size-capped, strict request
-        // is non-privileged; dispatch remains impossible until the client
-        // token below has been captured and checked.
-        let request = read_request(pipe)?;
-        let client = client_identity(pipe)?;
         let response = self
             .core
             .lock()
             .map_err(|_| NamedPipeError::PoisonedDispatcher)?
             .handle(&client, request);
-        write_response(pipe, &response)
+
+        let pipe_value = pipe.0 as usize;
+        run_bounded_pipe_io(timeout, move || {
+            let pipe = HANDLE(pipe_value as *mut std::ffi::c_void);
+            write_response(pipe, &response)
+        })
     }
+}
+
+fn run_bounded_pipe_io<T, F>(timeout: Duration, operation: F) -> Result<T, NamedPipeError>
+where
+    T: Send,
+    F: FnOnce() -> Result<T, NamedPipeError> + Send,
+{
+    if timeout.is_zero() {
+        return Err(NamedPipeError::InvalidTimeout);
+    }
+    let (ready_sender, ready_receiver) = mpsc::sync_channel(1);
+    let (result_sender, result_receiver) = mpsc::sync_channel(1);
+
+    thread::scope(|scope| {
+        let worker = scope.spawn(move || {
+            let thread_id = unsafe { GetCurrentThreadId() };
+            if ready_sender.send(thread_id).is_err() {
+                return;
+            }
+            let _ = result_sender.send(operation());
+        });
+
+        let thread_id = ready_receiver
+            .recv()
+            .map_err(|_| NamedPipeError::WorkerFailed)?;
+        let result = match result_receiver.recv_timeout(timeout) {
+            Ok(result) => result,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                cancel_synchronous_worker_io(thread_id)?;
+                // Cancellation converts the active synchronous pipe call into
+                // an error and lets the scoped worker unwind before its pipe
+                // reference can leave scope.
+                let _cancelled_result = result_receiver
+                    .recv()
+                    .map_err(|_| NamedPipeError::WorkerFailed)?;
+                Err(NamedPipeError::ClientIoTimedOut)
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => Err(NamedPipeError::WorkerFailed),
+        };
+
+        worker.join().map_err(|_| NamedPipeError::WorkerFailed)?;
+        result
+    })
 }
 
 struct OwnedHandle(HANDLE);
@@ -331,7 +343,12 @@ fn create_pipe_with_wait_mode(
 }
 
 fn runtime_pipe_name_wide() -> Vec<u16> {
-    let mut value: Vec<u16> = RUNTIME_PIPE_NAME.encode_utf16().collect();
+    #[cfg(test)]
+    let pipe_name = format!(r"\\.\pipe\ObsessionRuntime.test.{}", std::process::id());
+    #[cfg(not(test))]
+    let pipe_name = RUNTIME_PIPE_NAME.to_owned();
+
+    let mut value: Vec<u16> = pipe_name.encode_utf16().collect();
     value.push(0);
     value
 }
@@ -611,7 +628,9 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use obsession_runtime_protocol::{
-        decode_response_frame, encode_request_frame, Request, Response, ServiceErrorCode,
+        decode_response_frame, encode_request_frame, Capabilities, DpiStartRequest, DpiStopRequest,
+        FirewallOpenProxyLanRequest, HostsMutationRequest, OperationAccepted, Request, Response,
+        RuntimeSnapshot, RuntimeStarted, ServiceErrorCode,
     };
     use windows::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE};
     use windows::Win32::Storage::FileSystem::{
@@ -623,6 +642,63 @@ mod tests {
     use crate::LockedBackend;
 
     static PIPE_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    struct SlowCapabilitiesBackend;
+
+    impl RuntimeBackend for SlowCapabilitiesBackend {
+        fn capabilities(&self) -> Result<Capabilities, crate::BackendError> {
+            thread::sleep(Duration::from_millis(250));
+            RuntimeBackend::capabilities(&LockedBackend)
+        }
+
+        fn runtime_snapshot(&self) -> Result<RuntimeSnapshot, crate::BackendError> {
+            RuntimeBackend::runtime_snapshot(&LockedBackend)
+        }
+
+        fn dpi_start(
+            &mut self,
+            request: DpiStartRequest,
+        ) -> Result<RuntimeStarted, crate::BackendError> {
+            RuntimeBackend::dpi_start(&mut LockedBackend, request)
+        }
+
+        fn dpi_stop(&mut self, request: DpiStopRequest) -> Result<(), crate::BackendError> {
+            RuntimeBackend::dpi_stop(&mut LockedBackend, request)
+        }
+
+        fn hosts_install(
+            &mut self,
+            request: HostsMutationRequest,
+        ) -> Result<OperationAccepted, crate::BackendError> {
+            RuntimeBackend::hosts_install(&mut LockedBackend, request)
+        }
+
+        fn hosts_uninstall(&mut self) -> Result<OperationAccepted, crate::BackendError> {
+            RuntimeBackend::hosts_uninstall(&mut LockedBackend)
+        }
+
+        fn hosts_restore(
+            &mut self,
+            request: HostsMutationRequest,
+        ) -> Result<OperationAccepted, crate::BackendError> {
+            RuntimeBackend::hosts_restore(&mut LockedBackend, request)
+        }
+
+        fn firewall_open_proxy_lan(
+            &mut self,
+            request: FirewallOpenProxyLanRequest,
+        ) -> Result<OperationAccepted, crate::BackendError> {
+            RuntimeBackend::firewall_open_proxy_lan(&mut LockedBackend, request)
+        }
+
+        fn firewall_close_proxy_lan(&mut self) -> Result<(), crate::BackendError> {
+            RuntimeBackend::firewall_close_proxy_lan(&mut LockedBackend)
+        }
+
+        fn subscribe_events(&mut self) -> Result<OperationAccepted, crate::BackendError> {
+            RuntimeBackend::subscribe_events(&mut LockedBackend)
+        }
+    }
 
     #[test]
     fn integrity_classification_only_accepts_medium_and_high_user_tokens() {
@@ -715,6 +791,32 @@ mod tests {
         assert!(matches!(result, Err(NamedPipeError::ClientIoTimedOut)));
         drop(pipe);
         worker.join().expect("server worker must not panic");
+    }
+
+    #[test]
+    fn backend_work_can_outlive_the_client_io_deadline_without_poisoning_the_pipe() {
+        let _pipe_test = PIPE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let server = Arc::new(SecureNamedPipeServer::new(SlowCapabilitiesBackend));
+        let worker = {
+            let server = Arc::clone(&server);
+            thread::spawn(move || server.serve_one_with_timeout(Duration::from_millis(100)))
+        };
+
+        let pipe = connect_test_client().expect("test client must connect");
+        let pipe = OwnedHandle(pipe);
+        let request = RequestEnvelope::new("slow-capabilities-1", Request::GetCapabilities);
+        write_all(pipe.0, &encode_request_frame(&request).unwrap())
+            .expect("request write must complete");
+        let response = decode_response_frame(&read_frame(pipe.0).unwrap()).unwrap();
+
+        assert_eq!(response.request_id, "slow-capabilities-1");
+        assert!(matches!(response.response, Response::Capabilities(_)));
+        worker
+            .join()
+            .expect("server worker must not panic")
+            .expect("backend duration must not consume the client I/O deadline");
     }
 
     #[test]

@@ -588,17 +588,39 @@ pub async fn hosts_status(app: AppHandle, provider: String) -> crate::hosts::Hos
 }
 
 #[tauri::command]
-pub async fn hosts_install(app: AppHandle, provider: String) -> Result<(), String> {
+pub async fn hosts_install(
+    app: AppHandle,
+    provider: String,
+) -> Result<obsession_runtime_protocol::HostsHealthSnapshot, String> {
+    let state = app.state::<AppState>();
+    let _gate = state.hosts_gate.lock().await;
     crate::hosts::install(&app, Provider::parse(&provider)).await
 }
 
 #[tauri::command]
+pub async fn hosts_check(
+    app: AppHandle,
+    max_age_seconds: u32,
+) -> Result<obsession_runtime_protocol::HostsHealthSnapshot, String> {
+    let state = app.state::<AppState>();
+    let _gate = state.hosts_gate.lock().await;
+    crate::hosts::check_health(max_age_seconds).await
+}
+
+#[tauri::command]
 pub async fn hosts_uninstall(app: AppHandle) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let _gate = state.hosts_gate.lock().await;
     crate::hosts::uninstall(&app).await
 }
 
 #[tauri::command]
-pub async fn hosts_restore(app: AppHandle, provider: String) -> Result<(), String> {
+pub async fn hosts_restore(
+    app: AppHandle,
+    provider: String,
+) -> Result<obsession_runtime_protocol::HostsHealthSnapshot, String> {
+    let state = app.state::<AppState>();
+    let _gate = state.hosts_gate.lock().await;
     crate::hosts::restore_last_known_good(&app, Provider::parse(&provider)).await
 }
 

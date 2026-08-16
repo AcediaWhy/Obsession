@@ -346,6 +346,7 @@ pub fn run() {
             commands::open_external_url,
             commands::hosts_status,
             commands::hosts_install,
+            commands::hosts_check,
             commands::hosts_uninstall,
             commands::hosts_restore,
             commands::runtime_get_snapshot,

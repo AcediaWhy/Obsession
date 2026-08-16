@@ -261,4 +261,14 @@ describe("BootstrapSnapshot contract", () => {
       patch: { legacy_reliability_frozen_categories: ["discord"] },
     });
   });
+
+  it("keeps route checks read-only and bounded by a cache age", async () => {
+    vi.mocked(invoke).mockResolvedValue(undefined);
+
+    await api.hostsCheck(900);
+
+    expect(invoke).toHaveBeenCalledWith("hosts_check", {
+      maxAgeSeconds: 900,
+    });
+  });
 });

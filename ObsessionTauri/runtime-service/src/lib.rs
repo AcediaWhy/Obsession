@@ -43,9 +43,10 @@ pub mod scm;
 
 use obsession_runtime_protocol::{
     Capabilities, DpiReplaceRequest, DpiStartRequest, DpiStopRequest, FirewallOpenProxyLanRequest,
-    HostsMutationRequest, LegacyRecoveryApprovalRequest, LegacyRecoveryControlsRequest,
-    OperationAccepted, Request, RequestEnvelope, Response, ResponseEnvelope, RuntimeSnapshot,
-    RuntimeStarted, ServiceError, ServiceErrorCode, PROTOCOL_VERSION,
+    HostsCheckRequest, HostsHealthSnapshot, HostsMutationRequest, LegacyRecoveryApprovalRequest,
+    LegacyRecoveryControlsRequest, OperationAccepted, Request, RequestEnvelope, Response,
+    ResponseEnvelope, RuntimeSnapshot, RuntimeStarted, ServiceError, ServiceErrorCode,
+    PROTOCOL_VERSION,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -148,6 +149,12 @@ pub trait RuntimeBackend {
         &mut self,
         request: HostsMutationRequest,
     ) -> Result<OperationAccepted, BackendError>;
+    fn hosts_check(
+        &mut self,
+        _request: HostsCheckRequest,
+    ) -> Result<HostsHealthSnapshot, BackendError> {
+        Err(BackendError::ServiceUnavailable)
+    }
     fn hosts_uninstall(&mut self) -> Result<OperationAccepted, BackendError>;
     fn hosts_restore(
         &mut self,
@@ -213,6 +220,13 @@ impl RuntimeBackend for LockedBackend {
         &mut self,
         _request: HostsMutationRequest,
     ) -> Result<OperationAccepted, BackendError> {
+        Err(BackendError::ServiceUnavailable)
+    }
+
+    fn hosts_check(
+        &mut self,
+        _request: HostsCheckRequest,
+    ) -> Result<HostsHealthSnapshot, BackendError> {
         Err(BackendError::ServiceUnavailable)
     }
 
@@ -304,6 +318,9 @@ impl<B: RuntimeBackend> ServiceCore<B> {
             Request::DpiStop(request) => self.backend.dpi_stop(request).map(|()| Response::Stopped),
             Request::HostsInstall(request) => {
                 self.backend.hosts_install(request).map(Response::Accepted)
+            }
+            Request::HostsCheck(request) => {
+                self.backend.hosts_check(request).map(Response::HostsHealth)
             }
             Request::HostsUninstall => self.backend.hosts_uninstall().map(Response::Accepted),
             Request::HostsRestoreLastKnownGood(request) => {

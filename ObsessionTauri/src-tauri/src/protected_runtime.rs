@@ -13,7 +13,9 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use crate::state::{AppState, DpiLaunchSpec, DpiRuntimeSnapshot};
 use crate::util::{self, DpiStatusPayload, LockExt, VersionedSection};
-use obsession_runtime_protocol::{DpiEngine, HostsMutationRequest, Request};
+use obsession_runtime_protocol::{
+    DpiEngine, HostsCheckRequest, HostsHealthSnapshot, HostsMutationRequest, Request,
+};
 
 #[cfg(windows)]
 use obsession_runtime_client::RuntimeClient;
@@ -32,7 +34,7 @@ use obsession_runtime_protocol::{
 
 const DISCOVERY_TIMEOUT: Duration = Duration::from_millis(750);
 const OPERATION_TIMEOUT: Duration = Duration::from_secs(5);
-const HOSTS_OPERATION_TIMEOUT: Duration = Duration::from_secs(40);
+const HOSTS_OPERATION_TIMEOUT: Duration = Duration::from_secs(90);
 const PROXY_LAN_OPERATION_TIMEOUT: Duration = Duration::from_secs(5);
 
 static REQUEST_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -107,19 +109,42 @@ fn next_request_id(operation: &str) -> String {
 }
 
 #[cfg(windows)]
-fn service_error_message(code: ServiceErrorCode) -> &'static str {
-    match code {
-        ServiceErrorCode::AccessDenied => "служба отклонила удостоверение приложения",
-        ServiceErrorCode::Busy => "защищённый DPI runtime занят другой операцией",
-        ServiceErrorCode::Conflict => "состояние DPI изменилось; повторите операцию",
-        ServiceErrorCode::IncompatibleProtocol => "версия защищённой службы несовместима",
-        ServiceErrorCode::InvalidRequest => "служба отклонила параметры DPI",
-        ServiceErrorCode::ProtectedResourceInvalid => {
+fn service_error_message(operation: &str, code: ServiceErrorCode) -> &'static str {
+    let hosts_operation = operation.starts_with("hosts-");
+    let proxy_operation = operation.starts_with("proxy-lan-");
+    match (hosts_operation, proxy_operation, code) {
+        (_, _, ServiceErrorCode::AccessDenied) => "служба отклонила удостоверение приложения",
+        (true, _, ServiceErrorCode::Busy) => "защищённая операция с hosts уже выполняется",
+        (true, _, ServiceErrorCode::Conflict) => {
+            "файл hosts изменился прямо во время операции; повторите попытку"
+        }
+        (true, _, ServiceErrorCode::InvalidRequest) => "служба отклонила параметры hosts",
+        (true, _, ServiceErrorCode::ProtectedResourceInvalid) => {
+            "защищённые данные hosts отсутствуют или повреждены"
+        }
+        (true, _, ServiceErrorCode::RuntimeFailed) => "служба не смогла применить hosts",
+        (true, _, ServiceErrorCode::ServiceUnavailable) => {
+            "управление hosts недоступно в этой службе"
+        }
+        (_, true, ServiceErrorCode::Busy) => "настройка доступа к proxy уже выполняется",
+        (_, true, ServiceErrorCode::Conflict) => {
+            "состояние доступа к proxy изменилось; повторите операцию"
+        }
+        (_, true, ServiceErrorCode::InvalidRequest) => "служба отклонила параметры доступа к proxy",
+        (_, true, ServiceErrorCode::RuntimeFailed) => "служба не смогла изменить доступ к proxy",
+        (_, true, ServiceErrorCode::ServiceUnavailable) => {
+            "управление доступом к proxy недоступно в этой службе"
+        }
+        (_, _, ServiceErrorCode::Busy) => "защищённый DPI runtime занят другой операцией",
+        (_, _, ServiceErrorCode::Conflict) => "состояние DPI изменилось; повторите операцию",
+        (_, _, ServiceErrorCode::IncompatibleProtocol) => "версия защищённой службы несовместима",
+        (_, _, ServiceErrorCode::InvalidRequest) => "служба отклонила параметры DPI",
+        (_, _, ServiceErrorCode::ProtectedResourceInvalid) => {
             "защищённые файлы DPI отсутствуют или не прошли проверку целостности"
         }
-        ServiceErrorCode::RuntimeFailed => "защищённый DPI runtime не смог запуститься",
-        ServiceErrorCode::ServiceUnavailable => "возможность DPI недоступна в этой службе",
-        ServiceErrorCode::Internal => "внутренняя ошибка защищённой службы",
+        (_, _, ServiceErrorCode::RuntimeFailed) => "защищённый DPI runtime не смог запуститься",
+        (_, _, ServiceErrorCode::ServiceUnavailable) => "возможность DPI недоступна в этой службе",
+        (_, _, ServiceErrorCode::Internal) => "внутренняя ошибка защищённой службы",
     }
 }
 
@@ -133,7 +158,7 @@ fn call_service(operation: &str, request: Request, timeout: Duration) -> Result<
     match response.response {
         Response::Error(error) => Err(format!(
             "защищённая служба отклонила операцию: {}",
-            service_error_message(error.code)
+            service_error_message(operation, error.code)
         )),
         response => Ok(response),
     }
@@ -167,7 +192,7 @@ fn call_service_for_replace(
             code: Some(error.code),
             message: format!(
                 "защищённая служба отклонила операцию: {}",
-                service_error_message(error.code)
+                service_error_message(operation, error.code)
             ),
         }),
         response => Ok(response),
@@ -218,6 +243,30 @@ pub async fn hosts_install(
         Request::HostsInstall(HostsMutationRequest { provider }),
     )
     .await
+}
+
+pub async fn hosts_check(max_age_seconds: u32) -> Result<HostsHealthSnapshot, String> {
+    #[cfg(windows)]
+    {
+        let response = tauri::async_runtime::spawn_blocking(move || {
+            call_service(
+                "hosts-check",
+                Request::HostsCheck(HostsCheckRequest { max_age_seconds }),
+                HOSTS_OPERATION_TIMEOUT,
+            )
+        })
+        .await
+        .map_err(|error| format!("runtime-client завершился с ошибкой: {error}"))??;
+        match response {
+            Response::HostsHealth(snapshot) => Ok(snapshot),
+            _ => Err("защищённая служба вернула неожиданный ответ hosts check".to_string()),
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = max_age_seconds;
+        Err(unavailable())
+    }
 }
 
 pub async fn hosts_uninstall() -> Result<(), String> {
@@ -1582,6 +1631,23 @@ pub async fn dpi_stop(app: &AppHandle) -> Result<(), String> {
 mod tests {
     #[cfg(windows)]
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn service_conflicts_are_described_in_the_operation_domain() {
+        assert_eq!(
+            service_error_message("hosts-install", ServiceErrorCode::Conflict),
+            "файл hosts изменился прямо во время операции; повторите попытку"
+        );
+        assert_eq!(
+            service_error_message("proxy-lan-open", ServiceErrorCode::Conflict),
+            "состояние доступа к proxy изменилось; повторите операцию"
+        );
+        assert_eq!(
+            service_error_message("dpi-start", ServiceErrorCode::Conflict),
+            "состояние DPI изменилось; повторите операцию"
+        );
+    }
 
     #[cfg(windows)]
     #[test]

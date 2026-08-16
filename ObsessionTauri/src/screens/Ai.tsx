@@ -6,16 +6,47 @@ import { GlassPanel } from "../design/components/GlassPanel";
 import { StaggerItem } from "../design/components/Stagger";
 import { LogStream } from "../design/components/LogStream";
 import { Button, Chip, SectionLabel, StatusBadge } from "../design/components/atoms";
+import type {
+  AiRouteFailureReason,
+  AiRouteHealth,
+  AiRouteKind,
+  AiService,
+} from "../lib/tauri";
 
-const UNBLOCKED_SERVICES = [
-  "ChatGPT (OpenAI)",
-  "Claude (Anthropic)",
-  "Gemini (Google)",
-  "Perplexity AI",
-  "Poe",
-  "HuggingFace",
-  "Midjourney",
+const SERVICES: { id: AiService; name: string; owner: string }[] = [
+  { id: "chatgpt", name: "ChatGPT", owner: "OpenAI" },
+  { id: "claude", name: "Claude", owner: "Anthropic" },
+  { id: "gemini", name: "Gemini", owner: "Google" },
 ];
+
+const HEALTH_LABEL: Record<AiRouteHealth, string> = {
+  working: "Маршрут отвечает",
+  unavailable: "Маршрут недоступен",
+  inconclusive: "Проверка не завершена",
+  unchecked: "Ещё не проверен",
+};
+
+const HEALTH_COLOR: Record<AiRouteHealth, string> = {
+  working: "border-ok/30 bg-ok/10 text-ok",
+  unavailable: "border-danger/30 bg-danger/10 text-danger",
+  inconclusive: "border-warn/30 bg-warn/10 text-warn",
+  unchecked: "border-glass-border bg-white/5 text-ink-muted",
+};
+
+const ROUTE_LABEL: Record<AiRouteKind, string> = {
+  preferred: "основной",
+  fallback: "резервный",
+  direct: "прямой, без обхода",
+};
+
+const REASON_LABEL: Record<AiRouteFailureReason, string> = {
+  timeout: "сервер не ответил вовремя",
+  tls: "не удалось установить защищённое соединение",
+  dns: "ошибка разрешения адреса",
+  routeMissing: "оба источника маршрута недоступны",
+  offline: "нет подтверждённого доступа к сети",
+  externalChange: "hosts изменён другой программой",
+};
 
 const STATUS_LABEL: Record<string, string> = {
   installed: "Установлено (актуально)",
@@ -45,8 +76,9 @@ export function AiScreen() {
     busy: state.busy,
     error: state.error,
     rollbackAvailable: state.rollbackAvailable,
+    health: state.health,
     setProvider: state.setProvider,
-    refresh: state.refresh,
+    checkRoutes: state.checkRoutes,
     install: state.install,
     uninstall: state.uninstall,
     restore: state.restore,
@@ -68,7 +100,7 @@ export function AiScreen() {
       <div className="grid flex-1 grid-cols-[1fr_360px] gap-4 overflow-hidden">
         <GlassPanel scroll contentClassName="flex flex-col gap-6">
           <div>
-            <SectionLabel>Провайдер DNS</SectionLabel>
+            <SectionLabel>Предпочтительный источник</SectionLabel>
             <div className="flex gap-2">
               <Chip
                 label="Malw (dns.malw.link)"
@@ -86,17 +118,55 @@ export function AiScreen() {
             <p className="text-xs text-ink-muted mt-2">
               <strong>Malw:</strong> зеркала резолвятся через DNS Cloudflare.
               {" "}
-              <strong>GeoHide:</strong> GeoIP-обход, иногда медленнее.
+              <strong>GeoHide:</strong> GeoIP-обход, иногда медленнее. Если
+              выбранный источник не отвечает для отдельного сервиса, runtime
+              подставляет проверенный маршрут второго источника.
             </p>
           </div>
 
-          <div className="rounded-xl border border-glass-border bg-white/5 p-4">
-            <span className="text-sm font-medium text-ink-soft">Разблокируемые сервисы</span>
-            <div className="mt-2 flex flex-wrap gap-2">
-              {UNBLOCKED_SERVICES.map((svc) => (
-                <Chip key={svc} label={svc} active={false} disabled onClick={() => {}} />
-              ))}
+          <div>
+            <SectionLabel>Проверяемые маршруты</SectionLabel>
+            <div className="grid grid-cols-3 gap-2">
+              {SERVICES.map((service) => {
+                const route = s.health?.services.find(
+                  (entry) => entry.service === service.id,
+                );
+                const health = route?.health ?? "unchecked";
+                return (
+                  <div
+                    key={service.id}
+                    className={`rounded-xl border p-3 ${HEALTH_COLOR[health]}`}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <div className="text-sm font-semibold text-ink">
+                          {service.name}
+                        </div>
+                        <div className="text-3xs text-ink-muted">{service.owner}</div>
+                      </div>
+                      <span className="mt-1 h-2 w-2 shrink-0 rounded-full bg-current" />
+                    </div>
+                    <div className="mt-3 text-xs font-medium">
+                      {HEALTH_LABEL[health]}
+                    </div>
+                    <div className="mt-1 min-w-0 break-words text-3xs leading-4 text-ink-muted">
+                      {route
+                        ? `${ROUTE_LABEL[route.route]}${route.provider ? ` · ${route.provider === "malw" ? "Malw" : "GeoHide"}` : ""}`
+                        : "источник пока не определён"}
+                    </div>
+                    {route?.reason && (
+                      <div className="mt-1 text-3xs leading-4 text-current/80">
+                        {REASON_LABEL[route.reason]}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
+            <p className="mt-2 text-3xs leading-4 text-ink-muted">
+              Проверяется HTTPS-маршрут без аккаунта, cookies и содержимого
+              переписки. Это не проверка всех функций внутри сервиса.
+            </p>
           </div>
 
           {!protectedHostsAvailable && (
@@ -135,7 +205,11 @@ export function AiScreen() {
               onClick={() => s.install()}
               className="w-full"
             >
-              {installed ? "Переустановить / Обновить" : "Установить"}
+              {installed
+                ? s.health?.repairRecommended
+                  ? "Исправить конфигурацию"
+                  : "Переустановить / обновить"
+                : "Установить"}
             </Button>
             <div className="flex gap-2">
               <Button
@@ -149,10 +223,10 @@ export function AiScreen() {
               <Button
                 variant="ghost"
                 disabled={s.busy}
-                onClick={() => s.refresh()}
+                onClick={() => s.checkRoutes(0)}
                 className="flex-1"
               >
-                Проверить
+                Проверить маршруты
               </Button>
             </div>
             {s.rollbackAvailable && (
@@ -162,15 +236,16 @@ export function AiScreen() {
                 onClick={() => s.restore()}
                 className="w-full"
               >
-                Вернуть рабочую версию
+                Вернуть проверенную конфигурацию
               </Button>
             )}
           </div>
 
           <p className="text-xs leading-relaxed text-ink-muted">
-            Обход изменяет системный файл hosts транзакционно: снимок → запись →
-            проверка. При сбое или неудачных пробах откат автоматический; кнопка
-            «Вернуть рабочую версию» восстанавливает последнюю рабочую копию.
+            Обход изменяет системный файл hosts только после явного действия:
+            снимок → выбор маршрутов → запись → системная HTTPS-проверка.
+            Неожиданный сбой записи или post-write проверки возвращает точный
+            предыдущий файл. Фоновая проверка никогда не переписывает hosts.
           </p>
         </GlassPanel>
 

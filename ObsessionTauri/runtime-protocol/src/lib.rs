@@ -10,7 +10,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u16 = 1;
+pub const PROTOCOL_VERSION: u16 = 2;
 pub const RUNTIME_PIPE_NAME: &str = r"\\.\pipe\ObsessionRuntime.v1";
 pub const MAX_FRAME_BYTES: usize = 64 * 1024;
 pub const MAX_REQUEST_ID_BYTES: usize = 64;
@@ -21,6 +21,7 @@ pub const MAX_RELIABILITY_LANES: usize = MAX_SELECTIONS;
 pub const MAX_RELIABILITY_COUNTER: u64 = u32::MAX as u64;
 pub const MIN_FIREWALL_LEASE_SECONDS: u16 = 30;
 pub const MAX_FIREWALL_LEASE_SECONDS: u16 = 60 * 60;
+pub const MAX_HOSTS_CHECK_AGE_SECONDS: u32 = 60 * 60;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProtocolError {
@@ -39,6 +40,7 @@ pub enum ProtocolError {
     InvalidLegacyRecoveryApproval,
     InvalidPort,
     InvalidFirewallLease,
+    InvalidHostsCheck,
     InvalidResponse,
 }
 
@@ -66,6 +68,7 @@ impl fmt::Display for ProtocolError {
             }
             Self::InvalidPort => "port must be non-zero",
             Self::InvalidFirewallLease => "firewall lease is outside the allowed range",
+            Self::InvalidHostsCheck => "hosts check cache age is outside the allowed range",
             Self::InvalidResponse => "response contains invalid bounded data",
         };
         formatter.write_str(text)
@@ -126,6 +129,7 @@ pub enum Request {
     DpiReplace(DpiReplaceRequest),
     DpiStop(DpiStopRequest),
     HostsInstall(HostsMutationRequest),
+    HostsCheck(HostsCheckRequest),
     HostsUninstall,
     HostsRestoreLastKnownGood(HostsMutationRequest),
     FirewallOpenProxyLan(FirewallOpenProxyLanRequest),
@@ -142,6 +146,7 @@ impl Request {
             Self::SetLegacyRecoveryControls(request) => request.validate(),
             Self::ApproveLegacyRecovery(request) => request.validate(),
             Self::FirewallOpenProxyLan(request) => request.validate(),
+            Self::HostsCheck(request) => request.validate(),
             Self::GetCapabilities
             | Self::GetRuntimeSnapshot
             | Self::LegacyCleanup
@@ -630,6 +635,100 @@ pub struct HostsMutationRequest {
     pub provider: HostsProvider,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HostsCheckRequest {
+    pub max_age_seconds: u32,
+}
+
+impl HostsCheckRequest {
+    fn validate(&self) -> Result<(), ProtocolError> {
+        if self.max_age_seconds <= MAX_HOSTS_CHECK_AGE_SECONDS {
+            Ok(())
+        } else {
+            Err(ProtocolError::InvalidHostsCheck)
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AiService {
+    Chatgpt,
+    Claude,
+    Gemini,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AiRouteHealth {
+    Working,
+    Unavailable,
+    Inconclusive,
+    Unchecked,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AiRouteKind {
+    Preferred,
+    Fallback,
+    Direct,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AiRouteFailureReason {
+    Timeout,
+    Tls,
+    Dns,
+    RouteMissing,
+    Offline,
+    ExternalChange,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AiServiceRouteHealth {
+    pub service: AiService,
+    pub health: AiRouteHealth,
+    pub route: AiRouteKind,
+    pub provider: Option<HostsProvider>,
+    pub reason: Option<AiRouteFailureReason>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HostsHealthSnapshot {
+    pub preferred_provider: HostsProvider,
+    pub installed: bool,
+    pub checked_at_unix: Option<u64>,
+    pub repair_recommended: bool,
+    pub services: Vec<AiServiceRouteHealth>,
+}
+
+impl HostsHealthSnapshot {
+    fn validate(&self) -> Result<(), ProtocolError> {
+        if self.services.len() != 3 {
+            return Err(ProtocolError::InvalidResponse);
+        }
+        let mut services = BTreeSet::new();
+        for service in &self.services {
+            if !services.insert(service.service)
+                || matches!(service.route, AiRouteKind::Direct) != service.provider.is_none()
+                || (matches!(service.health, AiRouteHealth::Working)
+                    && matches!(service.route, AiRouteKind::Direct))
+            {
+                return Err(ProtocolError::InvalidResponse);
+            }
+        }
+        if services != BTreeSet::from([AiService::Chatgpt, AiService::Claude, AiService::Gemini]) {
+            return Err(ProtocolError::InvalidResponse);
+        }
+        Ok(())
+    }
+}
+
 /// Sanitized service-owned hosts state. The IPC contract never exposes the
 /// system path, downloaded payload, backup filenames or hashes.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -679,6 +778,7 @@ impl ResponseEnvelope {
         match &self.response {
             Response::Capabilities(capabilities) => capabilities.validate(),
             Response::RuntimeSnapshot(snapshot) => snapshot.validate(),
+            Response::HostsHealth(snapshot) => snapshot.validate(),
             Response::Accepted(accepted) if accepted.operation_id == 0 => {
                 Err(ProtocolError::InvalidResponse)
             }
@@ -704,6 +804,7 @@ impl ResponseEnvelope {
 pub enum Response {
     Capabilities(Capabilities),
     RuntimeSnapshot(RuntimeSnapshot),
+    HostsHealth(HostsHealthSnapshot),
     Accepted(OperationAccepted),
     Started(RuntimeStarted),
     Stopped,
@@ -730,6 +831,7 @@ pub enum Feature {
     /// operations in addition to read-only Eyes events.
     LegacyReliability,
     Hosts,
+    HostsHealthV2,
     ProxyLanFirewall,
 }
 
@@ -1720,6 +1822,68 @@ mod tests {
                 RequestEnvelope::new("firewall-1", Request::FirewallOpenProxyLan(request));
             assert!(encode_request_frame(&envelope).is_err());
         }
+    }
+
+    #[test]
+    fn hosts_health_contract_is_bounded_unique_and_consistent() {
+        let services = vec![
+            AiServiceRouteHealth {
+                service: AiService::Chatgpt,
+                health: AiRouteHealth::Working,
+                route: AiRouteKind::Preferred,
+                provider: Some(HostsProvider::Malw),
+                reason: None,
+            },
+            AiServiceRouteHealth {
+                service: AiService::Claude,
+                health: AiRouteHealth::Working,
+                route: AiRouteKind::Preferred,
+                provider: Some(HostsProvider::Malw),
+                reason: None,
+            },
+            AiServiceRouteHealth {
+                service: AiService::Gemini,
+                health: AiRouteHealth::Working,
+                route: AiRouteKind::Fallback,
+                provider: Some(HostsProvider::Geohide),
+                reason: None,
+            },
+        ];
+        let envelope = ResponseEnvelope {
+            protocol_version: PROTOCOL_VERSION,
+            request_id: "hosts-health".into(),
+            response: Response::HostsHealth(HostsHealthSnapshot {
+                preferred_provider: HostsProvider::Malw,
+                installed: true,
+                checked_at_unix: Some(1),
+                repair_recommended: false,
+                services: services.clone(),
+            }),
+        };
+        assert!(envelope.validate().is_ok());
+
+        let mut duplicate = services;
+        duplicate[2].service = AiService::Claude;
+        let invalid = ResponseEnvelope {
+            protocol_version: PROTOCOL_VERSION,
+            request_id: "hosts-health-invalid".into(),
+            response: Response::HostsHealth(HostsHealthSnapshot {
+                preferred_provider: HostsProvider::Malw,
+                installed: true,
+                checked_at_unix: Some(1),
+                repair_recommended: true,
+                services: duplicate,
+            }),
+        };
+        assert_eq!(invalid.validate(), Err(ProtocolError::InvalidResponse));
+
+        let request = RequestEnvelope::new(
+            "hosts-check-invalid",
+            Request::HostsCheck(HostsCheckRequest {
+                max_age_seconds: MAX_HOSTS_CHECK_AGE_SECONDS + 1,
+            }),
+        );
+        assert_eq!(request.validate(), Err(ProtocolError::InvalidHostsCheck));
     }
 
     #[test]

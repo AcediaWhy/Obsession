@@ -12,9 +12,9 @@ use std::sync::Mutex;
 
 use obsession_runtime_protocol::{
     Capabilities, DpiCategory, DpiEngine, DpiReplaceRequest, DpiRuntimeSnapshot, DpiStartRequest,
-    DpiStopRequest, Feature, FirewallOpenProxyLanRequest, HostsMutationRequest,
-    LegacyRecoveryApprovalRequest, LegacyRecoveryControlsRequest, LegacyRecoveryMode,
-    OperationAccepted, RuntimeSnapshot, RuntimeStarted,
+    DpiStopRequest, Feature, FirewallOpenProxyLanRequest, HostsCheckRequest, HostsHealthSnapshot,
+    HostsMutationRequest, LegacyRecoveryApprovalRequest, LegacyRecoveryControlsRequest,
+    LegacyRecoveryMode, OperationAccepted, RuntimeSnapshot, RuntimeStarted,
 };
 use obsession_runtime_reliability::legacy_reliability::contracts::{
     IntentFence, ProcessOwner, ProcessStartIdentity,
@@ -386,6 +386,7 @@ impl<L: RuntimeProcessLauncher> RuntimeBackend for ProtectedDpiBackend<L> {
         }
         if self.hosts.is_some() {
             features.push(Feature::Hosts);
+            features.push(Feature::HostsHealthV2);
         }
         if self.proxy_lan_firewall.is_some() {
             features.push(Feature::ProxyLanFirewall);
@@ -589,6 +590,16 @@ impl<L: RuntimeProcessLauncher> RuntimeBackend for ProtectedDpiBackend<L> {
             .as_mut()
             .ok_or(BackendError::ServiceUnavailable)?
             .install(request)
+    }
+
+    fn hosts_check(
+        &mut self,
+        request: HostsCheckRequest,
+    ) -> Result<HostsHealthSnapshot, BackendError> {
+        self.hosts
+            .as_mut()
+            .ok_or(BackendError::ServiceUnavailable)?
+            .check(request.max_age_seconds)
     }
 
     fn hosts_uninstall(&mut self) -> Result<OperationAccepted, BackendError> {

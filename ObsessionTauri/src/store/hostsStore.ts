@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import {
   api,
+  type HostsHealthSnapshot,
   type HostsStatus,
   type VersionedSection,
 } from "../lib/tauri";
@@ -18,10 +19,12 @@ interface HostsState {
   busy: boolean;
   error: string;
   rollbackAvailable: boolean;
+  health: HostsHealthSnapshot | null;
 
   applyVersionedStatus: (section: VersionedSection<HostsStatus>) => boolean;
   setProvider: (p: Provider) => Promise<void>;
   refresh: () => Promise<void>;
+  checkRoutes: (maxAgeSeconds?: number) => Promise<void>;
   install: () => Promise<void>;
   uninstall: () => Promise<void>;
   restore: () => Promise<void>;
@@ -37,6 +40,7 @@ export const useHostsStore = create<HostsState>((set, get) => ({
   busy: false,
   error: "",
   rollbackAvailable: false,
+  health: null,
 
   applyVersionedStatus: (section) => {
     if (section.revision <= get().revision) return false;
@@ -58,7 +62,7 @@ export const useHostsStore = create<HostsState>((set, get) => ({
   // идут мимо setProvider — их подхватывает общая settings-подписка coordinator.
   setProvider: async (p) => {
     if (p === get().provider) return;
-    set({ provider: p, status: "not_installed" });
+    set({ provider: p, status: "not_installed", health: null });
     await useSettingsStore.getState().patch({ ai_provider: p });
     await get().refresh();
   },
@@ -80,38 +84,58 @@ export const useHostsStore = create<HostsState>((set, get) => ({
       });
     } catch (e) {
       if (get().provider !== provider) return;
-      set({ busy: false, error: String(e) });
+      set({ busy: false, error: String(e), health: null });
     }
   },
 
+  checkRoutes: async (maxAgeSeconds = 0) => {
+    const existing = routeCheckInFlight;
+    if (existing) return existing;
+    routeCheckInFlight = (async () => {
+      set({ busy: true, error: "", health: null });
+      try {
+        const health = await api.hostsCheck(maxAgeSeconds);
+        set({ health, busy: false });
+      } catch (e) {
+        set({ busy: false, error: String(e), health: null });
+      } finally {
+        routeCheckInFlight = null;
+      }
+    })();
+    return routeCheckInFlight;
+  },
+
   install: async () => {
-    set({ busy: true, error: "" });
+    set({ busy: true, error: "", health: null });
     try {
-      await api.hostsInstall(get().provider);
+      const health = await api.hostsInstall(get().provider);
+      set({ health });
       await get().refresh();
     } catch (e) {
-      set({ busy: false, error: String(e) });
+      set({ busy: false, error: String(e), health: null });
     }
   },
 
   uninstall: async () => {
-    set({ busy: true, error: "" });
+    set({ busy: true, error: "", health: null });
     try {
       await api.hostsUninstall();
+      set({ health: null });
       await get().refresh();
     } catch (e) {
-      set({ busy: false, error: String(e) });
+      set({ busy: false, error: String(e), health: null });
     }
   },
 
   restore: async () => {
-    set({ busy: true, error: "" });
+    set({ busy: true, error: "", health: null });
     try {
-      await api.hostsRestore(get().provider);
-      toast.success("Восстановлена последняя рабочая версия hosts");
+      const health = await api.hostsRestore(get().provider);
+      set({ health });
+      toast.success("Восстановлена полностью проверенная конфигурация hosts");
       await get().refresh();
     } catch (e) {
-      set({ busy: false, error: String(e) });
+      set({ busy: false, error: String(e), health: null });
     }
   },
 
@@ -131,6 +155,7 @@ export function subscribeHostsToSettings(): () => void {
       localVersion: "",
       remoteVersion: "",
       rollbackAvailable: false,
+      health: null,
     });
 
     // Initial unified hydration must stay local and fast. Later user/profile
@@ -138,3 +163,5 @@ export function subscribeHostsToSettings(): () => void {
     if (previous.loaded) void useHostsStore.getState().refresh();
   });
 }
+
+let routeCheckInFlight: Promise<void> | null = null;

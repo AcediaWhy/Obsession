@@ -51,6 +51,37 @@ export interface HostsStatus {
   rollback_available: boolean;
 }
 
+export type AiService = "chatgpt" | "claude" | "gemini";
+export type AiRouteHealth =
+  | "working"
+  | "unavailable"
+  | "inconclusive"
+  | "unchecked";
+export type AiRouteKind = "preferred" | "fallback" | "direct";
+export type AiRouteFailureReason =
+  | "timeout"
+  | "tls"
+  | "dns"
+  | "routeMissing"
+  | "offline"
+  | "externalChange";
+
+export interface AiServiceRouteHealth {
+  service: AiService;
+  health: AiRouteHealth;
+  route: AiRouteKind;
+  provider: "malw" | "geohide" | null;
+  reason: AiRouteFailureReason | null;
+}
+
+export interface HostsHealthSnapshot {
+  preferredProvider: "malw" | "geohide";
+  installed: boolean;
+  checkedAtUnix: number | null;
+  repairRecommended: boolean;
+  services: AiServiceRouteHealth[];
+}
+
 export interface VersionedSection<T> {
   revision: number;
   value: T;
@@ -529,10 +560,12 @@ export const api = {
   hostsStatus: (provider: string) =>
     invoke<HostsStatus>("hosts_status", { provider }),
   hostsInstall: (provider: string) =>
-    invoke<void>("hosts_install", { provider }),
+    invoke<HostsHealthSnapshot>("hosts_install", { provider }),
+  hostsCheck: (maxAgeSeconds: number) =>
+    invoke<HostsHealthSnapshot>("hosts_check", { maxAgeSeconds }),
   hostsUninstall: () => invoke<void>("hosts_uninstall"),
   hostsRestore: (provider: string) =>
-    invoke<void>("hosts_restore", { provider }),
+    invoke<HostsHealthSnapshot>("hosts_restore", { provider }),
 
   getSettings: () => invoke<Settings>("get_settings"),
   updateSettings: (patch: Partial<Settings>) =>

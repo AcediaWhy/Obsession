@@ -89,7 +89,10 @@ pub async fn check_status(_app: &AppHandle, provider: Provider) -> HostsStatus {
     snapshot_status(_app, provider)
 }
 
-pub async fn install(app: &AppHandle, provider: Provider) -> Result<(), String> {
+pub async fn install(
+    app: &AppHandle,
+    provider: Provider,
+) -> Result<obsession_runtime_protocol::HostsHealthSnapshot, String> {
     util::emit_log(
         app,
         "info",
@@ -97,14 +100,21 @@ pub async fn install(app: &AppHandle, provider: Provider) -> Result<(), String> 
         "Защищённая служба устанавливает hosts…",
     );
     crate::protected_runtime::hosts_install(provider.protocol()).await?;
+    let health = crate::protected_runtime::hosts_check(900).await?;
     app.state::<AppState>().hosts_revision.bump();
     util::emit_log(
         app,
         "success",
         "hosts",
-        "Hosts применён и проверен защищённой службой.",
+        "Hosts применён; маршруты ChatGPT, Claude и Gemini проверены отдельно.",
     );
-    Ok(())
+    Ok(health)
+}
+
+pub async fn check_health(
+    max_age_seconds: u32,
+) -> Result<obsession_runtime_protocol::HostsHealthSnapshot, String> {
+    crate::protected_runtime::hosts_check(max_age_seconds).await
 }
 
 pub async fn uninstall(app: &AppHandle) -> Result<(), String> {
@@ -119,16 +129,20 @@ pub async fn uninstall(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-pub async fn restore_last_known_good(app: &AppHandle, provider: Provider) -> Result<(), String> {
+pub async fn restore_last_known_good(
+    app: &AppHandle,
+    provider: Provider,
+) -> Result<obsession_runtime_protocol::HostsHealthSnapshot, String> {
     crate::protected_runtime::hosts_restore(provider.protocol()).await?;
+    let health = crate::protected_runtime::hosts_check(0).await?;
     app.state::<AppState>().hosts_revision.bump();
     util::emit_log(
         app,
         "success",
         "hosts",
-        "Последняя защищённая рабочая версия hosts восстановлена.",
+        "Последняя полностью проверенная конфигурация hosts восстановлена.",
     );
-    Ok(())
+    Ok(health)
 }
 
 /// Fast service-owned snapshot for startup/resume. No network request occurs.
