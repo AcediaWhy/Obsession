@@ -74,7 +74,7 @@ fn runtime_is_shutting_down(app: &AppHandle) -> bool {
         .load(std::sync::atomic::Ordering::SeqCst)
 }
 
-async fn dpi_start_locked(
+pub(crate) async fn dpi_start_locked(
     app: &AppHandle,
     pairs: Vec<(String, String)>,
 ) -> Result<Vec<u32>, String> {
@@ -104,7 +104,7 @@ async fn dpi_start_locked(
     Ok(Vec::new())
 }
 
-async fn dpi_stop_locked(app: &AppHandle) -> Result<(), String> {
+pub(crate) async fn dpi_stop_locked(app: &AppHandle) -> Result<(), String> {
     // Сначала сообщаем Мозгу — штатный stop не должен выглядеть как сбой.
     send_brain_event(app, crate::brain::BrainEvent::SessionStop).await;
     crate::protected_runtime::dpi_stop(app).await

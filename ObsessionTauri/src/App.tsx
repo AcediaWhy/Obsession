@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import {
   AnimatePresence,
   motion,
@@ -22,6 +22,7 @@ import { initLogStream } from "./store/logStore";
 import { launcherBootstrap } from "./store/launcherBootstrap";
 import { useThemeStore, type Theme } from "./store/themeStore";
 import { useSettingsStore } from "./store/settingsStore";
+import { useOnboardingStore } from "./store/onboardingStore";
 import { Onboarding } from "./design/components/Onboarding";
 import { Toaster } from "./design/components/Toaster";
 import { on, win } from "./lib/tauri";
@@ -29,15 +30,22 @@ import { setWindowShown, useMotionOff } from "./design/render";
 import { screenVariants } from "./design/screenTransition";
 import { dur, ease, spring } from "./design/tokens";
 import { toast } from "./store/toastStore";
+import { useHostsStore } from "./store/hostsStore";
+import { useObsessionVisualPhase } from "./design/useObsessionVisualPhase";
+import { obsessionFocusForScreen, type ObsessionVisualPhase } from "./design/obsessionVisualState";
 
 function ThemeScene({
   theme,
   motionOff,
   paused,
+  phase,
+  screen,
 }: {
   theme: Theme;
   motionOff: boolean;
   paused: boolean;
+  phase: ObsessionVisualPhase;
+  screen: Tab;
 }) {
   const isPresent = useIsPresent();
   return (
@@ -48,7 +56,12 @@ function ThemeScene({
       exit={{ opacity: 0 }}
       transition={{ duration: motionOff ? 0 : dur.slow, ease: ease.xfade }}
     >
-      <HeroField theme={theme} frozen={!isPresent || paused} />
+      <HeroField
+        theme={theme}
+        frozen={!isPresent || paused}
+        phase={phase}
+        screen={screen}
+      />
     </motion.div>
   );
 }
@@ -64,11 +77,25 @@ export default function App() {
     setTab(next);
   };
   const theme = useThemeStore((s) => s.theme);
+  const obsessionPhase = useObsessionVisualPhase();
   const reduceMotion = useSettingsStore((s) => s.settings?.reduce_motion);
+  const settingsLoaded = useSettingsStore((s) => s.loaded);
   const motionOff = useMotionOff();
-  const showOnboarding = useSettingsStore(
-    (s) => s.loaded && !!s.settings && !s.settings.has_completed_onboarding,
-  );
+  const onboardingSnapshot = useOnboardingStore((s) => s.snapshot);
+  const onboardingLoaded = useOnboardingStore((s) => s.loaded);
+  const initializeOnboarding = useOnboardingStore((s) => s.initialize);
+  const startOnboarding = useOnboardingStore((s) => s.start);
+  const skipOnboarding = useOnboardingStore((s) => s.skip);
+  const showOnboarding =
+    onboardingLoaded &&
+    (onboardingSnapshot?.presentation === "required" ||
+      onboardingSnapshot?.presentation === "modal");
+  const showOnboardingOffer =
+    onboardingLoaded && onboardingSnapshot?.presentation === "offer";
+
+  useEffect(() => {
+    if (settingsLoaded) void initializeOnboarding();
+  }, [initializeOnboarding, settingsLoaded]);
 
   // Морф темы активируется DOM-атрибутом до paint и не создаёт два лишних
   // React-render на каждое переключение. CSS ограничивает переходы семантическими
@@ -76,28 +103,43 @@ export default function App() {
   const shellRef = useRef<HTMLDivElement>(null);
   const interactionShellRef = useRef<HTMLDivElement>(null);
   const prevTheme = useRef(theme);
+  const [focusCapture, setFocusCapture] = useState(false);
   useLayoutEffect(() => {
     const shell = shellRef.current;
     if (!shell) return;
     if (prevTheme.current === theme) {
-      if (motionOff) delete shell.dataset.themeMorph;
+      if (motionOff) {
+        delete shell.dataset.themeMorph;
+        setFocusCapture(false);
+      }
       return;
     }
+    const enteringObsession = theme === "obsession";
     prevTheme.current = theme;
     if (motionOff) {
       delete shell.dataset.themeMorph;
+      setFocusCapture(false);
       return;
     }
 
     shell.dataset.themeMorph = "true";
+    if (enteringObsession) setFocusCapture(true);
     const timer = window.setTimeout(() => {
       delete shell.dataset.themeMorph;
+      setFocusCapture(false);
     }, 650);
     return () => {
       window.clearTimeout(timer);
       delete shell.dataset.themeMorph;
+      setFocusCapture(false);
     };
   }, [theme, motionOff]);
+
+  const obsessionFocus = obsessionFocusForScreen(tab);
+  const obsessionStyle = {
+    "--obsession-focus-x": `${obsessionFocus.x * 100}%`,
+    "--obsession-focus-y": `${obsessionFocus.y * 100}%`,
+  } as CSSProperties;
 
   // Modal onboarding — единственная интерактивная ветка. Inert убирает основной
   // shell из tab/accessibility tree; атрибут ставим напрямую для совместимости
@@ -118,6 +160,7 @@ export default function App() {
   useEffect(() => {
     const unlisten = initLogStream();
     const releaseBootstrap = launcherBootstrap.acquire();
+    void useHostsStore.getState().checkRoutes(900);
 
     // Прогрев тяжёлой ленивой сцены (Rain/WebGL) — ТОЛЬКО когда окно впервые
     // становится видимым (вызывается из резюм-ветки ниже). При старте в трее
@@ -146,6 +189,7 @@ export default function App() {
       if (visible) {
         void win.showWebview();
         void launcherBootstrap.refresh();
+        void useHostsStore.getState().checkRoutes(900);
         scheduleWarm();
       } else {
         void win.hideWebview();
@@ -179,6 +223,7 @@ export default function App() {
         data-theme={theme}
         data-reduce-motion={reduceMotion}
         className="relative h-screen w-screen overflow-hidden"
+        style={obsessionStyle}
       >
         <ParallaxProvider paused={showOnboarding}>
           <div
@@ -199,9 +244,17 @@ export default function App() {
                   theme={theme}
                   motionOff={motionOff}
                   paused={showOnboarding}
+                  phase={obsessionPhase}
+                  screen={tab}
                 />
               </AnimatePresence>
             </Parallax>
+
+            <div
+              aria-hidden="true"
+              data-active={focusCapture || undefined}
+              className="obsession-focus-capture pointer-events-none absolute inset-0 z-[1]"
+            />
 
             {/* Титлбар — чистый хром, без параллакса. */}
             <div className="absolute inset-x-0 top-0 z-20">
@@ -245,10 +298,29 @@ export default function App() {
             {/* Тосты основного приложения принадлежат inert shell. Ошибки
                 завершения onboarding показываются внутри самого dialog. */}
             <Toaster />
+
+            {showOnboardingOffer && (
+              <aside className="no-drag absolute bottom-5 right-5 z-40 w-[min(390px,calc(100vw-40px))] rounded-2xl border border-white/[0.1] bg-base-900/95 p-4 shadow-2xl backdrop-blur-xl" aria-label="Предложение настройки">
+                <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-accent-cyan">Onboarding V2</p>
+                <h2 className="mt-1.5 text-sm font-semibold text-ink">Настроить функции через защищённую службу?</h2>
+                <p className="mt-1 text-xs leading-5 text-ink-soft">Для существующей установки это необязательное предложение. Текущая конфигурация сохранится до явного Review.</p>
+                <div className="mt-3 flex justify-end gap-2">
+                  <button type="button" onClick={() => void skipOnboarding()} className="rounded-xl border border-white/[0.08] bg-white/5 px-3.5 py-2 text-xs font-medium text-ink-soft hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">Не сейчас</button>
+                  <button type="button" onClick={() => void startOnboarding("soft_offer")} className="rounded-xl bg-accent/90 px-3.5 py-2 text-xs font-semibold text-white hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-cyan">Настроить сейчас</button>
+                </div>
+              </aside>
+            )}
           </div>
 
           {/* Онбординг первого запуска — единственная активная modal-ветка. */}
-          {showOnboarding && <Onboarding />}
+          {showOnboarding && (
+            <Onboarding
+              onDestination={(destination) => {
+                selectTab(destination);
+                void launcherBootstrap.refresh();
+              }}
+            />
+          )}
         </ParallaxProvider>
       </div>
     </MotionConfig>

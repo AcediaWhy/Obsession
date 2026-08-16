@@ -1,6 +1,7 @@
 import { useState } from "react";
 
 import { useSettingsStore } from "../store/settingsStore";
+import { useOnboardingStore } from "../store/onboardingStore";
 import { useThemeStore, THEMES, type Theme } from "../store/themeStore";
 import { useSecretStore } from "../store/secretStore";
 import { GlassPanel } from "../design/components/GlassPanel";
@@ -39,6 +40,7 @@ export function SettingsScreen() {
   const autostart = useSettingsStore((s) => s.autostart);
   const setAutostart = useSettingsStore((s) => s.setAutostart);
   const patch = useSettingsStore((s) => s.patch);
+  const startOnboarding = useOnboardingStore((s) => s.start);
 
   return (
     <div className="flex h-full flex-col gap-4">
@@ -187,14 +189,10 @@ export function SettingsScreen() {
                           : "Работает частично"}
                     </span>
                   </Row>
-                  <Row label="Онбординг" hint="Приветственный экран первого запуска">
-                    {cfg.has_completed_onboarding ? (
-                      <Button variant="ghost" onClick={() => patch({ has_completed_onboarding: false })}>
-                        Показать снова
-                      </Button>
-                    ) : (
-                      <span className="text-xs font-semibold text-ink-soft">Не пройден</span>
-                    )}
+                  <Row label="Мастер настройки" hint="Повторный запуск сохраняет текущую конфигурацию до Review">
+                    <Button variant="ghost" onClick={() => void startOnboarding("settings")}>
+                      Открыть мастер
+                    </Button>
                   </Row>
                   <HotkeyRow />
                 </div>

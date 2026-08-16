@@ -511,7 +511,11 @@ pub async fn toggle(app: &AppHandle, port: u16, fake_tls_domain: &str) -> Result
 }
 
 /// Внутренняя реализация start; вызывается только под `proxy_gate`.
-async fn start_locked(app: &AppHandle, port: u16, fake_tls_domain: &str) -> Result<String, String> {
+pub(crate) async fn start_locked(
+    app: &AppHandle,
+    port: u16,
+    fake_tls_domain: &str,
+) -> Result<String, String> {
     let (exe, bin_dir, cache_path, image) = {
         let state = app.state::<AppState>();
         match verified_tgproxy_path(state.paths.resource_dir()) {

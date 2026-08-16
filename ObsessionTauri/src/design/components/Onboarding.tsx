@@ -1,115 +1,19 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import { AnimatePresence, motion } from "framer-motion";
+import { motion } from "framer-motion";
 
-import { useSettingsStore } from "../../store/settingsStore";
-import { useThemeStore, THEMES, type Theme } from "../../store/themeStore";
-import { useSecretStore } from "../../store/secretStore";
-import { GlassPanel } from "./GlassPanel";
+import {
+  type OnboardingDestination,
+  type OnboardingDraft,
+  type OnboardingGoals,
+  type VerificationOutcome,
+} from "../../lib/onboarding";
+import { useOnboardingStore } from "../../store/onboardingStore";
+import { useThemeStore, type Theme } from "../../store/themeStore";
 import { Button } from "./atoms";
-import { EyeLogo } from "./EyeLogo";
-import { Icon } from "./icons";
-import { CustomTitleBar } from "./CustomTitleBar";
-import { ThemePreview } from "./ThemePreview";
-import { spring, cascade, dur, ease } from "../tokens";
+import { spring } from "../tokens";
 
-// Приветственный онбординг при первом запуске. Показывается, пока
-// settings.has_completed_onboarding === false; по «Готово»/«Пропустить»
-// выставляет флаг (персист в Rust). Повторно вызывается из Настроек.
-//
-// ВЁРСТКА. Окно приложения — 1000×680, минимум 800×600 (tauri.conf.json), а в
-// Tailwind брейкпоинт `lg` = 1024px. Поэтому здесь НЕ используется ни один
-// `lg:`-класс: в реальном окне он не срабатывает никогда, и вся раскладка,
-// написанная под него, молча вырождалась в одну колонку с обрезанным низом.
-// Опорные размеры — фиксированные и посчитаны под минимальное окно:
-// панель ≤ 880px по ширине, тело шага ограничено по высоте и прокручивается.
 const PANEL_WIDTH = "min(880px, 94vw)";
-// 44vh от 600px = 264px; жёсткий потолок 320px — чтобы на большом окне шаг не
-// расползался и оставался читаемым блоком, а не полосой во весь экран.
-const BODY_MAX_HEIGHT = "min(44vh, 320px)";
-const THEME_CORE_SIZE = 72;
-const SECONDARY_BUTTON_CLASS = "min-h-11 focus-visible:!ring-accent-cyan";
-
-type StepId = "intro" | "access" | "start" | "reliability" | "theme";
-
-type StepDef = {
-  id: StepId;
-  kicker: string;
-  title: string;
-  description: string;
-  render: () => JSX.Element;
-};
-
-// ─── Мелкие строительные блоки ───────────────────────────────────────────────
-
-function InfoCard({
-  icon: IconCmp,
-  title,
-  children,
-  index = 0,
-  tone = "accent",
-}: {
-  icon: (p: { size?: number }) => JSX.Element;
-  title: string;
-  children: React.ReactNode;
-  index?: number;
-  tone?: "accent" | "warn";
-}) {
-  return (
-    <motion.div
-      initial={{ opacity: 0, y: 10 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ ...spring.soft, delay: cascade.step * index }}
-      className="rounded-xl border border-white/[0.07] bg-base-800/40 p-3.5"
-    >
-      <div className="flex gap-3">
-        <div
-          className={[
-            "mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg",
-            tone === "warn" ? "bg-warn/10 text-warn" : "bg-accent/15 text-accent-cyan",
-          ].join(" ")}
-        >
-          <IconCmp size={17} />
-        </div>
-        <div className="min-w-0">
-          <div className="text-sm font-semibold text-ink">{title}</div>
-          <div className="mt-1 text-xs leading-5 text-ink-soft">{children}</div>
-        </div>
-      </div>
-    </motion.div>
-  );
-}
-
-// Строка нумерованного сценария («как включить»): цифра + текст.
-function NumberedRow({
-  n,
-  title,
-  children,
-}: {
-  n: number;
-  title: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <motion.div
-      initial={{ opacity: 0, y: 10 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ ...spring.soft, delay: cascade.step * (n - 1) }}
-      className="flex gap-3 rounded-xl border border-white/[0.07] bg-base-800/40 p-3.5"
-    >
-      <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-accent/15 text-xs font-semibold text-accent-cyan">
-        {n}
-      </div>
-      <div className="min-w-0">
-        <div className="text-sm font-semibold text-ink">{title}</div>
-        <div className="mt-1 text-xs leading-5 text-ink-soft">{children}</div>
-      </div>
-    </motion.div>
-  );
-}
-
-function ThemeMiniCore({ id, active }: { id: Theme; active: boolean }) {
-  return <ThemePreview theme={id} selected={active} size={THEME_CORE_SIZE} />;
-}
+const BODY_MAX_HEIGHT = "min(58vh, 390px)";
 
 export function getOnboardingKeyboardIntent(
   key: string,
@@ -120,8 +24,6 @@ export function getOnboardingKeyboardIntent(
   return confirmationOpen ? "close_confirmation" : "open_confirmation";
 }
 
-// Accent у светлых тем требует тёмного foreground, у Aurora/Fallen — белого.
-// Держим hover на 90% opacity: full accent в этих двух темах граничит с 4.5:1.
 export function getOnboardingPrimaryButtonClass(theme: Theme): string {
   return [
     "min-h-11 hover:!bg-accent/90 focus-visible:!ring-accent-cyan",
@@ -129,528 +31,360 @@ export function getOnboardingPrimaryButtonClass(theme: Theme): string {
   ].join(" ");
 }
 
-// ─── Компонент ───────────────────────────────────────────────────────────────
+function StatusRow({ label, ok, detail }: { label: string; ok: boolean; detail: string }) {
+  return (
+    <div className="flex items-start gap-3 rounded-xl border border-white/[0.07] bg-base-800/45 px-3.5 py-3">
+      <span
+        className={`mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full ${
+          ok ? "bg-ok/15 text-ok" : "bg-warn/15 text-warn"
+        }`}
+        aria-hidden="true"
+      >
+        {ok ? "✓" : "!"}
+      </span>
+      <span className="min-w-0">
+        <strong className="block text-sm font-semibold text-ink">{label}</strong>
+        <small className="mt-0.5 block text-xs leading-5 text-ink-soft">{detail}</small>
+      </span>
+    </div>
+  );
+}
 
-export function Onboarding() {
-  const patchConfirmed = useSettingsStore((s) => s.patchConfirmed);
-  const theme = useThemeStore((s) => s.theme);
-  const setTheme = useThemeStore((s) => s.setTheme);
-  const unlocked = useSecretStore((s) => s.unlocked);
+function GoalCard({
+  id,
+  title,
+  description,
+  checked,
+  onChange,
+}: {
+  id: keyof OnboardingGoals;
+  title: string;
+  description: string;
+  checked: boolean;
+  onChange: (id: keyof OnboardingGoals) => void;
+}) {
+  return (
+    <label
+      className={`no-drag flex cursor-pointer gap-3 rounded-xl border p-4 transition-colors ${
+        checked ? "border-accent/55 bg-accent/10" : "border-white/[0.08] bg-base-800/45"
+      }`}
+    >
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={() => onChange(id)}
+        className="mt-1 h-4 w-4 accent-[rgb(var(--accent))]"
+      />
+      <span>
+        <strong className="block text-sm font-semibold text-ink">{title}</strong>
+        <small className="mt-1 block text-xs leading-5 text-ink-soft">{description}</small>
+      </span>
+    </label>
+  );
+}
 
-  const [step, setStep] = useState(0);
-  const [confirmSkip, setConfirmSkip] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [completionError, setCompletionError] = useState("");
+function outcomeCopy(outcome: VerificationOutcome | undefined, rolledBack = false) {
+  if (rolledBack) {
+    return [
+      "Изменения безопасно отменены",
+      "Мастер восстановил предыдущую конфигурацию. Приложение продолжает работать без изменений.",
+    ];
+  }
+  switch (outcome) {
+    case "success":
+      return ["Настройка подтверждена", "Все выбранные цели прошли адресную проверку."];
+    case "partial":
+      return ["Часть целей работает", "Рабочие функции можно оставить, а непройденные проверить повторно."];
+    case "failed":
+      return ["Проверка не пройдена", "Конфигурация применена, но выбранные цели не подтвердили работу."];
+    default:
+      return [
+        "Автопроверка не дала однозначного ответа",
+        "Настройки применены, но адресные HTTPS-проверки не получили ответ. Проверь выбранные сервисы или повтори попытку.",
+      ];
+  }
+}
+
+function destinationFor(draft: OnboardingDraft): OnboardingDestination {
+  const selected = Object.entries(draft.goals).filter(([, enabled]) => enabled);
+  if (selected.length !== 1) return "overview";
+  return selected[0][0] as OnboardingDestination;
+}
+
+export function Onboarding({
+  onDestination,
+}: {
+  onDestination?: (destination: OnboardingDestination) => void;
+}) {
+  const theme = useThemeStore((state) => state.theme);
+  const snapshot = useOnboardingStore((state) => state.snapshot);
+  const readiness = useOnboardingStore((state) => state.readiness);
+  const busy = useOnboardingStore((state) => state.busy);
+  const failure = useOnboardingStore((state) => state.failure);
+  const checkReadiness = useOnboardingStore((state) => state.checkReadiness);
+  const saveDraft = useOnboardingStore((state) => state.saveDraft);
+  const buildPlan = useOnboardingStore((state) => state.buildPlan);
+  const apply = useOnboardingStore((state) => state.apply);
+  const verify = useOnboardingStore((state) => state.verify);
+  const acceptVerification = useOnboardingStore((state) => state.acceptVerification);
+  const rollback = useOnboardingStore((state) => state.rollback);
+  const complete = useOnboardingStore((state) => state.complete);
+  const skip = useOnboardingStore((state) => state.skip);
+  const cancel = useOnboardingStore((state) => state.cancel);
+  const launchRepair = useOnboardingStore((state) => state.launchRepair);
+  const clearFailure = useOnboardingStore((state) => state.clearFailure);
+
+  const [draft, setDraft] = useState<OnboardingDraft | null>(snapshot?.draft ?? null);
+  const [localView, setLocalView] = useState<"welcome" | "readiness" | "goals" | null>(
+    snapshot?.phase === "welcome" ? "welcome" : null,
+  );
   const dialogRef = useRef<HTMLDivElement>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
-  const bodyRef = useRef<HTMLDivElement>(null);
-  const skipButtonRef = useRef<HTMLButtonElement>(null);
-  const previousFocusRef = useRef<HTMLElement | null>(null);
-  const confirmationReturnFocusRef = useRef<HTMLElement | null>(null);
   const titleId = useId();
   const descriptionId = useId();
-  const confirmationTitleId = useId();
-  const confirmationDescriptionId = useId();
-
-  const themeOptions = useMemo(
-    () => THEMES.filter((th) => !th.secret || unlocked.includes(th.secret)),
-    [unlocked],
-  );
   const primaryButtonClass = getOnboardingPrimaryButtonClass(theme);
 
-  const finish = useCallback(async () => {
-    if (saving) return;
-    setSaving(true);
-    setCompletionError("");
-    const saved = await patchConfirmed({ has_completed_onboarding: true });
-    if (!saved) {
-      setSaving(false);
-      setCompletionError(
-        "Не удалось сохранить завершение. Проверь доступ к данным приложения и повтори попытку.",
+  useEffect(() => {
+    if (snapshot?.draft) setDraft(snapshot.draft);
+  }, [snapshot?.revision]);
+
+  useEffect(() => {
+    if (
+      snapshot?.phase === "recovery_required" &&
+      readiness === null &&
+      !busy &&
+      !failure
+    ) {
+      void checkReadiness();
+    }
+  }, [busy, checkReadiness, failure, readiness, snapshot?.phase]);
+
+  useEffect(() => {
+    headingRef.current?.focus({ preventScroll: true });
+  }, [snapshot?.phase, localView]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Tab") {
+        const focusable = Array.from(
+          dialogRef.current?.querySelectorAll<HTMLElement>(
+            'button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])',
+          ) ?? [],
+        );
+        if (!focusable.length) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (event.shiftKey && document.activeElement === first) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault();
+          first.focus();
+        }
+      }
+      if (
+        event.key === "Escape" &&
+        !busy &&
+        !snapshot?.transaction &&
+        snapshot?.presentation === "modal"
+      ) {
+        event.preventDefault();
+        void cancel();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [busy, cancel, snapshot?.presentation, snapshot?.transaction]);
+
+  const toggleGoal = useCallback(
+    (id: keyof OnboardingGoals) => {
+      setDraft((current) =>
+        current
+          ? { ...current, goals: { ...current.goals, [id]: !current.goals[id] } }
+          : current,
+      );
+      clearFailure();
+    },
+    [clearFailure],
+  );
+
+  const selectedCount = useMemo(
+    () => (draft ? Object.values(draft.goals).filter(Boolean).length : 0),
+    [draft],
+  );
+
+  if (!snapshot || !draft) return null;
+
+  const phase = localView ?? snapshot.phase;
+  const canExit = snapshot.presentation === "modal" && !snapshot.transaction;
+  const rolledBack = snapshot.transaction?.status === "rolled_back";
+  const failureText = failure
+    ? rolledBack
+      ? "Мастер заметил изменение конфигурации извне и остановил настройку до небезопасного применения."
+      : failure.code === "RUNTIME_UNAVAILABLE"
+      ? "Защищённая служба отсутствует или повреждена. До восстановления мастер ничего не применит."
+      : failure.code === "ROLLBACK_FAILED"
+        ? "Служба временно не завершила откат. Сохранённый снимок цел — повторите операцию через несколько секунд."
+      : failure.code === "STALE_PLAN" || failure.code === "STALE_REVISION"
+        ? "Состояние изменилось в другом месте. Мастер перечитает актуальный снимок перед повтором."
+        : "Операция остановлена безопасно. Технические детали сохранены только в локальном журнале."
+    : "";
+  const advisoryFailure = failure?.code === "ROLLBACK_FAILED";
+
+  const renderBody = () => {
+    if (phase === "welcome") {
+      return (
+        <div className="grid gap-3 sm:grid-cols-3">
+          <StatusRow label="Локальные данные" ok detail="Draft, checkpoints и результаты остаются на этом компьютере." />
+          <StatusRow label="Без изменений заранее" ok detail="До экрана Review ни одна системная настройка не меняется." />
+          <StatusRow label="Без повторного UAC" ok detail="Привилегированные действия выполняет уже установленная служба." />
+        </div>
       );
     }
-    // При успехе authoritative store update размонтирует onboarding. Не меняем
-    // локальный state после await, чтобы не обновлять уже размонтированный dialog.
-  }, [patchConfirmed, saving]);
 
-  const requestSkip = useCallback(() => {
-    if (saving) return;
-    confirmationReturnFocusRef.current =
-      document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    setCompletionError("");
-    setConfirmSkip(true);
-  }, [saving]);
-
-  const cancelSkip = useCallback(() => {
-    if (saving) return;
-    setCompletionError("");
-    setConfirmSkip(false);
-    window.setTimeout(() => {
-      if (confirmationReturnFocusRef.current?.isConnected) {
-        confirmationReturnFocusRef.current.focus();
-      } else if (skipButtonRef.current) {
-        skipButtonRef.current.focus();
-      } else {
-        headingRef.current?.focus();
-      }
-    }, 0);
-  }, [saving]);
-
-  const steps: StepDef[] = [
-    {
-      id: "intro",
-      kicker: "Первый запуск",
-      title: "Три инструмента в одном окне",
-      description:
-        "Obsession теперь запускается без постоянного UAC. Системные функции временно приостановлены до установки защищённого компонента.",
-      render: () => (
-        <div className="grid gap-3 sm:grid-cols-3">
-          <InfoCard icon={Icon.Bolt} title="DPI-обход" index={0}>
-            Готовые конфиги Zapret для Discord, YouTube&nbsp;/&nbsp;Twitch, игр и универсальный
-            набор. Выбираешь категорию — приложение поднимает winws.
-          </InfoCard>
-          <InfoCard icon={Icon.Robot} title="Доступ к ИИ" index={1}>
-            ChatGPT, Claude, Gemini и другие — через системный{" "}
-            <code className="font-mono">hosts</code>. Запись атомарная, с бэкапом: снимается одной
-            кнопкой.
-          </InfoCard>
-          <InfoCard icon={Icon.Send} title="Telegram-прокси" index={2}>
-            MTProto через WebSocket в один клик. Ссылка{" "}
-            <code className="font-mono">tg://proxy</code> и QR-код, чтобы подключить телефон из той
-            же сети.
-          </InfoCard>
+    if (phase === "readiness") {
+      const rows = readiness
+        ? [
+            ["Защищённая служба", readiness.service, "Аутентифицированный runtime отвечает"],
+            ["DPI capability", readiness.dpi, "Legacy доступен через Program Files"],
+            ["Hosts capability", readiness.hosts, "Системный hosts управляется службой"],
+            ["Telegram runtime", readiness.telegram, "Локальный proxy binary прошёл manifest"],
+            ["Защищённые ресурсы", readiness.protectedResources, "Конфиги читаются из immutable layout"],
+            ["AppData", readiness.appData, "Checkpoint можно записать атомарно"],
+            ["Порт Telegram", readiness.proxyPort, "Порт свободен или уже принадлежит Obsession"],
+            ["Незавершённая операция", !readiness.pendingRecovery, "Нет journal recovery, блокирующего новый apply"],
+          ] as const
+        : [];
+      return (
+        <div className="grid gap-2 sm:grid-cols-2">
+          {rows.map(([label, ok, detail]) => (
+            <StatusRow key={label} label={label} ok={ok} detail={detail} />
+          ))}
         </div>
-      ),
-    },
-    {
-      id: "access",
-      kicker: "Доступ",
-      title: "Безопасная граница привилегий",
-      description:
-        "Обычный интерфейс больше не запрашивает права администратора. DPI, hosts и запуск сетевых утилит вернутся через отдельный защищённый runtime.",
-      render: () => (
-        <div className="space-y-3">
-          <div className="grid gap-3 sm:grid-cols-2">
-            <InfoCard icon={Icon.Shield} title="Драйвер WinDivert" index={0}>
-              Драйвер и winws требуют системных прав. До появления подписанного helper/service
-              приложение намеренно не запускает их из пользовательской папки.
-            </InfoCard>
-            <InfoCard icon={Icon.Settings} title="Системный hosts" index={1}>
-              Файл <code className="font-mono">System32\drivers\etc\hosts</code> пока доступен
-              только для проверки. Запись и откат будут выполняться защищённым компонентом.
-            </InfoCard>
-          </div>
-          <motion.div
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ ...spring.soft, delay: cascade.step * 2 }}
-            className="flex gap-3 rounded-xl border border-white/[0.07] bg-base-800/30 px-4 py-3"
-          >
-            <div className="mt-0.5 shrink-0 text-ink-soft">
-              <Icon.Info size={16} />
-            </div>
-            <p className="text-xs leading-5 text-ink-soft">
-              Настройки и кэши по-прежнему лежат локально в{" "}
-              <code className="font-mono">%APPDATA%\Obsession</code>, но EXE, DLL, драйверы,
-              Lua и системные снапшоты больше не считаются доверенными из этой папки.
-            </p>
-          </motion.div>
-        </div>
-      ),
-    },
-    {
-      id: "start",
-      kicker: "Старт",
-      title: "Как включить обход",
-      description:
-        "Категории и профили можно настроить заранее. Запуск станет доступен после установки защищённого runtime.",
-      render: () => (
-        <div className="space-y-3">
-          <NumberedRow n={1} title="Выбери категорию">
-            Discord, YouTube&nbsp;/&nbsp;Twitch, Gaming, Universal или «Под угрозой». Категория
-            определяет, к каким сервисам применяется обход.
-          </NumberedRow>
-          <NumberedRow n={2} title="Проверь конфиг">
-            Можно оставить предложенный. Кнопка «Тест» честно дёргает заблокированный ресурс и
-            показывает, пробивает ли конкретный конфиг блокировку.
-          </NumberedRow>
-          <NumberedRow n={3} title="Включи защиту">
-            После безопасной миграции системный компонент поднимет winws из защищённой папки,
-            а интерфейс останется обычным процессом без постоянного UAC.
-          </NumberedRow>
-        </div>
-      ),
-    },
-    {
-      id: "reliability",
-      kicker: "Надёжность",
-      title: "Обход умеет замечать, что его режут",
-      description:
-        "ТСПУ подстраиваются, поэтому обход замкнут в петлю наблюдения. Отсюда и название приложения.",
-      render: () => (
-        <div className="space-y-3">
-          <div className="grid gap-3 sm:grid-cols-3">
-            <InfoCard icon={Icon.Eye} title="Глаза" index={0}>
-              Слушают копию собственного трафика и различают, что случилось: соединение сбросили или
-              его тихо роняют.
-            </InfoCard>
-            <InfoCard icon={Icon.Globe} title="Память сети" index={1}>
-              Запоминает, что работало именно в этой сети — по шлюзу и региону провайдера. В знакомой
-              сети рабочий конфиг поднимается сразу.
-            </InfoCard>
-            <InfoCard icon={Icon.Refresh} title="Мозг" index={2}>
-              Меняет стратегию строгой лестницей с запасом — аккуратно, чтобы перебором не
-              спровоцировать блокировку жёстче прежней.
-            </InfoCard>
-          </div>
-          <motion.div
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ ...spring.soft, delay: cascade.step * 3 }}
-            className="flex gap-3 rounded-xl border border-white/[0.07] bg-base-800/30 px-4 py-3"
-          >
-            <div className="mt-0.5 shrink-0 text-ink-soft">
-              <Icon.Info size={16} />
-            </div>
-            <p className="text-xs leading-5 text-ink-soft">
-              По умолчанию контур в режиме «Наблюдение»: он только показывает, что происходит, и сам
-              ничего не переключает. Право действовать выдаётся отдельно — режимом «С подтверждением»
-              или «Автоматический» в разделе надёжности.
-            </p>
-          </motion.div>
-        </div>
-      ),
-    },
-    {
-      id: "theme",
-      kicker: "Финиш",
-      title: "Выбери атмосферу",
-      description:
-        "Тему можно сменить в любой момент в Настройках. Скрытые появляются после разблокировки.",
-      render: () => (
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-          {themeOptions.map((th, index) => {
-            const selected = theme === th.id;
-            return (
-              <motion.button
-                key={th.id}
-                type="button"
-                onClick={() => setTheme(th.id)}
-                aria-pressed={selected}
-                aria-label={`Тема «${th.label}»${selected ? ", выбрана" : ""}`}
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ ...spring.soft, delay: cascade.step * index }}
-                className={[
-                  "no-drag group relative flex flex-col items-center gap-2 rounded-xl border p-2.5 transition-[border-color,background-color,box-shadow]",
-                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-cyan",
-                  selected
-                    ? "border-accent/50 bg-accent/10 shadow-glow"
-                    : "border-white/[0.07] bg-base-800/40 hover:border-accent/25 hover:bg-base-800/60",
-                ].join(" ")}
-              >
-                <div
-                  className="pointer-events-none flex items-center justify-center"
-                  style={{ width: THEME_CORE_SIZE, height: THEME_CORE_SIZE }}
-                >
-                  <ThemeMiniCore id={th.id} active={selected} />
-                </div>
-                <div className="flex items-center gap-1.5">
-                  {selected && <Icon.Check size={13} />}
-                  <span
-                    className={`text-xs font-semibold ${selected ? "text-ink" : "text-ink-soft"}`}
-                  >
-                    {th.label}
-                  </span>
-                </div>
-              </motion.button>
-            );
-          })}
-        </div>
-      ),
-    },
-  ];
-
-  const isLast = step === steps.length - 1;
-  const next = () => {
-    setCompletionError("");
-    if (isLast) void finish();
-    else setStep((s) => Math.min(steps.length - 1, s + 1));
-  };
-  const back = () => {
-    setCompletionError("");
-    setStep((s) => Math.max(0, s - 1));
-  };
-  const current = steps[step];
-
-  // Восстанавливаем focus после повторного запуска из Настроек. Таймер даёт App
-  // сначала снять inert с основного shell после размонтирования modal.
-  useEffect(() => {
-    previousFocusRef.current =
-      document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    return () => {
-      const previous = previousFocusRef.current;
-      window.setTimeout(() => {
-        if (previous?.isConnected) previous.focus();
-      }, 0);
-    };
-  }, []);
-
-  // Смена шага объявляется переносом focus на новый heading. Одновременно
-  // возвращаем прокрутку тела наверх, чтобы следующий шаг не открылся с середины.
-  useEffect(() => {
-    bodyRef.current?.scrollTo({ top: 0 });
-    headingRef.current?.focus();
-  }, [step, confirmSkip]);
-
-  // Modal keyboard contract: только focus trap и безопасный Escape. Enter и
-  // стрелки остаются нативным controls/scroll — глобальная навигация ломала Back
-  // и theme tiles.
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        const intent = getOnboardingKeyboardIntent(event.key, confirmSkip, saving);
-        if (!intent) return;
-        event.preventDefault();
-        if (intent === "open_confirmation") requestSkip();
-        else cancelSkip();
-        return;
-      }
-      if (event.key !== "Tab") return;
-
-      const root = dialogRef.current;
-      if (!root) return;
-      const focusable = Array.from(
-        root.querySelectorAll<HTMLElement>(
-          'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
-        ),
-      ).filter(
-        (element) =>
-          !element.hasAttribute("hidden") && element.getAttribute("aria-hidden") !== "true",
       );
+    }
 
-      if (focusable.length === 0) {
-        event.preventDefault();
-        headingRef.current?.focus();
-        return;
+    if (phase === "goals") {
+      return (
+        <div className="grid gap-3 sm:grid-cols-3">
+          <GoalCard id="dpi" title="Discord / DPI" description="Legacy — стабильный вариант; Discord станет первой категорией." checked={draft.goals.dpi} onChange={toggleGoal} />
+          <GoalCard id="ai" title="Доступ к ИИ" description="Применить service-owned hosts с атомарным возвратом." checked={draft.goals.ai} onChange={toggleGoal} />
+          <GoalCard id="telegram" title="Telegram" description="Запустить локальный MTProto-прокси и проверить endpoint." checked={draft.goals.telegram} onChange={toggleGoal} />
+        </div>
+      );
+    }
+
+    if (phase === "recommendation") {
+      return (
+        <div className="space-y-3">
+          {draft.goals.dpi && (
+            <fieldset className="grid gap-3 sm:grid-cols-2">
+              <legend className="mb-2 text-xs font-medium uppercase tracking-[0.16em] text-ink-muted">DPI-движок</legend>
+              {(["legacy", "zapret2"] as const).map((engine) => (
+                <label key={engine} className={`flex cursor-pointer gap-3 rounded-xl border p-4 ${draft.dpiEngine === engine ? "border-accent/55 bg-accent/10" : "border-white/[0.08] bg-base-800/45"}`}>
+                  <input type="radio" name="dpi-engine" checked={draft.dpiEngine === engine} onChange={() => setDraft({ ...draft, dpiEngine: engine })} />
+                  <span><strong className="block text-sm text-ink">{engine === "legacy" ? "Legacy — рекомендовано" : "Zapret2 — Advanced / Beta"}</strong><small className="mt-1 block text-xs leading-5 text-ink-soft">{engine === "legacy" ? "Предсказуемый основной движок и Reliability строго в observe_only." : "Для ручного эксперимента; adaptive-поиск автоматически не включается."}</small></span>
+                </label>
+              ))}
+            </fieldset>
+          )}
+          <StatusRow label="Существующая конфигурация сохранена" ok detail="При повторном запуске мастер меняет только явно подтверждённые пункты." />
+        </div>
+      );
+    }
+
+    if (phase === "review") {
+      return (
+        <ol className="space-y-2">
+          {snapshot.plan?.actions.map((action, index) => (
+            <li key={action.kind} className="rounded-xl border border-white/[0.08] bg-base-800/45 p-3.5">
+              <div className="flex gap-3"><span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-accent/15 text-xs font-semibold text-accent-cyan">{index + 1}</span><span><strong className="text-sm text-ink">{action.title}</strong><small className="mt-1 block text-xs leading-5 text-ink-soft">{action.detail}</small></span></div>
+              <div className="mt-2 grid gap-1 pl-10 text-[11px] text-ink-muted sm:grid-cols-2"><span>Проверка: {action.verification}</span><span>Rollback: {action.rollback}</span></div>
+            </li>
+          ))}
+        </ol>
+      );
+    }
+
+    if (phase === "applying" || phase === "rolling_back" || phase === "verifying") {
+      return (
+        <div className="flex min-h-48 flex-col items-center justify-center gap-4 text-center" aria-live="polite">
+          <motion.span className="h-14 w-14 rounded-full border border-accent/30 border-t-accent" animate={{ rotate: 360 }} transition={{ duration: 1.4, repeat: Infinity, ease: "linear" }} aria-hidden="true" />
+          <div><strong className="text-base text-ink">{phase === "verifying" ? "Проверяем только выбранные цели" : phase === "rolling_back" ? "Возвращаем точный снимок" : "Применяем подтверждённый план"}</strong><p className="mt-1 text-xs text-ink-soft">Snapshot остаётся источником истины; закрывать приложение сейчас не нужно.</p></div>
+        </div>
+      );
+    }
+
+    if (phase === "recovery_required") {
+      const hasJournal = Boolean(snapshot.transaction);
+      return (
+        <div className="space-y-3">
+          <StatusRow
+            label={hasJournal ? "Настройка приостановлена" : "Служба недоступна"}
+            ok={false}
+            detail={hasJournal
+              ? "Мастер остановил дальнейшие действия. Journal помнит выполненные шаги и продолжит обратный откат с последнего checkpoint."
+              : "Protected runtime отсутствует или повреждён. Новые изменения не выполнялись."}
+          />
+          <p className="rounded-xl border border-white/[0.07] bg-base-800/35 p-4 text-xs leading-5 text-ink-soft">
+            {hasJournal
+              ? "Это не означает, что приложение или runtime сломаны. Сохранённый снимок остаётся целым; безопасный откат можно повторить."
+              : <>Repair запускается только по фиксированному пути <code className="font-mono">C:\Program Files\Obsession\uninstall.exe</code> без uninstall-switch. Путь из frontend не принимается.</>}
+          </p>
+        </div>
+      );
+    }
+
+    const [title, description] = outcomeCopy(snapshot.verification?.outcome, rolledBack);
+    return (
+      <div className="space-y-3">
+        <div className="rounded-xl border border-white/[0.08] bg-base-800/45 p-4"><strong className="text-base text-ink">{title}</strong><p className="mt-1 text-xs leading-5 text-ink-soft">{description}</p></div>
+        <div className="grid gap-2 sm:grid-cols-3">
+          {snapshot.verification?.targets.filter((target) => target.status !== "not_selected").map((target) => <StatusRow key={target.id} label={target.label} ok={target.status === "passed"} detail={target.message} />)}
+        </div>
+      </div>
+    );
+  };
+
+  const heading = phase === "welcome" ? "Настроим выбранные функции" : phase === "readiness" ? "Проверка готовности" : phase === "goals" ? "Что должно работать сразу?" : phase === "recommendation" ? "Рекомендуем безопасный профиль" : phase === "review" ? "Точный план перед применением" : phase === "recovery_required" ? (snapshot.transaction ? "Нужно завершить безопасный откат" : "Служба требует восстановления") : phase === "result" ? "Результат проверки" : "Obsession настраивает систему";
+  const description = phase === "welcome" ? "Мастер работает через уже установленную службу и не запрашивает UAC повторно." : phase === "review" ? "После подтверждения план становится immutable, а перед первой mutation fingerprints проверяются ещё раз." : phase === "recovery_required" && snapshot.transaction ? "Снимок настроек сохранён. Приложение продолжает работать в обычном режиме." : "Состояние и checkpoints сохраняются локально и атомарно.";
+
+  const footer = (() => {
+    if (phase === "welcome") return <Button disabled={busy} onClick={() => void checkReadiness().then((ok) => ok && setLocalView("readiness"))} className={primaryButtonClass}>Проверить готовность</Button>;
+    if (phase === "readiness") {
+      const ready = readiness && readiness.service && readiness.protectedResources && !readiness.pendingRecovery;
+      return <Button disabled={busy || !ready} onClick={() => setLocalView("goals")} className={primaryButtonClass}>Выбрать цели</Button>;
+    }
+    if (phase === "goals") return <Button disabled={busy || selectedCount === 0} onClick={() => void saveDraft(draft).then((ok) => ok && setLocalView(null))} className={primaryButtonClass}>Получить рекомендацию</Button>;
+    if (phase === "recommendation") return <Button disabled={busy} onClick={() => void buildPlan(draft)} className={primaryButtonClass}>Собрать точный план</Button>;
+    if (phase === "review") return <Button disabled={busy} onClick={() => void apply().then((ok) => { if (ok) void verify(); })} className={primaryButtonClass}>Применить и проверить</Button>;
+    if (phase === "recovery_required") {
+      if (snapshot.transaction && readiness?.service !== false) {
+        return <Button disabled={busy} onClick={() => void rollback()} className={primaryButtonClass}>Повторить безопасный откат</Button>;
       }
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      const active = document.activeElement;
-      if (event.shiftKey && (active === first || !root.contains(active))) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && active === last) {
-        event.preventDefault();
-        first.focus();
-      }
+      return <Button disabled={busy || readiness?.repairAvailable === false} onClick={() => void launchRepair()} className={primaryButtonClass}>Восстановить службу</Button>;
+    }
+    if (phase !== "result") return null;
+    const outcome = snapshot.verification?.outcome;
+    const finish = async () => {
+      const destination = destinationFor(draft);
+      if (await complete(destination)) onDestination?.(destination);
     };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [cancelSkip, confirmSkip, requestSkip, saving]);
+    if (outcome === "success" || snapshot.verification?.accepted || rolledBack) return <Button disabled={busy} onClick={() => void finish()} className={primaryButtonClass}>{rolledBack ? "Завершить без изменений" : "Открыть приложение"}</Button>;
+    return <div className="flex flex-wrap justify-end gap-2"><Button variant="ghost" disabled={busy} onClick={() => void verify()}>Повторить проверку</Button><Button variant="ghost" disabled={busy} onClick={() => void rollback()}>Откатить</Button><Button disabled={busy} onClick={() => void acceptVerification().then((ok) => { if (ok) void finish(); })} className={primaryButtonClass}>Оставить конфигурацию</Button></div>;
+  })();
 
   return (
-    <motion.div
-      ref={dialogRef}
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      transition={{ duration: dur.base, ease: ease.enter }}
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby={confirmSkip ? confirmationTitleId : titleId}
-      aria-describedby={confirmSkip ? confirmationDescriptionId : descriptionId}
-      aria-busy={saving}
-      className="fixed inset-0 z-50 flex flex-col bg-base/[0.72] backdrop-blur-md"
-    >
-      {/* Оригинальный titlebar находится в inert shell. Копия внутри dialog
-          сохраняет доступ к drag/minimize/maximize/close, не выпуская focus наружу. */}
-      <div className="relative z-10 shrink-0">
-        <CustomTitleBar />
-      </div>
-
-      <div className="flex min-h-0 flex-1 items-center justify-center overflow-y-auto px-4 py-3">
-        <motion.div
-          initial={{ scale: 0.98, y: 12 }}
-          animate={{ scale: 1, y: 0 }}
-          transition={spring.soft}
-          style={{ width: PANEL_WIDTH }}
-          className="my-auto"
-        >
-          {/* padded={false} обязателен: свой `p-5` у GlassPanel и наш внутренний
-              давали двойной отступ, а `p-0` в className его не перебивал. */}
-          <GlassPanel spotlight={false} padded={false} className="relative">
-            {confirmSkip ? (
-              <div className="p-6">
-                <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-ink-soft">
-                  <span className="h-1.5 w-1.5 rounded-full bg-warn" />
-                  Первый запуск
-                </div>
-                <h2
-                  ref={headingRef}
-                  id={confirmationTitleId}
-                  tabIndex={-1}
-                  className="mt-4 font-display text-2xl font-semibold tracking-tight text-ink outline-none"
-                >
-                  Пропустить знакомство?
-                </h2>
-                <p
-                  id={confirmationDescriptionId}
-                  className="mt-2 max-w-xl text-sm leading-6 text-ink-soft"
-                >
-                  Системные настройки не изменятся. Выбранная тема останется, а знакомство можно в
-                  любой момент открыть снова в разделе «Настройки».
-                </p>
-                {completionError && (
-                  <p
-                    role="alert"
-                    className="mt-4 rounded-xl border border-danger/30 bg-danger/10 px-4 py-3 text-sm text-ink"
-                  >
-                    {completionError}
-                  </p>
-                )}
-                <div className="mt-6 flex flex-wrap justify-end gap-2">
-                  <Button
-                    variant="ghost"
-                    onClick={cancelSkip}
-                    disabled={saving}
-                    className={SECONDARY_BUTTON_CLASS}
-                  >
-                    Вернуться
-                  </Button>
-                  <Button
-                    variant="primary"
-                    onClick={() => void finish()}
-                    disabled={saving}
-                    className={primaryButtonClass}
-                  >
-                    {saving ? "Сохраняем…" : "Пропустить"}
-                  </Button>
-                </div>
-              </div>
-            ) : (
-              <div className="p-5">
-                {/* Шапка: логотип, счётчик и доступный сегментированный прогресс. */}
-                <div className="flex items-center justify-between gap-4">
-                  <div className="flex items-center gap-2.5">
-                    <EyeLogo size={26} />
-                    <span className="font-display text-sm font-semibold tracking-tight text-ink">
-                      Obsession
-                    </span>
-                  </div>
-                  <span className="font-mono text-xs text-ink-soft">
-                    Шаг {step + 1} из {steps.length}
-                  </span>
-                </div>
-
-                <div
-                  className="mt-3 flex gap-1.5"
-                  role="progressbar"
-                  aria-label="Прогресс знакомства"
-                  aria-valuemin={1}
-                  aria-valuemax={steps.length}
-                  aria-valuenow={step + 1}
-                  aria-valuetext={`Шаг ${step + 1} из ${steps.length}: ${current.title}`}
-                >
-                  {steps.map((s, i) => (
-                    <span
-                      key={s.id}
-                      aria-hidden="true"
-                      className={[
-                        "h-1 flex-1 rounded-full transition-colors duration-300",
-                        i < step ? "bg-accent/45" : i === step ? "bg-accent" : "bg-white/10",
-                      ].join(" ")}
-                    />
-                  ))}
-                </div>
-
-                <div className="mt-4 space-y-1.5">
-                  <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-ink-soft">
-                    <span className="h-1.5 w-1.5 rounded-full bg-accent shadow-glow" />
-                    {current.kicker}
-                  </div>
-                  <h2
-                    ref={headingRef}
-                    id={titleId}
-                    tabIndex={-1}
-                    className="font-display text-xl font-semibold tracking-tight text-ink outline-none"
-                  >
-                    {current.title}
-                  </h2>
-                  <p id={descriptionId} className="text-xs leading-5 text-ink-soft">
-                    {current.description}
-                  </p>
-                </div>
-
-                <div
-                  ref={bodyRef}
-                  tabIndex={0}
-                  role="region"
-                  aria-labelledby={titleId}
-                  className="scroll-fade mt-2 overflow-y-auto py-4 pr-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-cyan"
-                  style={{ maxHeight: BODY_MAX_HEIGHT }}
-                >
-                  <AnimatePresence mode="wait">
-                    <motion.div
-                      key={current.id}
-                      initial={{ opacity: 0, x: 18 }}
-                      animate={{ opacity: 1, x: 0 }}
-                      exit={{ opacity: 0, x: -18 }}
-                      transition={{ duration: dur.fast, ease: ease.enter }}
-                    >
-                      {current.render()}
-                    </motion.div>
-                  </AnimatePresence>
-                </div>
-
-                {completionError && (
-                  <p
-                    role="alert"
-                    className="mt-3 rounded-xl border border-danger/30 bg-danger/10 px-4 py-3 text-sm text-ink"
-                  >
-                    {completionError}
-                  </p>
-                )}
-
-                <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
-                  {isLast ? (
-                    <span />
-                  ) : (
-                    <button
-                      ref={skipButtonRef}
-                      type="button"
-                      onClick={requestSkip}
-                      disabled={saving}
-                      className="no-drag min-h-11 rounded-xl px-3 text-xs font-semibold tracking-[0.04em] text-ink-soft transition-colors hover:bg-white/5 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-cyan disabled:opacity-50"
-                    >
-                      Пропустить
-                    </button>
-                  )}
-                  <div className="flex flex-wrap items-center justify-end gap-2">
-                    {step > 0 && (
-                      <Button
-                        variant="ghost"
-                        onClick={back}
-                        disabled={saving}
-                        className={SECONDARY_BUTTON_CLASS}
-                      >
-                        Назад
-                      </Button>
-                    )}
-                    <Button
-                      variant="primary"
-                      onClick={next}
-                      disabled={saving}
-                      className={primaryButtonClass}
-                    >
-                      {saving ? "Сохраняем…" : isLast ? "Начать" : "Далее"}
-                    </Button>
-                  </div>
-                </div>
-              </div>
-            )}
-          </GlassPanel>
-        </motion.div>
-      </div>
-    </motion.div>
+    <div className="no-drag fixed inset-0 z-[100] flex items-center justify-center bg-black/75 px-4 py-6 backdrop-blur-xl">
+      <motion.div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby={titleId} aria-describedby={descriptionId} initial={{ opacity: 0, y: 14, scale: 0.985 }} animate={{ opacity: 1, y: 0, scale: 1 }} transition={spring.soft} style={{ width: PANEL_WIDTH }} className="relative flex max-h-[calc(100vh-3rem)] flex-col overflow-hidden rounded-2xl border border-white/[0.1] bg-base-900/95 shadow-2xl">
+        <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-accent-cyan/45 to-transparent" />
+        <header className="flex shrink-0 items-start justify-between gap-4 border-b border-white/[0.07] px-5 py-4 sm:px-6">
+          <div><p className="mb-1.5 font-mono text-[10px] uppercase tracking-[0.18em] text-accent-cyan">Onboarding V2 · {phase}</p><h1 ref={headingRef} id={titleId} tabIndex={-1} className="text-xl font-semibold tracking-tight text-ink">{heading}</h1><p id={descriptionId} className="mt-1.5 max-w-2xl text-xs leading-5 text-ink-soft">{description}</p></div>
+          {canExit && <button type="button" onClick={() => void cancel()} disabled={busy} aria-label="Закрыть мастер" className="rounded-lg p-2 text-ink-muted hover:bg-white/10 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">×</button>}
+        </header>
+        <main className="min-h-0 overflow-y-auto px-5 py-4 sm:px-6" style={{ maxHeight: BODY_MAX_HEIGHT }}>{renderBody()}{failureText && <div role={rolledBack ? "status" : "alert"} className={`mt-3 rounded-xl border px-4 py-3 text-xs leading-5 ${rolledBack ? "border-white/[0.09] bg-white/[0.035] text-ink-soft" : advisoryFailure ? "border-warn/25 bg-warn/10 text-warn" : "border-danger/25 bg-danger/10 text-danger"}`}>{failureText}{failure?.logPath && <span className="mt-1 block break-all font-mono text-[10px] text-ink-muted">{failure.logPath}</span>}</div>}</main>
+        <footer className="flex min-h-[68px] shrink-0 items-center justify-between gap-3 border-t border-white/[0.07] px-5 py-3 sm:px-6"><div>{!snapshot.transaction && snapshot.presentation === "required" && <Button variant="ghost" disabled={busy} onClick={() => void skip()}>Пропустить</Button>}</div><div className="ml-auto">{footer}</div></footer>
+      </motion.div>
+    </div>
   );
 }

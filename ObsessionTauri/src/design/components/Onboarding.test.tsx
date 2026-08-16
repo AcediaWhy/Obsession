@@ -30,6 +30,48 @@ vi.mock("../../lib/tauri", () => ({
   },
 }));
 
+const { onboardingMockState } = vi.hoisted(() => ({
+  onboardingMockState: {
+    loaded: true,
+    busy: false,
+    snapshot: {
+      flowVersion: 2,
+      revision: 1,
+      phase: "welcome",
+      presentation: "required",
+      draft: {
+        goals: { dpi: true, ai: false, telegram: false },
+        dpiEngine: "legacy",
+        aiProvider: "malw",
+      },
+      plan: null,
+      transaction: null,
+      verification: null,
+      terminalStatus: "active",
+      destination: null,
+    },
+    readiness: null,
+    failure: null,
+    checkReadiness: vi.fn(),
+    saveDraft: vi.fn(),
+    buildPlan: vi.fn(),
+    apply: vi.fn(),
+    verify: vi.fn(),
+    acceptVerification: vi.fn(),
+    rollback: vi.fn(),
+    complete: vi.fn(),
+    skip: vi.fn(),
+    cancel: vi.fn(),
+    launchRepair: vi.fn(),
+    clearFailure: vi.fn(),
+  },
+}));
+
+vi.mock("../../store/onboardingStore", () => ({
+  useOnboardingStore: (selector: (state: typeof onboardingMockState) => unknown) =>
+    selector(onboardingMockState),
+}));
+
 import type { Settings } from "../../lib/tauri";
 import { useSecretStore } from "../../store/secretStore";
 import { useSettingsStore } from "../../store/settingsStore";
@@ -107,22 +149,22 @@ describe("Onboarding PR 1 contract", () => {
     expect(getOnboardingKeyboardIntent("Escape", false, true)).toBeNull();
   });
 
-  it("renders a named modal, semantic progress and single-control theme tiles", () => {
+  it("renders a named functional modal without nested interactive controls", () => {
     const markup = renderToStaticMarkup(<Onboarding />);
 
     expect(markup).toContain('role="dialog"');
     expect(markup).toContain('aria-modal="true"');
-    expect(markup).toContain('role="progressbar"');
-    expect(markup).toContain('aria-valuenow="1"');
-    expect(markup).toContain("bg-base/[0.72]");
+    expect(markup).toContain("Без повторного UAC");
+    expect(markup).toContain("До экрана Review");
     expect(markup).toContain("hover:!bg-accent/90");
-    expect(markup).toContain("!text-white");
+    expect(markup).toContain("!text-[#05060B]");
     expect(markup).toContain("focus-visible:!ring-accent-cyan");
     expect(containsNestedButton(markup)).toBe(false);
   });
 
   it("uses a dark primary-button foreground on light theme accents", () => {
     expect(getOnboardingPrimaryButtonClass("ophanim")).toContain("!text-[#05060B]");
+    expect(getOnboardingPrimaryButtonClass("obsession")).toContain("!text-[#05060B]");
     expect(getOnboardingPrimaryButtonClass("ophanim")).not.toContain("!text-white");
     expect(getOnboardingPrimaryButtonClass("aurora")).toContain("!text-white");
   });
@@ -136,5 +178,188 @@ describe("Onboarding PR 1 contract", () => {
     expect(markup).not.toContain("<button");
     expect(markup).toContain("<canvas");
     expect(markup).not.toContain("tabindex");
+  });
+
+  it("renders the Obsession theme tile without a nested button", () => {
+    const markup = renderToStaticMarkup(
+      <ThemePreview theme="obsession" selected size={104} />,
+    );
+    expect(markup).toContain('aria-hidden="true"');
+    expect(markup).toContain("data-choir-seal");
+    expect(containsNestedButton(markup)).toBe(false);
+    expect(markup).not.toContain("<button");
+  });
+
+  it("presents an interrupted transaction as a retryable safe rollback", () => {
+    Object.assign(onboardingMockState.snapshot, {
+      phase: "recovery_required",
+      presentation: "modal",
+      transaction: {
+        transactionId: "tx-test",
+        planId: "plan-test",
+        status: "recovery_required",
+        checkpoint: "proxy_start_started",
+        verification: null,
+      },
+    });
+    try {
+      const markup = renderToStaticMarkup(<Onboarding />);
+      expect(markup).toContain("Нужно завершить безопасный откат");
+      expect(markup).toContain("Повторить безопасный откат");
+      expect(markup).not.toContain("Восстановить службу");
+      expect(markup).toContain("не означает, что приложение или runtime сломаны");
+      expect(markup).toContain("последнего checkpoint");
+      expect(containsNestedButton(markup)).toBe(false);
+    } finally {
+      Object.assign(onboardingMockState.snapshot, {
+        phase: "welcome",
+        presentation: "required",
+        transaction: null,
+      });
+    }
+  });
+
+  it("offers service repair only when readiness confirms it is unavailable", () => {
+    Object.assign(onboardingMockState.snapshot, {
+      phase: "recovery_required",
+      presentation: "modal",
+      transaction: {
+        transactionId: "tx-test",
+        planId: "plan-test",
+        status: "recovery_required",
+        checkpoint: "rollback_incomplete",
+        verification: null,
+      },
+    });
+    Object.assign(onboardingMockState, {
+      readiness: {
+        service: false,
+        dpi: false,
+        hosts: false,
+        telegram: true,
+        protectedResources: true,
+        appData: true,
+        pendingRecovery: true,
+        proxyPort: true,
+        repairAvailable: true,
+      },
+    });
+    try {
+      const markup = renderToStaticMarkup(<Onboarding />);
+      expect(markup).toContain("Восстановить службу");
+      expect(markup).not.toContain("Повторить безопасный откат");
+    } finally {
+      Object.assign(onboardingMockState, { readiness: null });
+      Object.assign(onboardingMockState.snapshot, {
+        phase: "welcome",
+        presentation: "required",
+        transaction: null,
+      });
+    }
+  });
+
+  it("renders a deferred rollback as an advisory warning, not a fatal error", () => {
+    Object.assign(onboardingMockState, {
+      failure: {
+        code: "ROLLBACK_FAILED",
+        retryable: true,
+        messageCode: "onboarding.error.rollback_deferred",
+        logPath: null,
+      },
+    });
+    try {
+      const markup = renderToStaticMarkup(<Onboarding />);
+      expect(markup).toContain("border-warn/25");
+      expect(markup).toContain("Сохранённый снимок цел");
+      expect(markup).not.toContain("border-danger/25");
+    } finally {
+      Object.assign(onboardingMockState, { failure: null });
+    }
+  });
+
+  it("presents a completed rollback as a neutral result without a false network warning", () => {
+    Object.assign(onboardingMockState.snapshot, {
+      phase: "result",
+      presentation: "modal",
+      transaction: {
+        transactionId: "tx-rolled-back",
+        planId: "plan-test",
+        status: "rolled_back",
+        checkpoint: "rolled_back",
+        verification: null,
+      },
+      verification: null,
+      terminalStatus: "completed",
+    });
+    Object.assign(onboardingMockState, {
+      failure: {
+        code: "APPLY_FAILED",
+        retryable: false,
+        messageCode: "onboarding.error.external_change",
+        logPath: "C:\\Obsession\\onboarding.log",
+      },
+    });
+    try {
+      const markup = renderToStaticMarkup(<Onboarding />);
+      expect(markup).toContain("Изменения безопасно отменены");
+      expect(markup).toContain("Приложение продолжает работать без изменений");
+      expect(markup).toContain("Завершить без изменений");
+      expect(markup).toContain('role="status"');
+      expect(markup).toContain("border-white/[0.09]");
+      expect(markup).not.toContain("Контрольная сеть недоступна");
+      expect(markup).not.toContain("border-danger/25");
+    } finally {
+      Object.assign(onboardingMockState, { failure: null });
+      Object.assign(onboardingMockState.snapshot, {
+        phase: "welcome",
+        presentation: "required",
+        transaction: null,
+        verification: null,
+        terminalStatus: "active",
+      });
+    }
+  });
+
+  it("describes an inconclusive HTTPS check without blaming a control network", () => {
+    const verification = {
+      outcome: "inconclusive",
+      accepted: false,
+      targets: [
+        {
+          id: "dpi",
+          label: "Discord / DPI",
+          status: "inconclusive",
+          message: "Runtime активен; автоматическая HTTPS-проверка Discord не получила ответ",
+        },
+      ],
+    };
+    Object.assign(onboardingMockState.snapshot, {
+      phase: "result",
+      presentation: "modal",
+      transaction: {
+        transactionId: "tx-inconclusive",
+        planId: "plan-test",
+        status: "applied",
+        checkpoint: "apply_complete",
+        verification,
+      },
+      verification,
+      terminalStatus: "active",
+    });
+    try {
+      const markup = renderToStaticMarkup(<Onboarding />);
+      expect(markup).toContain("Автопроверка не дала однозначного ответа");
+      expect(markup).toContain("адресные HTTPS-проверки не получили ответ");
+      expect(markup).toContain("автоматическая HTTPS-проверка Discord");
+      expect(markup).not.toContain("Контрольная сеть недоступна");
+    } finally {
+      Object.assign(onboardingMockState.snapshot, {
+        phase: "welcome",
+        presentation: "required",
+        transaction: null,
+        verification: null,
+        terminalStatus: "active",
+      });
+    }
   });
 });

@@ -20,6 +20,7 @@ mod lists_validate;
 mod net;
 mod netcache;
 mod netid;
+mod onboarding;
 mod paths;
 mod profiles;
 mod protected_runtime;
@@ -373,6 +374,20 @@ pub fn run() {
             commands::adaptive_confirm_candidate,
             commands::adaptive_reject_candidate,
             commands::adaptive_reset_saved,
+            onboarding::onboarding_start,
+            onboarding::onboarding_get_snapshot,
+            onboarding::onboarding_check_readiness,
+            onboarding::onboarding_save_draft,
+            onboarding::onboarding_build_plan,
+            onboarding::onboarding_apply,
+            onboarding::onboarding_get_transaction,
+            onboarding::onboarding_verify,
+            onboarding::onboarding_accept_verification,
+            onboarding::onboarding_rollback,
+            onboarding::onboarding_complete,
+            onboarding::onboarding_skip,
+            onboarding::onboarding_cancel,
+            onboarding::launch_repair_setup,
         ])
         .build(tauri::generate_context!())
         .expect("ошибка запуска Obsession")

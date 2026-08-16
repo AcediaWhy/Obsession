@@ -2,6 +2,7 @@ import { useShallow } from "zustand/react/shallow";
 
 import { useHostsStore } from "../store/hostsStore";
 import { useSettingsStore } from "../store/settingsStore";
+import { useOnboardingStore } from "../store/onboardingStore";
 import { GlassPanel } from "../design/components/GlassPanel";
 import { StaggerItem } from "../design/components/Stagger";
 import { LogStream } from "../design/components/LogStream";
@@ -65,6 +66,7 @@ const STATUS_COLOR: Record<string, string> = {
 };
 
 export function AiScreen() {
+  const launchRepair = useOnboardingStore((state) => state.launchRepair);
   const protectedHostsAvailable = useSettingsStore(
     (state) => state.protectedRuntime.hosts,
   );
@@ -170,9 +172,18 @@ export function AiScreen() {
           </div>
 
           {!protectedHostsAvailable && (
-            <div className="rounded-xl border border-warn/40 bg-warn/10 px-3 py-2 text-xs leading-relaxed text-warn">
-              Защищённая служба hosts недоступна. Установка, обновление и
-              восстановление заблокированы до успешного service preflight.
+            <div className="flex items-center justify-between gap-3 rounded-xl border border-warn/40 bg-warn/10 px-3 py-2 text-xs leading-relaxed text-warn">
+              <span>
+                Защищённая служба hosts недоступна или использует несовместимый
+                protocol. Установка заблокирована до восстановления runtime.
+              </span>
+              <Button
+                variant="ghost"
+                className="shrink-0"
+                onClick={() => void launchRepair()}
+              >
+                Восстановить
+              </Button>
             </div>
           )}
 
