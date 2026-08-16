@@ -386,6 +386,57 @@ fn runtime_snapshot_blocking(timeout: Duration) -> Result<RuntimeSnapshot, Strin
 }
 
 #[cfg(windows)]
+fn applied_legacy_recovery_config(snapshot: &RuntimeSnapshot) -> Option<(u64, &'static str, &str)> {
+    let runtime = snapshot.dpi.as_ref()?;
+    let reliability = snapshot.legacy_reliability.as_ref()?;
+    let completion = reliability.recovery.last_completion.as_ref()?;
+    if runtime.engine != DpiEngine::Legacy
+        || reliability.generation != runtime.generation
+        || completion.phase != LegacyRecoveryAttemptPhase::Applied
+        || completion.disposition != LegacyRecoveryCompletionDisposition::CandidateApplied
+        || !reliability.active_categories.contains(&completion.category)
+        || !runtime.selections.iter().any(|selection| {
+            selection.category == completion.category
+                && selection.strategy_id == completion.candidate_config_id
+        })
+    {
+        return None;
+    }
+    Some((
+        completion.attempt_id,
+        protocol_category_name(completion.category),
+        completion.candidate_config_id.as_str(),
+    ))
+}
+
+#[cfg(windows)]
+fn reconcile_legacy_recovery_snapshot(
+    app: &AppHandle,
+    snapshot: &RuntimeSnapshot,
+) -> Result<Option<u64>, String> {
+    let Some((attempt_id, category, candidate_config)) = applied_legacy_recovery_config(snapshot)
+    else {
+        return Ok(None);
+    };
+    crate::commands::persist_recovered_legacy_config(app, category, candidate_config)?;
+    Ok(Some(attempt_id))
+}
+
+pub(crate) fn reconcile_legacy_recovery_selection(app: &AppHandle) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        let snapshot = runtime_snapshot_blocking(DISCOVERY_TIMEOUT)?;
+        reconcile_legacy_recovery_snapshot(app, &snapshot)?;
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = app;
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
 fn legacy_controls_request(settings: &crate::settings::Settings) -> Result<Request, String> {
     let mode = if !settings.legacy_reliability_enabled {
         ProtocolRecoveryMode::ObserveOnly
@@ -679,10 +730,8 @@ fn project_legacy_reliability(
                     blackhole_flows: u16::from(lane.evidence.blackhole_flows),
                     blackhole_targets: u16::from(lane.evidence.blackhole_targets),
                 },
-                working_confirmed_recently: matches!(
-                    classification,
-                    AssessmentClassification::Working
-                ),
+                working_confirmed_recently: lane.working_confirmed_recently
+                    || matches!(classification, AssessmentClassification::Working),
                 cooldown_until_ms: None,
             }
         })
@@ -879,6 +928,7 @@ fn spawn_legacy_reliability_monitor(
     tauri::async_runtime::spawn(async move {
         let mut last = initial;
         let mut consecutive_failures = 0_u8;
+        let mut reported_persistence_failure = None;
         loop {
             if LEGACY_MONITOR_EPOCH.load(Ordering::Acquire) != epoch {
                 break;
@@ -893,6 +943,42 @@ fn spawn_legacy_reliability_monitor(
             match snapshot {
                 Ok(Ok(snapshot)) => {
                     consecutive_failures = 0;
+                    let completion_attempt =
+                        applied_legacy_recovery_config(&snapshot).map(|value| value.0);
+                    // Settings persistence takes the synchronous save gate and
+                    // performs fsync/rename. Calling it directly from this async
+                    // monitor would make Tokio's `blocking_lock` panic; release
+                    // builds use `panic = "abort"`, so accepting a candidate used
+                    // to terminate the whole launcher. Keep the blocking boundary
+                    // explicit, as in the other async settings mutations.
+                    let save_app = app.clone();
+                    let save_snapshot = snapshot.clone();
+                    let reconciliation = tauri::async_runtime::spawn_blocking(move || {
+                        reconcile_legacy_recovery_snapshot(&save_app, &save_snapshot)
+                    })
+                    .await
+                    .map_err(|error| {
+                        format!("не удалось завершить сохранение Legacy recovery: {error}")
+                    })
+                    .and_then(|result| result);
+                    match reconciliation {
+                        Ok(_) => reported_persistence_failure = None,
+                        Err(error)
+                            if completion_attempt.is_some()
+                                && completion_attempt != reported_persistence_failure =>
+                        {
+                            util::emit_log(
+                                &app,
+                                "warn",
+                                "dpi",
+                                &format!(
+                                    "Подтверждённая Legacy-конфигурация работает, но не сохранена: {error}"
+                                ),
+                            );
+                            reported_persistence_failure = completion_attempt;
+                        }
+                        Err(_) => {}
+                    }
                     let (status, keep_monitoring) = legacy_monitor_projection(&snapshot);
                     if last.as_ref() != Some(&status) {
                         emit_legacy_reliability_status(&app, status.clone());
@@ -1817,9 +1903,10 @@ mod tests {
         use obsession_runtime_protocol::{
             DpiRuntimeSnapshot, LegacyAccessActivitySnapshot, LegacyAssessmentClassification,
             LegacyAssessmentConfidence, LegacyEvidenceSnapshot, LegacyLanePhase,
-            LegacyLaneRuntimeSnapshot, LegacyRecoveryControlsSnapshot,
-            LegacyRecoveryProposalSnapshot, LegacyRecoveryRuntimeSnapshot,
-            LegacyReliabilityCounters, LegacyReliabilityRuntimeSnapshot,
+            LegacyLaneRuntimeSnapshot, LegacyRecoveryCompletionSnapshot,
+            LegacyRecoveryControlsSnapshot, LegacyRecoveryOrigin, LegacyRecoveryProposalSnapshot,
+            LegacyRecoveryRuntimeSnapshot, LegacyReliabilityCounters,
+            LegacyReliabilityRuntimeSnapshot,
         };
 
         let mut snapshot = RuntimeSnapshot {
@@ -1845,6 +1932,7 @@ mod tests {
                     phase: LegacyLanePhase::Healthy,
                     classification: LegacyAssessmentClassification::Working,
                     confidence: LegacyAssessmentConfidence::High,
+                    working_confirmed_recently: true,
                     evidence: LegacyEvidenceSnapshot {
                         working_flows: 2,
                         working_targets: 2,
@@ -1927,6 +2015,34 @@ mod tests {
         assert_eq!(proposal.incident_id.get(), 37);
         assert_eq!(proposal.category, "discord");
         assert_eq!(proposal.candidate_config_id, "discord_2.conf");
+
+        let completion = LegacyRecoveryCompletionSnapshot {
+            attempt_id: 31,
+            incident_id: 37,
+            category: DpiCategory::Discord,
+            previous_config_id: "discord_1.conf".into(),
+            candidate_config_id: "discord_2.conf".into(),
+            origin: LegacyRecoveryOrigin::Automatic {
+                control_generation: 23,
+            },
+            phase: LegacyRecoveryAttemptPhase::Applied,
+            disposition: LegacyRecoveryCompletionDisposition::CandidateApplied,
+            finished_at_monotonic_ms: 43,
+        };
+        snapshot
+            .legacy_reliability
+            .as_mut()
+            .unwrap()
+            .recovery
+            .last_completion = Some(completion);
+        snapshot.dpi.as_mut().unwrap().selections[0].strategy_id = "discord_2.conf".into();
+        assert_eq!(
+            applied_legacy_recovery_config(&snapshot),
+            Some((31, "discord", "discord_2.conf"))
+        );
+
+        snapshot.dpi.as_mut().unwrap().selections[0].strategy_id = "discord_1.conf".into();
+        assert!(applied_legacy_recovery_config(&snapshot).is_none());
     }
 
     #[cfg(windows)]

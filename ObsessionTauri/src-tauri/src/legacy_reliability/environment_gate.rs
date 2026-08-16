@@ -23,8 +23,8 @@ use super::contracts::{
 
 pub const CONTROL_ENDPOINTS: [&str; 3] = [
     "https://cp.cloudflare.com/generate_204",
-    "https://www.gstatic.com/generate_204",
-    "https://www.msftconnecttest.com/connecttest.txt",
+    "https://detectportal.firefox.com/success.txt",
+    "https://captive.apple.com/hotspot-detect.html",
 ];
 
 pub const CONTROL_QUORUM: usize = 2;
@@ -434,9 +434,8 @@ fn classify_gate_for_category(
 
     // Stable identity is mandatory both for a latency comparison and for an
     // actionable DPI verdict. Unknown/unstable networks stay diagnostic-only.
-    let trusted_baseline = local_network
-        .network_fingerprint
-        .is_stable()
+    let stable_network_identity = local_network.network_fingerprint.is_stable();
+    let trusted_baseline = stable_network_identity
         .then_some(baseline_latency_ms)
         .flatten();
 
@@ -461,6 +460,18 @@ fn classify_gate_for_category(
         if confirmed_single_target_blackhole {
             return GateClassification::DpiSuspected;
         }
+    }
+
+    // Repeated post-ClientHello resets plus a fresh failure of every exact
+    // target already provide their own timing evidence. Requiring an older
+    // latency sample here deadlocked first-run recovery: the service could
+    // observe the outage but could not build a baseline until the currently
+    // blocked strategy started working again.
+    if stable_network_identity
+        && reachable_target_count == 0
+        && (passive_evidence.has_reset_quorum() || confirmed_single_target_reset)
+    {
+        return GateClassification::DpiSuspected;
     }
 
     // A current passive blackhole cannot become Stable merely because one
@@ -1026,6 +1037,18 @@ mod tests {
     }
 
     #[test]
+    fn control_endpoints_are_independent_https_connectivity_checks() {
+        assert_eq!(
+            CONTROL_ENDPOINTS,
+            [
+                "https://cp.cloudflare.com/generate_204",
+                "https://detectportal.firefox.com/success.txt",
+                "https://captive.apple.com/hotspot-detect.html",
+            ]
+        );
+    }
+
+    #[test]
     fn sensor_unreliable_has_highest_precedence() {
         let mut offline = local_network();
         offline.online = false;
@@ -1220,17 +1243,34 @@ mod tests {
             ..PassiveEvidenceSummary::default()
         };
 
+        for baseline in [Some(100), None] {
+            assert_eq!(
+                classify_gate_for_category(
+                    "discord",
+                    &local_network(),
+                    ready_sensor(),
+                    corroborated,
+                    &healthy_controls(),
+                    std::slice::from_ref(&target),
+                    baseline,
+                ),
+                GateClassification::DpiSuspected
+            );
+        }
+
+        let mut unstable_network = local_network();
+        unstable_network.network_fingerprint = NetworkFingerprint::Unknown;
         assert_eq!(
             classify_gate_for_category(
                 "discord",
-                &local_network(),
+                &unstable_network,
                 ready_sensor(),
                 corroborated,
                 &healthy_controls(),
                 std::slice::from_ref(&target),
-                Some(100),
+                None,
             ),
-            GateClassification::DpiSuspected
+            GateClassification::TargetUnavailable
         );
 
         let uncorroborated = PassiveEvidenceSummary {
@@ -1247,6 +1287,64 @@ mod tests {
                 &healthy_controls(),
                 &[target],
                 Some(100),
+            ),
+            GateClassification::TargetUnavailable
+        );
+    }
+
+    #[test]
+    fn multi_target_reset_quorum_can_recover_before_a_latency_baseline_exists() {
+        let reset_quorum = PassiveEvidenceSummary {
+            reset_after_client_hello_flows: 3,
+            reset_targets: 2,
+            ..PassiveEvidenceSummary::default()
+        };
+        let failed_targets = [
+            EndpointProbeOutcome::failed("discord.com", EndpointProbeStage::Transport, 100),
+            EndpointProbeOutcome::failed("gateway.discord.gg", EndpointProbeStage::Transport, 120),
+        ];
+
+        assert_eq!(
+            classify_gate_for_category(
+                "discord",
+                &local_network(),
+                ready_sensor(),
+                reset_quorum,
+                &healthy_controls(),
+                &failed_targets,
+                None,
+            ),
+            GateClassification::DpiSuspected
+        );
+
+        let mut unstable_network = local_network();
+        unstable_network.network_fingerprint = NetworkFingerprint::Unknown;
+        assert_eq!(
+            classify_gate_for_category(
+                "discord",
+                &unstable_network,
+                ready_sensor(),
+                reset_quorum,
+                &healthy_controls(),
+                &failed_targets,
+                None,
+            ),
+            GateClassification::TargetUnavailable
+        );
+
+        let partially_reachable = [
+            EndpointProbeOutcome::failed("discord.com", EndpointProbeStage::Transport, 100),
+            EndpointProbeOutcome::http("gateway.discord.gg", 120, 404),
+        ];
+        assert_eq!(
+            classify_gate_for_category(
+                "discord",
+                &local_network(),
+                ready_sensor(),
+                reset_quorum,
+                &healthy_controls(),
+                &partially_reachable,
+                None,
             ),
             GateClassification::TargetUnavailable
         );

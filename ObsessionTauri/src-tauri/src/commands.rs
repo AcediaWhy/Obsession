@@ -689,6 +689,14 @@ pub struct BootstrapSnapshot {
 /// frontend не позволит более старому snapshot перетереть событие.
 #[tauri::command]
 pub fn bootstrap_get_snapshot(app: AppHandle) -> BootstrapSnapshot {
+    if let Err(error) = crate::protected_runtime::reconcile_legacy_recovery_selection(&app) {
+        crate::util::emit_log(
+            &app,
+            "warn",
+            "dpi",
+            &format!("Не удалось сохранить подтверждённую Legacy-конфигурацию: {error}"),
+        );
+    }
     let state = app.state::<AppState>();
 
     let (settings_revision, settings_value) = {
@@ -845,6 +853,36 @@ where
         state.legacy_automation_revision.bump();
     }
     Ok(next)
+}
+
+pub(crate) fn persist_recovered_legacy_config(
+    app: &AppHandle,
+    category: &str,
+    candidate_config: &str,
+) -> Result<bool, String> {
+    let state = app.state::<AppState>();
+    let available = state.paths.get_configs_for_category(category);
+    if !available.iter().any(|config| config == candidate_config) {
+        return Err(format!(
+            "подтверждённая Legacy-конфигурация {candidate_config} недоступна для {category}"
+        ));
+    }
+    if state
+        .settings
+        .lock_recover()
+        .selected_configs
+        .get(category)
+        .is_some_and(|selected| selected == candidate_config)
+    {
+        return Ok(false);
+    }
+
+    let category = category.to_owned();
+    let candidate_config = candidate_config.to_owned();
+    mutate_settings(app, move |settings| {
+        settings.selected_configs.insert(category, candidate_config);
+    })?;
+    Ok(true)
 }
 
 #[tauri::command]

@@ -86,6 +86,28 @@ function cleanupAll(unlisteners: UnlistenFn[]): void {
   }
 }
 
+export function appliedLegacyRecoveryConfig(
+  status: LegacyReliabilityStatus,
+): { category: string; configFile: string } | null {
+  const completion = status.lastCompletion;
+  if (
+    completion?.phase !== "applied" ||
+    completion.disposition !== "candidate_applied" ||
+    !status.activeCategories.includes(completion.category) ||
+    !status.lanes.some(
+      (lane) =>
+        lane.category === completion.category &&
+        lane.activeConfig === completion.candidateConfigId,
+    )
+  ) {
+    return null;
+  }
+  return {
+    category: completion.category,
+    configFile: completion.candidateConfigId,
+  };
+}
+
 function applySnapshot(
   ports: LauncherBootstrapPorts,
   snapshot: BootstrapSnapshot,
@@ -262,8 +284,26 @@ const realPorts: LauncherBootstrapPorts = {
     useBrainStore.getState().applyVersionedStatus(section),
   applyAdaptive: (section) =>
     useAdaptiveStrategyStore.getState().applyVersionedStatus(section),
-  applyLegacyReliability: (section) =>
-    useLegacyReliabilityStore.getState().applyVersionedStatus(section),
+  applyLegacyReliability: (section) => {
+    const applied = useLegacyReliabilityStore
+      .getState()
+      .applyVersionedStatus(section);
+    if (!applied) return false;
+    const recovered = appliedLegacyRecoveryConfig(section.value);
+    if (recovered) {
+      useDpiStore.setState((state) =>
+        state.selectedConfigs[recovered.category] === recovered.configFile
+          ? {}
+          : {
+              selectedConfigs: {
+                ...state.selectedConfigs,
+                [recovered.category]: recovered.configFile,
+              },
+            },
+      );
+    }
+    return true;
+  },
   applyHosts: (section) =>
     useHostsStore.getState().applyVersionedStatus(section),
   applySuggestion: (suggestion) =>

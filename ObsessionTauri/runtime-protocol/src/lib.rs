@@ -940,6 +940,11 @@ pub struct LegacyLaneRuntimeSnapshot {
     pub phase: LegacyLanePhase,
     pub classification: LegacyAssessmentClassification,
     pub confidence: LegacyAssessmentConfidence,
+    /// Transitional read-only compatibility for the short-lived service build
+    /// that emitted this field under protocol v1. New services must never put
+    /// it on the wire; new clients accept it until that build is retired.
+    #[serde(default, skip_serializing)]
+    pub working_confirmed_recently: bool,
     pub evidence: LegacyEvidenceSnapshot,
 }
 
@@ -1841,6 +1846,7 @@ mod tests {
                 phase: LegacyLanePhase::Healthy,
                 classification: LegacyAssessmentClassification::Working,
                 confidence: LegacyAssessmentConfidence::High,
+                working_confirmed_recently: false,
                 evidence: LegacyEvidenceSnapshot {
                     working_flows: 2,
                     working_targets: 2,
@@ -1881,6 +1887,25 @@ mod tests {
         let frame = encode_response_frame(&valid).unwrap();
         assert_eq!(decode_response_frame(&frame).unwrap(), valid);
         let json = String::from_utf8(frame[4..].to_vec()).unwrap();
+        assert!(!json.contains("workingConfirmedRecently"));
+        let transitional_json = json.replacen(
+            "\"confidence\":\"high\"",
+            "\"confidence\":\"high\",\"workingConfirmedRecently\":true",
+            1,
+        );
+        let transitional: ResponseEnvelope = serde_json::from_str(&transitional_json).unwrap();
+        let Response::RuntimeSnapshot(transitional) = transitional.response else {
+            unreachable!();
+        };
+        assert!(
+            transitional
+                .legacy_reliability
+                .unwrap()
+                .lanes
+                .first()
+                .unwrap()
+                .working_confirmed_recently
+        );
         for forbidden in ["path", "argv", "pid", "processIdentity", "rawPacket"] {
             assert!(!json.contains(forbidden));
         }

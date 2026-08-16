@@ -1215,10 +1215,7 @@ fn run_manager(
     gate: Arc<tokio::sync::Mutex<EnvironmentGate<ReqwestProbeBackend>>>,
     done: mpsc::SyncSender<()>,
 ) {
-    let runtime = match tokio::runtime::Builder::new_current_thread()
-        .enable_time()
-        .build()
-    {
+    let runtime = match build_manager_runtime() {
         Ok(runtime) => runtime,
         Err(_) => {
             let _ = done.send(());
@@ -1273,7 +1270,7 @@ fn run_manager(
                             ActiveGatePurpose::Diagnostic { category } => {
                                 let classification = match completion {
                                     Ok(Ok(report)) if report.category == category => {
-                                        diagnostic_classification(report.classification)
+                                        active_diagnostic_classification(&report)
                                     }
                                     Ok(Ok(_)) | Ok(Err(_)) | Err(_) => {
                                         Some(AssessmentClassification::UpstreamDegraded)
@@ -1370,6 +1367,12 @@ fn run_manager(
     });
     drop(ingress);
     let _ = done.send(());
+}
+
+fn build_manager_runtime() -> std::io::Result<tokio::runtime::Runtime> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
 }
 
 enum ActiveGatePurpose {
@@ -1480,6 +1483,27 @@ fn diagnostic_classification(
         }
         GateClassification::SensorUnreliable => AssessmentClassification::SensorUnreliable,
     })
+}
+
+/// Active diagnostics are presentation-only. If the exact category target
+/// returned a valid HTTP response, failures of the neutral connectivity
+/// controls must not make that working service look unavailable. Assessment
+/// and recovery continue to consume the original fail-closed gate report.
+fn active_diagnostic_classification(report: &GateReport) -> Option<AssessmentClassification> {
+    let category_is_reachable = report
+        .category_targets
+        .iter()
+        .any(|outcome| outcome.category_target_reachable());
+    if category_is_reachable
+        && matches!(
+            report.classification,
+            GateClassification::DnsFailure | GateClassification::UpstreamDegraded
+        )
+    {
+        return None;
+    }
+
+    diagnostic_classification(report.classification)
 }
 
 fn update_active_diagnostic(
@@ -1793,12 +1817,27 @@ fn sanitize_snapshot(
         .lanes
         .iter()
         .map(|lane| {
+            let project_recent_success = lane.working_confirmed_recently
+                && lane.classification == AssessmentClassification::AwaitingEvidence;
             Ok(LegacyLaneRuntimeSnapshot {
                 category: protocol_category(&lane.category)?,
                 lane_generation: lane.lane_generation.get(),
-                phase: protocol_lane_phase(lane.phase),
-                classification: protocol_classification(lane.classification),
-                confidence: protocol_confidence(lane.confidence),
+                phase: if project_recent_success {
+                    LegacyLanePhase::Healthy
+                } else {
+                    protocol_lane_phase(lane.phase)
+                },
+                classification: if project_recent_success {
+                    LegacyAssessmentClassification::Working
+                } else {
+                    protocol_classification(lane.classification)
+                },
+                confidence: if project_recent_success {
+                    LegacyAssessmentConfidence::High
+                } else {
+                    protocol_confidence(lane.confidence)
+                },
+                working_confirmed_recently: false,
                 evidence: LegacyEvidenceSnapshot {
                     working_flows: bounded_evidence(lane.evidence.working_flows, 2),
                     working_targets: bounded_evidence(lane.evidence.working_targets, 2),
@@ -1915,9 +1954,23 @@ mod tests {
     use obsession_runtime_reliability::legacy_reliability::contracts::{
         AttemptId, IntentEnvelope, RegistryVersion,
     };
+    use obsession_runtime_reliability::legacy_reliability::environment_gate::{
+        EndpointProbeOutcome, EndpointProbeStage, GateFence,
+    };
     use obsession_runtime_reliability::legacy_reliability::recovery::{
         AssistedApproval, RecoveryOrigin,
     };
+
+    #[test]
+    fn manager_runtime_enables_network_io() {
+        let runtime = build_manager_runtime().unwrap();
+        runtime.block_on(async {
+            let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+                .await
+                .unwrap();
+            assert!(listener.local_addr().unwrap().port() > 0);
+        });
+    }
 
     fn observer_snapshot() -> ObserveOnlySnapshot {
         let (ingress, receiver) = channel();
@@ -1983,6 +2036,64 @@ mod tests {
         );
     }
 
+    #[test]
+    fn reachable_category_target_suppresses_neutral_probe_failures_for_ux_only() {
+        let mut report = GateReport {
+            fence: GateFence {
+                session_id: SessionId::new(11),
+                lane_generation: LaneGeneration::new(19),
+                sensor_generation: SensorGeneration::new(13),
+                target_registry_version: RegistryVersion::new(17),
+                network_fingerprint: NetworkFingerprint::Unknown,
+            },
+            category: "discord".into(),
+            classification: GateClassification::UpstreamDegraded,
+            controls: Vec::new(),
+            category_targets: vec![EndpointProbeOutcome::http("https://discord.com/", 120, 200)],
+            baseline_latency_ms: None,
+            slow_threshold_ms: None,
+            generated_at_monotonic_ms: 100,
+            valid_until_monotonic_ms: 110,
+        };
+
+        for classification in [
+            GateClassification::DnsFailure,
+            GateClassification::UpstreamDegraded,
+        ] {
+            report.classification = classification;
+            assert_eq!(active_diagnostic_classification(&report), None);
+        }
+
+        let mut diagnostics = BTreeMap::new();
+        update_active_diagnostic(
+            &mut diagnostics,
+            report.category.clone(),
+            active_diagnostic_classification(&report),
+            100,
+        );
+        let projected = project_active_diagnostics(observer_snapshot(), &mut diagnostics, 101);
+        assert_eq!(
+            projected.lanes[0].classification,
+            AssessmentClassification::AwaitingEvidence
+        );
+        assert!(matches!(
+            projected.presumed_intent,
+            PresumedIntent::Wait {
+                reason: AssessmentClassification::AwaitingEvidence
+            }
+        ));
+
+        report.category_targets = vec![EndpointProbeOutcome::failed(
+            "https://discord.com/",
+            EndpointProbeStage::Transport,
+            120,
+        )];
+        assert_eq!(
+            active_diagnostic_classification(&report),
+            Some(AssessmentClassification::UpstreamDegraded)
+        );
+    }
+
     fn recovery_snapshot_and_registry() -> (ObserveOnlySnapshot, TargetRegistry) {
         let records = vec![
             LegacyConfigRecord::new(
@@ -2025,7 +2136,8 @@ mod tests {
 
     #[test]
     fn public_projection_keeps_fences_and_drops_backend_only_state() {
-        let source = observer_snapshot();
+        let mut source = observer_snapshot();
+        source.lanes[0].working_confirmed_recently = true;
         let projected = sanitize_snapshot(7, 5, &source).unwrap();
 
         assert_eq!(projected.generation, 7);
@@ -2036,6 +2148,15 @@ mod tests {
         assert_eq!(projected.active_categories, [DpiCategory::Discord]);
         assert_eq!(projected.lanes.len(), 1);
         assert_eq!(projected.lanes[0].lane_generation, 19);
+        assert_eq!(
+            projected.lanes[0].classification,
+            LegacyAssessmentClassification::Working
+        );
+        assert_eq!(projected.lanes[0].phase, LegacyLanePhase::Healthy);
+        assert_eq!(
+            projected.lanes[0].confidence,
+            LegacyAssessmentConfidence::High
+        );
         assert_eq!(projected.health, LegacyObserverHealth::Ready);
         assert_eq!(
             projected.recovery,

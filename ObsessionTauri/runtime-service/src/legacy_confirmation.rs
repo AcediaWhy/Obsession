@@ -157,6 +157,7 @@ pub(crate) struct LegacyConfirmationWindow {
     flow_cursor: u64,
     seen_flow_ids: BTreeSet<u64>,
     successful_probes: Vec<SuccessfulProbe>,
+    failed_target_probes: BTreeSet<u64>,
     working_flows: Vec<WorkingFlow>,
     tls_blackhole_flows: Vec<WeakAdverseFlow>,
     reset_flows: Vec<WeakAdverseFlow>,
@@ -189,6 +190,7 @@ impl LegacyConfirmationWindow {
             flow_cursor: arm.after_flow_sequence,
             seen_flow_ids: BTreeSet::new(),
             successful_probes: Vec::new(),
+            failed_target_probes: BTreeSet::new(),
             working_flows: Vec::new(),
             tls_blackhole_flows: Vec::new(),
             reset_flows: Vec::new(),
@@ -245,7 +247,17 @@ impl LegacyConfirmationWindow {
                 self.failure = Some(ConfirmationFailure::Environment);
             }
             LegacyHttpsProbeResult::TargetFailure => {
-                self.failure = Some(ConfirmationFailure::Target);
+                // A protected reqwest probe and Discord's Chromium network
+                // stack do not have the same TLS fingerprint. Some valid
+                // desync strategies therefore reset the synthetic probe while
+                // fresh, post-arm Discord connections work. Keep the failure
+                // as bounded negative evidence, but do not let it pre-empt
+                // exact Eyes observations from the real client.
+                if self.envelope.category == "discord" {
+                    self.failed_target_probes.insert(probe.probe_id);
+                } else {
+                    self.failure = Some(ConfirmationFailure::Target);
+                }
             }
         }
         self.refresh_quorum();
@@ -387,7 +399,8 @@ impl LegacyConfirmationWindow {
             self.single_target_quorum_at()
         } else {
             self.multi_target_quorum_at()
-        };
+        }
+        .or_else(|| self.discord_client_recovery_quorum_at());
         if let Some(reached_at) = reached_at {
             self.quorum_reached_at_ms = Some(
                 self.quorum_reached_at_ms
@@ -430,6 +443,25 @@ impl LegacyConfirmationWindow {
             .collect::<Vec<_>>();
         completions.sort_unstable();
         completions.get(1).copied()
+    }
+
+    /// Two independent synthetic failures followed by two fresh working
+    /// Discord flows prove a TLS-fingerprint mismatch rather than a broken
+    /// candidate. This exception is deliberately Discord-only: it relies on
+    /// the protected observer's post-arm SNI and generation fencing, never on
+    /// the mere presence of a process or cached UI state.
+    fn discord_client_recovery_quorum_at(&self) -> Option<u64> {
+        if self.envelope.category != "discord" || self.failed_target_probes.len() < 2 {
+            return None;
+        }
+        let mut working = self
+            .working_flows
+            .iter()
+            .map(|flow| (flow.observed_at_ms, flow.flow_id))
+            .collect::<Vec<_>>();
+        working.sort_unstable();
+        working.dedup_by_key(|(_, flow_id)| *flow_id);
+        working.get(1).map(|(observed_at_ms, _)| *observed_at_ms)
     }
 
     fn correspondence_completion_times(&self, target: &str) -> Vec<u64> {
@@ -501,6 +533,8 @@ impl LegacyConfirmationWindow {
             LegacyConfirmationDecision::Pending
         } else if pending_ingress {
             LegacyConfirmationDecision::Failed(ConfirmationFailure::Sensor)
+        } else if !self.failed_target_probes.is_empty() {
+            LegacyConfirmationDecision::Failed(ConfirmationFailure::Target)
         } else {
             LegacyConfirmationDecision::Failed(ConfirmationFailure::MissingWorkingEvidence)
         }
@@ -703,6 +737,13 @@ mod tests {
         }
     }
 
+    fn failed_probe(id: u64, target: &str, offset: u64) -> LegacyHttpsProbeObservation {
+        LegacyHttpsProbeObservation {
+            result: LegacyHttpsProbeResult::TargetFailure,
+            ..probe(id, target, offset)
+        }
+    }
+
     fn flow(
         sequence: u64,
         flow_id: u64,
@@ -820,6 +861,53 @@ mod tests {
     }
 
     #[test]
+    fn discord_client_working_can_override_a_synthetic_tls_fingerprint_mismatch() {
+        let (mut window, mut snapshot) = window(&["discord.com", "gateway.discord.gg"]);
+        assert_eq!(
+            window.observe_probe(failed_probe(1, "discord.com", 10), ARM_PROCESS_MS + 60,),
+            LegacyConfirmationDecision::Pending
+        );
+        assert_eq!(
+            window.observe_probe(
+                failed_probe(2, "gateway.discord.gg", 20),
+                ARM_PROCESS_MS + 70,
+            ),
+            LegacyConfirmationDecision::Pending
+        );
+        publish(
+            &mut snapshot,
+            vec![
+                flow(11, 101, "discord.com", Diagnosis::Working, 80),
+                flow(12, 102, "gateway.discord.gg", Diagnosis::Working, 90),
+            ],
+        );
+        assert_eq!(
+            window.observe_snapshot(&snapshot, ARM_PROCESS_MS + 100),
+            LegacyConfirmationDecision::Pending
+        );
+        assert_eq!(
+            window.observe_snapshot(&snapshot, ARM_PROCESS_MS + 90 + CLEAN_WINDOW_MS),
+            LegacyConfirmationDecision::Succeeded
+        );
+    }
+
+    #[test]
+    fn synthetic_target_failures_without_real_client_evidence_still_fail_closed() {
+        let (mut window, snapshot) = window(&["discord.com"]);
+        window.observe_probe(failed_probe(1, "discord.com", 10), ARM_PROCESS_MS + 60);
+        window.observe_probe(failed_probe(2, "discord.com", 20), ARM_PROCESS_MS + 70);
+        assert_eq!(
+            window.observe_snapshot(
+                &snapshot,
+                ARM_PROCESS_MS
+                    + LEGACY_CONFIRMATION_DEADLINE_MS
+                    + LEGACY_CONFIRMATION_DELIVERY_GRACE_MS,
+            ),
+            LegacyConfirmationDecision::Failed(ConfirmationFailure::Target)
+        );
+    }
+
+    #[test]
     fn pre_arm_or_uncorrelated_working_cannot_confirm_candidate() {
         let (mut window, mut snapshot) = window(&["one.example"]);
         window.observe_probe(probe(1, "one.example", 10), ARM_PROCESS_MS + 60);
@@ -913,28 +1001,32 @@ mod tests {
 
     #[test]
     fn probe_transport_failures_and_contract_violations_are_typed() {
-        for (result, expected) in [
-            (
-                LegacyHttpsProbeResult::EnvironmentFailure,
-                ConfirmationFailure::Environment,
-            ),
-            (
-                LegacyHttpsProbeResult::TargetFailure,
-                ConfirmationFailure::Target,
-            ),
-        ] {
-            let (mut window, _) = window(&["one.example"]);
-            let mut observation = probe(1, "one.example", 10);
-            observation.result = result;
-            assert_eq!(
-                window.observe_probe(observation, ARM_PROCESS_MS + 60),
-                LegacyConfirmationDecision::Failed(expected)
-            );
-        }
-
-        let (mut window, _) = window(&["one.example"]);
+        let (mut environment_window, _) = window(&["one.example"]);
+        let mut observation = probe(1, "one.example", 10);
+        observation.result = LegacyHttpsProbeResult::EnvironmentFailure;
         assert_eq!(
-            window.observe_probe(probe(1, "foreign.example", 10), ARM_PROCESS_MS + 60),
+            environment_window.observe_probe(observation, ARM_PROCESS_MS + 60),
+            LegacyConfirmationDecision::Failed(ConfirmationFailure::Environment)
+        );
+
+        let (mut target_window, snapshot) = window(&["one.example"]);
+        assert_eq!(
+            target_window.observe_probe(failed_probe(1, "one.example", 10), ARM_PROCESS_MS + 60,),
+            LegacyConfirmationDecision::Pending
+        );
+        assert_eq!(
+            target_window.observe_snapshot(
+                &snapshot,
+                ARM_PROCESS_MS
+                    + LEGACY_CONFIRMATION_DEADLINE_MS
+                    + LEGACY_CONFIRMATION_DELIVERY_GRACE_MS,
+            ),
+            LegacyConfirmationDecision::Failed(ConfirmationFailure::Target)
+        );
+
+        let (mut foreign_window, _) = window(&["one.example"]);
+        assert_eq!(
+            foreign_window.observe_probe(probe(1, "foreign.example", 10), ARM_PROCESS_MS + 60,),
             LegacyConfirmationDecision::Failed(ConfirmationFailure::Target)
         );
     }

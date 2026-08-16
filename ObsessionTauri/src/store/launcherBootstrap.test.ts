@@ -7,6 +7,7 @@ vi.mock("../lib/tauri", () => ({
 }));
 
 import {
+  appliedLegacyRecoveryConfig,
   createLauncherBootstrap,
   type LauncherBootstrapPorts,
 } from "./launcherBootstrap";
@@ -285,6 +286,46 @@ function createHarness(listenerGate?: Promise<void>) {
       snapshots.push(snapshot),
   };
 }
+
+describe("appliedLegacyRecoveryConfig", () => {
+  it("accepts only the candidate that is confirmed and still active", () => {
+    const value = legacyStatus("observing");
+    value.lanes[0].activeConfig = "discord_9.conf";
+    value.lastCompletion = {
+      attemptId: 7,
+      incidentId: 3,
+      category: "discord",
+      previousConfigId: "discord_1.conf",
+      candidateConfigId: "discord_9.conf",
+      origin: { kind: "automatic", controlGeneration: 2 },
+      phase: "applied",
+      disposition: "candidate_applied",
+      finishedAtMonotonicMs: 10_000,
+    };
+
+    expect(appliedLegacyRecoveryConfig(value)).toEqual({
+      category: "discord",
+      configFile: "discord_9.conf",
+    });
+  });
+
+  it("rejects a stale completion after the active lane changed", () => {
+    const value = legacyStatus("observing");
+    value.lastCompletion = {
+      attemptId: 7,
+      incidentId: 3,
+      category: "discord",
+      previousConfigId: "discord_1.conf",
+      candidateConfigId: "discord_9.conf",
+      origin: { kind: "automatic", controlGeneration: 2 },
+      phase: "applied",
+      disposition: "candidate_applied",
+      finishedAtMonotonicMs: 10_000,
+    };
+
+    expect(appliedLegacyRecoveryConfig(value)).toBeNull();
+  });
+});
 
 describe("launcherBootstrap", () => {
   beforeEach(() => {
