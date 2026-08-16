@@ -4,7 +4,7 @@
 //! `proxy/tg_ws_proxy.py`). Он слушает MTProto ровно на `127.0.0.1:<--port>`
 //! и туннелирует соединения через WebSocket к серверам Telegram. Секрет
 //! передаётся ему через `--secret`, а готовую ссылку `tg://proxy?...` он сам
-//! печатает в лог (stderr) — мы её оттуда и вычитываем.
+//! печатает в stderr — мы её оттуда вычитываем, не копируя секрет в app.log.
 //!
 //! Приложение:
 //!   1. Запускает CLI с `--port/--secret[/--fake-tls-domain]` и ловит
@@ -39,6 +39,12 @@ const MAX_RUNTIME_MANIFEST_BYTES: u64 = 1024 * 1024;
 const MAX_TGPROXY_BYTES: u64 = 256 * 1024 * 1024;
 const PROXY_LAN_FIREWALL_LEASE_SECONDS: u16 = 90;
 const PROXY_LAN_FIREWALL_RENEW_INTERVAL: Duration = Duration::from_secs(30);
+static TG_PROXY_LINK_RE: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| regex::Regex::new(r"tg://proxy\?[^\s]+").unwrap());
+
+fn redact_proxy_log_line(message: &str) -> std::borrow::Cow<'_, str> {
+    TG_PROXY_LINK_RE.replace_all(message, "tg://proxy?[redacted]")
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -846,7 +852,12 @@ pub(crate) async fn start_locked(
         return Err("Прокси завершился до окончания запуска.".to_string());
     }
 
-    util::emit_log(app, "success", "proxy", &format!("Telegram-прокси: {link}"));
+    util::emit_log(
+        app,
+        "success",
+        "proxy",
+        &format!("Telegram-прокси запущен на 127.0.0.1:{port}; ссылка сохранена без записи секрета в лог."),
+    );
     emit_status(app);
     Ok(link)
 }
@@ -909,8 +920,6 @@ fn spawn_link_reader<R>(
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
 {
     tokio::spawn(async move {
-        static LINK_RE: std::sync::LazyLock<regex::Regex> =
-            std::sync::LazyLock::new(|| regex::Regex::new(r"tg://proxy\?[^\s]+").unwrap());
         let mut lines = BufReader::new(stream).lines();
         while let Ok(Some(line)) = lines.next_line().await {
             if !is_current(&app, generation, pid) {
@@ -920,8 +929,9 @@ fn spawn_link_reader<R>(
             if msg.is_empty() {
                 continue;
             }
-            util::emit_log(&app, "info", "proxy", &format!("[tg] {msg}"));
-            if let Some(m) = LINK_RE.find(msg) {
+            let safe_msg = redact_proxy_log_line(msg);
+            util::emit_log(&app, "info", "proxy", &format!("[tg] {safe_msg}"));
+            if let Some(m) = TG_PROXY_LINK_RE.find(msg) {
                 let link = m.as_str().to_string();
                 let accepted = {
                     let state = app.state::<AppState>();
@@ -1014,6 +1024,21 @@ mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[test]
+    fn proxy_links_are_redacted_without_losing_surrounding_diagnostics() {
+        let secret = "dd00112233445566778899aabbccddeeff";
+        let line = format!(
+            "ready tg://proxy?server=127.0.0.1&port=24445&secret={secret} ok"
+        );
+        let safe = redact_proxy_log_line(&line);
+        assert_eq!(safe, "ready tg://proxy?[redacted] ok");
+        assert!(!safe.contains(secret));
+        assert_eq!(
+            TG_PROXY_LINK_RE.find(&line).unwrap().as_str(),
+            &line[6..line.len() - 3]
+        );
+    }
 
     fn tgproxy_fixture(record_path: &str, duplicate: bool) -> PathBuf {
         let nonce = SystemTime::now()

@@ -45,6 +45,7 @@
       "resources/configs": "configs",
       "resources/lists": "lists",
       "resources/icons": "icons",
+      "resources/licenses": "licenses",
       "resources/strategy-packs": "strategy-packs",
       "resources/ranking.json": "ranking.json",
       "resources/manifest.json": "manifest.json",
