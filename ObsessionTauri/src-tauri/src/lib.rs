@@ -280,11 +280,11 @@ pub fn run() {
                 });
             }
 
-            // Окно создано скрытым. Показываем, если не выбран старт в трее —
-            // иначе приложение живёт в трее до клика по иконке.
-            if !start_minimized {
+            // Окно создано скрытым. В dev/debug показываем всегда, в release — если не выбран старт в трее.
+            if !start_minimized || cfg!(debug_assertions) {
                 if let Some(win) = app.get_webview_window("main") {
                     let _ = win.show();
+                    let _ = win.unminimize();
                     let _ = win.set_focus();
                 }
             }
