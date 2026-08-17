@@ -159,6 +159,8 @@ describe("Onboarding PR 1 contract", () => {
     expect(markup).toContain("hover:!bg-accent/90");
     expect(markup).toContain("!text-[#05060B]");
     expect(markup).toContain("focus-visible:!ring-accent-cyan");
+    expect(markup).toContain('tabindex="-1"');
+    expect(markup).toContain("text-ink outline-none");
     expect(containsNestedButton(markup)).toBe(false);
   });
 
