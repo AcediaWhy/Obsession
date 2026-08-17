@@ -197,7 +197,7 @@ export function OverviewScreen() {
                 ? `MTProto на 127.0.0.1:${proxyPort}`
                 : proxyAvailable
                   ? "Готов к запуску"
-                  : "TgWsProxy.exe не найден"
+                  : "Компонент Telegram-прокси не найден"
             }
           />
         </StaggerItem>

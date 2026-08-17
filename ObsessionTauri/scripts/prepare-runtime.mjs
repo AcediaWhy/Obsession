@@ -19,7 +19,7 @@ const serviceSource = path.join(
 const serviceRelative = "runtime/Obsession.Runtime.exe";
 const manifestRelative = "runtime/runtime-manifest.json";
 const engineRelative = "bin/winws.exe";
-const tgProxyRelative = "bin/tg_ws_proxy.exe";
+const tgProxyRelative = "bin/obsession-tg-proxy.exe";
 const zapret2EngineRelative = "bin/zapret2/winws2.exe";
 const zapret2PackManifestRelative = "strategy-packs/builtin/manifest.json";
 

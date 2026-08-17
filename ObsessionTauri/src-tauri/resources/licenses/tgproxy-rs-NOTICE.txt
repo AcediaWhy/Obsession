@@ -1,4 +1,4 @@
-tgproxy-rs / tg_ws_proxy
+Obsession Telegram Proxy (`obsession-tg-proxy`)
 
 This component is an independent Rust rewrite derived from the design and
 behavior of Flowseal's tg-ws-proxy project. The upstream work is distributed

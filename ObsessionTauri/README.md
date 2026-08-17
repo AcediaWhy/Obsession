@@ -22,7 +22,7 @@
 
 - **Frontend:** React 18, TypeScript, Vite 6, Tailwind CSS, Framer Motion, Zustand.
 - **Desktop host:** Tauri 2 и Rust stable.
-- **Runtime:** Tokio, Windows API, named pipe IPC, WinDivert/winws и TgWsProxy.
+- **Runtime:** Tokio, Windows API, named pipe IPC, WinDivert/winws и Obsession Telegram Proxy.
 - **Графика:** собственные WebGL2 и Canvas 2D pipelines с SVG/CSS fallback.
 - **Тесты:** Vitest и Rust unit/integration tests для каждого crate.
 
@@ -133,13 +133,13 @@ flowchart TB
 - `src-tauri/src/adaptive_strategy/` — генерация, проверка и кэш Zapret2-кандидатов.
 - `src-tauri/src/hosts.rs` — frontend-facing façade для protected hosts runtime.
 - `src-tauri/src/onboarding.rs` — durable plan/apply/verify/rollback flow.
-- `src-tauri/src/proxy.rs` — TgWsProxy и LAN lease client.
+- `src-tauri/src/proxy.rs` — Obsession Telegram Proxy и LAN lease client.
 - `src/design/components/obsessionChoir/` — Black Choir geometry, motion и WebGL pipeline.
 - `src/store/` — состояние экранов и синхронизация snapshot с UI.
 
 ## Ресурсы и безопасность сборки
 
-winws, WinDivert, TgWsProxy, конфигурации и списки находятся в `src-tauri/resources/`. Скрипт подготовки создаёт manifest с хешами, а setup устанавливает payload в `%ProgramFiles%\Obsession`.
+winws, WinDivert, Obsession Telegram Proxy, конфигурации и списки находятся в `src-tauri/resources/`. Скрипт подготовки создаёт manifest с хешами, а setup устанавливает payload в `%ProgramFiles%\Obsession`.
 
 Не добавляйте в frontend обходные пути для прямой записи системных файлов или запуска произвольных процессов. Если требуется новая привилегированная возможность, она должна получить отдельный тип протокола, backend-валидацию, capability и тесты отказа.
 

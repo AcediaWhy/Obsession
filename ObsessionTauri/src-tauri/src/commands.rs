@@ -1308,7 +1308,7 @@ mod external_url_tests {
     #[test]
     fn accepts_the_links_the_app_actually_produces() {
         // Единственный реальный вызывающий — proxyStore.open() со ссылкой,
-        // которую печатает tg_ws_proxy (см. proxy.rs).
+        // которую печатает Obsession Telegram Proxy (см. proxy.rs).
         validate_external_url("tg://proxy?server=192.168.1.10&port=1443&secret=dd00ff").unwrap();
         validate_external_url("https://t.me/proxy?server=1.2.3.4&port=443").unwrap();
         validate_external_url("http://localhost:1420").unwrap();

@@ -1,8 +1,8 @@
 [package]
-name = "tg_ws_proxy"
+name = "obsession-tg-proxy"
 version = "0.1.0"
 edition = "2021"
-description = "Headless MTProto<->WebSocket Telegram proxy for Obsession (Rust rewrite of FlowSeal tg-ws-proxy CLI)"
+description = "Obsession Telegram proxy: a headless MTProto-to-WebSocket bridge derived from Flowseal's tg-ws-proxy"
 license = "MIT"
 authors = ["Flowseal contributors", "Obsession contributors"]
 readme = "README.md"

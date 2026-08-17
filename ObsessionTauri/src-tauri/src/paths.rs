@@ -13,7 +13,7 @@ pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const APP_DATA_FOLDER: &str = "Obsession";
 pub const APP_DATA_VENDOR: &str = "vlarpsu";
 pub const WINWS_EXE: &str = "winws.exe";
-pub const TGPROXY_EXE: &str = "tg_ws_proxy.exe";
+pub const TGPROXY_EXE: &str = "obsession-tg-proxy.exe";
 
 /// Системный hosts-файл Windows.
 pub const HOSTS_PATH: &str = r"C:\Windows\System32\drivers\etc\hosts";
@@ -119,7 +119,7 @@ impl Paths {
     pub fn netid_cache_path(&self) -> PathBuf {
         self.base_dir.join("netid_cache.json")
     }
-    /// Last-good список CF-фронтинг доменов TgWsProxy (передаётся ему через
+    /// Last-good список CF-фронтинг доменов Telegram-прокси (передаётся ему через
     /// `--cfproxy-cache`, чтобы пережить недоступность GitHub при рестарте).
     pub fn cfproxy_cache_path(&self) -> PathBuf {
         self.base_dir.join("cfproxy_cache.json")
@@ -145,21 +145,10 @@ impl Paths {
         self.strategy_packs_dir().join(pack)
     }
 
-    /// Ищет TgWsProxy по нескольким возможным именам.
+    /// Ищет встроенный Telegram-прокси Obsession под его уникальным именем.
     pub fn tgproxy_path(&self) -> Option<PathBuf> {
-        let names = [
-            TGPROXY_EXE,
-            "tg_ws_proxy.exe",
-            "TgWsProxy.exe",
-            "tg-ws-proxy.exe",
-        ];
-        for n in names {
-            let p = self.bin_dir().join(n);
-            if p.exists() {
-                return Some(p);
-            }
-        }
-        None
+        let path = self.bin_dir().join(TGPROXY_EXE);
+        path.is_file().then_some(path)
     }
 
     pub fn tray_icon_path(&self) -> PathBuf {

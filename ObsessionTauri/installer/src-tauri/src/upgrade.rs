@@ -1703,7 +1703,7 @@ fn run_transactional_update(
     )
     .map_err(|e| format!("Не удалось остановить установленный Obsession: {e}"))?;
 
-    // winws/tg_ws_proxy живут в %APPDATA%\Obsession\bin и переживают падение
+    // winws/Obsession Telegram Proxy живут в %APPDATA%\Obsession\bin и переживают падение
     // приложения, поэтому StopOwnedApplication их не видит. Нефатально: они
     // лежат вне каталога установки и подмену каталога не блокируют, но
     // осиротевший winws продолжит фильтровать трафик — фиксируем в журнале.

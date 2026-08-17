@@ -55,7 +55,7 @@ that user's account.
 
 - owns the Tauri UI, per-user settings, diagnostics and orchestration UI;
 - never opens WinDivert, writes the system hosts file or starts `winws`;
-- may run `TgWsProxy.exe` at medium integrity from the protected installation;
+- may run `obsession-tg-proxy.exe` at medium integrity from the protected installation;
 - asks the service only for the narrow privileged portion of an operation.
 
 ### Privileged Windows service
@@ -247,9 +247,9 @@ interference, but privilege safety comes from the request allowlist itself.
 
 ## 6. Telegram proxy split
 
-`TgWsProxy.exe` does not need an elevated token for loopback operation. The
+`obsession-tg-proxy.exe` does not need an elevated token for loopback operation. The
 medium client starts the fixed protected binary directly only after its exact
-`bin/tg_ws_proxy.exe` size and SHA-256 match the protected runtime manifest. The
+`bin/obsession-tg-proxy.exe` size and SHA-256 match the protected runtime manifest. The
 service is used only to add/remove the exact Obsession LAN firewall rule when
 LAN publication is requested.
 

@@ -10,8 +10,8 @@ $proxyRoot = Split-Path -Parent $PSScriptRoot
 $repoRoot = Split-Path -Parent $proxyRoot
 $obsessionRoot = Join-Path $repoRoot "ObsessionTauri"
 $manifest = Join-Path $proxyRoot "Cargo.toml"
-$sourceExe = Join-Path $proxyRoot "target\release\tg_ws_proxy.exe"
-$resourceExe = Join-Path $obsessionRoot "src-tauri\resources\bin\tg_ws_proxy.exe"
+$sourceExe = Join-Path $proxyRoot "target\release\obsession-tg-proxy.exe"
+$resourceExe = Join-Path $obsessionRoot "src-tauri\resources\bin\obsession-tg-proxy.exe"
 $licenseRoot = Join-Path $obsessionRoot "src-tauri\resources\licenses"
 
 & cargo build --manifest-path $manifest --locked --release
@@ -41,5 +41,5 @@ if ($LASTEXITCODE -ne 0) {
 
 $artifact = Get-Item -LiteralPath $resourceExe
 $sha256 = (Get-FileHash -LiteralPath $resourceExe -Algorithm SHA256).Hash
-Write-Host "tg_ws_proxy ready: $($artifact.FullName)"
+Write-Host "obsession-tg-proxy ready: $($artifact.FullName)"
 Write-Host "size=$($artifact.Length) sha256=$sha256"

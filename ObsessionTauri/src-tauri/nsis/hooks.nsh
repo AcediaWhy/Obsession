@@ -82,7 +82,7 @@
     !insertmacro OBSESSION_ABORT "Не удалось безопасно остановить Obsession. Закройте приложение вручную."
   ${EndIf}
 
-  ; winws/tg_ws_proxy живут в %APPDATA%\Obsession\bin и переживают падение
+  ; winws/Obsession Telegram Proxy живут в %APPDATA%\Obsession\bin и переживают падение
   ; приложения. Не фатально: установка новой версии их файлов не трогает
   ; (перезаливкой ведает версионный гейт в paths.rs), но осиротевший winws
   ; продолжит фильтровать трафик — об этом надо сказать вслух.

@@ -1,4 +1,4 @@
-# tgproxy-rs
+# Obsession Telegram Proxy
 
 Headless Rust MTProto-to-WebSocket bridge used by Obsession. The implementation
 is an independent rewrite derived from Flowseal's `tg-ws-proxy`; attribution and
@@ -15,7 +15,7 @@ license terms are in `NOTICE` and `LICENSE`.
   currently rejects Cloudflare Workers egress.
 - Proxy secrets and full `tg://` links must not be written to application logs.
 
-Run `tg_ws_proxy --help` for the complete CLI contract.
+Run `obsession-tg-proxy --help` for the complete CLI contract.
 
 ## Build and test
 

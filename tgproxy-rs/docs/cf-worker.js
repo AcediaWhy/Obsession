@@ -1,4 +1,4 @@
-// Archived Cloudflare Worker scaffold for tg_ws_proxy (Obsession).
+// Archived Cloudflare Worker scaffold for Obsession Telegram Proxy.
 //
 // Investigation on 2026-08-17 showed that Telegram rejects MTProto/WebSocket
 // sessions originating from Cloudflare Workers egress. Keeping the old relay,

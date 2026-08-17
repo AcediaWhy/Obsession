@@ -6,10 +6,10 @@ use std::path::PathBuf;
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub const USAGE: &str = "\
-tg_ws_proxy — headless MTProto<->WebSocket proxy for Obsession
+obsession-tg-proxy — headless MTProto<->WebSocket proxy for Obsession
 
 Usage:
-  tg_ws_proxy --port <port> --secret <secret> [options]
+  obsession-tg-proxy --port <port> --secret <secret> [options]
 
 Options:
   --port <port>                 TCP port to listen on (required)
@@ -72,7 +72,7 @@ pub fn parse(argv: &[String]) -> Result<Parsed, String> {
         };
         match flag {
             "-h" | "--help" => return Ok(Parsed::Help(USAGE.to_string())),
-            "--version" => return Ok(Parsed::Version(format!("tg_ws_proxy {VERSION}"))),
+            "--version" => return Ok(Parsed::Version(format!("obsession-tg-proxy {VERSION}"))),
             "--host" => host = Some(value(flag)?),
             "--port" => port = Some(parse_port(&value(flag)?)?),
             "--secret" => secret = Some(parse_secret(&value(flag)?)?),

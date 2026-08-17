@@ -1,4 +1,4 @@
-//! tg_ws_proxy — headless MTProto<->WebSocket мост для Telegram.
+//! obsession-tg-proxy — headless MTProto<->WebSocket мост для Telegram.
 //!
 //! Rust-переписывание CLI-части tg-ws-proxy (Flowseal, MIT). Контракт
 //! запуска совместим с Obsession (`ObsessionTauri/src-tauri/src/proxy.rs`):
@@ -84,7 +84,7 @@ async fn run(args: cli::Args, secret: [u8; 16]) -> Result<(), String> {
     };
     let worker_domains = Arc::new(args.cfproxy_worker_domains.clone());
 
-    logger::info("  Telegram MTProto WS Bridge Proxy (obsession, rust)");
+    logger::info("  Obsession Telegram Proxy (rust)");
     logger::info(format!("  Listening on   {}:{}", args.host, args.port));
     logger::info("  Secret:        [redacted]");
     if let Some(domain) = &args.fake_tls_domain {

@@ -110,7 +110,7 @@ function Stop-OwnedApplication {
     }
 }
 
-# winws/winws2/tg_ws_proxy are NOT launched from the install directory: the app
+# winws/winws2/Obsession Telegram Proxy are NOT launched from the install directory: the app
 # unpacks them into %APPDATA%\Obsession\bin on first start (paths.rs -
 # bin_dir/winws_path/winws2_path/tgproxy_path), and winws2 sits one level deeper
 # in bin\zapret2. Ownership is therefore checked against that root, not
@@ -130,8 +130,8 @@ function Stop-OwnedRuntimeProcesses {
     }
     $binRoot = Get-NormalizedPath (Join-Path (Join-Path $appData 'Obsession') 'bin')
 
-    # tgproxy_path() probes several names - cover them all, plus the Zapret2 engine.
-    $names = @('winws.exe', 'winws2.exe', 'tg_ws_proxy.exe', 'TgWsProxy.exe', 'tg-ws-proxy.exe')
+    # Keep old proxy image names only for bounded upgrade cleanup below binRoot.
+    $names = @('winws.exe', 'winws2.exe', 'obsession-tg-proxy.exe', 'tg_ws_proxy.exe', 'TgWsProxy.exe', 'tg-ws-proxy.exe')
     $failed = @()
     $unverified = @()
 

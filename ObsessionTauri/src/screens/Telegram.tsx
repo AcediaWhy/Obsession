@@ -117,7 +117,7 @@ export function TelegramScreen() {
         <div>
           <h1 className="font-display text-3xl font-semibold tracking-tight text-gradient">Telegram-прокси</h1>
           <p className="text-sm text-ink-muted">
-            MTProto-прокси через TgWsProxy в один клик
+            Собственный MTProto-прокси Obsession в один клик
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -145,14 +145,14 @@ export function TelegramScreen() {
                 ? "Прокси работает"
                 : s.available
                   ? "Нажмите, чтобы запустить"
-                  : "tg_ws_proxy.exe отсутствует или повреждён"}
+                  : "Компонент Telegram-прокси отсутствует или повреждён"}
             </div>
           </div>
 
           {!s.running && !canStart && (
             <GlassPanel className="border-warn/30">
               <p className="text-sm text-warn">
-                tg_ws_proxy.exe не найден в защищённых ресурсах или не прошёл
+                Telegram-прокси Obsession не найден в защищённых ресурсах или не прошёл
                 проверку runtime-manifest.
               </p>
               <p className="text-xs text-ink-muted mt-2">

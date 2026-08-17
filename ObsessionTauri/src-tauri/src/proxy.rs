@@ -1,7 +1,7 @@
-//! Управление Telegram-прокси (TgWsProxy).
+//! Управление Obsession Telegram Proxy.
 //!
-//! TgWsProxy — это локальный MTProto-прокси (headless CLI-сборка из
-//! `proxy/tg_ws_proxy.py`). Он слушает MTProto ровно на `127.0.0.1:<--port>`
+//! Это собственный локальный MTProto-прокси Obsession, написанный на Rust по
+//! мотивам прежнего `proxy/tg_ws_proxy.py`. Он слушает MTProto ровно на `127.0.0.1:<--port>`
 //! и туннелирует соединения через WebSocket к серверам Telegram. Секрет
 //! передаётся ему через `--secret`, а готовую ссылку `tg://proxy?...` он сам
 //! печатает в stderr — мы её оттуда вычитываем, не копируя секрет в app.log.
@@ -33,7 +33,7 @@ use tokio::task::JoinSet;
 use crate::state::{AppState, ProxyFirewall, ProxyForwarder, ProxyState};
 use crate::util::{self, LockExt, ProxyStatusPayload, VersionedSection};
 
-const TGPROXY_RELATIVE: &str = "bin/tg_ws_proxy.exe";
+const TGPROXY_RELATIVE: &str = "bin/obsession-tg-proxy.exe";
 const TGPROXY_MANIFEST_RELATIVE: &str = "runtime/runtime-manifest.json";
 const MAX_RUNTIME_MANIFEST_BYTES: u64 = 1024 * 1024;
 const MAX_TGPROXY_BYTES: u64 = 256 * 1024 * 1024;
@@ -92,7 +92,7 @@ fn emit_status(app: &AppHandle) {
     );
 }
 
-/// True, если бинарник TgWsProxy найден.
+/// True, если защищённый бинарник Telegram-прокси найден.
 pub fn available(app: &AppHandle) -> bool {
     let state = app.state::<AppState>();
     verified_tgproxy_path(state.paths.resource_dir()).is_some()
@@ -460,11 +460,9 @@ fn cleanup_previous_runtime(app: &AppHandle, detached: DetachedProxy, image: Opt
             .args(["/F", "/T", "/PID", &pid.to_string()])
             .output();
     }
-    // PyInstaller-onefile создаёт дочерний процесс с тем же именем. Sweep
-    // выполняется до нового spawn и под gate, поэтому не может задеть новый PID.
-    // Ограничение: taskkill /IM убивает ВСЕ процессы с этим именем, включая
-    // чужой TgWsProxy пользователя — принятый компромисс для добивания
-    // PyInstaller-детей (аналогично документировано в dpi::kill_orphans).
+    // Sweep выполняется до нового spawn и под gate, поэтому не может задеть
+    // новый PID. Уникальное имя образа ограничивает sweep процессами Obsession,
+    // не затрагивая апстримный tg-ws-proxy или другие Telegram-прокси.
     if let Some(image) = image {
         let swept = util::std_command("taskkill")
             .args(["/F", "/T", "/IM", image])
@@ -536,7 +534,7 @@ pub(crate) async fn start_locked(
             }
             None => {
                 return Err(
-                    "tg_ws_proxy.exe отсутствует или не прошёл проверку runtime-manifest"
+                    "Telegram-прокси отсутствует или не прошёл проверку runtime-manifest"
                         .to_string(),
                 )
             }
@@ -1033,9 +1031,7 @@ mod tests {
     #[test]
     fn proxy_links_are_redacted_without_losing_surrounding_diagnostics() {
         let secret = "dd00112233445566778899aabbccddeeff";
-        let line = format!(
-            "ready tg://proxy?server=127.0.0.1&port=24445&secret={secret} ok"
-        );
+        let line = format!("ready tg://proxy?server=127.0.0.1&port=24445&secret={secret} ok");
         let safe = redact_proxy_log_line(&line);
         assert_eq!(safe, "ready tg://proxy?[redacted] ok");
         assert!(!safe.contains(secret));
