@@ -5,11 +5,12 @@
 //! Цезарь-обфускации; кэш `--cfproxy-cache` хранит порядок последних
 //! рабочих доменов и обновляется при успешном соединении.
 
+use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use tokio_rustls::TlsConnector;
 
@@ -53,6 +54,8 @@ static CACHE_SERIAL: AtomicU64 = AtomicU64::new(0);
 pub struct CfRelay {
     domains: Vec<String>,
     cache_path: Option<PathBuf>,
+    active_domains: Mutex<HashMap<u16, String>>,
+    attempt_serial: AtomicU64,
 }
 
 impl CfRelay {
@@ -72,18 +75,42 @@ impl CfRelay {
         CfRelay {
             domains,
             cache_path: cache_path.map(Path::to_path_buf),
+            active_domains: Mutex::new(HashMap::new()),
+            attempt_serial: AtomicU64::new(0),
         }
     }
 
-    /// Сохраняем порядок кэша: последний рабочий relay должен проверяться
-    /// первым независимо от DC. Общий FALLBACK_BUDGET ограничивает перебор.
-    fn attempt_order(&self, _dc: u16) -> Vec<String> {
-        self.domains.clone()
+    /// Уже сработавший relay идёт первым отдельно для каждого DC. Пока
+    /// такого нет, параллельные подключения начинают с разных мест списка,
+    /// чтобы не устраивать stampede на одном недоступном домене.
+    fn attempt_order(&self, dc: u16) -> Vec<String> {
+        let mut order = self.domains.clone();
+        let active = self
+            .active_domains
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&dc)
+            .cloned();
+        if let Some(active) = active {
+            if let Some(index) = order.iter().position(|domain| domain == &active) {
+                order.swap(0, index);
+            }
+            return order;
+        }
+
+        if order.len() > 1 {
+            let serial = self.attempt_serial.fetch_add(1, Ordering::Relaxed) as usize;
+            let len = order.len();
+            order.rotate_left(serial % len);
+        }
+        order
     }
 
     /// Подключение к `wss://kws{dc}.{relay}/apiws`. Публичный relay получает
     /// признак media внутри relay-init, поэтому его DNS-имя не содержит `-1`;
-    /// DC203 мапится на kws2, как в прямом пути.
+    /// DC203 остаётся `kws203`: у публичных relay поддомен выбирает
+    /// origin, поэтому правило прямого Telegram-хоста `203 -> 2` здесь
+    /// неприменимо.
     /// Первый успешный домен поднимается в кэш.
     pub async fn connect(
         &self,
@@ -112,7 +139,7 @@ impl CfRelay {
                     .await
                 {
                     Ok((reader, writer)) => {
-                        self.remember_working_domain(&base);
+                        self.remember_working_domain(dc, &base);
                         return Some((reader, writer, host));
                     }
                     Err(error) => {
@@ -136,7 +163,14 @@ impl CfRelay {
     }
 
     /// Продвинуть сработавший домен в начало и сохранить кэш (best-effort).
-    fn remember_working_domain(&self, domain: &str) {
+    fn remember_working_domain(&self, dc: u16, domain: &str) {
+        if is_default_domain(domain) {
+            self.active_domains
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .insert(dc, domain.to_string());
+        }
+
         let Some(path) = &self.cache_path else {
             return;
         };
@@ -167,8 +201,7 @@ impl CfRelay {
 }
 
 fn public_relay_host(dc: u16, _is_media: bool, base: &str) -> String {
-    let sub_dc = if dc == 203 { 2 } else { dc };
-    format!("kws{sub_dc}.{base}")
+    format!("kws{dc}.{base}")
 }
 
 /// Фолбэк через собственный Cloudflare Worker (WS-to-WS мост):
@@ -387,7 +420,8 @@ mod tests {
         let base = "relay.example";
         assert_eq!(public_relay_host(2, false, base), "kws2.relay.example");
         assert_eq!(public_relay_host(2, true, base), "kws2.relay.example");
-        assert_eq!(public_relay_host(203, true, base), "kws2.relay.example");
+        assert_eq!(public_relay_host(203, false, base), "kws203.relay.example");
+        assert_eq!(public_relay_host(203, true, base), "kws203.relay.example");
     }
 
     #[test]
@@ -399,13 +433,23 @@ mod tests {
     }
 
     #[test]
-    fn attempt_order_preserves_cached_priority_for_every_dc() {
+    fn attempt_order_spreads_unlearned_connections_across_relays() {
         let relay = CfRelay::new(None);
-        let order2 = relay.attempt_order(2);
-        let order4 = relay.attempt_order(4);
-        assert_eq!(order2[0], CFPROXY_DEFAULT_DOMAINS[0]);
-        assert_eq!(order4[0], CFPROXY_DEFAULT_DOMAINS[0]);
-        assert_eq!(order2, order4);
+        let first = relay.attempt_order(2);
+        let second = relay.attempt_order(2);
+        assert_eq!(first[0], CFPROXY_DEFAULT_DOMAINS[0]);
+        assert_eq!(second[0], CFPROXY_DEFAULT_DOMAINS[1]);
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn working_domain_is_remembered_per_dc_in_memory() {
+        let relay = CfRelay::new(None);
+        relay.remember_working_domain(2, "sadnews.co.uk");
+        relay.remember_working_domain(4, "fixtelega.co.uk");
+
+        assert_eq!(relay.attempt_order(2)[0], "sadnews.co.uk");
+        assert_eq!(relay.attempt_order(4)[0], "fixtelega.co.uk");
     }
 
     #[test]
