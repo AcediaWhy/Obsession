@@ -50,7 +50,7 @@ export function ProfilesScreen() {
         </p>
       </StaggerItem>
 
-      <div className="grid flex-1 grid-cols-[360px_1fr] gap-4 overflow-hidden">
+      <div className="screen-split screen-split--start-360">
         {/* Сохранение текущего состояния. */}
         <GlassPanel className="flex flex-col gap-3">
           <SectionLabel>Новый профиль</SectionLabel>

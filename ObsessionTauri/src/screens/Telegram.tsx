@@ -126,7 +126,7 @@ export function TelegramScreen() {
         </div>
       </StaggerItem>
 
-      <div className="grid flex-1 grid-cols-[1fr_360px] gap-4 overflow-hidden">
+      <div className="screen-split screen-split--end-360">
         <GlassPanel scroll contentClassName="flex flex-col items-center gap-6">
           <div className="mt-2 flex flex-col items-center gap-4">
             <Parallax depth={18}>
@@ -264,7 +264,7 @@ export function TelegramScreen() {
         </GlassPanel>
 
         <GlassPanel className="flex flex-col overflow-hidden">
-          <LogStream height={520} />
+          <LogStream />
         </GlassPanel>
       </div>
     </div>

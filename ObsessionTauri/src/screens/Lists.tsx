@@ -64,7 +64,7 @@ export function ListsScreen() {
         </p>
       </StaggerItem>
 
-      <div className="grid flex-1 grid-cols-[300px_1fr] gap-4 overflow-hidden">
+      <div className="screen-split screen-split--start-300">
         {/* Левая колонка: файлы + создание. */}
         <GlassPanel className="flex flex-col gap-3 overflow-hidden">
           <NewListForm

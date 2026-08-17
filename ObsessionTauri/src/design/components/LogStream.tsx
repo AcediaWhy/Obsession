@@ -7,7 +7,7 @@ const MAX_DOM_LINES = 120;
 const BOTTOM_THRESHOLD_PX = 24;
 
 // Моно-лог реального времени с frame-batched ingestion и бережным автоскроллом.
-export function LogStream({ height = 200 }: { height?: number }) {
+export function LogStream({ height }: { height?: number }) {
   const lines = useLogStore((state) => state.lines);
   const clear = useLogStore((state) => state.clear);
   const ref = useRef<HTMLDivElement>(null);
@@ -44,7 +44,7 @@ export function LogStream({ height = 200 }: { height?: number }) {
   };
 
   return (
-    <div className="flex flex-col">
+    <div className="flex h-full min-h-0 flex-col">
       <div className="mb-2 flex items-center justify-between">
         <span className="text-2xs font-semibold uppercase tracking-[0.14em] text-ink-muted">
           Лог
@@ -60,7 +60,9 @@ export function LogStream({ height = 200 }: { height?: number }) {
         ref={ref}
         onScroll={onScroll}
         style={{ height }}
-        className="scroll-fade overflow-y-auto rounded-xl border border-glass-border bg-black/30 p-3 font-mono text-2xs tabular-nums leading-relaxed"
+        className={`scroll-fade overflow-y-auto rounded-xl border border-glass-border bg-black/30 p-3 font-mono text-2xs tabular-nums leading-relaxed ${
+          height === undefined ? "min-h-0 flex-1" : ""
+        }`}
       >
         {lines.length === 0 && (
           <div className="text-ink-muted">Лог пуст. Действия появятся здесь.</div>
@@ -73,7 +75,10 @@ export function LogStream({ height = 200 }: { height?: number }) {
         {visibleLines.map((line) => (
           <div key={line.id} className="log-row flex gap-2">
             <span className="shrink-0 text-ink-muted">{line.ts}</span>
-            <span style={{ color: levelColor[line.level] }} className="break-all">
+            <span
+              style={{ color: levelColor[line.level] }}
+              className="min-w-0 flex-1 whitespace-pre-wrap [overflow-wrap:anywhere]"
+            >
               {line.message}
             </span>
           </div>

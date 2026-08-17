@@ -470,6 +470,49 @@ body {
   user-select: none;
 }
 
+/* Общий каркас экранов с основной областью и боковой панелью. На штатной
+   ширине сохраняем двухколоночную композицию; в узком окне панели становятся
+   вертикальными карточками внутри одного скролла, а не сжимают друг друга до
+   нечитаемого состояния. */
+.screen-split {
+  display: grid;
+  min-height: 0;
+  flex: 1 1 0%;
+  gap: 1rem;
+  overflow: hidden;
+}
+
+.screen-split > * {
+  min-width: 0;
+}
+
+.screen-split--end-360 {
+  grid-template-columns: minmax(0, 1fr) 360px;
+}
+
+.screen-split--start-360 {
+  grid-template-columns: 360px minmax(0, 1fr);
+}
+
+.screen-split--start-300 {
+  grid-template-columns: 300px minmax(0, 1fr);
+}
+
+@media (max-width: 959px) {
+  .screen-split--end-360,
+  .screen-split--start-360,
+  .screen-split--start-300 {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .screen-split {
+    grid-auto-rows: minmax(360px, 70vh);
+    overflow-x: hidden;
+    overflow-y: auto;
+    padding-right: 0.25rem;
+  }
+}
+
 /* Тонкий кастомный скроллбар в стиле стекла. */
 ::-webkit-scrollbar {
   width: 8px;

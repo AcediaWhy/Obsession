@@ -106,7 +106,7 @@ export function AiScreen() {
         <StatusBadge active={installed} labelOn="Установлено" labelOff="Не установлено" />
       </StaggerItem>
 
-      <div className="grid flex-1 grid-cols-[1fr_360px] gap-4 overflow-hidden">
+      <div className="screen-split screen-split--end-360">
         <GlassPanel scroll contentClassName="flex flex-col gap-6">
           <div>
             <SectionLabel>Предпочтительный источник</SectionLabel>
@@ -282,7 +282,7 @@ export function AiScreen() {
         </GlassPanel>
 
         <GlassPanel className="flex flex-col overflow-hidden">
-          <LogStream height={520} />
+          <LogStream />
         </GlassPanel>
       </div>
     </div>

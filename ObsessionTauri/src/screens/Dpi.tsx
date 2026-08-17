@@ -120,7 +120,7 @@ export function DpiScreen() {
         </div>
       </StaggerItem>
 
-      <div className="grid flex-1 grid-cols-[1fr_360px] gap-4 overflow-hidden">
+      <div className="screen-split screen-split--end-360">
         {/* Левая колонка: питание + категории. */}
         <GlassPanel scroll>
           <Stagger className="flex flex-col items-center gap-6">
@@ -319,7 +319,7 @@ export function DpiScreen() {
 
         {/* Правая колонка: лог. */}
         <GlassPanel className="flex flex-col overflow-hidden">
-          <LogStream height={520} />
+          <LogStream />
         </GlassPanel>
       </div>
     </div>
