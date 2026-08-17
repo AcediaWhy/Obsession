@@ -16,18 +16,18 @@ DPI-обход · проверяемые маршруты к ИИ · Telegram-п
 
 <br />
 
-[![Скачать Obsession Setup](https://img.shields.io/badge/%E2%86%93-%D0%A1%D0%BA%D0%B0%D1%87%D0%B0%D1%82%D1%8C%20Obsession%20Setup-7c2340?style=for-the-badge)](https://github.com/Aizenssk-ss/VlarpSu/releases/latest)
+[![Скачать Obsession Setup](https://img.shields.io/badge/%E2%86%93-%D0%A1%D0%BA%D0%B0%D1%87%D0%B0%D1%82%D1%8C%20Obsession%20Setup-7c2340?style=for-the-badge)](https://github.com/AcediaWhy/Obsession/releases/latest)
 
-<sub>Windows 10/11 · x64 · установщик около 43 МиБ · интерфейс работает без постоянного UAC</sub>
+<sub>Windows 10/11 · x64 · установщик около 32 МиБ · интерфейс работает без постоянного UAC</sub>
 
 </div>
 
 ---
 
 <div align="center">
-  <img src="docs/assets/obsession-ai.png" width="920" alt="Obsession — экран проверяемых маршрутов ChatGPT, Claude и Gemini в теме The Black Choir" />
+  <img src="docs/assets/obsession-ai.png" width="920" alt="Obsession — экран проверяемых маршрутов ChatGPT, Claude и Gemini с автоматическим маршрутом Comss" />
   <br />
-  <sub>Obsession: The Black Choir · маршруты ChatGPT, Claude и Gemini проверяются независимо</sub>
+  <sub>Obsession: The Black Choir · Gemini через Comss с резервом GeoHide, ChatGPT и Claude через Malw или GeoHide</sub>
 </div>
 
 ## Что такое Obsession
@@ -44,8 +44,8 @@ Obsession — не VPN: приложение не скрывает IP-адрес
 |---|---|
 | **DPI-обход** | Zapret Legacy и экспериментальный Zapret2, отдельные категории Discord, YouTube/Twitch, Gaming и Universal, ручной выбор конфигурации, тестирование и автоподбор. |
 | **Надёжность** | Запоминает подтверждённую конфигурацию для текущей сети, оценивает состояние категорий и может последовательно проверить альтернативные стратегии. |
-| **ИИ-сервисы** | Отдельно проверяет HTTPS-маршруты к **ChatGPT, Claude и Gemini**. Для каждого сервиса выбирается отвечающий маршрут Malw или GeoHide; фоновая проверка не изменяет `hosts`. |
-| **Telegram** | Локальный TgWsProxy, ссылка `tg://proxy`, QR-код с прямым открытием клиента и опциональный доступ телефона по LAN через временное правило брандмауэра. |
+| **ИИ-сервисы** | Отдельно проверяет HTTPS-маршруты к **ChatGPT, Claude и Gemini**. Для ChatGPT и Claude выбирается отвечающий маршрут Malw или GeoHide; Gemini использует Comss с автоматическим резервом через GeoHide. Фоновая проверка не изменяет `hosts`. |
+| **Telegram** | Встроенный прокси `tgproxy-rs`, написанный на Rust, ссылка `tg://proxy`, QR-код с прямым открытием клиента и опциональный доступ телефона по LAN через временное правило брандмауэра. Прямое соединение с Telegram используется по умолчанию. |
 | **Профили и списки** | Профили настроек, встроенные доменные списки и раздельное управление категориями обхода. |
 | **Первый запуск** | Onboarding V2 проверяет готовность установленной службы, строит план выбранных функций, применяет его транзакционно и показывает раздельный результат проверки. |
 | **Интерфейс** | Трей, уведомления, собственный титлбар, режим уменьшенной анимации и пять открытых тем с WebGL2/Canvas-сценами и выразительными статичными fallback-кадрами. |
@@ -55,7 +55,7 @@ Obsession — не VPN: приложение не скрывает IP-адрес
 
 ## Установка
 
-1. Скачайте последний `Obsession-Setup_<версия>_x64.exe` на странице [Releases](https://github.com/Aizenssk-ss/VlarpSu/releases/latest).
+1. Скачайте последний `Obsession-Setup_<версия>_x64.exe` на странице [Releases](https://github.com/AcediaWhy/Obsession/releases/latest).
 2. При обновлении или восстановлении полностью выйдите из уже запущенной Obsession через меню трея. Установщик не перезаписывает занятые файлы молча.
 3. Запустите установщик и подтвердите UAC. Повышение прав требуется установщику и системной службе, но не обычному интерфейсу.
 4. После первого запуска выберите нужные функции в мастере настройки и дождитесь раздельной проверки результатов.
@@ -98,7 +98,7 @@ flowchart LR
 <div align="center">
 <table>
 <tr>
-<td align="center"><img src="ObsessionTauri/public/rain/poster.jpg" width="360" alt="Rain — дом у пруда за мокрым стеклом" /><br /><sub><b>Rain</b> · мокрое стекло и глубина сцены</sub></td>
+<td align="center"><img src="ObsessionTauri/public/rain/world-plate.jpg" width="360" alt="Rain — холодная комната у моря за дождевым стеклом" /><br /><sub><b>Rain</b> · холодная комната у моря за дождевым стеклом</sub></td>
 <td align="center"><img src="ObsessionTauri/public/midnight/poster.jpg" width="360" alt="Midnight — фонарь в ночном тумане" /><br /><sub><b>Midnight</b> · ночной туман и мягкий свет</sub></td>
 </tr>
 </table>
