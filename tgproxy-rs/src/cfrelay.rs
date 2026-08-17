@@ -44,7 +44,6 @@ pub const CFPROXY_DEFAULT_DOMAINS: [&str; 20] = [
 
 const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 const FALLBACK_BUDGET: std::time::Duration = std::time::Duration::from_secs(25);
-const MAX_RELAY_ATTEMPTS: usize = 4;
 const MAX_WORKER_ATTEMPTS: usize = 3;
 const MAX_CACHE_BYTES: u64 = 64 * 1024;
 static CACHE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -76,22 +75,15 @@ impl CfRelay {
         }
     }
 
-    /// Порядок попыток: начинаем со смещения по номеру DC, чтобы разные
-    /// клиенты расходились по разным relay (упрощённый balancer апстрима).
-    fn attempt_order(&self, dc: u16) -> Vec<String> {
-        let len = self.domains.len();
-        let start = dc as usize % len;
-        self.domains
-            .iter()
-            .cycle()
-            .skip(start)
-            .take(len)
-            .cloned()
-            .collect()
+    /// Сохраняем порядок кэша: последний рабочий relay должен проверяться
+    /// первым независимо от DC. Общий FALLBACK_BUDGET ограничивает перебор.
+    fn attempt_order(&self, _dc: u16) -> Vec<String> {
+        self.domains.clone()
     }
 
-    /// Подключение к `wss://kws{dc}.{relay}/apiws` (для media-DC —
-    /// `kws{dc}-1`; DC203 мапится на kws2, как в прямом пути).
+    /// Подключение к `wss://kws{dc}.{relay}/apiws`. Публичный relay получает
+    /// признак media внутри relay-init, поэтому его DNS-имя не содержит `-1`;
+    /// DC203 мапится на kws2, как в прямом пути.
     /// Первый успешный домен поднимается в кэш.
     pub async fn connect(
         &self,
@@ -100,16 +92,10 @@ impl CfRelay {
         connector: &TlsConnector,
         peer: &str,
     ) -> Option<(ws::WsReader, Arc<ws::WsWriter>, String)> {
-        let sub_dc = if dc == 203 { 2 } else { dc };
-        let subdomain = if is_media {
-            format!("kws{sub_dc}-1")
-        } else {
-            format!("kws{sub_dc}")
-        };
         let media_tag = if is_media { " media" } else { "" };
         let attempts = async {
-            for base in self.attempt_order(dc).into_iter().take(MAX_RELAY_ATTEMPTS) {
-                let host = format!("{subdomain}.{base}");
+            for base in self.attempt_order(dc) {
+                let host = public_relay_host(dc, is_media, &base);
                 let ip = match dns::resolve(&host).await {
                     Ok(ip) => ip,
                     Err(error) => {
@@ -178,6 +164,11 @@ impl CfRelay {
         }
         let _ = save_cached_domains_unlocked(path, &unique);
     }
+}
+
+fn public_relay_host(dc: u16, _is_media: bool, base: &str) -> String {
+    let sub_dc = if dc == 203 { 2 } else { dc };
+    format!("kws{sub_dc}.{base}")
 }
 
 /// Фолбэк через собственный Cloudflare Worker (WS-to-WS мост):
@@ -392,6 +383,14 @@ mod tests {
     }
 
     #[test]
+    fn public_relay_hostname_never_encodes_media() {
+        let base = "relay.example";
+        assert_eq!(public_relay_host(2, false, base), "kws2.relay.example");
+        assert_eq!(public_relay_host(2, true, base), "kws2.relay.example");
+        assert_eq!(public_relay_host(203, true, base), "kws2.relay.example");
+    }
+
+    #[test]
     fn default_list_has_no_duplicates() {
         let mut sorted = CFPROXY_DEFAULT_DOMAINS.to_vec();
         sorted.sort_unstable();
@@ -400,19 +399,13 @@ mod tests {
     }
 
     #[test]
-    fn attempt_order_rotates_by_dc() {
+    fn attempt_order_preserves_cached_priority_for_every_dc() {
         let relay = CfRelay::new(None);
         let order2 = relay.attempt_order(2);
         let order4 = relay.attempt_order(4);
-        assert_eq!(order2[0], "cakeisalie.co.uk"); // индекс 2
-        assert_eq!(order4[0], "lovetrue.co.uk"); // индекс 4
-                                                 // Полный набор сохраняется при любом смещении.
-        let mut sorted = order2.clone();
-        sorted.sort_unstable();
-        let mut expected = CFPROXY_DEFAULT_DOMAINS.to_vec();
-        expected.sort_unstable();
-        assert_eq!(sorted, expected);
-        assert_ne!(order2, order4);
+        assert_eq!(order2[0], CFPROXY_DEFAULT_DOMAINS[0]);
+        assert_eq!(order4[0], CFPROXY_DEFAULT_DOMAINS[0]);
+        assert_eq!(order2, order4);
     }
 
     #[test]
@@ -558,8 +551,9 @@ mod tests {
     }
 
     /// Синтетический obfuscated2-клиент для внешнего прокси: прокси должен
-    /// быть заранее запущен (по умолчанию 127.0.0.1:24445, адрес можно
-    /// переопределить переменной TGPROXY_PROBE_ADDR). Проба отправляет
+    /// быть заранее запущен (по умолчанию 127.0.0.1:24445). Адрес можно
+    /// переопределить через TGPROXY_PROBE_ADDR, а DC — через TGPROXY_PROBE_DC;
+    /// отрицательный DC моделирует media-соединение. Проба отправляет
     /// клиентский init, затем первый настоящий MTProto-пакет (req_pq,
     /// abridged) и ждёт ответных байтов — так проверяется путь до DC
     /// целиком, как это делает реальный клиент.
@@ -576,15 +570,23 @@ mod tests {
         }
         let target =
             std::env::var("TGPROXY_PROBE_ADDR").unwrap_or_else(|_| "127.0.0.1:24445".to_string());
+        let probe_dc = std::env::var("TGPROXY_PROBE_DC")
+            .ok()
+            .map(|raw| raw.parse::<i16>().expect("TGPROXY_PROBE_DC must be i16"))
+            .unwrap_or(2);
 
         let mut client = tokio::net::TcpStream::connect(&target)
             .await
             .expect("connect to reference proxy");
-        println!("connected to {target}, sending synthetic client init");
+        println!("connected to {target}, sending synthetic client init for DC{probe_dc}");
 
         let mut rng = rand::rngs::OsRng;
-        let init =
-            crate::obf2::build_client_init(2, crate::obf2::ProtoTag::Abridged, &secret, &mut rng);
+        let init = crate::obf2::build_client_init(
+            probe_dc,
+            crate::obf2::ProtoTag::Abridged,
+            &secret,
+            &mut rng,
+        );
         client.write_all(&init).await.expect("send client init");
 
         // Первый MTProto-пакет настоящего клиента: req_pq_multi (abridged).
