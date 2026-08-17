@@ -568,7 +568,10 @@ pub(crate) async fn start_locked(
         args.push("--fake-tls-domain".into());
         args.push(fake_tls_domain.to_string());
     }
-    // Диск-кэш CF-доменов под %APPDATA%\Obsession — переживает недоступность GitHub.
+    // Сначала прокси подключается к Telegram DC напрямую. Если провайдер режет
+    // этот маршрут, разрешаем fallback через публичные CF relay; кэш под
+    // %APPDATA%\Obsession хранит последние рабочие домены между запусками.
+    args.push("--cfproxy".into());
     args.push("--cfproxy-cache".into());
     args.push(cache_path.to_string_lossy().to_string());
 
@@ -576,7 +579,9 @@ pub(crate) async fn start_locked(
         app,
         "info",
         "proxy",
-        &format!("Запуск Telegram-прокси (MTProto на 127.0.0.1:{port})..."),
+        &format!(
+            "Запуск Telegram-прокси (MTProto на 127.0.0.1:{port}, публичные relay — только резервный маршрут)..."
+        ),
     );
 
     let mut std_cmd = util::std_command(&exe);

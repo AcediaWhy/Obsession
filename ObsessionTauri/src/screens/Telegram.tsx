@@ -188,6 +188,12 @@ export function TelegramScreen() {
             </div>
           </div>
 
+          <div className="w-full rounded-xl border border-glass-border bg-black/20 px-3 py-2 text-xs text-ink-muted">
+            Если прямое подключение к Telegram заблокировано, прокси использует
+            публичные Cloudflare relay как резервный маршрут. MTProto-трафик
+            остаётся зашифрованным, но relay видит IP и метаданные соединения.
+          </div>
+
           <div className="w-full">
             <SectionLabel>Авто-закрытие доступа с телефона</SectionLabel>
             <Select
