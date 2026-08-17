@@ -16,6 +16,9 @@ use tokio_rustls::TlsConnector;
 
 pub const MAX_MESSAGE_LEN: usize = 16 * 1024 * 1024;
 const WS_GUID: &[u8] = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+const WS_WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+const TCP_KEEPALIVE_IDLE: std::time::Duration = std::time::Duration::from_secs(60);
+const TCP_KEEPALIVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
 
 const OP_CONT: u8 = 0x0;
 const OP_BINARY: u8 = 0x2;
@@ -76,28 +79,53 @@ pub struct WsWriter {
 impl WsWriter {
     /// Отправка бинарного сообщения одним фреймом.
     pub async fn send(&self, data: &[u8]) -> std::io::Result<()> {
-        let mut write = self.write.lock().await;
-        send_frame(&mut *write, OP_BINARY, data).await
+        tokio::time::timeout(WS_WRITE_TIMEOUT, async {
+            let mut write = self.write.lock().await;
+            send_frame(&mut *write, OP_BINARY, data).await
+        })
+        .await
+        .map_err(|_| write_timeout_error())?
     }
 
     /// Пакеты одного чанка уходят очередью фреймов с одним flush.
     pub async fn send_batch(&self, parts: &[Vec<u8>]) -> std::io::Result<()> {
-        let mut write = self.write.lock().await;
-        for part in parts {
-            send_frame(&mut *write, OP_BINARY, part).await?;
-        }
-        write.flush().await
+        tokio::time::timeout(WS_WRITE_TIMEOUT, async {
+            let mut write = self.write.lock().await;
+            for part in parts {
+                send_frame(&mut *write, OP_BINARY, part).await?;
+            }
+            write.flush().await
+        })
+        .await
+        .map_err(|_| write_timeout_error())?
     }
 
     pub async fn close(&self) {
-        let mut write = self.write.lock().await;
-        let _ = send_frame(&mut *write, OP_CLOSE, &[]).await;
+        let _ = tokio::time::timeout(WS_WRITE_TIMEOUT, async {
+            let mut write = self.write.lock().await;
+            send_frame(&mut *write, OP_CLOSE, &[]).await
+        })
+        .await;
     }
 
     async fn send_pong(&self, payload: &[u8]) {
-        let mut write = self.write.lock().await;
-        let _ = send_frame(&mut *write, OP_PONG, payload).await;
+        let _ = tokio::time::timeout(WS_WRITE_TIMEOUT, async {
+            let mut write = self.write.lock().await;
+            send_frame(&mut *write, OP_PONG, payload).await
+        })
+        .await;
     }
+}
+
+fn write_timeout_error() -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::TimedOut, "websocket write timed out")
+}
+
+pub(crate) fn configure_tcp_keepalive(stream: &TcpStream) -> std::io::Result<()> {
+    let keepalive = socket2::TcpKeepalive::new()
+        .with_time(TCP_KEEPALIVE_IDLE)
+        .with_interval(TCP_KEEPALIVE_INTERVAL);
+    socket2::SockRef::from(stream).set_tcp_keepalive(&keepalive)
 }
 
 pub struct WsReader {
@@ -172,6 +200,7 @@ pub async fn connect(
         .map_err(|_| ConnectError::Timeout)?
         .map_err(ConnectError::Io)?;
     let _ = tcp.set_nodelay(true);
+    let _ = configure_tcp_keepalive(&tcp);
 
     let server_name =
         rustls::pki_types::ServerName::try_from(domain.to_string()).map_err(|error| {

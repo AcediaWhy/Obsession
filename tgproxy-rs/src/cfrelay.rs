@@ -126,6 +126,7 @@ impl CfRelay {
                 let ip = match dns::resolve(&host).await {
                     Ok(ip) => ip,
                     Err(error) => {
+                        self.forget_failed_domain(dc, &base);
                         logger::warn(format!(
                             "[{peer}] DC{dc}{media_tag} relay {host}: dns: {error}"
                         ));
@@ -143,6 +144,7 @@ impl CfRelay {
                         return Some((reader, writer, host));
                     }
                     Err(error) => {
+                        self.forget_failed_domain(dc, &base);
                         logger::warn(format!(
                             "[{peer}] DC{dc}{media_tag} relay {host} failed: {error}"
                         ));
@@ -197,6 +199,16 @@ impl CfRelay {
             }
         }
         let _ = save_cached_domains_unlocked(path, &unique);
+    }
+
+    fn forget_failed_domain(&self, dc: u16, domain: &str) {
+        let mut active = self
+            .active_domains
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if active.get(&dc).is_some_and(|current| current == domain) {
+            active.remove(&dc);
+        }
     }
 }
 
@@ -450,6 +462,16 @@ mod tests {
 
         assert_eq!(relay.attempt_order(2)[0], "sadnews.co.uk");
         assert_eq!(relay.attempt_order(4)[0], "fixtelega.co.uk");
+    }
+
+    #[test]
+    fn failed_working_domain_is_invalidated_in_memory() {
+        let relay = CfRelay::new(None);
+        relay.remember_working_domain(2, "sadnews.co.uk");
+        assert_eq!(relay.attempt_order(2)[0], "sadnews.co.uk");
+
+        relay.forget_failed_domain(2, "sadnews.co.uk");
+        assert_ne!(relay.attempt_order(2)[0], "sadnews.co.uk");
     }
 
     #[test]

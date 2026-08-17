@@ -492,6 +492,7 @@ dependencies = [
  "rustls",
  "sha1",
  "sha2",
+ "socket2",
  "tokio",
  "tokio-rustls",
  "webpki-roots 0.26.11",

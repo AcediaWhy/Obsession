@@ -24,9 +24,11 @@ use crate::ws;
 
 const CLIENT_INIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 const DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+const SESSION_WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 const WS_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 const WS_RETRY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
-const IP_FAIL_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+const IP_FAIL_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(2 * 60);
+const IP_FAIL_PROBE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
 const DC_FAIL_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(60);
 const READ_CHUNK: usize = 65536;
 const MAX_FAKE_TLS_HELLO_LEN: usize = 18 * 1024;
@@ -39,16 +41,26 @@ struct DirectRoute {
 
 #[derive(Default)]
 struct DirectHealth {
-    ip_fail_until: HashMap<String, Instant>,
+    ip_fail_until: HashMap<String, IpFailure>,
     dc_fail_until: HashMap<DirectRoute, Instant>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct IpFailure {
+    until: Instant,
+    next_probe: Instant,
 }
 
 impl DirectHealth {
     fn attempt_timeout(&mut self, now: Instant, ip: &str, route: DirectRoute) -> Option<Duration> {
-        self.ip_fail_until.retain(|_, until| *until > now);
+        self.ip_fail_until.retain(|_, failure| failure.until > now);
         self.dc_fail_until.retain(|_, until| *until > now);
 
-        if self.ip_fail_until.contains_key(ip) {
+        if let Some(failure) = self.ip_fail_until.get_mut(ip) {
+            if now >= failure.next_probe {
+                failure.next_probe = now + IP_FAIL_PROBE_INTERVAL;
+                return Some(WS_RETRY_TIMEOUT);
+            }
             return None;
         }
         if self.dc_fail_until.contains_key(&route) {
@@ -57,9 +69,21 @@ impl DirectHealth {
         Some(WS_CONNECT_TIMEOUT)
     }
 
-    fn record_timeout(&mut self, now: Instant, ip: &str, route: DirectRoute) {
-        self.ip_fail_until
-            .insert(ip.to_string(), now + IP_FAIL_COOLDOWN);
+    fn record_timeout(
+        &mut self,
+        now: Instant,
+        ip: &str,
+        route: DirectRoute,
+        enable_ip_cooldown: bool,
+    ) {
+        if enable_ip_cooldown {
+            self.ip_fail_until
+                .entry(ip.to_string())
+                .or_insert(IpFailure {
+                    until: now + IP_FAIL_COOLDOWN,
+                    next_probe: now + IP_FAIL_PROBE_INTERVAL,
+                });
+        }
         self.dc_fail_until.insert(route, now + DC_FAIL_COOLDOWN);
     }
 
@@ -128,6 +152,7 @@ pub async fn handle_client(stream: TcpStream, ctx: Arc<BridgeContext>) {
         Err(_) => "?".to_string(),
     };
     let _ = stream.set_nodelay(true);
+    let _ = ws::configure_tcp_keepalive(&stream);
     let (raw_read, raw_write) = stream.into_split();
 
     let Some((client_read, client_write, init)) =
@@ -194,6 +219,8 @@ pub async fn handle_client(stream: TcpStream, ctx: Arc<BridgeContext>) {
         // Отладочный режим --no-direct: сразу в фолбэк.
         None
     } else {
+        let has_fallback =
+            !ctx.worker_domains.is_empty() || (!is_test_dc && ctx.cf_relay.is_some());
         dial_dc(
             target_ip,
             dc_id,
@@ -201,7 +228,7 @@ pub async fn handle_client(stream: TcpStream, ctx: Arc<BridgeContext>) {
             ws_path,
             &ctx.connector,
             &peer,
-            media_tag,
+            has_fallback,
         )
         .await
     };
@@ -420,9 +447,10 @@ async fn dial_dc(
     ws_path: &str,
     connector: &TlsConnector,
     peer: &str,
-    media_tag: &str,
+    enable_ip_cooldown: bool,
 ) -> Option<(ws::WsReader, Arc<ws::WsWriter>)> {
     let route = DirectRoute { dc, is_media };
+    let media_tag = if is_media { "m" } else { "" };
     let timeout = {
         let mut health = lock_direct_health();
         health.attempt_timeout(Instant::now(), ip, route)
@@ -456,17 +484,19 @@ async fn dial_dc(
                     "[{peer}] DC{dc}{media_tag} WS connect failed via {domain}: {error}"
                 ));
                 if is_timeout {
-                    lock_direct_health().record_timeout(Instant::now(), ip, route);
-                    logger::info(format!(
-                        "[{peer}] DC{dc}{media_tag} direct WS timed out; {ip} enters cooldown"
-                    ));
                     timed_out = true;
-                    break;
                 }
             }
         }
     }
-    if !timed_out {
+    if timed_out {
+        lock_direct_health().record_timeout(Instant::now(), ip, route, enable_ip_cooldown);
+        if enable_ip_cooldown {
+            logger::info(format!(
+                "[{peer}] DC{dc}{media_tag} direct WS timed out; {ip} enters cooldown"
+            ));
+        }
+    } else {
         lock_direct_health().record_dc_failure(Instant::now(), route);
     }
     logger::warn(format!("[{peer}] DC{dc}{media_tag} direct WS unavailable"));
@@ -608,9 +638,18 @@ async fn pump_down(
                     stats.0 += data.len();
                     stats.1 += 1;
                 }
-                if let Err(error) = client_write.write_all(&data).await {
-                    *close_reason.lock().unwrap() = format!("client: {error}");
-                    return;
+                match tokio::time::timeout(SESSION_WRITE_TIMEOUT, client_write.write_all(&data))
+                    .await
+                {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => {
+                        *close_reason.lock().unwrap() = format!("client: {error}");
+                        return;
+                    }
+                    Err(_) => {
+                        *close_reason.lock().unwrap() = "client: write timed out".to_string();
+                        return;
+                    }
                 }
             }
             None => {
@@ -666,7 +705,7 @@ mod tests {
     fn timeout_opens_global_ip_and_route_cooldowns() {
         let now = Instant::now();
         let mut health = DirectHealth::default();
-        health.record_timeout(now, "149.154.167.220", NORMAL_DC2);
+        health.record_timeout(now, "149.154.167.220", NORMAL_DC2, true);
 
         assert_eq!(
             health.attempt_timeout(now, "149.154.167.220", NORMAL_DC2),
@@ -679,6 +718,39 @@ mod tests {
         assert_eq!(
             health.attempt_timeout(now, "149.154.171.5", NORMAL_DC2),
             Some(WS_RETRY_TIMEOUT)
+        );
+    }
+
+    #[test]
+    fn cooldown_allows_one_periodic_probe() {
+        let now = Instant::now();
+        let mut health = DirectHealth::default();
+        health.record_timeout(now, "149.154.167.220", NORMAL_DC2, true);
+
+        let probe_at = now + IP_FAIL_PROBE_INTERVAL;
+        assert_eq!(
+            health.attempt_timeout(probe_at, "149.154.167.220", NORMAL_DC2),
+            Some(WS_RETRY_TIMEOUT)
+        );
+        assert_eq!(
+            health.attempt_timeout(probe_at, "149.154.167.220", MEDIA_DC2),
+            None
+        );
+    }
+
+    #[test]
+    fn timeout_without_fallback_does_not_disable_the_ip() {
+        let now = Instant::now();
+        let mut health = DirectHealth::default();
+        health.record_timeout(now, "149.154.167.220", NORMAL_DC2, false);
+
+        assert_eq!(
+            health.attempt_timeout(now, "149.154.167.220", NORMAL_DC2),
+            Some(WS_RETRY_TIMEOUT)
+        );
+        assert_eq!(
+            health.attempt_timeout(now, "149.154.167.220", MEDIA_DC2),
+            Some(WS_CONNECT_TIMEOUT)
         );
     }
 
@@ -702,7 +774,7 @@ mod tests {
     fn cooldowns_expire_without_wall_clock_waits() {
         let now = Instant::now();
         let mut health = DirectHealth::default();
-        health.record_timeout(now, "149.154.167.220", NORMAL_DC2);
+        health.record_timeout(now, "149.154.167.220", NORMAL_DC2, true);
 
         assert_eq!(
             health.attempt_timeout(
@@ -726,7 +798,7 @@ mod tests {
     fn success_clears_ip_and_matching_route_health() {
         let now = Instant::now();
         let mut health = DirectHealth::default();
-        health.record_timeout(now, "149.154.167.220", NORMAL_DC2);
+        health.record_timeout(now, "149.154.167.220", NORMAL_DC2, true);
         health.record_success("149.154.167.220", NORMAL_DC2);
 
         assert_eq!(
