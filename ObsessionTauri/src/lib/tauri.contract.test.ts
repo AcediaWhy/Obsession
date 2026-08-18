@@ -1,6 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn(),
+  isTauri: vi.fn(() => true),
+}));
 
 import { invoke } from "@tauri-apps/api/core";
 import { api, type BootstrapSnapshot, type DpiStatus } from "./tauri";

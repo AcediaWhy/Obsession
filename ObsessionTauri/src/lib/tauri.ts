@@ -1,11 +1,17 @@
 // Типизированный мост к Rust-бэкенду: обёртки invoke() и подписки на события.
 
-import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { invoke as tauriInvoke, isTauri } from "@tauri-apps/api/core";
+import {
+  listen,
+  type EventCallback,
+  type EventName,
+  type UnlistenFn,
+} from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { invokeBrowserPreview } from "./browserPreview";
 
 // ─── Типы (зеркалят Rust-payload'ы) ──────────────────────────────────────
 
@@ -523,6 +529,15 @@ export interface ConfStat {
 
 // ─── Команды ──────────────────────────────────────────────────────────────
 
+function invoke<T>(
+  command: string,
+  args?: Record<string, unknown>,
+): Promise<T> {
+  return isTauri()
+    ? tauriInvoke<T>(command, args)
+    : invokeBrowserPreview<T>(command, args);
+}
+
 export const api = {
   getConfig: () => invoke<AppConfig>("get_config"),
   runtimeGetSnapshot: () => invoke<RuntimeSnapshot>("runtime_get_snapshot"),
@@ -626,68 +641,78 @@ export const api = {
 
 // ─── События ──────────────────────────────────────────────────────────────
 
+const noopUnlisten: UnlistenFn = () => {};
+
+function listenRuntime<T>(
+  event: EventName,
+  handler: EventCallback<T>,
+): Promise<UnlistenFn> {
+  return isTauri()
+    ? listen<T>(event, handler)
+    : Promise.resolve(noopUnlisten);
+}
 
 export const on = {
   log: (cb: (e: LogEvent) => void): Promise<UnlistenFn> =>
-    listen<LogEvent>("log", (e) => cb(e.payload)),
+    listenRuntime<LogEvent>("log", (e) => cb(e.payload)),
   dpiStatus: (cb: (e: DpiStatus) => void): Promise<UnlistenFn> =>
-    listen<VersionedSection<DpiStatus>>("dpi-status", (e) => {
+    listenRuntime<VersionedSection<DpiStatus>>("dpi-status", (e) => {
       cb(e.payload.value);
     }),
   dpiStatusVersioned: (
     cb: (section: VersionedSection<DpiStatus>) => void,
   ): Promise<UnlistenFn> =>
-    listen<VersionedSection<DpiStatus>>("dpi-status", (e) => cb(e.payload)),
+    listenRuntime<VersionedSection<DpiStatus>>("dpi-status", (e) => cb(e.payload)),
   proxyStatus: (cb: (e: ProxyStatus) => void): Promise<UnlistenFn> =>
-    listen<VersionedSection<ProxyStatus>>("proxy-status", (e) => {
+    listenRuntime<VersionedSection<ProxyStatus>>("proxy-status", (e) => {
       cb(e.payload.value);
     }),
   proxyStatusVersioned: (
     cb: (section: VersionedSection<ProxyStatus>) => void,
   ): Promise<UnlistenFn> =>
-    listen<VersionedSection<ProxyStatus>>("proxy-status", (e) => cb(e.payload)),
+    listenRuntime<VersionedSection<ProxyStatus>>("proxy-status", (e) => cb(e.payload)),
   brainStatus: (cb: (s: BrainStatus) => void): Promise<UnlistenFn> =>
-    listen<VersionedSection<BrainStatus>>("brain://status", (e) => {
+    listenRuntime<VersionedSection<BrainStatus>>("brain://status", (e) => {
       cb(e.payload.value);
     }),
   brainStatusVersioned: (
     cb: (section: VersionedSection<BrainStatus>) => void,
   ): Promise<UnlistenFn> =>
-    listen<VersionedSection<BrainStatus>>("brain://status", (e) => cb(e.payload)),
+    listenRuntime<VersionedSection<BrainStatus>>("brain://status", (e) => cb(e.payload)),
   legacyReliabilityStatus: (
     cb: (status: LegacyReliabilityStatus) => void,
   ): Promise<UnlistenFn> =>
-    listen<VersionedSection<LegacyReliabilityStatus>>(
+    listenRuntime<VersionedSection<LegacyReliabilityStatus>>(
       "legacy-reliability://status",
       (e) => cb(e.payload.value),
     ),
   legacyReliabilityStatusVersioned: (
     cb: (section: VersionedSection<LegacyReliabilityStatus>) => void,
   ): Promise<UnlistenFn> =>
-    listen<VersionedSection<LegacyReliabilityStatus>>(
+    listenRuntime<VersionedSection<LegacyReliabilityStatus>>(
       "legacy-reliability://status",
       (e) => cb(e.payload),
     ),
   adaptiveStatus: (cb: (s: AdaptiveStatus) => void): Promise<UnlistenFn> =>
-    listen<VersionedSection<AdaptiveStatus>>("adaptive://status", (e) => {
+    listenRuntime<VersionedSection<AdaptiveStatus>>("adaptive://status", (e) => {
       cb(e.payload.value);
     }),
   adaptiveStatusVersioned: (
     cb: (section: VersionedSection<AdaptiveStatus>) => void,
   ): Promise<UnlistenFn> =>
-    listen<VersionedSection<AdaptiveStatus>>("adaptive://status", (e) =>
+    listenRuntime<VersionedSection<AdaptiveStatus>>("adaptive://status", (e) =>
       cb(e.payload),
     ),
   adaptiveSuggestion: (
     cb: (suggestion: AdaptiveSuggestion) => void,
   ): Promise<UnlistenFn> =>
-    listen<AdaptiveSuggestion>("adaptive://suggestion", (e) => cb(e.payload)),
+    listenRuntime<AdaptiveSuggestion>("adaptive://suggestion", (e) => cb(e.payload)),
   adaptiveProbe: (cb: (probe: AdaptiveProbeBatch) => void): Promise<UnlistenFn> =>
-    listen<AdaptiveProbeBatch>("adaptive://probe", (e) => cb(e.payload)),
+    listenRuntime<AdaptiveProbeBatch>("adaptive://probe", (e) => cb(e.payload)),
   // Rust сообщает о скрытии/показе окна в трей — дополняет Visibility API для
   // паузы анимаций (WebView2 не всегда шлёт visibilitychange на hide()).
   windowVisibility: (cb: (visible: boolean) => void): Promise<UnlistenFn> =>
-    listen<boolean>("window-visibility", (e) => cb(e.payload)),
+    listenRuntime<boolean>("window-visibility", (e) => cb(e.payload)),
 };
 
 // ─── Runtime snapshots ────────────────────────────────────────────────────
@@ -701,15 +726,22 @@ export const runtime = {
 // ─── Утилиты окна / системы ────────────────────────────────────────────────
 
 export const win = {
-  minimize: () => getCurrentWindow().minimize(),
-  toggleMaximize: () => getCurrentWindow().toggleMaximize(),
-  close: () => getCurrentWindow().close(),
+  minimize: () =>
+    isTauri() ? getCurrentWindow().minimize() : Promise.resolve(),
+  toggleMaximize: () =>
+    isTauri() ? getCurrentWindow().toggleMaximize() : Promise.resolve(),
+  close: () =>
+    isTauri() ? getCurrentWindow().close() : Promise.resolve(),
   // Показ/скрытие именно веб-вью: в свёрнутом (iconic) окне композитор WebView2
   // продолжает рисовать кадры — hide() гасит рендер до ~0% CPU, show() возвращает.
-  showWebview: () => getCurrentWebview().show(),
-  hideWebview: () => getCurrentWebview().hide(),
+  showWebview: () =>
+    isTauri() ? getCurrentWebview().show() : Promise.resolve(),
+  hideWebview: () =>
+    isTauri() ? getCurrentWebview().hide() : Promise.resolve(),
   onFocusChanged: (cb: (focused: boolean) => void): Promise<UnlistenFn> =>
-    getCurrentWindow().onFocusChanged(({ payload }) => cb(payload)),
+    isTauri()
+      ? getCurrentWindow().onFocusChanged(({ payload }) => cb(payload))
+      : Promise.resolve(noopUnlisten),
 };
 
 export const clipboard = { write: writeText };
