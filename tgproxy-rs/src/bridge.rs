@@ -11,6 +11,7 @@ use rand::rngs::OsRng;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpStream;
+use tokio::task::JoinSet;
 use tokio_rustls::TlsConnector;
 
 use crate::cfrelay::CfRelay;
@@ -20,6 +21,7 @@ use crate::fake_tls;
 use crate::logger;
 use crate::obf2::{self, CryptoCtx, ProtoTag};
 use crate::splitter::{MsgSplitter, Proto};
+use crate::upstream::{Framing, Upstream, UpstreamReader, UpstreamWriter};
 use crate::ws;
 
 const CLIENT_INIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
@@ -27,6 +29,16 @@ const DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 const SESSION_WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 const WS_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 const WS_RETRY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+const DIRECT_RACE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(900);
+const TCP_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(1200);
+const WS_STAGGER: std::time::Duration = std::time::Duration::from_millis(100);
+const FALLBACK_STAGGER: std::time::Duration = std::time::Duration::from_millis(200);
+const RELAY_CONFIDENCE_TIME: std::time::Duration = std::time::Duration::from_secs(30);
+// End-to-end tests show that a Worker-to-Telegram /apiws relay is not a viable
+// transport for this proxy. Keep parsing the legacy flag for launch-contract
+// compatibility, but never schedule the route. The separate public relay
+// remains available when explicitly enabled.
+const WORKER_ROUTES_ENABLED: bool = false;
 const IP_FAIL_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(2 * 60);
 const IP_FAIL_PROBE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
 const DC_FAIL_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(60);
@@ -37,6 +49,36 @@ const MAX_FAKE_TLS_HELLO_LEN: usize = 18 * 1024;
 struct DirectRoute {
     dc: u16,
     is_media: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RouteCandidate {
+    DirectTcp,
+    TelegramWebSocket,
+    Fallback,
+}
+
+impl RouteCandidate {
+    fn label(self) -> &'static str {
+        match self {
+            Self::DirectTcp => "direct-tcp",
+            Self::TelegramWebSocket => "telegram-wss",
+            Self::Fallback => "fallback",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RouteRaceEvent {
+    Unavailable(RouteCandidate),
+    TaskFailed(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RelaySessionVerdict {
+    Success,
+    Failure,
+    Neutral,
 }
 
 #[derive(Default)]
@@ -52,6 +94,13 @@ struct IpFailure {
 }
 
 impl DirectHealth {
+    fn direct_is_suppressed(&mut self, now: Instant, ip: &str) -> bool {
+        self.ip_fail_until.retain(|_, failure| failure.until > now);
+        self.ip_fail_until
+            .get(ip)
+            .is_some_and(|failure| now < failure.next_probe)
+    }
+
     fn attempt_timeout(&mut self, now: Instant, ip: &str, route: DirectRoute) -> Option<Duration> {
         self.ip_fail_until.retain(|_, failure| failure.until > now);
         self.dc_fail_until.retain(|_, until| *until > now);
@@ -104,6 +153,22 @@ fn lock_direct_health() -> std::sync::MutexGuard<'static, DirectHealth> {
     DIRECT_HEALTH
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn direct_timeout_for_route(timeout: Duration, has_fallback: bool) -> Duration {
+    if has_fallback {
+        timeout.min(DIRECT_RACE_TIMEOUT)
+    } else {
+        timeout
+    }
+}
+
+fn fallback_is_available(
+    is_test_dc: bool,
+    public_relay_enabled: bool,
+    worker_configured: bool,
+) -> bool {
+    !is_test_dc && (public_relay_enabled || (WORKER_ROUTES_ENABLED && worker_configured))
 }
 
 /// Общий контекст моста (один на процесс, раздаётся в задачи соединений).
@@ -215,82 +280,49 @@ pub async fn handle_client(stream: TcpStream, ctx: Arc<BridgeContext>) {
         dc::WS_PATH
     };
 
-    let direct = if ctx.no_direct {
+    let has_fallback = fallback_is_available(
+        is_test_dc,
+        ctx.cf_relay.is_some(),
+        !ctx.worker_domains.is_empty(),
+    );
+    let upstream = if ctx.no_direct {
         // Отладочный режим --no-direct: сразу в фолбэк.
-        None
+        connect_fallback(&ctx, dc_id, is_test_dc, parsed.is_media, &peer).await
     } else {
-        let has_fallback =
-            !ctx.worker_domains.is_empty() || (!is_test_dc && ctx.cf_relay.is_some());
-        dial_dc(
+        connect_with_route_race(
+            ctx.clone(),
             target_ip,
             dc_id,
+            is_test_dc,
             parsed.is_media,
             ws_path,
-            &ctx.connector,
-            &peer,
+            peer.clone(),
             has_fallback,
         )
         .await
     };
-    let (ws_read, ws_write) = match direct {
-        Some(pair) => pair,
+    let upstream = match upstream {
+        Some(upstream) => upstream,
         None => {
-            // Прямой путь недоступен. Порядок фолбэка как в апстриме:
-            // свой CF worker, затем публичные relay (для тестовых DC —
-            // только worker).
-            let worker = if ctx.worker_domains.is_empty() {
-                None
-            } else {
-                crate::cfrelay::connect_worker(
-                    &ctx.worker_domains,
-                    dc_id,
-                    parsed.is_media,
-                    &ctx.connector,
-                    &peer,
-                )
-                .await
-            };
-            match worker {
-                Some((reader, write, _)) => (reader, write),
-                None => {
-                    if is_test_dc {
-                        logger::warn(format!(
-                            "[{peer}] DC{dc_id}{media_tag} no fallback available (test DC)"
-                        ));
-                        return;
-                    }
-                    let fallback = match ctx.cf_relay.as_ref() {
-                        Some(relay) => {
-                            relay
-                                .connect(dc_id, parsed.is_media, &ctx.connector, &peer)
-                                .await
-                        }
-                        None => None,
-                    };
-                    match fallback {
-                        Some((reader, write, _)) => (reader, write),
-                        None => {
-                            logger::warn(format!(
-                                "[{peer}] DC{dc_id}{media_tag} no fallback available"
-                            ));
-                            return;
-                        }
-                    }
-                }
-            }
+            logger::warn(format!(
+                "[{peer}] DC{dc_id}{media_tag} no upstream route available"
+            ));
+            return;
         }
     };
 
-    if let Err(error) = ws_write.send(&relay_init).await {
+    if let Err(error) = upstream.send_init(&relay_init).await {
         logger::warn(format!("[{peer}] relay init send failed: {error}"));
+        if let Some(feedback) = upstream.relay_feedback() {
+            feedback.failure();
+        }
         return;
     }
 
     run_session(
         client_read,
         client_write,
-        ws_read,
-        ws_write,
+        upstream,
         crypto,
         splitter,
         peer,
@@ -298,6 +330,156 @@ pub async fn handle_client(stream: TcpStream, ctx: Arc<BridgeContext>) {
         parsed.is_media,
     )
     .await;
+}
+
+async fn connect_fallback(
+    ctx: &BridgeContext,
+    dc_id: u16,
+    is_test_dc: bool,
+    is_media: bool,
+    peer: &str,
+) -> Option<Upstream> {
+    if WORKER_ROUTES_ENABLED && !ctx.worker_domains.is_empty() {
+        if let Some((reader, write, _)) = crate::cfrelay::connect_worker(
+            &ctx.worker_domains,
+            dc_id,
+            is_media,
+            &ctx.connector,
+            peer,
+        )
+        .await
+        {
+            return Some(Upstream::from_websocket(reader, write, "worker-wss"));
+        }
+    }
+
+    if is_test_dc {
+        logger::warn(format!(
+            "[{peer}] DC{dc_id}{} no fallback available (test DC)",
+            if is_media { " media" } else { "" }
+        ));
+        return None;
+    }
+
+    match ctx.cf_relay.as_ref() {
+        Some(relay) => relay
+            .connect(dc_id, is_media, &ctx.connector, peer)
+            .await
+            .map(|(reader, write, domain)| {
+                Upstream::from_public_relay(reader, write, relay.clone(), dc_id, domain)
+            }),
+        None => None,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn connect_with_route_race(
+    ctx: Arc<BridgeContext>,
+    target_ip: &'static str,
+    dc_id: u16,
+    is_test_dc: bool,
+    is_media: bool,
+    ws_path: &'static str,
+    peer: String,
+    has_fallback: bool,
+) -> Option<Upstream> {
+    let mut attempts = JoinSet::new();
+
+    let tcp_peer = peer.clone();
+    attempts.spawn(async move {
+        (
+            RouteCandidate::DirectTcp,
+            dial_tcp_dc(dc_id, is_test_dc, is_media, &tcp_peer).await,
+        )
+    });
+
+    let direct_suppressed = {
+        let mut health = lock_direct_health();
+        health.direct_is_suppressed(Instant::now(), target_ip)
+    };
+    if direct_suppressed {
+        logger::info(format!(
+            "[{peer}] DC{dc_id}{} direct WSS skipped (cooldown)",
+            if is_media { " media" } else { "" }
+        ));
+    } else {
+        let direct_connector = ctx.connector.clone();
+        let direct_peer = peer.clone();
+        attempts.spawn(async move {
+            tokio::time::sleep(WS_STAGGER).await;
+            (
+                RouteCandidate::TelegramWebSocket,
+                dial_dc(
+                    target_ip,
+                    dc_id,
+                    is_media,
+                    ws_path,
+                    &direct_connector,
+                    &direct_peer,
+                    has_fallback,
+                )
+                .await,
+            )
+        });
+    }
+
+    if has_fallback {
+        let fallback_ctx = ctx;
+        let fallback_peer = peer.clone();
+        attempts.spawn(async move {
+            tokio::time::sleep(FALLBACK_STAGGER).await;
+            (
+                RouteCandidate::Fallback,
+                connect_fallback(&fallback_ctx, dc_id, is_test_dc, is_media, &fallback_peer).await,
+            )
+        });
+    }
+
+    let media_tag = if is_media { " media" } else { "" };
+    let winner = select_route_winner(&mut attempts, |event| match event {
+        RouteRaceEvent::Unavailable(candidate) => logger::info(format!(
+            "[{peer}] DC{dc_id}{media_tag} route candidate unavailable: {}",
+            candidate.label()
+        )),
+        RouteRaceEvent::TaskFailed(error) => logger::warn(format!(
+            "[{peer}] DC{dc_id}{media_tag} route candidate task failed: {error}"
+        )),
+    })
+    .await;
+
+    if let Some((candidate, upstream)) = winner {
+        logger::info(format!(
+            "[{peer}] DC{dc_id}{media_tag} route race winner: {}",
+            candidate.label()
+        ));
+        Some(upstream)
+    } else {
+        None
+    }
+}
+
+async fn select_route_winner<T, F>(
+    attempts: &mut JoinSet<(RouteCandidate, Option<T>)>,
+    mut on_event: F,
+) -> Option<(RouteCandidate, T)>
+where
+    T: Send + 'static,
+    F: FnMut(RouteRaceEvent),
+{
+    while let Some(result) = attempts.join_next().await {
+        match result {
+            Ok((candidate, Some(value))) => {
+                // `shutdown` both aborts and joins every loser, so no TCP/TLS
+                // connection can outlive the route race in the background.
+                attempts.shutdown().await;
+                return Some((candidate, value));
+            }
+            Ok((candidate, None)) => on_event(RouteRaceEvent::Unavailable(candidate)),
+            Err(error) if error.is_cancelled() => {}
+            Err(error) => on_event(RouteRaceEvent::TaskFailed(error.to_string())),
+        }
+    }
+    None
 }
 
 /// Чтение клиентского init с учётом опционального FakeTLS-слоя.
@@ -440,6 +622,34 @@ async fn read_client_init(
     }
 }
 
+async fn dial_tcp_dc(dc: u16, is_test_dc: bool, is_media: bool, peer: &str) -> Option<Upstream> {
+    let media_tag = if is_media { " media" } else { "" };
+    let endpoints = dc::dc_tcp_endpoints(dc, is_test_dc);
+    if endpoints.is_empty() {
+        logger::warn(format!(
+            "[{peer}] DC{dc}{media_tag} has no raw TCP bootstrap endpoint"
+        ));
+        return None;
+    }
+
+    for &(ip, port) in endpoints {
+        logger::info(format!(
+            "[{peer}] DC{dc}{media_tag} -> tcp://{ip}:{port} (direct)"
+        ));
+        match tokio::time::timeout(TCP_CONNECT_TIMEOUT, TcpStream::connect((ip, port))).await {
+            Ok(Ok(stream)) => return Some(Upstream::from_tcp(stream, "direct-tcp")),
+            Ok(Err(error)) => logger::warn(format!(
+                "[{peer}] DC{dc}{media_tag} direct TCP {ip}:{port} failed: {error}"
+            )),
+            Err(_) => logger::warn(format!(
+                "[{peer}] DC{dc}{media_tag} direct TCP {ip}:{port} timed out"
+            )),
+        }
+    }
+
+    None
+}
+
 async fn dial_dc(
     ip: &str,
     dc: u16,
@@ -448,7 +658,7 @@ async fn dial_dc(
     connector: &TlsConnector,
     peer: &str,
     enable_ip_cooldown: bool,
-) -> Option<(ws::WsReader, Arc<ws::WsWriter>)> {
+) -> Option<Upstream> {
     let route = DirectRoute { dc, is_media };
     let media_tag = if is_media { "m" } else { "" };
     let timeout = {
@@ -461,6 +671,7 @@ async fn dial_dc(
         ));
         return None;
     };
+    let timeout = direct_timeout_for_route(timeout, enable_ip_cooldown);
     if timeout == WS_RETRY_TIMEOUT {
         logger::info(format!(
             "[{peer}] DC{dc}{media_tag} direct WS retry with {:.0}s timeout",
@@ -476,7 +687,7 @@ async fn dial_dc(
         match ws::connect(ip, &domain, ws_path, timeout, connector).await {
             Ok(pair) => {
                 lock_direct_health().record_success(ip, route);
-                return Some(pair);
+                return Some(Upstream::from_websocket(pair.0, pair.1, "telegram-wss"));
             }
             Err(error) => {
                 let is_timeout = matches!(&error, ws::ConnectError::Timeout);
@@ -485,6 +696,11 @@ async fn dial_dc(
                 ));
                 if is_timeout {
                     timed_out = true;
+                    // Both Telegram WS hostnames use the same destination IP.
+                    // Retrying the second name after a TCP/TLS timeout only
+                    // doubles the cold-start penalty and matches no useful
+                    // route distinction.
+                    break;
                 }
             }
         }
@@ -509,8 +725,7 @@ async fn dial_dc(
 async fn run_session(
     client_read: ClientRead,
     client_write: ClientWrite,
-    ws_read: ws::WsReader,
-    ws_write: Arc<ws::WsWriter>,
+    upstream: Upstream,
     ctx: CryptoCtx,
     splitter: MsgSplitter,
     peer: String,
@@ -523,6 +738,9 @@ async fn run_session(
         tg_enc,
         tg_dec,
     } = ctx;
+    let route = upstream.route();
+    let relay_feedback = upstream.relay_feedback();
+    let (upstream_read, upstream_write) = upstream.into_parts();
 
     let up_stats = Arc::new(std::sync::Mutex::new((0usize, 0usize)));
     let down_stats = Arc::new(std::sync::Mutex::new((0usize, 0usize)));
@@ -531,7 +749,7 @@ async fn run_session(
 
     let mut up = tokio::spawn(pump_up(
         client_read,
-        ws_write.clone(),
+        upstream_write.clone(),
         clt_dec,
         tg_enc,
         splitter,
@@ -539,7 +757,7 @@ async fn run_session(
         close_reason.clone(),
     ));
     let mut down = tokio::spawn(pump_down(
-        ws_read,
+        upstream_read,
         client_write,
         tg_dec,
         clt_enc,
@@ -562,17 +780,45 @@ async fn run_session(
     let (down_bytes, down_packets) = *down_stats.lock().unwrap();
     let reason = close_reason.lock().unwrap().clone();
     let media_tag = if is_media { "m" } else { "" };
+    let elapsed = started.elapsed();
     logger::info(format!(
-        "[{peer}] DC{dc}{media_tag} WS session closed ({reason}): ^{up_bytes} B ({up_packets} pkts) v{down_bytes} B ({down_packets} pkts) in {:.1}s",
-        started.elapsed().as_secs_f64()
+        "[{peer}] DC{dc}{media_tag} {route} session closed ({reason}): ^{up_bytes} B ({up_packets} units) v{down_bytes} B ({down_packets} units) in {:.1}s",
+        elapsed.as_secs_f64()
     ));
 
-    ws_write.close().await;
+    if let Some(feedback) = relay_feedback {
+        match relay_session_verdict(elapsed, down_bytes, &reason) {
+            RelaySessionVerdict::Success => feedback.success(),
+            RelaySessionVerdict::Failure => {
+                logger::warn(format!(
+                    "[{peer}] DC{dc}{media_tag} public relay demoted after unstable session"
+                ));
+                feedback.failure();
+            }
+            RelaySessionVerdict::Neutral => {}
+        }
+    }
+
+    upstream_write.close().await;
+}
+
+fn relay_session_verdict(
+    elapsed: Duration,
+    down_bytes: usize,
+    close_reason: &str,
+) -> RelaySessionVerdict {
+    if elapsed >= RELAY_CONFIDENCE_TIME && down_bytes > 0 {
+        RelaySessionVerdict::Success
+    } else if close_reason.starts_with("upstream:") || down_bytes == 0 {
+        RelaySessionVerdict::Failure
+    } else {
+        RelaySessionVerdict::Neutral
+    }
 }
 
 async fn pump_up(
     mut read: ClientRead,
-    ws: Arc<ws::WsWriter>,
+    upstream: UpstreamWriter,
     mut clt_dec: CtrCipher,
     mut tg_enc: CtrCipher,
     mut splitter: MsgSplitter,
@@ -584,7 +830,7 @@ async fn pump_up(
         match read.read(&mut buf).await {
             Ok(0) => {
                 if let Some(tail) = splitter.flush() {
-                    let _ = ws.send(&tail).await;
+                    let _ = upstream.send(&tail).await;
                 }
                 return;
             }
@@ -593,19 +839,20 @@ async fn pump_up(
                 clt_dec.apply(chunk);
                 let mut cipher = chunk.to_vec();
                 tg_enc.apply(&mut cipher);
-                let parts = splitter.split(chunk, &cipher);
-                if parts.is_empty() {
-                    continue;
-                }
+                let parts =
+                    prepare_upstream_payloads(upstream.framing(), &mut splitter, chunk, cipher);
                 {
                     let mut stats = stats.lock().unwrap();
                     stats.0 += n;
                     stats.1 += parts.len();
                 }
+                if parts.is_empty() {
+                    continue;
+                }
                 let result = if parts.len() > 1 {
-                    ws.send_batch(&parts).await
+                    upstream.send_batch(&parts).await
                 } else {
-                    ws.send(&parts[0]).await
+                    upstream.send(&parts[0]).await
                 };
                 if let Err(error) = result {
                     *close_reason.lock().unwrap() = format!("upstream: {error}");
@@ -620,25 +867,39 @@ async fn pump_up(
     }
 }
 
+fn prepare_upstream_payloads(
+    framing: Framing,
+    splitter: &mut MsgSplitter,
+    plain: &[u8],
+    cipher: Vec<u8>,
+) -> Vec<Vec<u8>> {
+    match framing {
+        Framing::ByteStream => vec![cipher],
+        Framing::TelegramMessages => splitter.split(plain, &cipher),
+    }
+}
+
 async fn pump_down(
-    mut ws_read: ws::WsReader,
+    mut upstream_read: UpstreamReader,
     mut client_write: ClientWrite,
     mut tg_dec: CtrCipher,
     mut clt_enc: CtrCipher,
     stats: Arc<std::sync::Mutex<(usize, usize)>>,
     close_reason: Arc<std::sync::Mutex<String>>,
 ) {
+    let mut data = Vec::with_capacity(READ_CHUNK);
     loop {
-        match ws_read.recv().await {
-            Some(mut data) => {
-                tg_dec.apply(&mut data);
-                clt_enc.apply(&mut data);
+        match upstream_read.recv_into(&mut data).await {
+            Ok(Some(count)) => {
+                let chunk = &mut data[..count];
+                tg_dec.apply(chunk);
+                clt_enc.apply(chunk);
                 {
                     let mut stats = stats.lock().unwrap();
-                    stats.0 += data.len();
+                    stats.0 += count;
                     stats.1 += 1;
                 }
-                match tokio::time::timeout(SESSION_WRITE_TIMEOUT, client_write.write_all(&data))
+                match tokio::time::timeout(SESSION_WRITE_TIMEOUT, client_write.write_all(chunk))
                     .await
                 {
                     Ok(Ok(())) => {}
@@ -652,11 +913,15 @@ async fn pump_down(
                     }
                 }
             }
-            None => {
+            Ok(None) => {
                 let mut reason = close_reason.lock().unwrap();
                 if *reason == "normal" {
-                    *reason = "upstream: ws_close".to_string();
+                    *reason = "upstream: closed".to_string();
                 }
+                return;
+            }
+            Err(error) => {
+                *close_reason.lock().unwrap() = format!("upstream: {error}");
                 return;
             }
         }
@@ -680,6 +945,7 @@ async fn drain_and_close(mut read: ClientRead) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     const NORMAL_DC2: DirectRoute = DirectRoute {
         dc: 2,
@@ -702,6 +968,113 @@ mod tests {
     }
 
     #[test]
+    fn fallback_route_caps_direct_timeout_without_changing_direct_only() {
+        assert_eq!(
+            direct_timeout_for_route(WS_CONNECT_TIMEOUT, true),
+            DIRECT_RACE_TIMEOUT
+        );
+        assert_eq!(
+            direct_timeout_for_route(WS_RETRY_TIMEOUT, true),
+            DIRECT_RACE_TIMEOUT
+        );
+        assert_eq!(
+            direct_timeout_for_route(WS_CONNECT_TIMEOUT, false),
+            WS_CONNECT_TIMEOUT
+        );
+    }
+
+    #[test]
+    fn worker_configuration_never_enables_a_fallback_route() {
+        assert!(!fallback_is_available(false, false, true));
+        assert!(fallback_is_available(false, true, false));
+        assert!(fallback_is_available(false, true, true));
+        assert!(!fallback_is_available(true, true, true));
+    }
+
+    #[tokio::test]
+    async fn route_race_uses_first_success_after_an_unavailable_candidate() {
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let mut attempts = JoinSet::new();
+        attempts.spawn(async { (RouteCandidate::DirectTcp, None) });
+        attempts.spawn(async move {
+            release_rx.await.expect("direct result must release WSS");
+            (RouteCandidate::TelegramWebSocket, Some("telegram-wss"))
+        });
+        attempts.spawn(async {
+            std::future::pending::<()>().await;
+            (RouteCandidate::Fallback, Some("fallback"))
+        });
+
+        let mut events = Vec::new();
+        let mut release_tx = Some(release_tx);
+        let winner = select_route_winner(&mut attempts, |event| {
+            if event == RouteRaceEvent::Unavailable(RouteCandidate::DirectTcp) {
+                let _ = release_tx.take().expect("release only once").send(());
+            }
+            events.push(event);
+        })
+        .await;
+
+        assert_eq!(
+            winner,
+            Some((RouteCandidate::TelegramWebSocket, "telegram-wss"))
+        );
+        assert_eq!(
+            events,
+            vec![RouteRaceEvent::Unavailable(RouteCandidate::DirectTcp)]
+        );
+        assert!(attempts.is_empty());
+    }
+
+    #[tokio::test]
+    async fn route_race_joins_cancelled_losers_before_returning() {
+        struct CancellationFlag(Arc<AtomicBool>);
+
+        impl Drop for CancellationFlag {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let mut attempts = JoinSet::new();
+        let loser_cancelled = cancelled.clone();
+        attempts.spawn(async move {
+            let _flag = CancellationFlag(loser_cancelled);
+            let _ = started_tx.send(());
+            std::future::pending::<()>().await;
+            (RouteCandidate::Fallback, Some("loser"))
+        });
+        started_rx.await.expect("loser task must start");
+        attempts.spawn(async { (RouteCandidate::DirectTcp, Some("winner")) });
+
+        let winner = select_route_winner(&mut attempts, |_| {}).await;
+
+        assert_eq!(winner, Some((RouteCandidate::DirectTcp, "winner")));
+        assert!(cancelled.load(Ordering::SeqCst));
+        assert!(attempts.is_empty());
+    }
+
+    #[tokio::test]
+    async fn route_race_returns_none_when_every_candidate_is_unavailable() {
+        let mut attempts = JoinSet::new();
+        attempts.spawn(async { (RouteCandidate::DirectTcp, None::<()>) });
+        attempts.spawn(async { (RouteCandidate::TelegramWebSocket, None::<()>) });
+
+        let mut events = Vec::new();
+        let winner = select_route_winner(&mut attempts, |event| events.push(event)).await;
+
+        assert_eq!(winner, None);
+        assert_eq!(events.len(), 2);
+        assert!(events.iter().all(|event| matches!(
+            event,
+            RouteRaceEvent::Unavailable(RouteCandidate::DirectTcp)
+                | RouteRaceEvent::Unavailable(RouteCandidate::TelegramWebSocket)
+        )));
+    }
+
+    #[test]
     fn timeout_opens_global_ip_and_route_cooldowns() {
         let now = Instant::now();
         let mut health = DirectHealth::default();
@@ -719,6 +1092,16 @@ mod tests {
             health.attempt_timeout(now, "149.154.171.5", NORMAL_DC2),
             Some(WS_RETRY_TIMEOUT)
         );
+    }
+
+    #[test]
+    fn fallback_preference_skips_direct_until_probe_window() {
+        let now = Instant::now();
+        let mut health = DirectHealth::default();
+        health.record_timeout(now, "149.154.167.220", NORMAL_DC2, true);
+
+        assert!(health.direct_is_suppressed(now, "149.154.167.220"));
+        assert!(!health.direct_is_suppressed(now + IP_FAIL_PROBE_INTERVAL, "149.154.167.220"));
     }
 
     #[test]
@@ -804,6 +1187,46 @@ mod tests {
         assert_eq!(
             health.attempt_timeout(now, "149.154.167.220", NORMAL_DC2),
             Some(WS_CONNECT_TIMEOUT)
+        );
+    }
+
+    #[test]
+    fn byte_stream_bypasses_packet_splitter_but_websocket_waits_for_packet() {
+        let partial_plain = [0x02u8, 0xaa, 0xbb];
+        let partial_cipher = vec![0x10, 0x20, 0x30];
+
+        let mut tcp_splitter = MsgSplitter::new(Proto::Abridged);
+        let tcp_parts = prepare_upstream_payloads(
+            Framing::ByteStream,
+            &mut tcp_splitter,
+            &partial_plain,
+            partial_cipher.clone(),
+        );
+        assert_eq!(tcp_parts, vec![partial_cipher.clone()]);
+
+        let mut websocket_splitter = MsgSplitter::new(Proto::Abridged);
+        let websocket_parts = prepare_upstream_payloads(
+            Framing::TelegramMessages,
+            &mut websocket_splitter,
+            &partial_plain,
+            partial_cipher,
+        );
+        assert!(websocket_parts.is_empty());
+    }
+
+    #[test]
+    fn relay_health_requires_a_stable_downstream_session() {
+        assert_eq!(
+            relay_session_verdict(Duration::from_secs(3), 0, "upstream: closed"),
+            RelaySessionVerdict::Failure
+        );
+        assert_eq!(
+            relay_session_verdict(Duration::from_secs(3), 100, "normal"),
+            RelaySessionVerdict::Neutral
+        );
+        assert_eq!(
+            relay_session_verdict(RELAY_CONFIDENCE_TIME, 100, "upstream: closed"),
+            RelaySessionVerdict::Success
         );
     }
 }

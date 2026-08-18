@@ -25,6 +25,31 @@ pub fn dc_test_ip(dc: u16) -> Option<&'static str> {
     })
 }
 
+/// Bootstrap-адреса raw MTProto TCP. Позже этот список будет дополняться
+/// last-known-good данными из getProxyConfig/getProxyConfigV6, но статический
+/// набор нужен, чтобы updater мог стартовать даже в полностью заблокированной
+/// сети. Порядок соответствует публичной конфигурации Telegram/MTProxy.
+pub fn dc_tcp_endpoints(dc: u16, is_test: bool) -> &'static [(&'static str, u16)] {
+    if is_test {
+        return match dc {
+            1 => &[("149.154.175.10", 443)],
+            2 => &[("149.154.167.40", 443)],
+            3 => &[("149.154.175.117", 443)],
+            _ => &[],
+        };
+    }
+
+    match dc {
+        1 => &[("149.154.175.50", 443)],
+        2 => &[("149.154.167.51", 443), ("95.161.76.100", 443)],
+        3 => &[("149.154.175.100", 443)],
+        4 => &[("149.154.167.91", 443)],
+        5 => &[("149.154.171.5", 443)],
+        203 => &[("91.105.192.100", 443)],
+        _ => &[],
+    }
+}
+
 pub const WS_PATH: &str = "/apiws";
 pub const WS_PATH_TEST: &str = "/apiws_test";
 
@@ -75,5 +100,13 @@ mod tests {
     #[test]
     fn dc203_maps_to_kws2() {
         assert_eq!(ws_domains(203, false)[0], "kws2.web.telegram.org");
+    }
+
+    #[test]
+    fn tcp_bootstrap_covers_regular_cdn_and_test_dcs() {
+        assert_eq!(dc_tcp_endpoints(1, false), &[("149.154.175.50", 443)]);
+        assert_eq!(dc_tcp_endpoints(203, false), &[("91.105.192.100", 443)]);
+        assert_eq!(dc_tcp_endpoints(2, true), &[("149.154.167.40", 443)]);
+        assert!(dc_tcp_endpoints(999, false).is_empty());
     }
 }

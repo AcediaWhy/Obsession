@@ -16,6 +16,7 @@ mod link;
 mod logger;
 mod obf2;
 mod splitter;
+mod upstream;
 mod ws;
 
 use std::process::ExitCode;
@@ -94,8 +95,8 @@ async fn run(args: cli::Args, secret: [u8; 16]) -> Result<(), String> {
         logger::warn("  Direct DC:     disabled (--no-direct debug flag)");
     }
     if !worker_domains.is_empty() {
-        logger::info(format!(
-            "  CF worker:     enabled ({})",
+        logger::warn(format!(
+            "  CF worker:     ignored (unsupported architecture; configured: {})",
             worker_domains.join(", ")
         ));
     }

@@ -11,6 +11,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use tokio_rustls::TlsConnector;
 
@@ -45,8 +46,10 @@ pub const CFPROXY_DEFAULT_DOMAINS: [&str; 20] = [
 
 const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 const FALLBACK_BUDGET: std::time::Duration = std::time::Duration::from_secs(25);
+const FAILED_RELAY_COOLDOWN: Duration = Duration::from_secs(5 * 60);
 const MAX_WORKER_ATTEMPTS: usize = 3;
 const MAX_CACHE_BYTES: u64 = 64 * 1024;
+const CACHE_SCHEMA_VERSION: u8 = 2;
 static CACHE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 static CACHE_SERIAL: AtomicU64 = AtomicU64::new(0);
 
@@ -55,6 +58,7 @@ pub struct CfRelay {
     domains: Vec<String>,
     cache_path: Option<PathBuf>,
     active_domains: Mutex<HashMap<u16, String>>,
+    failed_domains: Mutex<HashMap<(u16, String), Instant>>,
     attempt_serial: AtomicU64,
 }
 
@@ -76,6 +80,7 @@ impl CfRelay {
             domains,
             cache_path: cache_path.map(Path::to_path_buf),
             active_domains: Mutex::new(HashMap::new()),
+            failed_domains: Mutex::new(HashMap::new()),
             attempt_serial: AtomicU64::new(0),
         }
     }
@@ -85,23 +90,45 @@ impl CfRelay {
     /// чтобы не устраивать stampede на одном недоступном домене.
     fn attempt_order(&self, dc: u16) -> Vec<String> {
         let mut order = self.domains.clone();
+        let cooled = {
+            let now = Instant::now();
+            let mut failed = self
+                .failed_domains
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            failed.retain(|_, until| *until > now);
+            failed
+                .iter()
+                .filter(|((failed_dc, _), _)| *failed_dc == dc)
+                .map(|((_, domain), _)| domain.clone())
+                .collect::<Vec<_>>()
+        };
+        order.sort_by_key(|domain| cooled.contains(domain));
         let active = self
             .active_domains
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .get(&dc)
             .cloned();
-        if let Some(active) = active {
+        if let Some(active) = active.filter(|domain| !cooled.contains(domain)) {
             if let Some(index) = order.iter().position(|domain| domain == &active) {
                 order.swap(0, index);
             }
             return order;
         }
 
-        if order.len() > 1 {
+        let available_len = order
+            .iter()
+            .position(|domain| cooled.contains(domain))
+            .unwrap_or(order.len());
+        let rotation_len = if available_len == 0 {
+            order.len()
+        } else {
+            available_len
+        };
+        if rotation_len > 1 {
             let serial = self.attempt_serial.fetch_add(1, Ordering::Relaxed) as usize;
-            let len = order.len();
-            order.rotate_left(serial % len);
+            order[..rotation_len].rotate_left(serial % rotation_len);
         }
         order
     }
@@ -111,7 +138,8 @@ impl CfRelay {
     /// DC203 остаётся `kws203`: у публичных relay поддомен выбирает
     /// origin, поэтому правило прямого Telegram-хоста `203 -> 2` здесь
     /// неприменимо.
-    /// Первый успешный домен поднимается в кэш.
+    /// HTTP 101 доказывает только доступность relay endpoint. Домен становится
+    /// активным позднее, когда мост подтвердит устойчивую MTProto-сессию.
     pub async fn connect(
         &self,
         dc: u16,
@@ -139,10 +167,7 @@ impl CfRelay {
                 match ws::connect(&ip.to_string(), &host, "/apiws", CONNECT_TIMEOUT, connector)
                     .await
                 {
-                    Ok((reader, writer)) => {
-                        self.remember_working_domain(dc, &base);
-                        return Some((reader, writer, host));
-                    }
+                    Ok((reader, writer)) => return Some((reader, writer, base)),
                     Err(error) => {
                         self.forget_failed_domain(dc, &base);
                         logger::warn(format!(
@@ -166,6 +191,10 @@ impl CfRelay {
 
     /// Продвинуть сработавший домен в начало и сохранить кэш (best-effort).
     fn remember_working_domain(&self, dc: u16, domain: &str) {
+        self.failed_domains
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&(dc, domain.to_string()));
         if is_default_domain(domain) {
             self.active_domains
                 .lock()
@@ -209,6 +238,38 @@ impl CfRelay {
         if active.get(&dc).is_some_and(|current| current == domain) {
             active.remove(&dc);
         }
+        drop(active);
+        if is_default_domain(domain) {
+            self.failed_domains
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .insert(
+                    (dc, domain.to_string()),
+                    Instant::now() + FAILED_RELAY_COOLDOWN,
+                );
+        }
+    }
+
+    pub(crate) fn report_session_success(&self, dc: u16, domain: &str) {
+        self.remember_working_domain(dc, domain);
+    }
+
+    pub(crate) fn report_session_failure(&self, dc: u16, domain: &str) {
+        self.forget_failed_domain(dc, domain);
+
+        let Some(path) = &self.cache_path else {
+            return;
+        };
+        if !is_default_domain(domain) {
+            return;
+        }
+        let _guard = CACHE_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut order = load_cached_domains_unlocked(path).unwrap_or_else(|| self.domains.clone());
+        order.retain(|candidate| candidate != domain);
+        order.push(domain.to_string());
+        let _ = save_cached_domains_unlocked(path, &order);
     }
 }
 
@@ -324,7 +385,7 @@ fn save_cached_domains_unlocked(path: &Path, domains: &[String]) -> std::io::Res
         }
     }
     let json = format!(
-        "{{\"domains\":[{}]}}",
+        "{{\"version\":{CACHE_SCHEMA_VERSION},\"domains\":[{}]}}",
         allowed
             .iter()
             .map(|d| format!("\"{d}\""))
@@ -375,6 +436,16 @@ fn is_default_domain(domain: &str) -> bool {
 
 /// Мини-парсер `"domains": ["a", "b"]` без зависимости от serde_json.
 fn serde_lite(text: &str) -> Option<Vec<String>> {
+    let version_start = text.find("\"version\"")? + "\"version\"".len();
+    let version_value = text[version_start..].split_once(':')?.1.trim_start();
+    let version_len = version_value
+        .bytes()
+        .take_while(|byte| byte.is_ascii_digit())
+        .count();
+    let version = version_value[..version_len].parse::<u8>().ok()?;
+    if version != CACHE_SCHEMA_VERSION {
+        return None;
+    }
     let start = text.find("\"domains\"")?;
     let open = text[start..].find('[')? + start;
     let close = text[open + 1..].find(']')? + open + 1;
@@ -472,6 +543,29 @@ mod tests {
 
         relay.forget_failed_domain(2, "sadnews.co.uk");
         assert_ne!(relay.attempt_order(2)[0], "sadnews.co.uk");
+        assert_eq!(relay.attempt_order(2).last().unwrap(), "sadnews.co.uk");
+    }
+
+    #[test]
+    fn unstable_session_demotes_domain_in_persistent_cache() {
+        let dir = std::env::temp_dir().join("tgproxy_rs_test_session_failure_cache");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("cfproxy_cache.json");
+        save_cached_domains(
+            &path,
+            &["sadnews.co.uk".to_string(), "pclead.co.uk".to_string()],
+        )
+        .unwrap();
+
+        let relay = CfRelay::new(Some(&path));
+        relay.report_session_success(2, "sadnews.co.uk");
+        relay.report_session_failure(2, "sadnews.co.uk");
+
+        let cached = load_cached_domains(&path).unwrap();
+        assert_ne!(cached[0], "sadnews.co.uk");
+        assert_eq!(cached.last().unwrap(), "sadnews.co.uk");
+        assert_ne!(relay.attempt_order(2)[0], "sadnews.co.uk");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -520,6 +614,18 @@ mod tests {
         let relay = CfRelay::new(Some(&path));
         assert_eq!(relay.domains[0], "sadnews.co.uk");
         assert_eq!(relay.domains.len(), CFPROXY_DEFAULT_DOMAINS.len());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn legacy_connection_only_cache_is_ignored() {
+        let dir = std::env::temp_dir().join("tgproxy_rs_test_legacy_cache");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("cfproxy_cache.json");
+        std::fs::write(&path, r#"{"domains":["sadnews.co.uk"]}"#).unwrap();
+
+        let relay = CfRelay::new(Some(&path));
+        assert_eq!(relay.domains[0], CFPROXY_DEFAULT_DOMAINS[0]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -687,6 +793,107 @@ mod tests {
         println!(
             "SUCCESS: {received} bytes from DC (first byte 0x{:02x})",
             response[0]
+        );
+    }
+
+    /// Та же сквозная проба, но с padded-intermediate транспортом, который
+    /// используют мобильные клиенты Telegram. Нужна отдельно от abridged:
+    /// именно transport framing определяет границы WebSocket messages.
+    #[tokio::test]
+    #[ignore = "requires a proxy listening on 127.0.0.1:24445"]
+    async fn synthetic_padded_client_probe() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let secret_hex = "5a5a1133445566778899aabbccddeeff";
+        let mut secret = [0u8; 16];
+        for i in 0..16 {
+            secret[i] = u8::from_str_radix(&secret_hex[i * 2..i * 2 + 2], 16).expect("secret hex");
+        }
+        let target =
+            std::env::var("TGPROXY_PROBE_ADDR").unwrap_or_else(|_| "127.0.0.1:24445".to_string());
+        let probe_dc = std::env::var("TGPROXY_PROBE_DC")
+            .ok()
+            .map(|raw| raw.parse::<i16>().expect("TGPROXY_PROBE_DC must be i16"))
+            .unwrap_or(2);
+
+        let mut client = tokio::net::TcpStream::connect(&target)
+            .await
+            .expect("connect to reference proxy");
+        println!("connected to {target}, sending padded client init for DC{probe_dc}");
+
+        let mut rng = rand::rngs::OsRng;
+        let init = crate::obf2::build_client_init(
+            probe_dc,
+            crate::obf2::ProtoTag::Padded,
+            &secret,
+            &mut rng,
+        );
+        client.write_all(&init).await.expect("send client init");
+
+        let abridged = req_pq_multi_packet(&mut rng);
+        let payload = &abridged[1..];
+        let padding_len = 12usize;
+        let mut req_pq = Vec::with_capacity(4 + payload.len() + padding_len);
+        req_pq.extend_from_slice(&((payload.len() + padding_len) as u32).to_le_bytes());
+        req_pq.extend_from_slice(payload);
+        let mut padding = vec![0u8; padding_len];
+        rand::RngCore::fill_bytes(&mut rng, &mut padding);
+        req_pq.extend_from_slice(&padding);
+
+        use crate::crypto::CtrCipher;
+        let prekey: [u8; 32] = init[8..40].try_into().unwrap();
+        let iv: [u8; 16] = init[40..56].try_into().unwrap();
+        let key = {
+            use sha2::{Digest, Sha256};
+            let mut hasher = Sha256::new();
+            hasher.update(prekey);
+            hasher.update(secret);
+            <[u8; 32]>::from(hasher.finalize())
+        };
+        let mut c2s = CtrCipher::new(&key, &iv);
+        c2s.skip_64();
+        c2s.apply(&mut req_pq);
+        client.write_all(&req_pq).await.expect("send padded req_pq");
+        println!("padded req_pq sent ({} bytes)", req_pq.len());
+
+        let mut response = vec![0u8; 4096];
+        let received = tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            client.read(&mut response),
+        )
+        .await
+        .expect("silence: no data in 20s")
+        .expect("read response from proxy");
+        assert!(received > 0, "connection closed by proxy without data");
+        response.truncate(received);
+
+        let reversed: Vec<u8> = init[8..56].iter().rev().copied().collect();
+        let server_key = {
+            use sha2::{Digest, Sha256};
+            let mut hasher = Sha256::new();
+            hasher.update(&reversed[..32]);
+            hasher.update(secret);
+            <[u8; 32]>::from(hasher.finalize())
+        };
+        let server_iv: [u8; 16] = reversed[32..48].try_into().unwrap();
+        let mut s2c = CtrCipher::new(&server_key, &server_iv);
+        s2c.apply(&mut response);
+
+        assert!(
+            response.len() >= 28,
+            "padded response is shorter than MTProto envelope"
+        );
+        let outer_len =
+            u32::from_le_bytes(response[..4].try_into().unwrap()) as usize & 0x7fff_ffff;
+        assert_eq!(outer_len + 4, response.len());
+        assert_eq!(&response[4..12], &[0; 8], "resPQ must be unencrypted");
+        assert_eq!(
+            u32::from_le_bytes(response[24..28].try_into().unwrap()),
+            0x0516_2463,
+            "unexpected first Telegram constructor"
+        );
+        println!(
+            "SUCCESS PADDED: {received} bytes, valid resPQ constructor, outer_len={outer_len}"
         );
     }
 
