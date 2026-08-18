@@ -1,7 +1,9 @@
+import { useLayoutEffect, useRef } from "react";
 import { motion } from "framer-motion";
 import { Icon } from "./icons";
 import { EyeLogo } from "./EyeLogo";
-import { spring } from "../tokens";
+import { useMotionOff } from "../render";
+import { dur, ease, spring } from "../tokens";
 
 export type Tab = "overview" | "dpi" | "ai" | "telegram" | "lists" | "profiles" | "settings";
 
@@ -26,6 +28,16 @@ export function NavRail({
   active: Tab;
   onSelect: (t: Tab) => void;
 }) {
+  const previousActiveRef = useRef(active);
+  const previousIndex = TAB_ORDER.indexOf(previousActiveRef.current);
+  const activeIndex = TAB_ORDER.indexOf(active);
+  const farJump = Math.abs(activeIndex - previousIndex) > 1;
+  const motionOff = useMotionOff();
+
+  useLayoutEffect(() => {
+    previousActiveRef.current = active;
+  }, [active]);
+
   return (
     <nav className="flex w-[220px] flex-col px-4 pb-4 pt-2">
       {/* Лого — живой глаз (идентичность Obsession). */}
@@ -54,9 +66,26 @@ export function NavRail({
               {isActive && (
                 <motion.div
                   layoutId="nav-active"
-                  className="nav-active-plate absolute inset-0 rounded-xl border border-accent/40 bg-accent/15 shadow-glow"
-                  transition={spring.snappy}
-                />
+                  aria-hidden
+                  className="absolute inset-0 rounded-xl"
+                  // В вертикальном меню дальний spring-перелёт на мгновение
+                  // подсвечивал промежуточные пункты. Соседние пункты сохраняют
+                  // физичный slide; дальний выбор телепортирует геометрию и
+                  // проявляет новую plate коротким fade.
+                  transition={farJump || motionOff ? { duration: 0 } : spring.snappy}
+                >
+                  <motion.span
+                    key={active}
+                    initial={farJump && !motionOff ? { opacity: 0, scale: 0.98 } : false}
+                    animate={{ opacity: 1, scale: 1 }}
+                    transition={
+                      farJump && !motionOff
+                        ? { duration: dur.fast, ease: ease.enter }
+                        : { duration: 0 }
+                    }
+                    className="nav-active-plate absolute inset-0 rounded-xl border border-accent/40 bg-accent/15 shadow-glow"
+                  />
+                </motion.div>
               )}
               {/* Иконка: у активного пункта — акцент темы (цвет приезжает вместе
                   с пилюлей), у прочих — гаснет до soft и оживает на hover.
@@ -64,7 +93,7 @@ export function NavRail({
                   «пункт подаётся навстречу»; transform дёшев и не трогает пилюлю. */}
               <span
                 className={[
-                  "relative z-10 flex items-center gap-3 transition-[color,transform] duration-200 group-hover:translate-x-0.5",
+                  "relative z-10 flex items-center gap-3 transition-[color,transform] duration-[var(--motion-fast)] group-hover:translate-x-0.5",
                   isActive ? "text-accent-cyan" : "text-ink-muted group-hover:text-ink-soft",
                 ].join(" ")}
               >

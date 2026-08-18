@@ -7,6 +7,14 @@
 :root {
   color-scheme: dark;
 
+  /* CSS-зеркало шкалы из design/tokens.ts. Интеракционные переходы используют
+     только эти значения; длинная амбиентная хореография сцен остаётся локальной. */
+  --motion-fast: 140ms;
+  --motion-base: 300ms;
+  --motion-slow: 600ms;
+  --motion-ease-enter: cubic-bezier(0.22, 1, 0.36, 1);
+  --motion-ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
+
   /* Акцентная палитра (rgb-триплеты для rgb(var(--x) / a)). По умолчанию —
      холодная Aurora: индиго / циан / фиолетовый. */
   --accent: 99 102 241;
@@ -245,7 +253,7 @@
 }
 
 .obsession-focus-capture[data-active="true"] {
-  animation: obsession-focus-capture 650ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: obsession-focus-capture var(--motion-slow) var(--motion-ease-enter) both;
 }
 
 @keyframes obsession-focus-capture {
@@ -557,17 +565,27 @@ body {
 }
 
 /* Транзишен интерактивных поверхностей (кнопки, чипы, плитки). Цвета — быстрые
-   (отклик), box-shadow — медленный: свечение «расцветает» за 0.35 с, а не
-   щёлкает. transform в списке НЕТ намеренно — его ведёт framer (whileTap/Hover).
+   (отклик), box-shadow — базовый: свечение успевает «расцвести», но не отстаёт.
+   transform в списке НЕТ намеренно — его ведёт framer (whileTap/Hover).
    Одна причина существования класса: в Tailwind transition-[...] задаёт ОДНУ
    длительность на весь список, а здесь у тени своя. */
 .btn-anim {
   transition:
-    color 0.2s ease,
-    background-color 0.2s ease,
-    border-color 0.2s ease,
-    opacity 0.2s ease,
-    box-shadow 0.45s ease;
+    color var(--motion-fast) var(--motion-ease-standard),
+    background-color var(--motion-fast) var(--motion-ease-standard),
+    border-color var(--motion-fast) var(--motion-ease-standard),
+    opacity var(--motion-fast) var(--motion-ease-standard),
+    box-shadow var(--motion-base) var(--motion-ease-enter);
+}
+
+/* Поля не двигаем физически: им нужен только такой же быстрый и предсказуемый
+   отклик рамки/фона, как у остальных контролов. */
+.control-anim {
+  transition:
+    color var(--motion-fast) var(--motion-ease-standard),
+    background-color var(--motion-fast) var(--motion-ease-standard),
+    border-color var(--motion-fast) var(--motion-ease-standard),
+    box-shadow var(--motion-base) var(--motion-ease-enter);
 }
 
 /* Область перетаскивания окна (кастомный титлбар). */
@@ -617,11 +635,13 @@ body {
     transparent 60%
   );
   opacity: 0;
-  transition: opacity 0.45s ease;
+  transition: opacity var(--motion-fast) var(--motion-ease-standard);
   pointer-events: none;
 }
 .spotlight:hover::after {
   opacity: 1;
+  transition-duration: var(--motion-base);
+  transition-timing-function: var(--motion-ease-enter);
 }
 
 /* Spotlight-кромка: тонкий кант панели загорается под курсором (эффект глубины,
@@ -642,11 +662,13 @@ body {
   -webkit-mask-composite: xor;
   mask-composite: exclude;
   opacity: 0;
-  transition: opacity 0.45s ease;
+  transition: opacity var(--motion-fast) var(--motion-ease-standard);
   pointer-events: none;
 }
 .glass:hover > .spotlight-ring {
   opacity: 1;
+  transition-duration: var(--motion-base);
+  transition-timing-function: var(--motion-ease-enter);
 }
 
 /* Градиентная заливка текста (заголовки). Мягкая диффузная тень (большой blur, без
@@ -721,13 +743,13 @@ textarea {
 [data-theme-morph="true"] .glass::before,
 [data-theme-morph="true"] .glass::after {
   transition:
-    color 0.6s ease,
-    background-color 0.6s ease,
-    border-color 0.6s ease,
-    box-shadow 0.6s ease,
-    text-shadow 0.6s ease,
-    fill 0.6s ease,
-    stroke 0.6s ease !important;
+    color var(--motion-slow) var(--motion-ease-standard),
+    background-color var(--motion-slow) var(--motion-ease-standard),
+    border-color var(--motion-slow) var(--motion-ease-standard),
+    box-shadow var(--motion-slow) var(--motion-ease-standard),
+    text-shadow var(--motion-slow) var(--motion-ease-standard),
+    fill var(--motion-slow) var(--motion-ease-standard),
+    stroke var(--motion-slow) var(--motion-ease-standard) !important;
 }
 
 /* Уходящая theme scene сохраняет последний кадр crossfade, не продолжая

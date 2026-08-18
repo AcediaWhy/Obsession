@@ -11,8 +11,8 @@ import { Stagger, StaggerItem } from "../design/components/Stagger";
 import { Button } from "../design/components/atoms";
 import { Uptime } from "../design/components/Uptime";
 import { Icon } from "../design/components/icons";
-import { dur, ease, spring } from "../design/tokens";
-import { useRenderActive } from "../design/render";
+import { cascade, dur, ease, spring } from "../design/tokens";
+import { useMotionOff, useRenderActive } from "../design/render";
 
 const CATEGORY_LABELS: Record<string, string> = {
   discord: "Discord",
@@ -91,9 +91,9 @@ export function OverviewScreen() {
                 : spring.soft
             }
             className={[
-              // Доводка цвета/свечения 0.5с — состояние «протекает» в новое,
+              // Доводка цвета/свечения за base-такт — состояние «протекает» в новое,
               // в одном темпе с glow панели и бейджами.
-              "relative flex h-16 w-16 shrink-0 items-center justify-center rounded-full border transition-[color,background-color,border-color,box-shadow] duration-500",
+              "relative flex h-16 w-16 shrink-0 items-center justify-center rounded-full border transition-[color,background-color,border-color,box-shadow] duration-[var(--motion-base)]",
               protectedNow
                 ? "border-ok/40 bg-ok/15 text-ok shadow-glow"
                 : "border-glass-border bg-white/5 text-ink-muted",
@@ -170,6 +170,7 @@ export function OverviewScreen() {
       <Stagger className="grid grid-cols-2 gap-4">
         <StaggerItem glass>
           <StatusCard
+            entryOrder={0}
             icon={<Icon.Bolt size={18} />}
             title="DPI-обход"
             on={dpiActive}
@@ -187,6 +188,7 @@ export function OverviewScreen() {
 
         <StaggerItem glass>
           <StatusCard
+            entryOrder={1}
             icon={<Icon.Send size={18} />}
             title="Telegram-прокси"
             on={proxyRunning}
@@ -204,6 +206,7 @@ export function OverviewScreen() {
 
         <StaggerItem glass>
           <StatusCard
+            entryOrder={2}
             icon={<Icon.Robot size={18} />}
             title="ИИ-разблокировка"
             on={hostsStatus === "installed" || hostsStatus === "outdated"}
@@ -220,6 +223,7 @@ export function OverviewScreen() {
 
         <StaggerItem glass>
           <StatusCard
+            entryOrder={3}
             icon={<Icon.Globe size={18} />}
             title="Сеть"
             on={!!net?.online}
@@ -241,6 +245,7 @@ export function OverviewScreen() {
 }
 
 function StatusCard({
+  entryOrder = 0,
   icon,
   title,
   on,
@@ -250,6 +255,7 @@ function StatusCard({
   warn = false,
   neutral = false,
 }: {
+  entryOrder?: number;
   icon: React.ReactNode;
   title: string;
   on: boolean;
@@ -259,6 +265,7 @@ function StatusCard({
   warn?: boolean;
   neutral?: boolean;
 }) {
+  const motionOff = useMotionOff();
   const tone = warn
     ? "text-warn"
     : on
@@ -267,22 +274,122 @@ function StatusCard({
         : "text-ok"
       : "text-ink-muted";
   const dot = warn ? "bg-warn" : on ? (neutral ? "bg-accent" : "bg-ok") : "bg-ink-muted";
+  // Учитываем не только on: outdated -> installed остаётся on=true, но это всё
+  // равно полноценная смена состояния, которую должны заметить label/dot/wash.
+  const stateKey = `${on}:${warn}:${neutral}:${on ? onLabel : offLabel}`;
 
   return (
-    <GlassPanel className="flex h-full flex-col gap-3">
-      <div className="flex items-center gap-2.5">
-        <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-white/5 text-ink-soft">
-          {icon}
-        </span>
-        <span className="text-sm font-semibold text-ink">{title}</span>
-        <span className="ml-auto flex items-center gap-1.5">
-          <span className={`h-2 w-2 rounded-full transition-colors duration-500 ${dot} ${on ? "animate-pulse" : ""}`} />
-          <span className={`text-xs font-semibold transition-colors duration-500 ${tone}`}>
-            {on ? onLabel : offLabel}
+    <motion.div
+      // Opacity анимирует сама стеклянная поверхность (это сохраняет корректный
+      // backdrop sampling), а внешний transform даёт ей лёгкий settle без
+      // ложного hover-lift: карточки здесь информационные, не кнопки.
+      initial={motionOff ? false : { y: 4, scale: 0.995 }}
+      animate={{ y: 0, scale: 1 }}
+      transition={
+        motionOff
+          ? { duration: 0 }
+          : {
+              duration: dur.slow,
+              ease: ease.enter,
+              delay: entryOrder * cascade.step,
+            }
+      }
+      className="h-full"
+    >
+      <GlassPanel
+        transition={
+          motionOff
+            ? { duration: dur.fast, ease: ease.enter }
+            : {
+                duration: dur.slow,
+                ease: ease.enter,
+                delay: entryOrder * cascade.step,
+              }
+        }
+        className="relative flex h-full flex-col gap-3 overflow-hidden"
+      >
+        {/* Одноразовый wash при настоящей смене состояния. initial={false}
+            оставляет холодный mount спокойным; постоянного pulse у карточки нет. */}
+        <AnimatePresence initial={false}>
+          <motion.span
+            key={stateKey}
+            aria-hidden
+            initial={
+              motionOff
+                ? { opacity: 0 }
+                : { x: "-130%", opacity: 0 }
+            }
+            animate={
+              motionOff
+                ? { opacity: 0 }
+                : { x: "300%", opacity: [0, 0.08, 0] }
+            }
+            exit={{ opacity: 0, transition: { duration: 0 } }}
+            transition={{ duration: dur.slow + dur.base, ease: ease.xfade }}
+            className={`pointer-events-none absolute inset-y-0 left-0 w-1/2 -skew-x-12 bg-gradient-to-r from-transparent via-current to-transparent ${tone}`}
+          />
+        </AnimatePresence>
+
+        <div className="relative flex items-center gap-2.5">
+          <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-white/5 text-ink-soft">
+            {icon}
           </span>
-        </span>
-      </div>
-      <p className="truncate text-xs text-ink-muted">{detail}</p>
-    </GlassPanel>
+          <span className="text-sm font-semibold text-ink">{title}</span>
+          <span className="ml-auto flex items-center gap-1.5" aria-live="polite">
+            <span className="relative h-2 w-2 shrink-0">
+              <AnimatePresence initial={false} mode="sync">
+                <motion.span
+                  key={stateKey}
+                  initial={motionOff ? { opacity: 0 } : { opacity: 0.5, scale: 0.82 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: motionOff ? 1 : 1.22 }}
+                  transition={
+                    motionOff
+                      ? { duration: dur.fast, ease: ease.enter }
+                      : { duration: dur.base + dur.fast, ease: ease.xfade }
+                  }
+                  className={`absolute inset-0 rounded-full ${dot}`}
+                />
+              </AnimatePresence>
+            </span>
+            <span className="grid min-w-[6.75rem] justify-items-end">
+              <AnimatePresence initial={false} mode="sync">
+                <motion.span
+                  key={stateKey}
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  transition={{
+                    duration: motionOff ? dur.fast : dur.base + dur.fast,
+                    ease: ease.xfade,
+                  }}
+                  className={`col-start-1 row-start-1 whitespace-nowrap text-xs font-semibold ${tone}`}
+                >
+                  {on ? onLabel : offLabel}
+                </motion.span>
+              </AnimatePresence>
+            </span>
+          </span>
+        </div>
+
+        <div className="relative grid min-w-0">
+          <AnimatePresence initial={false} mode="sync">
+            <motion.p
+              key={detail}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{
+                duration: motionOff ? dur.fast : dur.base + dur.fast,
+                ease: ease.xfade,
+              }}
+              className="col-start-1 row-start-1 truncate text-xs text-ink-muted"
+            >
+              {detail}
+            </motion.p>
+          </AnimatePresence>
+        </div>
+      </GlassPanel>
+    </motion.div>
   );
 }

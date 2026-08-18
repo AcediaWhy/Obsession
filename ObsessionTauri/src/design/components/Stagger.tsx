@@ -26,10 +26,19 @@ const item: Variants = {
   show: { opacity: 1, y: 0, transition: spring.rise },
 };
 
-// Transform-only вариант для стеклянных детей (см. шапку файла).
+// Стеклянная поверхность сама делает fade, а направленное движение уже даёт
+// экранная обёртка. Второй y-сдвиг здесь складывался с ней в ~30px и создавал
+// ощущение, что панели «догоняют» выбранный раздел.
 const itemGlass: Variants = {
-  hidden: { y: 14 },
-  show: { y: 0, transition: spring.rise },
+  hidden: {},
+  show: {},
+};
+
+// Заголовок экрана тоже получает движение от screenVariants. Оставляем только
+// fade, чтобы иерархия проявлялась мягко без повторного вертикального пробега.
+const itemStandalone: Variants = {
+  hidden: { opacity: 0 },
+  show: { opacity: 1, transition: { duration: dur.base, ease: ease.enter } },
 };
 
 export function Stagger({
@@ -61,7 +70,7 @@ export function StaggerItem({
 }) {
   return (
     <motion.div
-      variants={glass ? itemGlass : item}
+      variants={standalone ? itemStandalone : glass ? itemGlass : item}
       {...(standalone ? { initial: "hidden", animate: "show" } : {})}
       // На выходе экрана (AnimatePresence прокидывает exit вглубь) обычные
       // элементы гаснут сами; стеклянные — нет: их фейдит GlassPanel.exit.

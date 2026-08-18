@@ -1,4 +1,3 @@
-import { AnimatePresence, motion } from "framer-motion";
 import { useEffect, useMemo, useState } from "react";
 
 import type {
@@ -13,8 +12,8 @@ import { useAdaptiveStrategyStore } from "../../store/adaptiveStrategyStore";
 import { useDpiStore } from "../../store/dpiStore";
 import { useSettingsStore } from "../../store/settingsStore";
 import { Button, Chip, SectionLabel, Switch } from "./atoms";
+import { Collapse } from "./Collapse";
 import { Icon } from "./icons";
-import { spring } from "../tokens";
 
 const CATEGORY_ORDER: AdaptiveCategory[] = ["discord", "youtube_twitch", "gaming"];
 
@@ -184,15 +183,7 @@ export function Zapret2StrategyPanel({ profiles }: Props) {
                 )}
               </div>
 
-              <AnimatePresence initial={false}>
-                {expanded ? (
-                  <motion.div
-                    initial={{ opacity: 0, height: 0 }}
-                    animate={{ opacity: 1, height: "auto" }}
-                    exit={{ opacity: 0, height: 0 }}
-                    transition={spring.expand}
-                    className="overflow-hidden"
-                  >
+              <Collapse open={expanded}>
                     <div className="border-t border-white/[0.06] bg-white/[0.025] px-3 py-3">
                       {ownsSession && status ? (
                         <SearchSession
@@ -331,9 +322,7 @@ export function Zapret2StrategyPanel({ profiles }: Props) {
                         )
                       )}
                     </div>
-                  </motion.div>
-                ) : null}
-              </AnimatePresence>
+              </Collapse>
             </div>
           );
         })}
@@ -343,23 +332,23 @@ export function Zapret2StrategyPanel({ profiles }: Props) {
         type="button"
         aria-expanded={detailsOpen}
         onClick={() => setDetailsOpen((open) => !open)}
-        className="no-drag mt-2 flex w-full items-center justify-between rounded-lg px-2 py-2 text-xs text-ink-muted transition-colors hover:bg-white/5 hover:text-ink-soft focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
+        className="no-drag btn-anim mt-2 flex w-full items-center justify-between rounded-lg px-2 py-2 text-xs text-ink-muted hover:bg-white/5 hover:text-ink-soft focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
       >
         <span className="flex items-center gap-2">
           <Icon.List size={15} /> Технические детали
         </span>
-        <span className="font-mono text-3xs">{profiles.length} профилей</span>
+        <span className="flex items-center gap-2">
+          <span className="font-mono text-3xs">{profiles.length} профилей</span>
+          <Icon.Chevron
+            size={14}
+            className={`transition-transform duration-[var(--motion-fast)] ${
+              detailsOpen ? "rotate-180" : ""
+            }`}
+          />
+        </span>
       </button>
 
-      <AnimatePresence initial={false}>
-        {detailsOpen ? (
-          <motion.div
-            initial={{ opacity: 0, height: 0 }}
-            animate={{ opacity: 1, height: "auto" }}
-            exit={{ opacity: 0, height: 0 }}
-            transition={spring.expand}
-            className="overflow-hidden"
-          >
+      <Collapse open={detailsOpen}>
             <TechnicalDetails
               profiles={profiles}
               probe={probe}
@@ -367,9 +356,7 @@ export function Zapret2StrategyPanel({ profiles }: Props) {
               error={error}
               onReset={(category) => void resetProfile(category)}
             />
-          </motion.div>
-        ) : null}
-      </AnimatePresence>
+      </Collapse>
     </section>
   );
 }

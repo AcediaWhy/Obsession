@@ -75,7 +75,12 @@ export function GlassPanel({
 
   const handlePointerEnter: NonNullable<Props["onPointerEnter"]> = (event) => {
     pointerInsideRef.current = true;
-    rectRef.current = event.currentTarget.getBoundingClientRect();
+    const rect = event.currentTarget.getBoundingClientRect();
+    rectRef.current = rect;
+    // Первый hover-кадр должен появиться уже под курсором, а не в старой/default
+    // точке до следующего тика общего pointer bus.
+    event.currentTarget.style.setProperty("--mx", `${event.clientX - rect.left}px`);
+    event.currentTarget.style.setProperty("--my", `${event.clientY - rect.top}px`);
     onPointerEnterProp?.(event);
   };
   const handlePointerLeave: NonNullable<Props["onPointerLeave"]> = (event) => {
@@ -118,9 +123,9 @@ export function GlassPanel({
       style={{ x, y, ...style }}
       className={[
         // transition-shadow: тумблер glow (командный центр Обзора при включении
-        // защиты) расцветает за 0.5с, а не щёлкает. Framer box-shadow здесь не
+        // защиты) расцветает за base-такт, а не щёлкает. Framer box-shadow здесь не
         // анимирует — конфликта нет.
-        "theme-morph glass rounded-xl2 shadow-glass transition-shadow duration-500",
+        "theme-morph glass rounded-xl2 shadow-glass transition-shadow duration-[var(--motion-base)]",
         spotlight ? "spotlight" : "",
         glow ? "shadow-glow" : "",
         scroll ? "overflow-hidden" : padded ? "p-5" : "",

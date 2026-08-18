@@ -1,10 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { AnimatePresence, motion } from "framer-motion";
 
 import { api, type DiagResult } from "../../lib/tauri";
 import { Button, SectionLabel } from "./atoms";
+import { Collapse } from "./Collapse";
 import { Icon } from "./icons";
-import { spring } from "../tokens";
 import { beginMountedCycle } from "./diagnosticsLifecycle";
 
 // Виджет диагностики: полноценный HTTPS-GET к заблокированным ресурсам через
@@ -56,15 +55,9 @@ export function Diagnostics() {
           </span>
         </Button>
 
-        <AnimatePresence initial={false}>
-          {results && results.length > 0 && (
-            <motion.div
-              initial={{ opacity: 0, height: 0 }}
-              animate={{ opacity: 1, height: "auto" }}
-              exit={{ opacity: 0, height: 0 }}
-              transition={spring.expand}
-              className="flex flex-col gap-1 overflow-hidden"
-            >
+        <Collapse open={Boolean(results?.length)}>
+          {results ? (
+            <div className="flex flex-col gap-1">
               {results.map((r) => (
                 <div
                   key={r.name}
@@ -86,9 +79,9 @@ export function Diagnostics() {
                   </span>
                 </div>
               ))}
-            </motion.div>
-          )}
-        </AnimatePresence>
+            </div>
+          ) : null}
+        </Collapse>
       </div>
     </div>
   );

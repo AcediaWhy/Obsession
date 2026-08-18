@@ -1,11 +1,10 @@
 import { useEffect, useState } from "react";
-import { AnimatePresence, motion } from "framer-motion";
 
 import { api, type BrainStatus } from "../../lib/tauri";
 import { useBrainStore } from "../../store/brainStore";
 import { useSettingsStore } from "../../store/settingsStore";
 import { SectionLabel, Switch } from "./atoms";
-import { spring } from "../tokens";
+import { Collapse } from "./Collapse";
 
 // Debug-читалка контура надёжности: тумблер авто-восстановления (Мозг L3) +
 // живой агрегированный статус машины состояний (`brain://status`). Намеренно
@@ -78,15 +77,12 @@ export function BrainPanel() {
         <Switch checked={enabled} onChange={toggle} disabled={busy} />
       </div>
 
-      <AnimatePresence initial={false}>
-        {enabled && status && (
-          <motion.div
-            initial={{ opacity: 0, height: 0 }}
-            animate={{ opacity: 1, height: "auto" }}
-            exit={{ opacity: 0, height: 0 }}
-            transition={spring.expand}
-            className="flex flex-col gap-1 overflow-hidden rounded-lg bg-white/5 px-3 py-2 text-sm"
-          >
+      <Collapse
+        open={Boolean(enabled && status)}
+        className="rounded-lg bg-white/5"
+      >
+        {status ? (
+          <div className="flex flex-col gap-1 px-3 py-2 text-sm">
             <div className="flex items-center justify-between">
               <span className="text-ink-muted">Состояние</span>
               <span className={`font-semibold ${PHASE_TONE[status.phase]}`}>
@@ -116,9 +112,9 @@ export function BrainPanel() {
                 <span className="text-2xs tabular-nums text-ink-muted">{status.asnRegion}</span>
               </div>
             )}
-          </motion.div>
-        )}
-      </AnimatePresence>
+          </div>
+        ) : null}
+      </Collapse>
 
       {enabled && !status && (
         <p className="px-1 text-2xs text-ink-muted">

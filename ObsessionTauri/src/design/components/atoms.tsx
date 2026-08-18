@@ -64,7 +64,7 @@ export function StatusBadge({
 }) {
   // layout: в шапках Dpi/Telegram слева появляется Uptime-пилюля — бейдж
   // отъезжает пружиной, а не рывком. Цвет точки/текста и свечение доводятся
-  // медленно (0.5s) — смена состояния «протекает», как glow у кнопок.
+  // за base-такт — смена состояния «протекает», но не отстаёт от контрола.
   return (
     <motion.div
       layout
@@ -73,11 +73,11 @@ export function StatusBadge({
     >
       <span
         className={[
-          "h-2 w-2 rounded-full transition-[background-color,box-shadow] duration-500",
+          "h-2 w-2 rounded-full transition-[background-color,box-shadow] duration-[var(--motion-base)]",
           active ? "bg-ok shadow-[0_0_10px_2px_rgba(52,211,153,0.7)]" : "bg-ink-muted",
         ].join(" ")}
       />
-      <span className={`transition-colors duration-500 ${active ? "text-ok" : "text-ink-muted"}`}>
+      <span className={`transition-colors duration-[var(--motion-base)] ${active ? "text-ok" : "text-ink-muted"}`}>
         {active ? labelOn : labelOff}
       </span>
     </motion.div>
@@ -106,9 +106,13 @@ export function Chip({
   ariaChecked?: boolean;
 }) {
   return (
-    <button
+    <motion.button
+      type="button"
       role={role}
       aria-checked={ariaChecked}
+      whileHover={disabled ? undefined : { y: -1 }}
+      whileTap={disabled ? undefined : { y: 0, scale: 0.97 }}
+      transition={spring.flick}
       onClick={onClick}
       disabled={disabled}
       className={[
@@ -120,7 +124,7 @@ export function Chip({
       ].join(" ")}
     >
       {label}
-    </button>
+    </motion.button>
   );
 }
 
@@ -144,7 +148,7 @@ export function Select({
       value={value}
       disabled={disabled}
       onChange={(e) => onChange(e.target.value)}
-      className="no-drag theme-morph w-full rounded-xl border border-glass-border bg-base-800/80 px-3 py-2.5 text-sm text-ink outline-none transition-colors focus:border-accent/60 disabled:opacity-50"
+      className="no-drag theme-morph control-anim w-full rounded-xl border border-glass-border bg-base-800/80 px-3 py-2.5 text-sm text-ink outline-none focus:border-accent/60 disabled:opacity-50"
     >
       {options.map((o) => (
         <option key={o} value={o} className="bg-base-800">
@@ -174,7 +178,7 @@ export function TextField({
       value={value}
       placeholder={placeholder}
       onChange={(e) => onChange(e.target.value)}
-      className="no-drag theme-morph w-full rounded-xl border border-glass-border bg-base-800/80 px-3 py-2.5 text-sm text-ink outline-none transition-colors placeholder:text-ink-muted focus:border-accent/60"
+      className="no-drag theme-morph control-anim w-full rounded-xl border border-glass-border bg-base-800/80 px-3 py-2.5 text-sm text-ink outline-none placeholder:text-ink-muted focus:border-accent/60"
     />
   );
 }
@@ -203,14 +207,18 @@ export function Switch({
   ariaLabel?: string;
 }) {
   return (
-    <button
+    <motion.button
+      type="button"
       role="switch"
       aria-checked={checked}
       aria-label={ariaLabel}
+      whileHover={disabled ? undefined : { y: -1 }}
+      whileTap={disabled ? undefined : { y: 0, scale: 0.94 }}
+      transition={spring.flick}
       disabled={disabled}
       onClick={() => onChange(!checked)}
       className={[
-        "no-drag theme-morph relative h-6 w-11 shrink-0 rounded-full border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:opacity-40",
+        "no-drag theme-morph btn-anim relative h-6 w-11 shrink-0 rounded-full border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:opacity-40",
         checked
           ? "border-accent/50 bg-accent/30 shadow-glow"
           : "border-glass-border bg-white/5",
@@ -227,7 +235,7 @@ export function Switch({
         ].join(" ")}
         style={{ height: 18, width: 18, top: 2, left: checked ? 22 : 3 }}
       />
-    </button>
+    </motion.button>
   );
 }
 

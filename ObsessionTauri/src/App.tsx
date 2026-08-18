@@ -127,7 +127,7 @@ export default function App() {
     const timer = window.setTimeout(() => {
       delete shell.dataset.themeMorph;
       setFocusCapture(false);
-    }, 650);
+    }, dur.slow * 1000);
     return () => {
       window.clearTimeout(timer);
       delete shell.dataset.themeMorph;
@@ -230,10 +230,13 @@ export default function App() {
 
   return (
     <MotionConfig reducedMotion={reduceMotion ? "always" : "user"}>
+      {/* Единый effective-флаг: настройка приложения ИЛИ системный
+          prefers-reduced-motion. Иначе CSS продолжал animate-pulse/transition,
+          хотя Framer и canvas уже останавливались через useMotionOff(). */}
       <div
         ref={shellRef}
         data-theme={theme}
-        data-reduce-motion={reduceMotion}
+        data-reduce-motion={motionOff}
         className="relative h-screen w-screen overflow-hidden"
         style={obsessionStyle}
       >
@@ -278,12 +281,13 @@ export default function App() {
               <NavRail active={tab} onSelect={selectTab} />
               <main className="flex-1 overflow-hidden px-6 pb-6 pt-2">
                 <div className="relative h-full">
-                  <AnimatePresence mode="sync" custom={tabDir.current}>
+                  <AnimatePresence mode="wait" custom={tabDir.current}>
                     {/* Обёртка экрана — transform-only: opacity у предка стекла
                         образует backdrop root (Chromium), и панели теряли матовость
                         на время перехода. Фейд делают сами панели/элементы через
-                        exit-пропагацию (GlassPanel, StaggerItem). Вход — пружиной
-                        rise (как у каскада детей), выход — коротким duration. */}
+                        exit-пропагацию (GlassPanel, StaggerItem). mode="wait"
+                        не смешивает два набора стекла/текста в одном кадре; короткий
+                        exit (dur.fast) сменяется компактным направленным входом. */}
                     <motion.div
                       key={tab}
                       custom={tabDir.current}

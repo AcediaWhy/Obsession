@@ -185,7 +185,7 @@ export function ObsessionField({ paused = false, phase, screen }: ObsessionScene
       <canvas
         ref={canvasRef}
         data-testid="obsession-webgl"
-        className="absolute inset-0 h-full w-full transition-opacity duration-700"
+        className="absolute inset-0 h-full w-full transition-opacity duration-[var(--motion-slow)]"
         style={{ opacity: ready ? 1 : 0 }}
       />
     </div>

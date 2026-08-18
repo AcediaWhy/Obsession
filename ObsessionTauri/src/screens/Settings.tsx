@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { motion } from "framer-motion";
 
 import { useSettingsStore } from "../store/settingsStore";
 import { useOnboardingStore } from "../store/onboardingStore";
@@ -16,6 +17,7 @@ import {
   TextField,
 } from "../design/components/atoms";
 import { Icon } from "../design/components/icons";
+import { spring } from "../design/tokens";
 import { api } from "../lib/tauri";
 
 const AI_PROVIDERS = ["malw", "geohide"];
@@ -303,13 +305,16 @@ function ThemeTile({
   onSelect: () => void;
 }) {
   return (
-    <button
+    <motion.button
       type="button"
       onClick={onSelect}
       aria-pressed={selected}
       aria-label={`Тема «${label}»${selected ? ", выбрана" : ""}`}
+      whileHover={{ y: -1 }}
+      whileTap={{ y: 0, scale: 0.98 }}
+      transition={spring.flick}
       className={[
-        "no-drag group relative flex flex-col items-center gap-2 rounded-xl border p-3 transition-[color,background-color,border-color,box-shadow,opacity]",
+        "no-drag theme-morph btn-anim group relative flex flex-col items-center gap-2 rounded-xl border p-3",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70",
         selected
           ? "border-accent/60 bg-accent/10 shadow-glow"
@@ -320,13 +325,20 @@ function ThemeTile({
       <div className="pointer-events-none flex h-[104px] items-center justify-center">
         <ThemePreview theme={id} selected={selected} size={104} />
       </div>
-      <div className="flex items-center gap-1.5">
-        {selected && <Icon.Check size={14} />}
+      <div className="relative flex items-center">
+        <span
+          aria-hidden
+          className={`absolute right-full mr-1.5 transition-[opacity,transform] duration-[var(--motion-fast)] ${
+            selected ? "scale-100 opacity-100" : "scale-75 opacity-0"
+          }`}
+        >
+          <Icon.Check size={14} />
+        </span>
         <span className={`text-sm font-semibold ${selected ? "text-ink" : "text-ink-soft"}`}>
           {label}
         </span>
       </div>
-    </button>
+    </motion.button>
   );
 }
 

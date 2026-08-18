@@ -1,7 +1,9 @@
 import { useLayoutEffect, useRef } from "react";
+import { AnimatePresence, motion } from "framer-motion";
 
 import { useLogStore } from "../../store/logStore";
-import { levelColor } from "../tokens";
+import { useMotionOff } from "../render";
+import { dur, ease, levelColor } from "../tokens";
 
 const MAX_DOM_LINES = 120;
 const BOTTOM_THRESHOLD_PX = 24;
@@ -10,6 +12,7 @@ const BOTTOM_THRESHOLD_PX = 24;
 export function LogStream({ height }: { height?: number }) {
   const lines = useLogStore((state) => state.lines);
   const clear = useLogStore((state) => state.clear);
+  const motionOff = useMotionOff();
   const ref = useRef<HTMLDivElement>(null);
   const stickToBottomRef = useRef(true);
   const autoScrollRef = useRef(false);
@@ -72,17 +75,50 @@ export function LogStream({ height }: { height?: number }) {
             скрыто предыдущих строк: {hiddenLineCount}
           </div>
         )}
-        {visibleLines.map((line) => (
-          <div key={line.id} className="log-row flex gap-2">
-            <span className="shrink-0 text-ink-muted">{line.ts}</span>
-            <span
-              style={{ color: levelColor[line.level] }}
-              className="min-w-0 flex-1 whitespace-pre-wrap [overflow-wrap:anywhere]"
+        {/* Стабильный id — ключ к тому, что появление проигрывает только новая
+            строка. Уже видимые строки не перемонтируются при следующем batch. */}
+        <AnimatePresence initial={false}>
+          {visibleLines.map((line) => (
+            <motion.div
+              key={line.id}
+              initial={
+                motionOff
+                  ? { opacity: 0 }
+                  : {
+                      opacity: 0,
+                      y: 3,
+                      backgroundColor: "rgba(255, 255, 255, 0.035)",
+                    }
+              }
+              animate={{
+                opacity: 1,
+                y: 0,
+                backgroundColor: "rgba(255, 255, 255, 0)",
+              }}
+              transition={
+                motionOff
+                  ? { duration: dur.fast, ease: ease.enter }
+                  : {
+                      opacity: { duration: dur.base + dur.fast, ease: ease.enter },
+                      y: { duration: dur.base + dur.fast, ease: ease.enter },
+                      backgroundColor: {
+                        duration: dur.slow + dur.base,
+                        ease: ease.xfade,
+                      },
+                    }
+              }
+              className="log-row flex gap-2 rounded-sm"
             >
-              {line.message}
-            </span>
-          </div>
-        ))}
+              <span className="shrink-0 text-ink-muted">{line.ts}</span>
+              <span
+                style={{ color: levelColor[line.level] }}
+                className="min-w-0 flex-1 whitespace-pre-wrap [overflow-wrap:anywhere]"
+              >
+                {line.message}
+              </span>
+            </motion.div>
+          ))}
+        </AnimatePresence>
       </div>
     </div>
   );

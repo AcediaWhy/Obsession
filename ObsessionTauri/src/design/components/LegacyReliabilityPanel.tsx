@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { AnimatePresence, motion } from "framer-motion";
 
 import type {
   LegacyReliabilityClassification,
@@ -16,8 +15,8 @@ import type {
 } from "../../lib/tauri";
 import { useLegacyReliabilityStore } from "../../store/legacyReliabilityStore";
 import { useSettingsStore } from "../../store/settingsStore";
-import { spring } from "../tokens";
 import { Button, Chip, SectionLabel, Switch } from "./atoms";
+import { Collapse } from "./Collapse";
 import { Icon } from "./icons";
 
 export type LegacyReliabilityTone = "muted" | "ok" | "warn" | "danger";
@@ -830,11 +829,11 @@ export function LegacyReliabilityPanelView({
               aria-expanded={detailsExpanded}
               disabled={modeChangePending || !onDetailsExpandedChange}
               onClick={() => onDetailsExpandedChange?.(!detailsExpanded)}
-              className="no-drag shrink-0 rounded-lg p-1.5 text-ink-muted transition-colors hover:bg-white/5 hover:text-ink-soft focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:opacity-40"
+              className="no-drag btn-anim shrink-0 rounded-lg p-1.5 text-ink-muted hover:bg-white/5 hover:text-ink-soft focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:opacity-40"
             >
               <Icon.Chevron
                 size={16}
-                className={`transition-transform duration-200 ${
+                className={`transition-transform duration-[var(--motion-fast)] ${
                   detailsExpanded ? "rotate-180" : ""
                 }`}
               />
@@ -842,15 +841,7 @@ export function LegacyReliabilityPanelView({
           ) : null}
         </div>
 
-        <AnimatePresence initial={false}>
-          {configuredEnabled && detailsExpanded ? (
-            <motion.div
-              initial={{ opacity: 0, height: 0 }}
-              animate={{ opacity: 1, height: "auto" }}
-              exit={{ opacity: 0, height: 0 }}
-              transition={spring.expand}
-              className="overflow-hidden"
-            >
+        <Collapse open={configuredEnabled && detailsExpanded}>
               <div className="border-t border-white/[0.06] bg-white/[0.025]">
                 <div className="px-3 py-3">
                   <div className="mb-2 flex items-center justify-between gap-2">
@@ -967,9 +958,7 @@ export function LegacyReliabilityPanelView({
                   </p>
                 ) : null}
               </div>
-            </motion.div>
-          ) : null}
-        </AnimatePresence>
+        </Collapse>
       </div>
     </section>
   );

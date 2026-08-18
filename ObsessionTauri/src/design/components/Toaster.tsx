@@ -2,7 +2,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import type { ReactNode } from "react";
 
 import { useToastStore, type ToastKind } from "../../store/toastStore";
-import { spring } from "../tokens";
+import { dur, ease, spring } from "../tokens";
 import { Icon } from "./icons";
 
 // Контейнер тостов поверх всего (top-right). Стиль — стеклянная пилюля с цветной
@@ -29,9 +29,14 @@ export function Toaster() {
             <motion.div
               key={t.id}
               layout
-              initial={{ opacity: 0, x: 40, scale: 0.96 }}
+              initial={{ opacity: 0, x: 24, scale: 0.98 }}
               animate={{ opacity: 1, x: 0, scale: 1 }}
-              exit={{ opacity: 0, x: 40, scale: 0.96 }}
+              exit={{
+                opacity: 0,
+                x: 24,
+                scale: 0.98,
+                transition: { duration: dur.fast, ease: ease.exit },
+              }}
               transition={spring.snappy}
               // Пока курсор над тостом — автоскрытие стоит: его читают.
               onMouseEnter={() => pause(t.id)}

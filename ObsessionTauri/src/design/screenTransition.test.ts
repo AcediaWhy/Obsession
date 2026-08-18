@@ -25,9 +25,9 @@ describe("screenVariants", () => {
   });
 
   it("знак смещения следует направлению перехода", () => {
-    expect(resolve(screenVariants.enter, 1).y).toBe(16);
-    expect(resolve(screenVariants.enter, -1).y).toBe(-16);
-    expect(resolve(screenVariants.exit, 1).y).toBe(-12);
-    expect(resolve(screenVariants.exit, -1).y).toBe(12);
+    expect(resolve(screenVariants.enter, 1).y).toBe(8);
+    expect(resolve(screenVariants.enter, -1).y).toBe(-8);
+    expect(resolve(screenVariants.exit, 1).y).toBe(-6);
+    expect(resolve(screenVariants.exit, -1).y).toBe(6);
   });
 });

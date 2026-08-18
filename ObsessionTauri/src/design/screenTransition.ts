@@ -11,14 +11,15 @@ import { dur, ease } from "./tokens";
 // Вынесено из App отдельным модулем, чтобы pointerEvents-контракт (ниже)
 // покрывался юнит-тестом: баг тихий, глазами в ревью не ловится.
 export const screenVariants: Variants = {
-  // 16px хода: под мягкую пружину rise меньший путь почти не читается.
-  enter: (dir: number) => ({ y: 16 * dir, pointerEvents: "auto" }),
+  // 8px — дистанция page-side-by-side из transitions.dev: направление читается,
+  // но экран не складывает большой пробег с локальными layout-анимациями.
+  enter: (dir: number) => ({ y: 8 * dir, pointerEvents: "auto" }),
   // pointerEvents задаём явно и здесь: прерванный выход (быстрый возврат на тот
   // же раздел) оживляет ТОТ ЖЕ элемент, и без сброса на нём навсегда осталось бы
   // "none" из exit-варианта — экран стал бы некликабельным.
   center: { y: 0, pointerEvents: "auto" },
   exit: (dir: number) => ({
-    y: -12 * dir,
+    y: -6 * dir,
     // Уходящий экран — absolute inset-0 поверх всей контентной области, и
     // AnimatePresence держит его смонтированным, пока не завершатся exit-анимации
     // ВСЕХ потомков. Панели гаснут через opacity (GlassPanel), а нулевая
