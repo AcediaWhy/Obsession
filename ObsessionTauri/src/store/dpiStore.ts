@@ -11,10 +11,12 @@ import {
   type VersionedSection,
   type Zapret2ProfileDescriptor,
 } from "../lib/tauri";
+import { withDeadline } from "../lib/asyncDeadline";
 
 const CATEGORY_ORDER = ["discord", "youtube_twitch", "gaming", "universal", "atrisk"];
 const ZAPRET2_CATEGORIES = new Set(["discord", "youtube_twitch", "gaming"]);
 export const TRANSITION_WATCHDOG_MS = 8_000;
+export const TRANSITION_RECONCILE_TIMEOUT_MS = 4_000;
 
 type CategorySelections = {
   legacy: string[];
@@ -145,7 +147,11 @@ export const useDpiStore = create<DpiState>((set, get) => ({
   reconcileTransition: async () => {
     if (!get().transitioning) return;
     try {
-      const snapshot = await runtime.bootstrap();
+      const snapshot = await withDeadline(
+        runtime.bootstrap(),
+        TRANSITION_RECONCILE_TIMEOUT_MS,
+        "Backend не ответил на сверку состояния DPI.",
+      );
       if (
         !get().transitioning ||
         snapshot.dpi.revision < get().revision
@@ -157,9 +163,11 @@ export const useDpiStore = create<DpiState>((set, get) => ({
         revision: Math.max(get().revision, snapshot.dpi.revision),
         transitioning: false,
       });
-    } catch {
-      // Без подтверждённого snapshot сохраняем блокировку: догадки опаснее
-      // краткого busy-состояния.
+    } catch (error) {
+      // Backend status остаётся источником истины и может прийти позднее.
+      // Но frontend latch нельзя оставлять навсегда: пользователь должен иметь
+      // возможность повторить действие без перезапуска приложения.
+      set({ transitioning: false, error: String(error) });
     }
   },
 
@@ -250,10 +258,16 @@ export const useDpiStore = create<DpiState>((set, get) => ({
     }));
     try {
       await persist();
-      await api.dpiStart(configs);
+      await withDeadline(
+        api.dpiStart(configs),
+        TRANSITION_WATCHDOG_MS,
+        "Запуск DPI не ответил вовремя. Состояние будет синхронизировано автоматически.",
+      );
       // active/processes придут подпиской dpi-status ещё до resolve.
     } catch (e) {
-      set({ active: false, error: String(e) });
+      // Не перетираем active: service мог успеть запустить runtime, а ответ
+      // потеряться/опоздать. Versioned status или следующий snapshot уточнит итог.
+      set({ error: String(e) });
     } finally {
       // Держим блокировку до конца операции (включая старт Глаз на бэкенде).
       set({ transitioning: false });
@@ -264,7 +278,11 @@ export const useDpiStore = create<DpiState>((set, get) => ({
     if (get().transitioning) return;
     set({ transitioning: true });
     try {
-      await api.dpiStop();
+      await withDeadline(
+        api.dpiStop(),
+        TRANSITION_WATCHDOG_MS,
+        "Остановка DPI не ответила вовремя. Состояние будет синхронизировано автоматически.",
+      );
     } catch (e) {
       set({ error: String(e) });
     } finally {

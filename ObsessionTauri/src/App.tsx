@@ -30,7 +30,6 @@ import { setWindowShown, useMotionOff } from "./design/render";
 import { screenVariants } from "./design/screenTransition";
 import { dur, ease, spring } from "./design/tokens";
 import { toast } from "./store/toastStore";
-import { useHostsStore } from "./store/hostsStore";
 import { useObsessionVisualPhase } from "./design/useObsessionVisualPhase";
 import { obsessionFocusForScreen, type ObsessionVisualPhase } from "./design/obsessionVisualState";
 
@@ -161,18 +160,19 @@ export default function App() {
     const unlisten = initLogStream();
     const releaseBootstrap = launcherBootstrap.acquire();
     let disposed = false;
-    let protectedRefreshQueue = Promise.resolve();
-    const scheduleProtectedRefresh = (refreshSnapshot: boolean) => {
-      protectedRefreshQueue = protectedRefreshQueue.then(async () => {
+    let bootstrapRefreshQueue = Promise.resolve();
+    const scheduleBootstrapRefresh = (refreshSnapshot: boolean) => {
+      bootstrapRefreshQueue = bootstrapRefreshQueue.then(async () => {
         if (disposed) return;
         if (refreshSnapshot) await launcherBootstrap.refresh();
         else await launcherBootstrap.whenReady();
-        if (!disposed) await useHostsStore.getState().checkRoutes(3600);
       });
     };
-    // The runtime service intentionally serializes protected operations. Do not
-    // race the potentially long AI route probe against startup hydration.
-    scheduleProtectedRefresh(false);
+    // Не запускаем здесь AI route probe: защищённая служба обслуживает один
+    // pipe, а сетевой hosts-check может удерживать его до 25 секунд и ставить
+    // пользовательский DPI/proxy start в очередь. Проверка остаётся доступна
+    // явно на экране ИИ.
+    scheduleBootstrapRefresh(false);
 
     // Прогрев тяжёлой ленивой сцены (Rain/WebGL) — ТОЛЬКО когда окно впервые
     // становится видимым (вызывается из резюм-ветки ниже). При старте в трее
@@ -200,7 +200,7 @@ export default function App() {
       setWindowShown(visible);
       if (visible) {
         void win.showWebview();
-        scheduleProtectedRefresh(true);
+        scheduleBootstrapRefresh(true);
         scheduleWarm();
       } else {
         void win.hideWebview();
@@ -281,13 +281,13 @@ export default function App() {
               <NavRail active={tab} onSelect={selectTab} />
               <main className="flex-1 overflow-hidden px-6 pb-6 pt-2">
                 <div className="relative h-full">
-                  <AnimatePresence mode="wait" custom={tabDir.current}>
+                  <AnimatePresence mode="sync" custom={tabDir.current}>
                     {/* Обёртка экрана — transform-only: opacity у предка стекла
                         образует backdrop root (Chromium), и панели теряли матовость
                         на время перехода. Фейд делают сами панели/элементы через
-                        exit-пропагацию (GlassPanel, StaggerItem). mode="wait"
-                        не смешивает два набора стекла/текста в одном кадре; короткий
-                        exit (dur.fast) сменяется компактным направленным входом. */}
+                        exit-пропагацию (GlassPanel, StaggerItem). mode="sync"
+                        гарантирует, что новый экран смонтируется даже если exit
+                        предыдущей вкладки был прерван быстрым переключением. */}
                     <motion.div
                       key={tab}
                       custom={tabDir.current}

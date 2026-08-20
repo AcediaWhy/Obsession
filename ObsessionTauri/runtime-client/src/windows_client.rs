@@ -33,10 +33,9 @@ const SERVICE_RELATIVE_PATH: [&str; 3] = ["Obsession", "runtime", "Obsession.Run
 const SERVICE_NAME: PCWSTR = w!("ObsessionRuntime");
 const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
 const MAX_PROCESS_PATH_UTF16: usize = 32_768;
-/// The service deliberately owns one authenticated pipe instance and serializes
-/// protected operations. A route-health probe may hold it for up to 25 seconds,
-/// which is not evidence that the service disappeared.
-const MIN_BUSY_PIPE_WAIT: Duration = Duration::from_secs(30);
+// The service deliberately owns one authenticated pipe instance and serializes
+// protected operations. The caller chooses whether waiting behind a long
+// operation is acceptable by supplying the complete acquisition timeout.
 
 #[derive(Debug)]
 pub enum ClientError {
@@ -109,7 +108,10 @@ impl RuntimeClient {
         let pipe_name = runtime_pipe_name_wide();
         let started = Instant::now();
         let unavailable_deadline = started + self.timeout;
-        let busy_deadline = started + self.timeout.max(MIN_BUSY_PIPE_WAIT);
+        // Never silently turn a 750ms discovery or 5s user operation into a
+        // 30s wait. Long hosts operations already construct a client with their
+        // own 90s budget.
+        let busy_deadline = unavailable_deadline;
         let mut observed_busy = false;
 
         loop {

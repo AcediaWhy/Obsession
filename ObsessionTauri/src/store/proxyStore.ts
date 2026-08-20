@@ -6,6 +6,9 @@ import {
   type Settings,
   type VersionedSection,
 } from "../lib/tauri";
+import { withDeadline } from "../lib/asyncDeadline";
+
+export const PROXY_TRANSITION_TIMEOUT_MS = 8_000;
 
 interface ProxyState {
   revision: number;
@@ -87,12 +90,18 @@ export const useProxyStore = create<ProxyState>((set, get) => ({
     if (get().transitioning) return;
     set({ transitioning: true, error: "", link: "", lanLink: null });
     try {
-      const link = await api.proxyStart(get().port, get().fakeTlsDomain);
+      const link = await withDeadline(
+        api.proxyStart(get().port, get().fakeTlsDomain),
+        PROXY_TRANSITION_TIMEOUT_MS,
+        "Запуск Telegram-прокси не ответил вовремя. Состояние будет синхронизировано автоматически.",
+      );
       // lanLink придёт через подписку proxy-status.
       set({ running: true, link, transitioning: false });
       await savePrefs();
     } catch (e) {
-      set({ transitioning: false, running: false, error: String(e) });
+      // Поздний proxy-status остаётся источником истины; не объявляем живой
+      // процесс остановленным только из-за потерянного ответа invoke.
+      set({ transitioning: false, error: String(e) });
     }
   },
 
@@ -100,7 +109,11 @@ export const useProxyStore = create<ProxyState>((set, get) => ({
     if (get().transitioning) return;
     set({ transitioning: true });
     try {
-      await api.proxyStop();
+      await withDeadline(
+        api.proxyStop(),
+        PROXY_TRANSITION_TIMEOUT_MS,
+        "Остановка Telegram-прокси не ответила вовремя. Состояние будет синхронизировано автоматически.",
+      );
       // Ссылки сбрасываем только после успешной остановки: при ошибке прокси
       // продолжает работать, и UI не должен показывать «остановлен».
       set({ link: "", lanLink: null, lanPublished: false, lanExpiryUnix: null });
