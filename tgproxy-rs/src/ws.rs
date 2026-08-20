@@ -81,7 +81,8 @@ impl WsWriter {
     pub async fn send(&self, data: &[u8]) -> std::io::Result<()> {
         tokio::time::timeout(WS_WRITE_TIMEOUT, async {
             let mut write = self.write.lock().await;
-            send_frame(&mut *write, OP_BINARY, data).await
+            send_frame(&mut *write, OP_BINARY, data).await?;
+            write.flush().await
         })
         .await
         .map_err(|_| write_timeout_error())?
@@ -103,7 +104,8 @@ impl WsWriter {
     pub async fn close(&self) {
         let _ = tokio::time::timeout(WS_WRITE_TIMEOUT, async {
             let mut write = self.write.lock().await;
-            send_frame(&mut *write, OP_CLOSE, &[]).await
+            send_frame(&mut *write, OP_CLOSE, &[]).await?;
+            write.flush().await
         })
         .await;
     }
@@ -111,7 +113,8 @@ impl WsWriter {
     async fn send_pong(&self, payload: &[u8]) {
         let _ = tokio::time::timeout(WS_WRITE_TIMEOUT, async {
             let mut write = self.write.lock().await;
-            send_frame(&mut *write, OP_PONG, payload).await
+            send_frame(&mut *write, OP_PONG, payload).await?;
+            write.flush().await
         })
         .await;
     }
@@ -375,8 +378,7 @@ where
 {
     let mut frame = Vec::with_capacity(payload.len() + 14);
     encode_frame(&mut frame, opcode, payload);
-    write.write_all(&frame).await?;
-    write.flush().await
+    write.write_all(&frame).await
 }
 
 /// Кодирование клиентского фрейма: FIN=1, маска обязательна для
@@ -461,6 +463,38 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+    use tokio::io::AsyncWrite;
+
+    #[derive(Default)]
+    struct CountingWriter {
+        bytes: Vec<u8>,
+        flushes: usize,
+    }
+
+    impl AsyncWrite for CountingWriter {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            data: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            self.bytes.extend_from_slice(data);
+            Poll::Ready(Ok(data.len()))
+        }
+
+        fn poll_flush(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            self.flushes += 1;
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
 
     fn encrypted_req_pq(relay: &[u8; crate::obf2::HANDSHAKE_LEN]) -> Vec<u8> {
         use rand::RngCore as _;
@@ -570,6 +604,24 @@ mod tests {
         assert_eq!(frames[0].payload, b"one");
         assert_eq!(frames[1].opcode, OP_PING);
         assert_eq!(frames[2].payload, b"two");
+    }
+
+    #[tokio::test]
+    async fn batched_frames_are_committed_with_one_flush() {
+        let mut write = CountingWriter::default();
+        send_frame(&mut write, OP_BINARY, b"one").await.unwrap();
+        send_frame(&mut write, OP_BINARY, b"two").await.unwrap();
+        send_frame(&mut write, OP_BINARY, b"three").await.unwrap();
+
+        assert_eq!(write.flushes, 0, "frame writes must not flush individually");
+        write.flush().await.unwrap();
+        assert_eq!(write.flushes, 1, "the batch must be committed once");
+
+        let frames = decode_frames(&write.bytes);
+        assert_eq!(frames.len(), 3);
+        assert_eq!(frames[0].payload, b"one");
+        assert_eq!(frames[1].payload, b"two");
+        assert_eq!(frames[2].payload, b"three");
     }
 
     #[test]
