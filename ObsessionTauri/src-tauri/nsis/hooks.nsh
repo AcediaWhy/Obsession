@@ -82,10 +82,9 @@
     !insertmacro OBSESSION_ABORT "Не удалось безопасно остановить Obsession. Закройте приложение вручную."
   ${EndIf}
 
-  ; winws/Obsession Telegram Proxy живут в %APPDATA%\Obsession\bin и переживают падение
-  ; приложения. Не фатально: установка новой версии их файлов не трогает
-  ; (перезаливкой ведает версионный гейт в paths.rs), но осиротевший winws
-  ; продолжит фильтровать трафик — об этом надо сказать вслух.
+  ; Миграционная очистка только для старых релизов, которые копировали
+  ; winws/proxy в %APPDATA%\Obsession\bin. Современным runtime в Program Files
+  ; управляет elevated native machine worker/service.
   !insertmacro OBSESSION_RUN_SAFETY_ACTION "StopOwnedRuntime"
   ${If} $0 <> 0
     DetailPrint "Obsession: $1"
@@ -114,12 +113,9 @@
     !insertmacro OBSESSION_ABORT "Не удалось безопасно остановить Obsession. Закройте приложение вручную."
   ${EndIf}
 
-  ; Критично именно при удалении: winws мог пережить падение приложения, и
-  ; после сноса бинарников его будет нечем остановить — драйвер WinDivert
-  ; продолжит перехватывать трафик машины до перезагрузки. Проверка ведётся по
-  ; точному пути в %APPDATA%\Obsession\bin, поэтому ЧУЖОЙ winws.exe (стоковый
-  ; Zapret рядом) не пострадает. Не Abort: удаление должно завершиться в любом
-  ; случае, иначе пользователь останется и с процессом, и с установкой.
+  ; Миграционная очистка старого %APPDATA% runtime. Проверка точного пути не
+  ; затрагивает чужой winws.exe. Защищённые процессы, службу и
+  ; %ProgramData%\Obsession удаляет elevated machine-worker до этого legacy hook.
   !insertmacro OBSESSION_RUN_SAFETY_ACTION "StopOwnedRuntime"
   ${If} $0 <> 0
     DetailPrint "Obsession: $1"
@@ -142,6 +138,8 @@
     ; product files without trusting an arbitrary non-empty directory.
     !insertmacro OBSESSION_WRITE_OWNER_MARKER
   ${Else}
+    ; Machine-worker owns cleanup of %ProgramData%\Obsession\Runtime. This
+    ; medium-integrity legacy hook intentionally never removes ProgramData.
     DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "Obsession"
     Delete "$INSTDIR\${OBSESSION_OWNER_MARKER}"
   ${EndIf}

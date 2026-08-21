@@ -110,11 +110,11 @@ function Stop-OwnedApplication {
     }
 }
 
-# winws/winws2/Obsession Telegram Proxy are NOT launched from the install directory: the app
-# unpacks them into %APPDATA%\Obsession\bin on first start (paths.rs -
-# bin_dir/winws_path/winws2_path/tgproxy_path), and winws2 sits one level deeper
-# in bin\zapret2. Ownership is therefore checked against that root, not
-# $installDir.
+# The protected runtime is installed below %ProgramFiles%\Obsession and is owned
+# by the elevated native machine worker/service. This helper must never manage
+# that runtime. Stop-OwnedRuntimeProcesses is retained only for bounded migration
+# cleanup of pre-service releases that copied winws/proxy binaries below
+# %APPDATA%\Obsession\bin.
 #
 # The exact-path check is mandatory: matching on the image name alone would kill
 # a FOREIGN winws.exe the user may be running in parallel (stock Zapret,
