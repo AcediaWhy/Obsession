@@ -6,8 +6,12 @@
 //! DLL name from the client. The host remains disabled until the installer and
 //! protected backend are ready.
 
+use std::env;
 use std::fmt;
+use std::fs;
 use std::mem::size_of;
+use std::os::windows::fs::MetadataExt;
+use std::path::{Path, PathBuf};
 use std::slice;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Mutex};
@@ -32,7 +36,8 @@ use windows::Win32::Security::{
     TOKEN_MANDATORY_LABEL, TOKEN_QUERY, TOKEN_USER,
 };
 use windows::Win32::Storage::FileSystem::{
-    FlushFileBuffers, ReadFile, WriteFile, FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_DUPLEX,
+    FlushFileBuffers, ReadFile, WriteFile, FILE_ATTRIBUTE_REPARSE_POINT,
+    FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_DUPLEX,
 };
 use windows::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, GetNamedPipeClientProcessId,
@@ -45,7 +50,9 @@ use windows::Win32::System::SystemServices::{
     SECURITY_MANDATORY_SYSTEM_RID,
 };
 use windows::Win32::System::Threading::{
-    GetCurrentThread, GetCurrentThreadId, OpenThread, OpenThreadToken, THREAD_TERMINATE,
+    GetCurrentThread, GetCurrentThreadId, OpenProcess, OpenThread, OpenThreadToken,
+    QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+    THREAD_TERMINATE,
 };
 use windows::Win32::System::IO::CancelSynchronousIo;
 
@@ -55,12 +62,54 @@ const PIPE_BUFFER_BYTES: u32 = (MAX_FRAME_BYTES + 4) as u32;
 const DEFAULT_CLIENT_IO_TIMEOUT: Duration = Duration::from_secs(5);
 const LISTENER_POLL_INTERVAL: Duration = Duration::from_millis(20);
 const BACKGROUND_POLL_INTERVAL: Duration = Duration::from_millis(250);
+const MAX_PROCESS_IMAGE_UTF16: usize = 32_768;
+const PRODUCT_DIRECTORY: &str = "Obsession";
+const RUNTIME_DIRECTORY: &str = "runtime";
+const SERVICE_FILE_NAME: &str = "Obsession.Runtime.exe";
+const CLIENT_FILE_NAME: &str = "Obsession.exe";
 
 // Only SYSTEM, Administrators and locally interactive users may open the pipe.
 // `P` protects this DACL from inheritance. Remote clients are also rejected at
 // the pipe protocol level below.
 const PIPE_SECURITY_DESCRIPTOR: windows::core::PCWSTR =
     w!("D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;IU)");
+
+#[derive(Clone, Debug)]
+struct ClientProcessPolicy {
+    expected_image: Option<PathBuf>,
+}
+
+impl ClientProcessPolicy {
+    fn installed_application() -> Self {
+        Self {
+            expected_image: installed_client_image(),
+        }
+    }
+
+    #[cfg(test)]
+    fn current_test_process() -> Self {
+        Self {
+            expected_image: env::current_exe()
+                .ok()
+                .and_then(|path| fs::canonicalize(path).ok()),
+        }
+    }
+
+    fn authenticates(&self, process: HANDLE) -> bool {
+        let Some(expected) = &self.expected_image else {
+            return false;
+        };
+        process_image_path(process)
+            .and_then(|path| fs::canonicalize(path).ok())
+            .is_some_and(|actual| windows_path_eq(&actual, expected))
+    }
+}
+
+struct CapturedClientProcess {
+    process_id: u32,
+    authenticated: bool,
+    _handle: Option<OwnedHandle>,
+}
 
 #[derive(Debug)]
 pub enum NamedPipeError {
@@ -114,12 +163,22 @@ impl From<ProtocolError> for NamedPipeError {
 /// the actual service host, before this can be installed as LocalSystem.
 pub struct SecureNamedPipeServer<B> {
     core: Mutex<ServiceCore<B>>,
+    client_process_policy: ClientProcessPolicy,
 }
 
 impl<B: RuntimeBackend + Send> SecureNamedPipeServer<B> {
     pub fn new(backend: B) -> Self {
         Self {
             core: Mutex::new(ServiceCore::new(backend)),
+            client_process_policy: ClientProcessPolicy::installed_application(),
+        }
+    }
+
+    #[cfg(test)]
+    fn new_for_test(backend: B) -> Self {
+        Self {
+            core: Mutex::new(ServiceCore::new(backend)),
+            client_process_policy: ClientProcessPolicy::current_test_process(),
         }
     }
 
@@ -189,13 +248,17 @@ impl<B: RuntimeBackend + Send> SecureNamedPipeServer<B> {
         timeout: Duration,
     ) -> Result<(), NamedPipeError> {
         let pipe_value = pipe.0 as usize;
+        let client_process_policy = self.client_process_policy.clone();
         let (request, client) = run_bounded_pipe_io(timeout, move || {
             let pipe = HANDLE(pipe_value as *mut std::ffi::c_void);
+            // Hold a query handle across frame consumption and token capture so
+            // a disconnect/PID-reuse race cannot substitute a different image.
+            let process = capture_client_process(pipe, &client_process_policy)?;
             // Windows permits impersonation only after the server has consumed
             // client data. The strict size-capped frame is parsed first, but it
             // cannot reach dispatch until the captured token is accepted.
             let request = read_request(pipe)?;
-            let client = client_identity(pipe)?;
+            let client = client_identity(pipe, &process)?;
             Ok((request, client))
         })?;
 
@@ -415,14 +478,121 @@ fn cancel_synchronous_worker_io(thread_id: u32) -> Result<(), NamedPipeError> {
     }
 }
 
-fn client_identity(pipe: HANDLE) -> Result<ClientIdentity, NamedPipeError> {
+fn installed_client_image() -> Option<PathBuf> {
+    let service = env::current_exe().ok()?;
+    let program_files = PathBuf::from(env::var_os("ProgramFiles")?);
+    let expected = expected_client_image(&service, &program_files)?;
+
+    // Reject junctions/symlinks in every product-controlled component before
+    // canonicalization. Program Files itself is the trusted OS boundary.
+    let runtime = service.parent()?;
+    let install_root = runtime.parent()?;
+    if [install_root, runtime, service.as_path(), expected.as_path()]
+        .into_iter()
+        .any(path_is_reparse_point)
+    {
+        return None;
+    }
+
+    let canonical_program_files = fs::canonicalize(program_files).ok()?;
+    let canonical_service = fs::canonicalize(service).ok()?;
+    let canonical_expected = fs::canonicalize(expected).ok()?;
+    let canonical_layout = expected_client_image(&canonical_service, &canonical_program_files)?;
+    windows_path_eq(&canonical_expected, &canonical_layout).then_some(canonical_expected)
+}
+
+fn expected_client_image(service: &Path, program_files: &Path) -> Option<PathBuf> {
+    if !file_name_eq(service, SERVICE_FILE_NAME) {
+        return None;
+    }
+    let runtime = service.parent()?;
+    if !file_name_eq(runtime, RUNTIME_DIRECTORY) {
+        return None;
+    }
+    let install_root = runtime.parent()?;
+    if !file_name_eq(install_root, PRODUCT_DIRECTORY)
+        || !windows_path_eq(install_root.parent()?, program_files)
+    {
+        return None;
+    }
+    Some(install_root.join(CLIENT_FILE_NAME))
+}
+
+fn file_name_eq(path: &Path, expected: &str) -> bool {
+    path.file_name()
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| value.eq_ignore_ascii_case(expected))
+}
+
+fn windows_path_eq(left: &Path, right: &Path) -> bool {
+    left.as_os_str()
+        .to_string_lossy()
+        .eq_ignore_ascii_case(&right.as_os_str().to_string_lossy())
+}
+
+fn path_is_reparse_point(path: &Path) -> bool {
+    fs::symlink_metadata(path)
+        .map(|metadata| metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0)
+        .unwrap_or(true)
+}
+
+fn process_image_path(process: HANDLE) -> Option<PathBuf> {
+    let mut buffer = vec![0u16; MAX_PROCESS_IMAGE_UTF16];
+    let mut length = u32::try_from(buffer.len()).ok()?;
+    unsafe {
+        QueryFullProcessImageNameW(
+            process,
+            PROCESS_NAME_WIN32,
+            PWSTR(buffer.as_mut_ptr()),
+            &mut length,
+        )
+        .ok()?;
+    }
+    let length = usize::try_from(length).ok()?;
+    if length == 0 || length > buffer.len() {
+        return None;
+    }
+    String::from_utf16(&buffer[..length])
+        .ok()
+        .map(PathBuf::from)
+}
+
+fn capture_client_process(
+    pipe: HANDLE,
+    policy: &ClientProcessPolicy,
+) -> Result<CapturedClientProcess, NamedPipeError> {
+    let mut process_id = 0;
+    unsafe {
+        GetNamedPipeClientProcessId(pipe, &mut process_id)?;
+    }
+    if process_id == 0 {
+        return Err(NamedPipeError::InvalidClientIdentity);
+    }
+
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, process_id) }
+        .ok()
+        .map(OwnedHandle);
+    let authenticated = handle
+        .as_ref()
+        .is_some_and(|process| policy.authenticates(process.0));
+    Ok(CapturedClientProcess {
+        process_id,
+        authenticated,
+        _handle: handle,
+    })
+}
+
+fn client_identity(
+    pipe: HANDLE,
+    process: &CapturedClientProcess,
+) -> Result<ClientIdentity, NamedPipeError> {
     let mut process_id = 0;
     let mut session_id = 0;
     unsafe {
         GetNamedPipeClientProcessId(pipe, &mut process_id)?;
         GetNamedPipeClientSessionId(pipe, &mut session_id)?;
     }
-    if process_id == 0 {
+    if process_id == 0 || process_id != process.process_id {
         return Err(NamedPipeError::InvalidClientIdentity);
     }
 
@@ -435,6 +605,8 @@ fn client_identity(pipe: HANDLE) -> Result<ClientIdentity, NamedPipeError> {
         let integrity = token_integrity(token.0)?;
         Ok(ClientIdentity {
             is_local: true,
+            process_id,
+            process_authenticated: process.authenticated,
             session_id,
             user_sid,
             integrity,
@@ -729,8 +901,43 @@ mod tests {
     }
 
     #[test]
+    fn installed_client_layout_accepts_only_the_fixed_program_files_image() {
+        let program_files = Path::new(r"C:\Program Files");
+        let service = Path::new(r"C:\Program Files\Obsession\runtime\Obsession.Runtime.exe");
+        assert_eq!(
+            expected_client_image(service, program_files),
+            Some(PathBuf::from(r"C:\Program Files\Obsession\Obsession.exe"))
+        );
+        assert!(expected_client_image(
+            Path::new(r"C:\Users\User\Obsession\runtime\Obsession.Runtime.exe"),
+            program_files
+        )
+        .is_none());
+        assert!(expected_client_image(
+            Path::new(r"C:\Program Files\Obsession\runtime\renamed.exe"),
+            program_files
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn process_policy_authenticates_the_open_image_not_merely_a_local_pid() {
+        let process = OwnedHandle(
+            unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, std::process::id()) }
+                .expect("test process must be queryable"),
+        );
+        let trusted = ClientProcessPolicy::current_test_process();
+        assert!(trusted.authenticates(process.0));
+
+        let foreign = ClientProcessPolicy {
+            expected_image: Some(PathBuf::from(r"C:\Program Files\Foreign\client.exe")),
+        };
+        assert!(!foreign.authenticates(process.0));
+    }
+
+    #[test]
     fn zero_client_io_timeout_is_rejected_before_creating_a_pipe() {
-        let server = SecureNamedPipeServer::new(LockedBackend);
+        let server = SecureNamedPipeServer::new_for_test(LockedBackend);
         assert!(matches!(
             server.serve_one_with_timeout(Duration::ZERO),
             Err(NamedPipeError::InvalidTimeout)
@@ -742,7 +949,7 @@ mod tests {
         let _pipe_test = PIPE_TEST_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let server = Arc::new(SecureNamedPipeServer::new(LockedBackend));
+        let server = Arc::new(SecureNamedPipeServer::new_for_test(LockedBackend));
         let stop = Arc::new(AtomicBool::new(false));
         let worker = {
             let server = Arc::clone(&server);
@@ -764,7 +971,7 @@ mod tests {
         let _pipe_test = PIPE_TEST_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let server = Arc::new(SecureNamedPipeServer::new(LockedBackend));
+        let server = Arc::new(SecureNamedPipeServer::new_for_test(LockedBackend));
         let (done_sender, done_receiver) = std::sync::mpsc::sync_channel(1);
         let worker = {
             let server = Arc::clone(&server);
@@ -798,7 +1005,7 @@ mod tests {
         let _pipe_test = PIPE_TEST_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let server = Arc::new(SecureNamedPipeServer::new(SlowCapabilitiesBackend));
+        let server = Arc::new(SecureNamedPipeServer::new_for_test(SlowCapabilitiesBackend));
         let worker = {
             let server = Arc::clone(&server);
             thread::spawn(move || server.serve_one_with_timeout(Duration::from_millis(100)))
@@ -824,7 +1031,7 @@ mod tests {
         let _pipe_test = PIPE_TEST_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let server = Arc::new(SecureNamedPipeServer::new(LockedBackend));
+        let server = Arc::new(SecureNamedPipeServer::new_for_test(LockedBackend));
         let worker = {
             let server = Arc::clone(&server);
             thread::spawn(move || server.serve_one())

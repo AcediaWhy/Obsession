@@ -61,20 +61,28 @@ pub enum ClientIntegrity {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ClientIdentity {
     pub is_local: bool,
+    pub process_id: u32,
+    pub process_authenticated: bool,
     pub session_id: u32,
     pub user_sid: String,
     pub integrity: ClientIntegrity,
 }
 
 impl ClientIdentity {
-    fn is_allowed(&self) -> bool {
+    fn has_interactive_identity(&self) -> bool {
         self.is_local
+            && self.process_id != 0
             && self.session_id != 0
             && valid_user_sid_text(&self.user_sid)
             && matches!(
                 self.integrity,
                 ClientIntegrity::Medium | ClientIntegrity::High
             )
+    }
+
+    fn is_allowed_for(&self, request: &Request) -> bool {
+        self.has_interactive_identity()
+            && (self.process_authenticated || matches!(request, Request::LegacyCleanup))
     }
 }
 
@@ -274,7 +282,7 @@ impl<B: RuntimeBackend> ServiceCore<B> {
         let request_id = request.request_id.clone();
         let response = if request.validate().is_err() {
             error_response(ServiceErrorCode::InvalidRequest)
-        } else if !client.is_allowed() {
+        } else if !client.is_allowed_for(&request.request) {
             error_response(ServiceErrorCode::AccessDenied)
         } else {
             self.dispatch(client, request.request)
@@ -354,6 +362,8 @@ mod tests {
     fn allowed_client() -> ClientIdentity {
         ClientIdentity {
             is_local: true,
+            process_id: 1000,
+            process_authenticated: true,
             session_id: 1,
             user_sid: "S-1-5-21-1000".into(),
             integrity: ClientIntegrity::Medium,
@@ -410,6 +420,14 @@ mod tests {
                 ..allowed_client()
             },
             ClientIdentity {
+                process_authenticated: false,
+                ..allowed_client()
+            },
+            ClientIdentity {
+                process_id: 0,
+                ..allowed_client()
+            },
+            ClientIdentity {
                 session_id: 0,
                 ..allowed_client()
             },
@@ -435,6 +453,37 @@ mod tests {
                 })
             );
         }
+    }
+
+    #[test]
+    fn unauthenticated_installer_can_only_request_sid_scoped_legacy_cleanup() {
+        let client = ClientIdentity {
+            process_authenticated: false,
+            ..allowed_client()
+        };
+        let mut service = ServiceCore::new(LockedBackend);
+
+        let cleanup = service.handle(
+            &client,
+            RequestEnvelope::new("cleanup-1", Request::LegacyCleanup),
+        );
+        assert_eq!(
+            cleanup.response,
+            Response::Error(ServiceError {
+                code: ServiceErrorCode::RuntimeFailed,
+            })
+        );
+
+        let capabilities = service.handle(
+            &client,
+            RequestEnvelope::new("cap-unauthenticated", Request::GetCapabilities),
+        );
+        assert_eq!(
+            capabilities.response,
+            Response::Error(ServiceError {
+                code: ServiceErrorCode::AccessDenied,
+            })
+        );
     }
 
     #[derive(Default)]
