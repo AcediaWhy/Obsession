@@ -1,0 +1,57 @@
+From dac509b55860e2e239dc3a19eeb0e259ea1403b7 Mon Sep 17 00:00:00 2001
+From: Obsession Patch Builder <patches@obsession.local>
+Date: Sat, 22 Aug 2026 01:20:10 +0400
+Subject: [PATCH 5/5] build: enable baseline compiler mitigations
+
+---
+ nfq2/Makefile | 17 ++++++++++++-----
+ 1 file changed, 12 insertions(+), 5 deletions(-)
+
+diff --git a/nfq2/Makefile b/nfq2/Makefile
+index 762e860..03f6c38 100644
+--- a/nfq2/Makefile
++++ b/nfq2/Makefile
+@@ -2,15 +2,18 @@ CC ?= cc
+ PKG_CONFIG ?= pkg-config
+ OPTIMIZE ?= -Os
+ MINSIZE ?= -flto=auto -ffunction-sections -fdata-sections
+-CFLAGS += -std=gnu99 $(OPTIMIZE) $(MINSIZE)
++HARDEN_CFLAGS ?= -Wall -Wextra -D_FORTIFY_SOURCE=2 -fstack-protector-strong
++CFLAGS += -std=gnu99 $(OPTIMIZE) $(MINSIZE) $(HARDEN_CFLAGS)
+ CFLAGS_PIC = -fPIC
+ CFLAGS_LINUX = -Wno-alloc-size-larger-than $(CFLAGS_PIC)
+ CFLAGS_SYSTEMD = -DUSE_SYSTEMD
+ CFLAGS_BSD = -Wno-address-of-packed-member $(CFLAGS_PIC)
+-CFLAGS_CYGWIN = -Wno-address-of-packed-member -static -Wl,--nxcompat
++CFLAGS_CYGWIN = -Wno-address-of-packed-member -static -Wl,--nxcompat -Wl,--dynamicbase
+ CFLAGS_CYGWIN32 =
+-CFLAGS_CYGWIN64 = -Wl,--dynamicbase -Wl,--high-entropy-va
++CFLAGS_CYGWIN64 = -Wl,--high-entropy-va
+ CFLAGS_UBSAN = -fsanitize=undefined,alignment -fno-sanitize-recover=undefined,alignment
++CFLAGS_ASAN = -fsanitize=address -fno-omit-frame-pointer
++LDFLAGS_ASAN = -fsanitize=address
+ LDFLAGS_PIE = -pie
+ LDFLAGS += -flto=auto -Wl,--gc-sections $(LDFLAGS_PIE)
+ LDFLAGS_ANDROID = -llog
+@@ -25,8 +28,9 @@ LIBS_CYGWIN32 = -lwindivert32
+ LIBS_CYGWIN64 = -lwindivert64
+ RES_CYGWIN32 = windows/res/winws_res32.o
+ RES_CYGWIN64 = windows/res/winws_res64.o
+-SRC_FILES = *.c crypto/*.c
+-SRC_FILES_ANDROID = $(SRC_FILES) andr/*.c
++SRC_FILES = checksum.c conntrack.c darkmagic.c desync.c filter.c gzip.c helpers.c hostlist.c ipset.c lua.c nfqws.c packet_queue.c params.c pools.c protocol.c random.c sec.c timer.c win.c \
++	crypto/aes-ctr.c crypto/aes-gcm.c crypto/aes.c crypto/gcm.c crypto/hkdf.c crypto/hmac.c crypto/sha224-256.c crypto/usha.c
++SRC_FILES_ANDROID = $(SRC_FILES) andr/getifaddrs.c andr/netlink.c
+ 
+ LUA_JIT?=1
+ 
+@@ -148,6 +152,9 @@ nfqws2: $(SRC_FILES)
+ ubsan: $(SRC_FILES)
+ 	$(CC) $(CFLAGS_UBSAN) $(CFLAGS) $(LUA_CFL) $(CFLAGS_LINUX) -o nfqws2 $(SRC_FILES) $(LIBS) $(LUA_LIB) $(LIBS_LINUX) $(LDFLAGS)
+ 
++asan: $(SRC_FILES)
++	$(CC) $(CFLAGS_ASAN) $(CFLAGS) $(LUA_CFL) $(CFLAGS_LINUX) -o nfqws2 $(SRC_FILES) $(LIBS) $(LUA_LIB) $(LIBS_LINUX) $(LDFLAGS) $(LDFLAGS_ASAN)
++
+ systemd: $(SRC_FILES)
+ 	$(CC) $(STRIPP) $(CFLAGS) $(LUA_CFL) $(CFLAGS_LINUX) $(CFLAGS_SYSTEMD) -o nfqws2 $(SRC_FILES) $(LIBS) $(LUA_LIB) $(LIBS_LINUX) $(LIBS_SYSTEMD) $(LDFLAGS)
+ 

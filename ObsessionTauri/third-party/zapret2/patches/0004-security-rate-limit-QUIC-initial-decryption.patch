@@ -1,0 +1,72 @@
+From e48eaba4c9692d6203a2b8a69c13652c488afa23 Mon Sep 17 00:00:00 2001
+From: Obsession Patch Builder <patches@obsession.local>
+Date: Sat, 22 Aug 2026 01:19:09 +0400
+Subject: [PATCH 4/5] security: rate limit QUIC initial decryption
+
+---
+ nfq2/desync.c | 45 ++++++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 44 insertions(+), 1 deletion(-)
+
+diff --git a/nfq2/desync.c b/nfq2/desync.c
+index 4bd8a7a..a86c2dc 100644
+--- a/nfq2/desync.c
++++ b/nfq2/desync.c
+@@ -18,6 +18,43 @@
+ #define TCP_MAX_REASM 16384
+ #define UDP_MAX_REASM 16384
+ 
++#ifndef QUIC_DECRYPT_RATE
++#define QUIC_DECRYPT_RATE 512U
++#endif
++#ifndef QUIC_DECRYPT_BURST
++#define QUIC_DECRYPT_BURST 1024U
++#endif
++
++#define NSEC_PER_SEC 1000000000ULL
++
++static bool quic_decrypt_rate_take(void)
++{
++	static uint64_t tokens, last_ns;
++	struct timespec now;
++	uint64_t now_ns, elapsed, max_tokens = (uint64_t)QUIC_DECRYPT_BURST * NSEC_PER_SEC;
++
++	if (!QUIC_DECRYPT_RATE || !QUIC_DECRYPT_BURST) return false;
++	if (clock_gettime(CLOCK_BOOT_OR_UPTIME, &now)) return false;
++	now_ns = (uint64_t)now.tv_sec * NSEC_PER_SEC + (uint64_t)now.tv_nsec;
++	if (!last_ns)
++	{
++		tokens = max_tokens;
++		last_ns = now_ns;
++	}
++	else if (now_ns > last_ns)
++	{
++		elapsed = now_ns - last_ns;
++		if (elapsed >= max_tokens / QUIC_DECRYPT_RATE)
++			tokens = max_tokens;
++		else
++			tokens = MIN(max_tokens, tokens + elapsed * QUIC_DECRYPT_RATE);
++		last_ns = now_ns;
++	}
++	if (tokens < NSEC_PER_SEC) return false;
++	tokens -= NSEC_PER_SEC;
++	return true;
++}
++
+ typedef	struct
+ {
+ 	t_l7payload l7p;
+@@ -1827,7 +1864,13 @@ static uint8_t dpi_desync_udp_packet_play(
+ 				else
+ 				{
+ 					clean_len = sizeof(clean);
+-					pclean = QUICDecryptInitial(dis->data_payload, dis->len_payload, clean, &clean_len) ? clean : NULL;
++					if (quic_decrypt_rate_take())
++						pclean = QUICDecryptInitial(dis->data_payload, dis->len_payload, clean, &clean_len) ? clean : NULL;
++					else
++					{
++						DLOG("QUIC initial decryption rate limit reached\n");
++						pclean = NULL;
++					}
+ 				}
+ 				if (pclean)
+ 				{

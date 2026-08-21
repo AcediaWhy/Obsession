@@ -6,8 +6,8 @@
 
 use super::manifest::StrategyDef;
 
-pub const WINWS2_VERSION: (u32, u32, u32) = (1, 0, 2);
-/// `winws2` печатает `lua_compat_ver 6` при старте официального релиза 1.0.2.
+pub const WINWS2_VERSION: (u32, u32, u32) = (1, 0, 4);
+/// Patched `winws2` v1.0.4-h1 keeps upstream `lua_compat_ver 6`.
 pub const LUA_API: u32 = 6;
 pub const LUA_LIB: &str = "lua/zapret-lib.lua";
 

@@ -3,7 +3,7 @@
   "pack_id": "builtin.base",
   "pack_version": "0.3.0",
   "engine": {
-    "winws2_min": ">=1.0.2",
+    "winws2_min": ">=1.0.4",
     "lua_api": 6
   },
   "categories": [

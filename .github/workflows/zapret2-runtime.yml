@@ -1,0 +1,42 @@
+name: Build patched zapret2 runtime
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/zapret2-runtime.yml"
+      - "ObsessionTauri/scripts/build-zapret2.ps1"
+      - "ObsessionTauri/third-party/zapret2/**"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/zapret2-runtime.yml"
+      - "ObsessionTauri/scripts/build-zapret2.ps1"
+      - "ObsessionTauri/third-party/zapret2/**"
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows-x86_64:
+    runs-on: windows-2025
+    timeout-minutes: 45
+    steps:
+      - name: Check out Obsession
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Build and verify patched winws2
+        shell: pwsh
+        run: >-
+          ./ObsessionTauri/scripts/build-zapret2.ps1
+          -WorkRoot "${{ runner.temp }}/zapret2-work"
+          -OutputDirectory "${{ runner.temp }}/zapret2-output"
+
+      - name: Upload verified runtime
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: obsession-zapret2-v1.0.4-h1-windows-x86_64
+          path: ${{ runner.temp }}/zapret2-output/*
+          if-no-files-found: error
+          retention-days: 14

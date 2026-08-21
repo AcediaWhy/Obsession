@@ -20,7 +20,7 @@ use sha2::{Digest, Sha256};
 use crate::protected_layout::{VerifiedDpiPlan, VerifiedResource};
 
 const PACK_SCHEMA_VERSION: u32 = 1;
-const WINWS2_VERSION: (u32, u32, u32) = (1, 0, 2);
+const WINWS2_VERSION: (u32, u32, u32) = (1, 0, 4);
 const LUA_API: u32 = 6;
 const LUA_LIB: &str = "lua/zapret-lib.lua";
 const MAX_PACK_BYTES: u64 = 1024 * 1024;

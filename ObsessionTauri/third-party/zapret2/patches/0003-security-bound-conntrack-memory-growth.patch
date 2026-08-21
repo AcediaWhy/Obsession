@@ -1,0 +1,310 @@
+From c82a62de924c5105efffdb746a1fed8f5026124f Mon Sep 17 00:00:00 2001
+From: Obsession Patch Builder <patches@obsession.local>
+Date: Sat, 22 Aug 2026 01:19:09 +0400
+Subject: [PATCH 3/5] security: bound conntrack memory growth
+
+---
+ nfq2/conntrack.c    | 70 +++++++++++++++++++++++++++++++++------------
+ nfq2/conntrack.h    | 14 +++++++++
+ nfq2/packet_queue.c | 18 ++++++++++--
+ nfq2/packet_queue.h |  5 +++-
+ 4 files changed, 86 insertions(+), 21 deletions(-)
+
+diff --git a/nfq2/conntrack.c b/nfq2/conntrack.c
+index e085df9..fa04705 100644
+--- a/nfq2/conntrack.c
++++ b/nfq2/conntrack.c
+@@ -68,6 +68,8 @@ void ConntrackPoolInit(t_conntrack *p, time_t purge_interval, uint32_t timeout_s
+ 	p->timeout_udp = timeout_udp;
+ 	p->t_purge_interval = purge_interval;
+ 	p->t_last_purge = boottime();
++	p->reasm_bytes = 0;
++	p->delayed_bytes = 0;
+ 	p->pool = NULL;
+ }
+ 
+@@ -100,33 +102,53 @@ static t_conntrack_pool *ConntrackPoolSearch(t_conntrack_pool *p, const t_conn *
+ 	return t;
+ }
+ 
+-static void ConntrackInitTrack(t_ctrack *t)
++static void ConntrackInitTrack(t_conntrack *owner, t_ctrack *t)
+ {
+ 	memset(t, 0, sizeof(*t));
+ 	t->l7proto = L7_UNKNOWN;
+ 	t->reasm_client_payload = L7P_UNKNOWN;
+ 	t->pos.client.scale = t->pos.server.scale = 0;
+-	rawpacket_queue_init(&t->delayed, RAW_PACKET_QUEUE_DELAYED_MAX);
++	t->reasm_client.total_bytes = &owner->reasm_bytes;
++	t->reasm_client.max_total_bytes = CTRACK_MAX_REASM_BYTES;
++	rawpacket_queue_init(&t->delayed, RAW_PACKET_QUEUE_DELAYED_MAX,
++		RAW_PACKET_QUEUE_DELAYED_BYTES_MAX, &owner->delayed_bytes, CTRACK_MAX_DELAYED_BYTES);
+ 	lua_newtable(params.L);
+ 	t->lua_state = luaL_ref(params.L, LUA_REGISTRYINDEX);
+ 	lua_newtable(params.L);
+ 	t->lua_instance_cutoff = luaL_ref(params.L, LUA_REGISTRYINDEX);
+ }
+-static void ConntrackReInitTrack(t_ctrack *t)
++static void ConntrackReInitTrack(t_conntrack *owner, t_ctrack *t)
+ {
+ 	ConntrackClearTrack(t);
+-	ConntrackInitTrack(t);
++	ConntrackInitTrack(owner, t);
+ }
+ 
+-static t_conntrack_pool *ConntrackNew(t_conntrack_pool **pp, const t_conn *c)
++static bool ConntrackEvictOldest(t_conntrack *p)
++{
++	t_conntrack_pool *elem, *tmp, *oldest = NULL;
++	HASH_ITER(hh, p->pool, elem, tmp)
++	{
++		if (!oldest || elem->track.pos.t_last.tv_sec < oldest->track.pos.t_last.tv_sec ||
++			(elem->track.pos.t_last.tv_sec == oldest->track.pos.t_last.tv_sec &&
++			 elem->track.pos.t_last.tv_nsec < oldest->track.pos.t_last.tv_nsec))
++			oldest = elem;
++	}
++	if (!oldest) return false;
++	HASH_DEL(p->pool, oldest);
++	ConntrackFreeElem(oldest);
++	return true;
++}
++
++static t_conntrack_pool *ConntrackNew(t_conntrack *p, const t_conn *c)
+ {
+ 	t_conntrack_pool *ctnew;
++	if (HASH_COUNT(p->pool) >= CTRACK_MAX_ENTRIES && !ConntrackEvictOldest(p)) return NULL;
+ 	if (!(ctnew = malloc(sizeof(*ctnew)))) return NULL;
+ 	ctnew->conn = *c;
+ 	oom = false;
+-	HASH_ADD(hh, *pp, conn, sizeof(*c), ctnew);
++	HASH_ADD(hh, p->pool, conn, sizeof(*c), ctnew);
+ 	if (oom) { free(ctnew); return NULL; }
+-	ConntrackInitTrack(&ctnew->track);
++	ConntrackInitTrack(p, &ctnew->track);
+ 	return ctnew;
+ }
+ 
+@@ -171,7 +193,7 @@ static void ConntrackApplyPos(t_ctrack *t, bool bReverse, const struct dissect *
+ 		reverse->rseq_over_2G = true;
+ }
+ 
+-static void ConntrackFeedPacket(t_ctrack *t, bool bReverse, const struct dissect *dis)
++static void ConntrackFeedPacket(t_conntrack *owner, t_ctrack *t, bool bReverse, const struct dissect *dis)
+ {
+ 	if (bReverse)
+ 	{
+@@ -191,7 +213,7 @@ static void ConntrackFeedPacket(t_ctrack *t, bool bReverse, const struct dissect
+ 	{
+ 		if (tcp_syn_segment(dis->tcp))
+ 		{
+-			if (t->pos.state != SYN) ConntrackReInitTrack(t); // erase current entry
++			if (t->pos.state != SYN) ConntrackReInitTrack(owner, t); // erase current entry
+ 			t->pos.client.seq0 = ntohl(dis->tcp->th_seq);
+ 		}
+ 		else if (tcp_synack_segment(dis->tcp))
+@@ -199,7 +221,7 @@ static void ConntrackFeedPacket(t_ctrack *t, bool bReverse, const struct dissect
+ 			// ignore SA dups
+ 			uint32_t seq0 = ntohl(dis->tcp->th_ack) - 1;
+ 			if (t->pos.state != SYN && t->pos.client.seq0 != seq0)
+-				ConntrackReInitTrack(t); // erase current entry
++				ConntrackReInitTrack(owner, t); // erase current entry
+ 			if (!t->pos.client.seq0) t->pos.client.seq0 = seq0;
+ 			t->pos.server.seq0 = ntohl(dis->tcp->th_seq);
+ 		}
+@@ -253,7 +275,7 @@ bool ConntrackPoolDoubleSearch(t_conntrack *p, const struct dissect *dis, t_ctra
+ 	return ConntrackPoolDoubleSearchPool(&p->pool, dis, ctrack, bReverse);
+ }
+ 
+-static bool ConntrackPoolFeedPool(t_conntrack_pool **pp, const struct dissect *dis, t_ctrack **ctrack, bool *bReverse)
++static bool ConntrackPoolFeedPool(t_conntrack *p, const struct dissect *dis, t_ctrack **ctrack, bool *bReverse)
+ {
+ 	t_conn conn, connswp;
+ 	t_conntrack_pool *ctr;
+@@ -261,26 +283,26 @@ static bool ConntrackPoolFeedPool(t_conntrack_pool **pp, const struct dissect *d
+ 	uint8_t proto = dis->tcp ? IPPROTO_TCP : dis->udp ? IPPROTO_UDP : IPPROTO_NONE;
+ 
+ 	if (!ConntrackExtractConn(&conn, false, dis)) return false;
+-	if ((ctr = ConntrackPoolSearch(*pp, &conn)))
++	if ((ctr = ConntrackPoolSearch(p->pool, &conn)))
+ 	{
+-		ConntrackFeedPacket(&ctr->track, (b_rev = false), dis);
++		ConntrackFeedPacket(p, &ctr->track, (b_rev = false), dis);
+ 		goto ok;
+ 	}
+ 	else
+ 	{
+ 		connswap(&conn, &connswp);
+-		if ((ctr = ConntrackPoolSearch(*pp, &connswp)))
++		if ((ctr = ConntrackPoolSearch(p->pool, &connswp)))
+ 		{
+-			ConntrackFeedPacket(&ctr->track, (b_rev = true), dis);
++			ConntrackFeedPacket(p, &ctr->track, (b_rev = true), dis);
+ 			goto ok;
+ 		}
+ 	}
+ 	b_rev = dis->tcp && tcp_synack_segment(dis->tcp);
+ 	if ((dis->tcp && tcp_syn_segment(dis->tcp)) || b_rev || dis->udp)
+ 	{
+-		if ((ctr = ConntrackNew(pp, b_rev ? &connswp : &conn)))
++		if ((ctr = ConntrackNew(p, b_rev ? &connswp : &conn)))
+ 		{
+-			ConntrackFeedPacket(&ctr->track, b_rev, dis);
++			ConntrackFeedPacket(p, &ctr->track, b_rev, dis);
+ 			goto ok;
+ 		}
+ 	}
+@@ -293,7 +315,7 @@ ok:
+ }
+ bool ConntrackPoolFeed(t_conntrack *p, const struct dissect *dis, t_ctrack **ctrack, bool *bReverse)
+ {
+-	return ConntrackPoolFeedPool(&p->pool, dis, ctrack, bReverse);
++	return ConntrackPoolFeedPool(p, dis, ctrack, bReverse);
+ }
+ 
+ static bool ConntrackPoolDropPool(t_conntrack_pool **pp, const struct dissect *dis)
+@@ -382,14 +404,18 @@ void ConntrackPoolDump(const t_conntrack *p)
+ 
+ void ReasmClear(t_reassemble *reasm)
+ {
++	if (reasm->total_bytes) *reasm->total_bytes -= reasm->size;
+ 	free(reasm->packet);
+ 	reasm->packet = NULL;
+ 	reasm->size = reasm->size_present = 0;
+ }
+ bool ReasmInit(t_reassemble *reasm, size_t size_requested, uint32_t seq_start)
+ {
++	if (reasm->total_bytes && reasm->max_total_bytes && size_requested > reasm->max_total_bytes - *reasm->total_bytes)
++		return false;
+ 	reasm->packet = malloc(size_requested);
+ 	if (!reasm->packet) return false;
++	if (reasm->total_bytes) *reasm->total_bytes += size_requested;
+ 	reasm->size = size_requested;
+ 	reasm->size_present = 0;
+ 	reasm->seq = seq_start;
+@@ -397,8 +423,16 @@ bool ReasmInit(t_reassemble *reasm, size_t size_requested, uint32_t seq_start)
+ }
+ bool ReasmResize(t_reassemble *reasm, size_t new_size)
+ {
++	if (reasm->total_bytes && reasm->max_total_bytes && new_size > reasm->size &&
++		new_size - reasm->size > reasm->max_total_bytes - *reasm->total_bytes)
++		return false;
+ 	uint8_t *p = realloc(reasm->packet, new_size);
+ 	if (!p) return false;
++	if (reasm->total_bytes)
++	{
++		if (new_size >= reasm->size) *reasm->total_bytes += new_size - reasm->size;
++		else *reasm->total_bytes -= reasm->size - new_size;
++	}
+ 	reasm->packet = p;
+ 	reasm->size = new_size;
+ 	if (reasm->size_present > new_size) reasm->size_present = new_size;
+diff --git a/nfq2/conntrack.h b/nfq2/conntrack.h
+index 42caf8b..e4723ea 100644
+--- a/nfq2/conntrack.h
++++ b/nfq2/conntrack.h
+@@ -30,6 +30,17 @@
+ #define RETRANS_COUNTER_STOP ((uint8_t)-1)
+ 
+ #define RAW_PACKET_QUEUE_DELAYED_MAX	64
++#define RAW_PACKET_QUEUE_DELAYED_BYTES_MAX	(256U * 1024U)
++
++#ifndef CTRACK_MAX_ENTRIES
++#define CTRACK_MAX_ENTRIES	8192U
++#endif
++#ifndef CTRACK_MAX_REASM_BYTES
++#define CTRACK_MAX_REASM_BYTES	(8U * 1024U * 1024U)
++#endif
++#ifndef CTRACK_MAX_DELAYED_BYTES
++#define CTRACK_MAX_DELAYED_BYTES	(16U * 1024U * 1024U)
++#endif
+ 
+ typedef union {
+ 	struct in_addr ip;
+@@ -49,6 +60,8 @@ typedef struct {
+ 	uint32_t seq;			// current seq number. if a packet comes with unsupported seq overlap - it fails reassemble session.
+ 	size_t size;			// expected message size. success means that we have received exactly 'size' bytes and have them in 'packet'
+ 	size_t size_present;		// how many bytes already stored in 'packet'
++	size_t *total_bytes;		// optional shared budget owned by the conntrack pool
++	size_t max_total_bytes;
+ } t_reassemble;
+ 
+ 
+@@ -98,6 +111,7 @@ typedef struct
+ 	// inactivity time to purge an entry in each connection state
+ 	uint32_t timeout_syn,timeout_established,timeout_fin,timeout_udp;
+ 	time_t t_purge_interval, t_last_purge;
++	size_t reasm_bytes, delayed_bytes;
+ 	t_conntrack_pool *pool;
+ } t_conntrack;
+ 
+diff --git a/nfq2/packet_queue.c b/nfq2/packet_queue.c
+index 20fb69c..f46d28c 100644
+--- a/nfq2/packet_queue.c
++++ b/nfq2/packet_queue.c
+@@ -4,10 +4,14 @@
+ 
+ #include "packet_queue.h"
+ 
+-void rawpacket_queue_init(struct rawpacket_queue *q, unsigned int max_packets)
++void rawpacket_queue_init(struct rawpacket_queue *q, unsigned int max_packets, size_t max_bytes, size_t *total_bytes, size_t max_total_bytes)
+ {
+ 	TAILQ_INIT(&q->q);
+ 	q->max_packets = max_packets;
++	q->bytes = 0;
++	q->max_bytes = max_bytes;
++	q->total_bytes = total_bytes;
++	q->max_total_bytes = max_total_bytes;
+ }
+ void rawpacket_free(struct rawpacket *rp)
+ {
+@@ -18,7 +22,12 @@ struct rawpacket *rawpacket_dequeue(struct rawpacket_queue *q)
+ {
+ 	struct rawpacket *rp;
+ 	rp = TAILQ_FIRST(&q->q);
+-	if (rp)	TAILQ_REMOVE(&q->q, rp, next);
++	if (rp)
++	{
++		TAILQ_REMOVE(&q->q, rp, next);
++		q->bytes -= rp->len;
++		if (q->total_bytes) *q->total_bytes -= rp->len;
++	}
+ 	return rp;
+ }
+ void rawpacket_queue_destroy(struct rawpacket_queue *q)
+@@ -37,6 +46,9 @@ struct rawpacket *rawpacket_queue(
+ 	bool server_side)
+ {
+ 	if (q->max_packets && rawpacket_queue_count(q)>=q->max_packets) return NULL;
++	if ((q->max_bytes && len > q->max_bytes - q->bytes) ||
++		(q->total_bytes && q->max_total_bytes && len > q->max_total_bytes - *q->total_bytes))
++		return NULL;
+ 
+ 	struct rawpacket *rp = malloc(sizeof(struct rawpacket));
+ 	if (!rp) return NULL;
+@@ -74,6 +86,8 @@ struct rawpacket *rawpacket_queue(
+ 	rp->server_side = server_side;
+ 	
+ 	TAILQ_INSERT_TAIL(&q->q, rp, next);
++	q->bytes += len;
++	if (q->total_bytes) *q->total_bytes += len;
+ 	
+ 	return rp;
+ }
+diff --git a/nfq2/packet_queue.h b/nfq2/packet_queue.h
+index cbf6e85..9c21278 100644
+--- a/nfq2/packet_queue.h
++++ b/nfq2/packet_queue.h
+@@ -27,9 +27,12 @@ struct rawpacket_queue
+ {
+ 	struct rawpacket_tailhead q;
+ 	unsigned int max_packets;
++	size_t bytes, max_bytes;
++	size_t *total_bytes;
++	size_t max_total_bytes;
+ };
+ 
+-void rawpacket_queue_init(struct rawpacket_queue *q, unsigned int max_packets);
++void rawpacket_queue_init(struct rawpacket_queue *q, unsigned int max_packets, size_t max_bytes, size_t *total_bytes, size_t max_total_bytes);
+ void rawpacket_queue_destroy(struct rawpacket_queue *q);
+ bool rawpacket_queue_empty(const struct rawpacket_queue *q);
+ unsigned int rawpacket_queue_count(const struct rawpacket_queue *q);

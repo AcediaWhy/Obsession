@@ -37,6 +37,8 @@
 *.yaml   text eol=lf
 *.ps1    text eol=lf
 *.sh     text eol=lf
+# Mail-formatted patches intentionally preserve upstream/context whitespace.
+*.patch  text eol=lf -whitespace
 
 # --- Системно-чувствительные текстовые ассеты: строгий LF, без CRLF/BOM ---
 # winws читает .conf как есть; CRLF/BOM ломали десинк. Держим канонический LF;

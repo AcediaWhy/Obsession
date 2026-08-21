@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "upstream": {
+    "repository": "https://github.com/bol-van/zapret2.git",
+    "tag": "v1.0.4",
+    "commit": "2c21faa80e1acb71ddceb8b49176f266b7d33f05",
+    "source_date_epoch": 1785483090
+  },
+  "patchset": {
+    "version": "h1",
+    "patches": [
+      {
+        "file": "0001-security-harden-nested-IP-length-dissection.patch",
+        "sha256": "6f7618f755e331c230e64aea29704b84dece963eafc5d2cd9fe3d27763408d2c"
+      },
+      {
+        "file": "0002-security-use-CSPRNG-for-wire-visible-randomness.patch",
+        "sha256": "ab174d63191ddb2be62b0c213297b2f6a42c24ed739f02797158bca7df569952"
+      },
+      {
+        "file": "0003-security-bound-conntrack-memory-growth.patch",
+        "sha256": "6a35a8c70b3b68f9f06903a3a3062d1aef5bc142275801360e51982e6f2e3d31"
+      },
+      {
+        "file": "0004-security-rate-limit-QUIC-initial-decryption.patch",
+        "sha256": "3f930f2c460d9473178053cc58f8c8de55bd3858e5d6e5d31eb7434f0866c7e4"
+      },
+      {
+        "file": "0005-build-enable-baseline-compiler-mitigations.patch",
+        "sha256": "3d302968f21eb210f2c239467ee06dffbce61797eedc6c8ac88cda1e38b26f6d"
+      }
+    ]
+  },
+  "luajit": {
+    "version": "2.1-20250826",
+    "url": "https://github.com/openresty/luajit2/archive/refs/tags/v2.1-20250826.tar.gz",
+    "sha256": "5a49743ad6ce4b7f19aac71b55a08052c1feb62750f051982082c12bf62f39c0"
+  },
+  "cygwin": {
+    "setup_url": "https://cygwin.com/setup-x86_64.exe",
+    "setup_sha256": "2c9f2fb56e1fb687b5d9680afa8f8b06e6214f0e483096af0eae1946431226c5",
+    "mirror": "https://mirrors.kernel.org/sourceware/cygwin/",
+    "packages": {
+      "bash": "5.2.21-1",
+      "binutils": "2.47-1",
+      "coreutils": "9.0-1",
+      "cygwin": "3.6.10-1",
+      "gcc-core": "14.4.0-1",
+      "libgcc1": "14.4.0-1",
+      "make": "4.4.1-2",
+      "windows-default-manifest": "6.5-1",
+      "zlib-devel": "1.3.2-1",
+      "zlib0": "1.3.2-1"
+    }
+  }
+}
