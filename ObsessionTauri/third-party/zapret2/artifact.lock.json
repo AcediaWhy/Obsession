@@ -12,6 +12,10 @@
     "cygwin1": {
       "size": 3234357,
       "sha256": "d66788fce4ef1ce787fc1a83f2dd1e063e58bbf0d48ad93164ee195a983c035e"
+    },
+    "windivert": {
+      "size": 47616,
+      "sha256": "16abd6a029e65557c6a309bea7b13bf81fff4e193567582e1cddbf6719f323e0"
     }
   }
 }

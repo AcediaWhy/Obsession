@@ -77,6 +77,20 @@ Assert-LastExitCode 'Checking zapret2 patch applicability'
 & git -c user.name='Obsession Patch Builder' -c user.email='patches@obsession.local' -C $sourceRoot am --quiet -- @patchPaths
 Assert-LastExitCode 'Applying zapret2 patch series'
 
+$windowsReleaseArchive = Join-Path $runRoot 'zapret2-windows-release.zip'
+Invoke-WebRequest -UseBasicParsing -Uri $lock.windows_release.url -OutFile $windowsReleaseArchive
+Assert-Hash -Path $windowsReleaseArchive -Expected $lock.windows_release.sha256
+$windowsReleaseRoot = Join-Path $runRoot 'zapret2-windows-release'
+Expand-Archive -LiteralPath $windowsReleaseArchive -DestinationPath $windowsReleaseRoot
+$windivertSource = Join-Path $windowsReleaseRoot $lock.windows_release.windivert_dll.path
+if (-not (Test-Path -LiteralPath $windivertSource -PathType Leaf)) {
+    throw "Pinned WinDivert.dll is missing from the zapret2 Windows release: $windivertSource"
+}
+if ((Get-Item -LiteralPath $windivertSource).Length -ne $lock.windows_release.windivert_dll.size) {
+    throw "Pinned WinDivert.dll size does not match upstream.lock.json"
+}
+Assert-Hash -Path $windivertSource -Expected $lock.windows_release.windivert_dll.sha256
+
 $setupPath = Join-Path $runRoot 'setup-x86_64.exe'
 Invoke-WebRequest -UseBasicParsing -Uri $lock.cygwin.setup_url -OutFile $setupPath
 Assert-Hash -Path $setupPath -Expected $lock.cygwin.setup_sha256
@@ -175,12 +189,24 @@ foreach ($requiredFlag in @('HIGH_ENTROPY_VA', 'DYNAMIC_BASE', 'NX_COMPAT', '__s
     }
 }
 
+$objdumpPath = Join-Path $cygwinRoot 'bin\objdump.exe'
+$windivertPeHeaders = (& $objdumpPath -p $windivertSource | Out-String)
+Assert-LastExitCode 'Inspecting pinned WinDivert.dll'
+if ($windivertPeHeaders -notmatch 'DYNAMIC_BASE') {
+    throw 'Pinned WinDivert.dll is missing DYNAMIC_BASE'
+}
+if ($windivertPeHeaders -match 'HIGH_ENTROPY_VA') {
+    throw 'Pinned WinDivert.dll unexpectedly enables HIGH_ENTROPY_VA; zapret2 v1.0.4 intentionally removed it for Cygwin compatibility'
+}
+
 $winwsSource = Join-Path $sourceRoot 'nfq2\winws2.exe'
 $cygwinSource = Join-Path $cygwinRoot 'bin\cygwin1.dll'
 $winwsOutput = Join-Path $OutputDirectory 'winws2.exe'
 $cygwinOutput = Join-Path $OutputDirectory 'cygwin1.dll'
+$windivertOutput = Join-Path $OutputDirectory 'WinDivert.dll'
 Copy-Item -LiteralPath $winwsSource -Destination $winwsOutput -Force
 Copy-Item -LiteralPath $cygwinSource -Destination $cygwinOutput -Force
+Copy-Item -LiteralPath $windivertSource -Destination $windivertOutput -Force
 
 $provenance = [ordered]@{
     schema_version = 1
@@ -190,6 +216,7 @@ $provenance = [ordered]@{
     patchset_version = [string]$lock.patchset.version
     patches = @($lock.patchset.patches)
     luajit = $lock.luajit
+    windows_release = $lock.windows_release
     cygwin = [ordered]@{
         setup_sha256 = [string]$lock.cygwin.setup_sha256
         packages = $lock.cygwin.packages
@@ -203,6 +230,10 @@ $provenance = [ordered]@{
             size = (Get-Item -LiteralPath $cygwinOutput).Length
             sha256 = Get-Sha256 -Path $cygwinOutput
         }
+        windivert = [ordered]@{
+            size = (Get-Item -LiteralPath $windivertOutput).Length
+            sha256 = Get-Sha256 -Path $windivertOutput
+        }
     }
 }
 $provenance | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $OutputDirectory 'build-provenance.json') -Encoding utf8NoBOM
@@ -210,7 +241,7 @@ $provenance | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $Ou
 $artifactLockPath = Join-Path $patchRoot 'artifact.lock.json'
 if (-not $AllowArtifactHashChange -and (Test-Path -LiteralPath $artifactLockPath)) {
     $artifactLock = Get-Content -LiteralPath $artifactLockPath -Raw | ConvertFrom-Json
-    foreach ($name in @('winws2', 'cygwin1')) {
+    foreach ($name in @('winws2', 'cygwin1', 'windivert')) {
         $expectedOutput = $artifactLock.outputs.$name
         $actualOutput = $provenance.outputs.$name
         if ($expectedOutput.size -ne $actualOutput.size -or $expectedOutput.sha256 -ne $actualOutput.sha256) {
@@ -222,3 +253,4 @@ if (-not $AllowArtifactHashChange -and (Test-Path -LiteralPath $artifactLockPath
 Write-Host "Patched zapret2 runtime built at: $OutputDirectory"
 Write-Host "winws2.exe SHA-256: $($provenance.outputs.winws2.sha256)"
 Write-Host "cygwin1.dll SHA-256: $($provenance.outputs.cygwin1.sha256)"
+Write-Host "WinDivert.dll SHA-256: $($provenance.outputs.windivert.sha256)"

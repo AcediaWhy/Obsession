@@ -2,7 +2,9 @@
 
 Obsession does not vendor a mutable fork of zapret2. `upstream.lock.json` pins an
 exact upstream tag/commit, the LuaJIT input, the signed Cygwin bootstrap and the
-toolchain package versions. `patches/` is an ordered `git format-patch` series.
+toolchain package versions. The byte-exact official Windows release archive is
+also pinned as the source of the v1.0.4 `WinDivert.dll`. `patches/` is an ordered
+`git format-patch` series.
 
 The current patchset (`v1.0.4-h1`) contains:
 
@@ -20,10 +22,14 @@ Build from the repository root:
 
 The script verifies every pinned input and patch before compiling. It refuses a
 changed Cygwin bootstrap, package drift, a patch hash mismatch, a wrong upstream
-commit, or a PE file without ASLR, high-entropy VA, NX and stack-protector
-imports. It also compares the result with `artifact.lock.json`; use
+commit, a `winws2.exe` without ASLR, high-entropy VA, NX and stack-protector
+imports, or a `WinDivert.dll` that differs from the official v1.0.4 release. The
+DLL must retain `DYNAMIC_BASE` and must not restore the `HIGH_ENTROPY_VA` flag
+removed by upstream in v1.0.4. The script also compares every output with
+`artifact.lock.json`; use
 `-AllowArtifactHashChange` only while deliberately reviewing an upgrade. The
-output includes `build-provenance.json` and the matching `cygwin1.dll`.
+output includes `build-provenance.json`, the matching `cygwin1.dll`, and the
+pinned `WinDivert.dll`.
 
 ## Updating upstream safely
 

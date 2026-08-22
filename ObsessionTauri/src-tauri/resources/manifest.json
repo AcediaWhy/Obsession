@@ -49,7 +49,7 @@
           "path": "bin/zapret2/WinDivert.dll",
           "role": "driver",
           "size": 47616,
-          "sha256": "06c3f201b815a5798816e8c15b925b28f3c38e5aba31efedec10af9e598ce723"
+          "sha256": "16abd6a029e65557c6a309bea7b13bf81fff4e193567582e1cddbf6719f323e0"
         },
         {
           "path": "bin/zapret2/WinDivert64.sys",
