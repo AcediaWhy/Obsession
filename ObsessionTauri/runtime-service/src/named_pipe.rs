@@ -164,6 +164,7 @@ impl From<ProtocolError> for NamedPipeError {
 pub struct SecureNamedPipeServer<B> {
     core: Mutex<ServiceCore<B>>,
     client_process_policy: ClientProcessPolicy,
+    pipe_name: Vec<u16>,
 }
 
 impl<B: RuntimeBackend + Send> SecureNamedPipeServer<B> {
@@ -171,6 +172,7 @@ impl<B: RuntimeBackend + Send> SecureNamedPipeServer<B> {
         Self {
             core: Mutex::new(ServiceCore::new(backend)),
             client_process_policy: ClientProcessPolicy::installed_application(),
+            pipe_name: pipe_name_wide(RUNTIME_PIPE_NAME),
         }
     }
 
@@ -183,6 +185,7 @@ impl<B: RuntimeBackend + Send> SecureNamedPipeServer<B> {
         Self {
             core: Mutex::new(ServiceCore::new(backend)),
             client_process_policy: ClientProcessPolicy::current_test_process(),
+            pipe_name: pipe_name_wide(&test_pipe_name()),
         }
     }
 
@@ -201,7 +204,7 @@ impl<B: RuntimeBackend + Send> SecureNamedPipeServer<B> {
             return Err(NamedPipeError::InvalidTimeout);
         }
         let descriptor = LocalSecurityDescriptor::new()?;
-        let pipe = create_pipe(&descriptor)?;
+        let pipe = create_pipe(&descriptor, &self.pipe_name)?;
         let pipe = OwnedHandle(pipe);
 
         accept_client(pipe.0)?;
@@ -222,7 +225,7 @@ impl<B: RuntimeBackend + Send> SecureNamedPipeServer<B> {
             return Ok(false);
         }
         let descriptor = LocalSecurityDescriptor::new()?;
-        let pipe = create_stoppable_pipe(&descriptor)?;
+        let pipe = create_stoppable_pipe(&descriptor, &self.pipe_name)?;
         let pipe = OwnedHandle(pipe);
 
         let connected = accept_client_until_stopped(pipe.0, stop, || {
@@ -373,20 +376,26 @@ impl Drop for LocalSecurityDescriptor {
     }
 }
 
-fn create_pipe(descriptor: &LocalSecurityDescriptor) -> Result<HANDLE, NamedPipeError> {
-    create_pipe_with_wait_mode(descriptor, PIPE_WAIT)
+fn create_pipe(
+    descriptor: &LocalSecurityDescriptor,
+    pipe_name: &[u16],
+) -> Result<HANDLE, NamedPipeError> {
+    create_pipe_with_wait_mode(descriptor, pipe_name, PIPE_WAIT)
 }
 
-fn create_stoppable_pipe(descriptor: &LocalSecurityDescriptor) -> Result<HANDLE, NamedPipeError> {
-    create_pipe_with_wait_mode(descriptor, PIPE_NOWAIT)
+fn create_stoppable_pipe(
+    descriptor: &LocalSecurityDescriptor,
+    pipe_name: &[u16],
+) -> Result<HANDLE, NamedPipeError> {
+    create_pipe_with_wait_mode(descriptor, pipe_name, PIPE_NOWAIT)
 }
 
 fn create_pipe_with_wait_mode(
     descriptor: &LocalSecurityDescriptor,
+    pipe_name: &[u16],
     wait_mode: NAMED_PIPE_MODE,
 ) -> Result<HANDLE, NamedPipeError> {
     let attributes = descriptor.as_attributes();
-    let pipe_name = runtime_pipe_name_wide();
     let pipe = unsafe {
         CreateNamedPipeW(
             PCWSTR(pipe_name.as_ptr()),
@@ -409,19 +418,15 @@ fn create_pipe_with_wait_mode(
     }
 }
 
-fn runtime_pipe_name_wide() -> Vec<u16> {
-    // Tests and external integration-test builds (client-test-policy) must never
-    // race the production endpoint: a live system service owns the well-known
-    // name, so the first-instance create would fail and clients would reach the
-    // real service instead of the in-process test server.
-    #[cfg(any(test, feature = "client-test-policy"))]
-    let pipe_name = format!(r"\\.\pipe\ObsessionRuntime.test.{}", std::process::id());
-    #[cfg(not(any(test, feature = "client-test-policy")))]
-    let pipe_name = RUNTIME_PIPE_NAME.to_owned();
-
+fn pipe_name_wide(pipe_name: &str) -> Vec<u16> {
     let mut value: Vec<u16> = pipe_name.encode_utf16().collect();
     value.push(0);
     value
+}
+
+#[cfg(any(test, feature = "client-test-policy"))]
+fn test_pipe_name() -> String {
+    format!(r"\\.\pipe\ObsessionRuntime.test.{}", std::process::id())
 }
 
 fn accept_client(pipe: HANDLE) -> Result<(), NamedPipeError> {
@@ -810,7 +815,7 @@ mod tests {
     use obsession_runtime_protocol::{
         decode_response_frame, encode_request_frame, Capabilities, DpiStartRequest, DpiStopRequest,
         FirewallOpenProxyLanRequest, HostsMutationRequest, OperationAccepted, Request, Response,
-        RuntimeSnapshot, RuntimeStarted, ServiceErrorCode,
+        RuntimeSnapshot, RuntimeStarted, ServiceErrorCode, RUNTIME_PIPE_NAME,
     };
     use windows::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE};
     use windows::Win32::Storage::FileSystem::{
@@ -953,6 +958,19 @@ mod tests {
     }
 
     #[test]
+    fn production_constructor_keeps_the_well_known_endpoint_with_test_feature_enabled() {
+        let server = SecureNamedPipeServer::new(LockedBackend);
+        assert_eq!(server.pipe_name, pipe_name_wide(RUNTIME_PIPE_NAME));
+    }
+
+    #[test]
+    fn test_constructor_uses_a_process_scoped_endpoint() {
+        let server = SecureNamedPipeServer::new_for_test(LockedBackend);
+        assert_eq!(server.pipe_name, pipe_name_wide(&test_pipe_name()));
+        assert_ne!(server.pipe_name, pipe_name_wide(RUNTIME_PIPE_NAME));
+    }
+
+    #[test]
     fn idle_listener_observes_stop_without_waiting_for_a_client() {
         let _pipe_test = PIPE_TEST_LOCK
             .lock()
@@ -1087,7 +1105,7 @@ mod tests {
 
     fn connect_test_client() -> Result<HANDLE, NamedPipeError> {
         let deadline = Instant::now() + Duration::from_secs(2);
-        let pipe_name = runtime_pipe_name_wide();
+        let pipe_name = pipe_name_wide(&test_pipe_name());
         while Instant::now() < deadline {
             if unsafe { WaitNamedPipeW(PCWSTR(pipe_name.as_ptr()), 50).as_bool() } {
                 let pipe = unsafe {

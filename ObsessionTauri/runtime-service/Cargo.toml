@@ -6,8 +6,9 @@ publish = false
 
 [features]
 # Exposes SecureNamedPipeServer::new_for_test so integration tests in other
-# crates (runtime-client) can run a same-process pipe server whose client
-# policy trusts the current test executable instead of the installed path.
+# crates (runtime-client) can run a same-process pipe server on a process-scoped
+# endpoint whose client policy trusts the current test executable. This feature
+# never changes the production SecureNamedPipeServer::new configuration.
 client-test-policy = []
 
 [dependencies]

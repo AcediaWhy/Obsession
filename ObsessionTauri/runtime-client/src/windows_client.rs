@@ -3,6 +3,7 @@ use std::fs;
 use std::mem::size_of;
 use std::os::windows::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -28,7 +29,7 @@ use windows::Win32::System::Services::{
     SERVICE_QUERY_CONFIG, SERVICE_QUERY_STATUS, SERVICE_RUNNING, SERVICE_STATUS_PROCESS,
     SERVICE_WIN32_OWN_PROCESS,
 };
-use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
+use windows::Win32::System::Threading::{CreateEventW, ResetEvent, WaitForSingleObject};
 use windows::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 
 use windows::Win32::UI::Shell::{FOLDERID_ProgramFiles, SHGetKnownFolderPath, KF_FLAG_DEFAULT};
@@ -50,6 +51,7 @@ pub enum ClientError {
     UnexpectedEndOfStream,
     InvalidTimeout,
     TimedOut,
+    WorkerFailed,
 }
 
 impl fmt::Display for ClientError {
@@ -64,6 +66,7 @@ impl fmt::Display for ClientError {
             Self::TimedOut => {
                 formatter.write_str("runtime operation exceeded its end-to-end deadline")
             }
+            Self::WorkerFailed => formatter.write_str("runtime pipe worker failed unexpectedly"),
         }
     }
 }
@@ -84,14 +87,57 @@ impl From<ProtocolError> for ClientError {
 
 pub struct RuntimeClient {
     timeout: Duration,
+    pipe_name: String,
+    server_process_policy: ServerProcessPolicy,
+}
+
+#[derive(Clone, Copy)]
+enum ServerProcessPolicy {
+    RegisteredService,
+    #[cfg(test)]
+    CurrentProcess,
 }
 
 impl RuntimeClient {
     pub fn new(timeout: Duration) -> Result<Self, ClientError> {
+        Self::with_configuration(
+            timeout,
+            RUNTIME_PIPE_NAME.to_owned(),
+            ServerProcessPolicy::RegisteredService,
+        )
+    }
+
+    fn with_configuration(
+        timeout: Duration,
+        pipe_name: String,
+        server_process_policy: ServerProcessPolicy,
+    ) -> Result<Self, ClientError> {
         if timeout.is_zero() || timeout.as_millis() > u32::MAX as u128 {
             return Err(ClientError::InvalidTimeout);
         }
-        Ok(Self { timeout })
+        Ok(Self {
+            timeout,
+            pipe_name,
+            server_process_policy,
+        })
+    }
+
+    #[cfg(test)]
+    fn new_for_test(timeout: Duration) -> Result<Self, ClientError> {
+        Self::with_configuration(
+            timeout,
+            test_pipe_name(),
+            ServerProcessPolicy::CurrentProcess,
+        )
+    }
+
+    #[cfg(test)]
+    fn new_for_test_with_registered_server_policy(timeout: Duration) -> Result<Self, ClientError> {
+        Self::with_configuration(
+            timeout,
+            test_pipe_name(),
+            ServerProcessPolicy::RegisteredService,
+        )
     }
 
     /// Opens a fresh authenticated connection for one request/one response.
@@ -111,21 +157,38 @@ impl RuntimeClient {
         let request = RequestEnvelope::new(request_id, request);
         let frame = encode_request_frame(&request)?;
         let pipe = self.open_authenticated_pipe(deadline)?;
-        {
-            let mut io = BoundedPipeIo::new(pipe.0, deadline)?;
-            io.write_all(&frame)?;
-            let response = decode_response_frame(&io.read_frame()?)?;
-            if response.request_id != request.request_id {
-                return Err(ClientError::ResponseIdMismatch);
-            }
-            Ok(response)
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(ClientError::TimedOut);
         }
-        // `io` (and then `pipe`) drop here: a timed-out operation leaves a
-        // cancelled handle that closes cleanly without leaking the request.
+
+        let expected_request_id = request.request_id;
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let _worker = thread::Builder::new()
+            .name("runtime-pipe-io".to_owned())
+            .spawn(move || {
+                let result = (|| {
+                    let mut io = BoundedPipeIo::new(pipe.handle(), deadline)?;
+                    io.write_all(&frame)?;
+                    let response = decode_response_frame(&io.read_frame()?)?;
+                    if response.request_id != expected_request_id {
+                        return Err(ClientError::ResponseIdMismatch);
+                    }
+                    Ok(response)
+                })();
+                let _ = sender.send(result);
+            })
+            .map_err(|_| ClientError::WorkerFailed)?;
+
+        match receiver.recv_timeout(remaining) {
+            Ok(result) => result,
+            Err(mpsc::RecvTimeoutError::Timeout) => Err(ClientError::TimedOut),
+            Err(mpsc::RecvTimeoutError::Disconnected) => Err(ClientError::WorkerFailed),
+        }
     }
 
     fn open_authenticated_pipe(&self, deadline: Instant) -> Result<OwnedHandle, ClientError> {
-        let pipe_name = runtime_pipe_name_wide();
+        let pipe_name = pipe_name_wide(&self.pipe_name);
         // Never silently turn a 750ms discovery or 5s user operation into a
         // 30s wait. Long hosts operations already construct a client with their
         // own 90s budget. Acquisition, busy-waiting and I/O share one
@@ -160,7 +223,7 @@ impl RuntimeClient {
             match opened {
                 Ok(pipe) => {
                     let pipe = OwnedHandle(pipe);
-                    verify_pipe_server(pipe.0)?;
+                    verify_pipe_server(pipe.0, self.server_process_policy)?;
                     return Ok(pipe);
                 }
                 // Another authenticated client can win the narrow race between
@@ -199,7 +262,11 @@ fn wait_for_pipe(
         });
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
-            return Err(ClientError::Windows(last_error));
+            return if observed_busy {
+                Err(ClientError::TimedOut)
+            } else {
+                Err(ClientError::Windows(last_error))
+            };
         }
         let wait_ms = remaining.as_millis().clamp(1, 50) as u32;
         if unsafe { WaitNamedPipeW(PCWSTR(pipe_name.as_ptr()), wait_ms).as_bool() } {
@@ -242,6 +309,16 @@ fn is_busy_pipe_error(error: &WindowsError) -> bool {
 
 struct OwnedHandle(HANDLE);
 
+// SAFETY: a Windows kernel handle is process-wide and may be closed from a
+// different thread. `OwnedHandle` has unique ownership and is moved, not shared.
+unsafe impl Send for OwnedHandle {}
+
+impl OwnedHandle {
+    fn handle(&self) -> HANDLE {
+        self.0
+    }
+}
+
 impl Drop for OwnedHandle {
     fn drop(&mut self) {
         if !self.0.is_invalid() {
@@ -252,7 +329,10 @@ impl Drop for OwnedHandle {
     }
 }
 
-fn verify_pipe_server(pipe: HANDLE) -> Result<(), ClientError> {
+fn verify_pipe_server(
+    pipe: HANDLE,
+    server_process_policy: ServerProcessPolicy,
+) -> Result<(), ClientError> {
     let mut process_id = 0;
     unsafe {
         GetNamedPipeServerProcessId(pipe, &mut process_id)?;
@@ -261,22 +341,18 @@ fn verify_pipe_server(pipe: HANDLE) -> Result<(), ClientError> {
         return Err(ClientError::UntrustedServer);
     }
 
-    // Integration tests talk to an in-process test server on a per-process
-    // endpoint; the installed-service identity check cannot and must not pass
-    // there. The endpoint name itself is the trust boundary in that mode.
-    #[cfg(test)]
-    {
-        let _ = process_id;
-        return Ok(());
-    }
-    #[cfg(not(test))]
-    {
-        let expected = expected_service_path()?;
-        if protected_path_has_reparse_point(&expected)? {
-            return Err(ClientError::UntrustedServer);
+    match server_process_policy {
+        #[cfg(test)]
+        ServerProcessPolicy::CurrentProcess if process_id == std::process::id() => Ok(()),
+        #[cfg(test)]
+        ServerProcessPolicy::CurrentProcess => Err(ClientError::UntrustedServer),
+        ServerProcessPolicy::RegisteredService => {
+            let expected = expected_service_path()?;
+            if protected_path_has_reparse_point(&expected)? {
+                return Err(ClientError::UntrustedServer);
+            }
+            verify_registered_service(process_id, &expected)
         }
-        verify_registered_service(process_id, &expected)?;
-        Ok(())
     }
 }
 
@@ -452,28 +528,25 @@ fn path_key(path: &Path) -> String {
     value.trim_end_matches('\\').to_ascii_lowercase()
 }
 
-fn runtime_pipe_name_wide() -> Vec<u16> {
-    // Mirrors runtime-service: under test builds (the dev-dependency is compiled
-    // with `client-test-policy`) both sides agree on a per-process test endpoint
-    // so integration tests never touch the production pipe owned by the
-    // installed ObsessionRuntime service.
-    #[cfg(test)]
-    let pipe_name = format!(r"\\.\pipe\ObsessionRuntime.test.{}", std::process::id());
-    #[cfg(not(test))]
-    let pipe_name = RUNTIME_PIPE_NAME.to_owned();
-
+fn pipe_name_wide(pipe_name: &str) -> Vec<u16> {
     let mut value: Vec<u16> = pipe_name.encode_utf16().collect();
     value.push(0);
     value
 }
 
+#[cfg(test)]
+fn test_pipe_name() -> String {
+    format!(r"\\.\pipe\ObsessionRuntime.test.{}", std::process::id())
+}
+
 /// Overlapped pipe transport bounded by one absolute end-to-end deadline.
 ///
-/// Every read/write runs as an overlapped operation on an auto-reset event and
+/// Every read/write runs as an overlapped operation on a manual-reset event and
 /// waits with the remaining deadline. When the deadline expires, pending I/O is
-/// cancelled via `CancelIoEx` (which is why the pipe must be opened with
-/// `FILE_FLAG_OVERLAPPED`), the handle stays valid, and [`ClientError::TimedOut`]
-/// is returned instead of blocking forever behind a slow service operation.
+/// cancelled via `CancelIoEx` and reaped with `GetOverlappedResult` before its
+/// stack-owned OVERLAPPED and buffer can be dropped. `RuntimeClient::call` runs
+/// this cleanup on a worker, so cancellation cleanup cannot extend the caller's
+/// end-to-end deadline.
 struct BoundedPipeIo {
     pipe: HANDLE,
     event: OwnedHandle,
@@ -482,7 +555,7 @@ struct BoundedPipeIo {
 
 impl BoundedPipeIo {
     fn new(pipe: HANDLE, deadline: Instant) -> Result<Self, ClientError> {
-        let event = unsafe { CreateEventW(None, false, false, PCWSTR::null())? };
+        let event = unsafe { CreateEventW(None, true, false, PCWSTR::null())? };
         Ok(Self {
             pipe,
             event: OwnedHandle(event),
@@ -493,29 +566,35 @@ impl BoundedPipeIo {
     fn wait(&self, overlapped: &OVERLAPPED) -> Result<u32, ClientError> {
         let remaining = self.deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
-            // Deadline hit before or while the request was queued: cancel and
-            // report a timeout regardless of what the kernel does next.
-            unsafe {
-                let _ = CancelIoEx(self.pipe, Some(overlapped));
-            }
+            self.cancel_and_reap(overlapped);
             return Err(ClientError::TimedOut);
         }
         let wait_ms = remaining.as_millis().min((u32::MAX - 1) as u128) as u32;
         let signaled = unsafe { WaitForSingleObject(self.event.0, wait_ms) };
         if signaled == WAIT_TIMEOUT {
-            unsafe {
-                let _ = CancelIoEx(self.pipe, Some(overlapped));
-            }
+            self.cancel_and_reap(overlapped);
             return Err(ClientError::TimedOut);
         }
         if signaled != WAIT_OBJECT_0 {
-            return Err(WindowsError::from_win32().into());
+            let error = WindowsError::from_win32();
+            self.cancel_and_reap(overlapped);
+            return Err(error.into());
         }
         let mut transferred = 0u32;
         unsafe {
             GetOverlappedResult(self.pipe, overlapped, &mut transferred, false)?;
         }
         Ok(transferred)
+    }
+
+    fn cancel_and_reap(&self, overlapped: &OVERLAPPED) {
+        unsafe {
+            let _ = CancelIoEx(self.pipe, Some(overlapped));
+            // CancelIoEx only requests cancellation. The OVERLAPPED, event and
+            // caller buffer must remain alive until the operation completes.
+            let mut ignored = 0u32;
+            let _ = GetOverlappedResult(self.pipe, overlapped, &mut ignored, true);
+        }
     }
 
     fn read_frame(&mut self) -> Result<Vec<u8>, ClientError> {
@@ -558,59 +637,60 @@ impl BoundedPipeIo {
 
     /// One overlapped ReadFile chunk under the shared deadline.
     fn read_chunk(&self, buffer: &mut [u8], transferred: &mut u32) -> Result<(), ClientError> {
-        let mut overlapped = self.new_overlapped();
-        let result = unsafe {
-            ReadFile(
-                self.pipe,
-                Some(buffer),
-                Some(transferred),
-                Some(&mut overlapped),
-            )
-        };
+        let mut overlapped = self.new_overlapped()?;
+        let result = unsafe { ReadFile(self.pipe, Some(buffer), None, Some(&mut overlapped)) };
         self.finish_overlapped(result, &overlapped, transferred)
     }
 
     /// One overlapped WriteFile chunk under the shared deadline.
     /// WriteFile only reads `buffer`, so the slice stays shared.
     fn write_chunk(&self, buffer: &[u8], transferred: &mut u32) -> Result<(), ClientError> {
-        let mut overlapped = self.new_overlapped();
-        let result = unsafe {
-            WriteFile(
-                self.pipe,
-                Some(buffer),
-                Some(transferred),
-                Some(&mut overlapped),
-            )
-        };
+        let mut overlapped = self.new_overlapped()?;
+        let result = unsafe { WriteFile(self.pipe, Some(buffer), None, Some(&mut overlapped)) };
         self.finish_overlapped(result, &overlapped, transferred)
     }
 
     #[allow(clippy::field_reassign_with_default)] // OVERLAPPED is a C struct; hEvent is the only field we set
-    fn new_overlapped(&self) -> OVERLAPPED {
+    fn new_overlapped(&self) -> Result<OVERLAPPED, ClientError> {
+        if self
+            .deadline
+            .saturating_duration_since(Instant::now())
+            .is_zero()
+        {
+            return Err(ClientError::TimedOut);
+        }
+        unsafe {
+            ResetEvent(self.event.0)?;
+        }
         let mut overlapped = OVERLAPPED::default();
         overlapped.hEvent = self.event.0;
-        overlapped
+        Ok(overlapped)
     }
 
     /// Shared completion path: immediate errors propagate, ERROR_IO_PENDING
-    /// waits on the event under the deadline, synchronous completion returns.
+    /// waits on the event under the deadline, and every successful operation
+    /// obtains its byte count from GetOverlappedResult as Win32 requires when
+    /// the ReadFile/WriteFile byte-count pointer is null.
     fn finish_overlapped(
         &self,
         result: windows::core::Result<()>,
         overlapped: &OVERLAPPED,
         transferred: &mut u32,
     ) -> Result<(), ClientError> {
-        if let Err(error) = result {
-            // ERROR_IO_PENDING means the operation queued asynchronously; any
-            // other error is immediate (includes ERROR_BROKEN_PIPE etc).
-            if error.code() != HRESULT::from_win32(ERROR_IO_PENDING.0) {
-                return Err(error.into());
+        let completion = match result {
+            Ok(()) => {
+                let mut bytes = 0u32;
+                unsafe {
+                    GetOverlappedResult(self.pipe, overlapped, &mut bytes, false)?;
+                }
+                Ok(bytes)
             }
-        } else {
-            // Completed synchronously: `transferred` is already valid.
-            return Ok(());
-        }
-        match self.wait(overlapped) {
+            Err(error) if error.code() == HRESULT::from_win32(ERROR_IO_PENDING.0) => {
+                self.wait(overlapped)
+            }
+            Err(error) => Err(error.into()),
+        };
+        match completion {
             Ok(bytes) => {
                 *transferred = bytes;
                 Ok(())
@@ -632,6 +712,10 @@ mod tests {
     };
     use obsession_runtime_service::named_pipe::SecureNamedPipeServer;
     use obsession_runtime_service::{BackendError, LockedBackend, RuntimeBackend};
+    use windows::Win32::Storage::FileSystem::PIPE_ACCESS_DUPLEX;
+    use windows::Win32::System::Pipes::{
+        CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT,
+    };
 
     /// Same global serialization the service tests use: the well-known pipe
     /// endpoint allows exactly one first instance per process tree.
@@ -660,6 +744,52 @@ mod tests {
         assert!(matches_retryable_wait_error(&error));
         assert!(is_busy_pipe_error(&error));
         assert!(!is_missing_pipe_error(&error));
+    }
+
+    #[test]
+    fn occupied_pipe_exhausts_the_budget_as_timed_out() {
+        let pipe_name = format!(
+            r"\\.\pipe\ObsessionRuntime.busy-test.{}",
+            std::process::id()
+        );
+        let pipe_name = pipe_name_wide(&pipe_name);
+        let server = unsafe {
+            CreateNamedPipeW(
+                PCWSTR(pipe_name.as_ptr()),
+                PIPE_ACCESS_DUPLEX,
+                PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
+                1,
+                4096,
+                4096,
+                0,
+                None,
+            )
+        };
+        assert!(!server.is_invalid());
+        let _server = OwnedHandle(server);
+        let client = unsafe {
+            CreateFileW(
+                PCWSTR(pipe_name.as_ptr()),
+                GENERIC_READ.0 | GENERIC_WRITE.0,
+                FILE_SHARE_NONE,
+                None,
+                OPEN_EXISTING,
+                FILE_ATTRIBUTE_NORMAL | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION,
+                None,
+            )
+        }
+        .expect("test client must occupy the only pipe instance");
+        let _client = OwnedHandle(client);
+
+        let deadline = Instant::now() + Duration::from_millis(120);
+        let result = wait_for_pipe(
+            &pipe_name,
+            deadline,
+            deadline,
+            Duration::from_millis(120),
+            true,
+        );
+        assert!(matches!(result, Err(ClientError::TimedOut)));
     }
 
     #[test]
@@ -729,14 +859,13 @@ mod tests {
     #[test]
     fn same_user_fake_pipe_server_is_rejected_before_request_bytes_are_sent() {
         let _pipe_test = pipe_test_lock();
-        let client = RuntimeClient::new(Duration::from_secs(2)).unwrap();
-        // Under test both sides use the per-process endpoint, so there is no
-        // "installed service" to authenticate against: the early return that
-        // production machines relied on cannot happen here.
-        // A same-process server passes transport-level checks only until the
-        // response; the client must reject it BEFORE sending request bytes
-        // because its image is not the installed service executable.
-        let server = Arc::new(SecureNamedPipeServer::new(LockedBackend));
+        let client =
+            RuntimeClient::new_for_test_with_registered_server_policy(Duration::from_secs(2))
+                .unwrap();
+        // The endpoint is test-scoped, but the client deliberately keeps the
+        // production SCM/path identity policy. This same-process server must
+        // therefore be rejected before call() starts its I/O worker.
+        let server = Arc::new(SecureNamedPipeServer::new_for_test(LockedBackend));
         let worker = {
             let server = Arc::clone(&server);
             thread::spawn(move || server.serve_one())
@@ -746,7 +875,7 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
             if wait_for_pipe(
-                &runtime_pipe_name_wide(),
+                &pipe_name_wide(&test_pipe_name()),
                 deadline,
                 deadline,
                 Duration::from_secs(2),
@@ -762,33 +891,14 @@ mod tests {
         }
 
         let fake_result = client.call("capabilities-1", Request::GetCapabilities);
-        // Under test the transport identity check is disabled (per-process
-        // endpoint is the trust boundary), so the rejection happens one layer
-        // later: the server's installed-application policy refuses the test
-        // image and answers AccessDenied instead of executing the operation.
-        // Either outcome proves a same-process fake server cannot execute
-        // privileged work; what must NOT happen is a Capabilities response.
-        match &fake_result {
-            Err(ClientError::UntrustedServer) => {}
-            Ok(envelope)
-                if matches!(
-                    envelope.response,
-                    obsession_runtime_protocol::Response::Error(
-                        obsession_runtime_protocol::ServiceError {
-                            code: obsession_runtime_protocol::ServiceErrorCode::AccessDenied,
-                        }
-                    )
-                ) => {}
-            other => {
-                panic!("same-process server must not execute privileged operations: {other:?}")
-            }
-        }
+        assert!(matches!(fake_result, Err(ClientError::UntrustedServer)));
 
-        // The server served a complete request/response cycle (its answer was
-        // AccessDenied, but that is still a well-formed exchange), so its
-        // worker finishes successfully. The old world relied on the client
-        // aborting before bytes were sent, which made the server error out.
-        worker.join().expect("fake server worker must not panic");
+        // Verification failed before the request worker was spawned. Closing
+        // the authenticated handle leaves the server without a complete frame.
+        assert!(worker
+            .join()
+            .expect("fake server worker must not panic")
+            .is_err());
     }
 
     /// Backend whose capabilities response is delayed past any short client
@@ -848,10 +958,10 @@ mod tests {
         }
     }
 
-    /// The core regression for I1: a backend operation slower than the client's
-    /// end-to-end deadline returns TimedOut instead of blocking forever.
+    /// The core regression for I1: a response delayed by backend work returns
+    /// TimedOut to the client without waiting for that backend work to finish.
     #[test]
-    fn slow_backend_response_is_cancelled_at_the_end_to_end_deadline() {
+    fn slow_backend_response_returns_at_the_client_deadline() {
         let _pipe_test = pipe_test_lock();
         let server = Arc::new(SecureNamedPipeServer::new_for_test(
             DelayedCapabilitiesBackend(Duration::from_millis(1500)),
@@ -865,7 +975,7 @@ mod tests {
         // client starts; otherwise acquisition consumes the whole budget.
         thread::sleep(Duration::from_millis(80));
 
-        let client = RuntimeClient::new(Duration::from_millis(400)).unwrap();
+        let client = RuntimeClient::new_for_test(Duration::from_millis(400)).unwrap();
         let started = Instant::now();
         let result = client.call("slow-backend-1", Request::GetCapabilities);
         let elapsed = started.elapsed();
@@ -879,12 +989,8 @@ mod tests {
             "cancel must return promptly instead of waiting for the backend: {elapsed:?}"
         );
 
-        // The client cancelled its read and dropped the pipe, so when the
-        // server later writes the response it observes ERROR_NO_DATA ("pipe
-        // being closed"). That failure is the EXPECTED outcome: it proves the
-        // server-side transport survives an abandoned client instead of
-        // hanging, which is exactly the property this batch relies on. The
-        // only unacceptable outcomes here are a panic or a hang (join below).
+        // The backend itself is not cancelled by I1. It finishes later, and its
+        // response write observes that the deadline-bound client has gone.
         let _ = worker.join().expect("server worker must not panic");
     }
 
@@ -900,7 +1006,7 @@ mod tests {
         };
         thread::sleep(Duration::from_millis(80));
 
-        let client = RuntimeClient::new(Duration::from_secs(5)).unwrap();
+        let client = RuntimeClient::new_for_test(Duration::from_secs(5)).unwrap();
         let response = client
             .call("overlapped-roundtrip-1", Request::GetCapabilities)
             .expect("fast backend must round-trip");
