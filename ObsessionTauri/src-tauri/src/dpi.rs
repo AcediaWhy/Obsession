@@ -4632,7 +4632,12 @@ pub async fn test(app: &AppHandle, category: &str, config_file: &str) -> bool {
     connected
 }
 
-/// Обнаруживает чужие/orphan-процессы winws в системе (не свои).
+/// Диагностика: перечисляет запущенные процессы обхода (winws/winws2), не
+/// отслеживаемые этим экземпляром приложения. Только отчёт — НИКАКИХ убийств:
+/// после аварийного закрытия UI процесс может легитимно принадлежать защищённой
+/// службе (Job Object), а «чужой» winws.exe может быть параллельным инструментом
+/// пользователя (Zapret/GoodbyeDPI). Принудительное завершение — только вручную
+/// через [`emergency_kill_all`] (осознанное действие пользователя).
 pub fn detect_orphaned(app: &AppHandle) -> Vec<u32> {
     let tracked: std::collections::HashSet<u32> = {
         let state = app.state::<AppState>();
@@ -4640,26 +4645,22 @@ pub fn detect_orphaned(app: &AppHandle) -> Vec<u32> {
         set
     };
 
-    let output = util::std_command("tasklist")
-        .args([
-            "/FI",
-            &format!("IMAGENAME eq {}", crate::paths::WINWS_EXE),
-            "/NH",
-            "/FO",
-            "CSV",
-        ])
-        .output();
-
     let mut orphans = Vec::new();
-    if let Ok(out) = output {
-        if out.status.success() {
-            let text = String::from_utf8_lossy(&out.stdout);
-            // CSV: "winws.exe","1234","Console","1","12 345 K"
-            for line in text.lines() {
-                if let Some(cap) = ORPHAN_PID_RE.captures(line.trim()) {
-                    if let Ok(pid) = cap[1].parse::<u32>() {
-                        if !tracked.contains(&pid) {
-                            orphans.push(pid);
+    for image in [crate::paths::WINWS_EXE, crate::paths::WINWS2_EXE] {
+        let output = util::std_command("tasklist")
+            .args(["/FI", &format!("IMAGENAME eq {image}"), "/NH", "/FO", "CSV"])
+            .output();
+
+        if let Ok(out) = output {
+            if out.status.success() {
+                let text = String::from_utf8_lossy(&out.stdout);
+                // CSV: "winws.exe","1234","Console","1","12 345 K"
+                for line in text.lines() {
+                    if let Some(cap) = ORPHAN_PID_RE.captures(line.trim()) {
+                        if let Ok(pid) = cap[1].parse::<u32>() {
+                            if !tracked.contains(&pid) && !orphans.contains(&pid) {
+                                orphans.push(pid);
+                            }
                         }
                     }
                 }
@@ -4667,35 +4668,6 @@ pub fn detect_orphaned(app: &AppHandle) -> Vec<u32> {
         }
     }
     orphans
-}
-
-/// Точечно убивает список orphan-PID winws (только указанные PID, не по имени
-/// образа). В отличие от [`emergency_kill_all`], не трогает ЧУЖИЕ winws.exe —
-/// например, параллельно запущенный другой инструмент обхода (Zapret/GoodbyeDPI).
-/// Используется на старте для зачистки собственных зависших процессов.
-pub fn kill_orphans(app: &AppHandle, pids: &[u32]) {
-    if pids.is_empty() {
-        return;
-    }
-    util::emit_log(
-        app,
-        "warn",
-        "dpi",
-        &format!(
-            "Зачистка зависших winws.exe от прошлого запуска: PID [{}].",
-            pids.iter()
-                .map(u32::to_string)
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-    );
-    for pid in pids {
-        // /T добивает дерево на случай, если winws успел породить детей.
-        let _ = util::std_command("taskkill")
-            .args(["/F", "/T", "/PID", &pid.to_string()])
-            .output();
-    }
-    emit_status(app);
 }
 
 /// Крайняя мера: убивает ВСЕ winws.exe/winws2.exe в системе (включая чужие).

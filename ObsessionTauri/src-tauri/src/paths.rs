@@ -13,6 +13,9 @@ pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const APP_DATA_FOLDER: &str = "Obsession";
 pub const APP_DATA_VENDOR: &str = "vlarpsu";
 pub const WINWS_EXE: &str = "winws.exe";
+/// Имя образа движка Zapret2 Beta. Живёт в отдельном подкаталоге bin/zapret2,
+/// но tasklist фильтрует по имени образа, а не по пути.
+pub const WINWS2_EXE: &str = "winws2.exe";
 pub const TGPROXY_EXE: &str = "obsession-tg-proxy.exe";
 
 /// Системный hosts-файл Windows.
