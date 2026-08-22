@@ -86,7 +86,7 @@ impl ClientProcessPolicy {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "client-test-policy"))]
     fn current_test_process() -> Self {
         Self {
             expected_image: env::current_exe()
@@ -174,8 +174,12 @@ impl<B: RuntimeBackend + Send> SecureNamedPipeServer<B> {
         }
     }
 
-    #[cfg(test)]
-    fn new_for_test(backend: B) -> Self {
+    /// Test-only constructor. Gated on the service's `client-test-policy`
+    /// feature (implied by `cfg(test)`) so external integration tests
+    /// (runtime-client) can authenticate against this process image instead of
+    /// the installed application path.
+    #[cfg(any(test, feature = "client-test-policy"))]
+    pub fn new_for_test(backend: B) -> Self {
         Self {
             core: Mutex::new(ServiceCore::new(backend)),
             client_process_policy: ClientProcessPolicy::current_test_process(),
@@ -406,9 +410,13 @@ fn create_pipe_with_wait_mode(
 }
 
 fn runtime_pipe_name_wide() -> Vec<u16> {
-    #[cfg(test)]
+    // Tests and external integration-test builds (client-test-policy) must never
+    // race the production endpoint: a live system service owns the well-known
+    // name, so the first-instance create would fail and clients would reach the
+    // real service instead of the in-process test server.
+    #[cfg(any(test, feature = "client-test-policy"))]
     let pipe_name = format!(r"\\.\pipe\ObsessionRuntime.test.{}", std::process::id());
-    #[cfg(not(test))]
+    #[cfg(not(any(test, feature = "client-test-policy")))]
     let pipe_name = RUNTIME_PIPE_NAME.to_owned();
 
     let mut value: Vec<u16> = pipe_name.encode_utf16().collect();
