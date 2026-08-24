@@ -227,10 +227,7 @@ pub(crate) fn compile(plan: &VerifiedDpiPlan) -> Result<Vec<String>, Zapret2Comp
                     "adaptive override has no protected control profile",
                 ))?;
             let control_profile = profile_from_strategy(control, selected.category(), &resources)?;
-            let hostlist = control_profile.hostlist.ok_or(Zapret2CompileError(
-                "adaptive override has no protected hostlist",
-            ))?;
-            profiles.push(adaptive_profile(candidate, hostlist)?);
+            profiles.push(adaptive_profile(candidate, &control_profile)?);
         }
 
         for strategy in selected_profiles {
@@ -318,7 +315,7 @@ fn strategy_supports_transport(
 
 fn adaptive_profile(
     candidate: &Zapret2AdaptiveOverride,
-    hostlist: String,
+    control: &Profile,
 ) -> Result<Profile, Zapret2CompileError> {
     let bytes = serde_json::to_vec(candidate)
         .map_err(|_| Zapret2CompileError("could not fingerprint adaptive override"))?;
@@ -371,10 +368,26 @@ fn adaptive_profile(
             Ok(rendered)
         })
         .collect::<Result<Vec<_>, _>>()?;
+    // Порты наследуются у контрольного профиля пака. Схема кандидата их не
+    // описывает, а зашитый «443» отбирал у профиля покрытие альтернативных
+    // портов Cloudflare: подтверждённый кандидат молча сужал обход до 443.
+    // Контрольный профиль high-port правило уже прошёл, поэтому унаследованные
+    // порты допустимы по построению.
     let (filter_tcp, filter_udp, filter_l7) = match candidate.transport {
-        Zapret2AdaptiveTransport::Tls => (Some("443".into()), None, vec!["tls".into()]),
-        Zapret2AdaptiveTransport::Quic => (None, Some("443".into()), vec!["quic".into()]),
+        Zapret2AdaptiveTransport::Tls => (
+            control.filter_tcp.clone().or_else(|| Some("443".into())),
+            None,
+            vec!["tls".into()],
+        ),
+        Zapret2AdaptiveTransport::Quic => (
+            None,
+            control.filter_udp.clone().or_else(|| Some("443".into())),
+            vec!["quic".into()],
+        ),
     };
+    let hostlist = control.hostlist.clone().ok_or(Zapret2CompileError(
+        "adaptive override has no protected hostlist",
+    ))?;
     let expected_payload = match candidate.transport {
         Zapret2AdaptiveTransport::Tls => Zapret2AdaptivePayload::TlsClientHello,
         Zapret2AdaptiveTransport::Quic => Zapret2AdaptivePayload::QuicInitial,
@@ -919,6 +932,77 @@ fn protocol_category(value: &str) -> Option<DpiCategory> {
         "atrisk" => Some(DpiCategory::AtRisk),
         "universal" => Some(DpiCategory::Universal),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod adaptive_profile_tests {
+    use super::*;
+    use obsession_runtime_protocol::{Zapret2AdaptiveStep, ZAPRET2_ADAPTIVE_SCHEMA_VERSION};
+
+    fn control(filter_tcp: Option<&str>, filter_udp: Option<&str>) -> Profile {
+        Profile {
+            name: "control".into(),
+            filter_tcp: filter_tcp.map(str::to_owned),
+            filter_udp: filter_udp.map(str::to_owned),
+            filter_l7: vec!["tls".into()],
+            hostlist: Some("C:\\lists\\discord.txt".into()),
+            ipset: None,
+            payload: vec!["tls_client_hello".into()],
+            out_range: Some("-d10".into()),
+            in_range: None,
+            desync: vec!["multidisorder:pos=1,2,midsld,sniext".into()],
+        }
+    }
+
+    fn candidate(transport: Zapret2AdaptiveTransport) -> Zapret2AdaptiveOverride {
+        Zapret2AdaptiveOverride {
+            schema_version: ZAPRET2_ADAPTIVE_SCHEMA_VERSION,
+            category: DpiCategory::Discord,
+            transport,
+            steps: vec![Zapret2AdaptiveStep {
+                function: Zapret2AdaptiveFunction::MultiDisorder,
+                args: BTreeMap::from([(
+                    "pos".to_owned(),
+                    Zapret2AdaptiveValue::Text("1,midsld".into()),
+                )]),
+            }],
+            payload: match transport {
+                Zapret2AdaptiveTransport::Tls => Zapret2AdaptivePayload::TlsClientHello,
+                Zapret2AdaptiveTransport::Quic => Zapret2AdaptivePayload::QuicInitial,
+            },
+            out_range: Some(Zapret2AdaptiveRange::FirstTenDataPackets),
+        }
+    }
+
+    #[test]
+    fn inherits_alt_ports_from_the_control_profile() {
+        let control = control(Some("443,2053,2083,2087,2096,8443"), None);
+        let built = adaptive_profile(&candidate(Zapret2AdaptiveTransport::Tls), &control).unwrap();
+        assert_eq!(
+            built.filter_tcp.as_deref(),
+            Some("443,2053,2083,2087,2096,8443")
+        );
+        assert_eq!(built.filter_udp, None);
+        assert_eq!(built.hostlist, control.hostlist);
+    }
+
+    #[test]
+    fn falls_back_to_443_when_the_control_profile_has_no_filter() {
+        let built = adaptive_profile(
+            &candidate(Zapret2AdaptiveTransport::Tls),
+            &control(None, None),
+        )
+        .unwrap();
+        assert_eq!(built.filter_tcp.as_deref(), Some("443"));
+    }
+
+    #[test]
+    fn quic_candidate_inherits_the_udp_filter() {
+        let control = control(None, Some("443,19294-19344"));
+        let built = adaptive_profile(&candidate(Zapret2AdaptiveTransport::Quic), &control).unwrap();
+        assert_eq!(built.filter_udp.as_deref(), Some("443,19294-19344"));
+        assert_eq!(built.filter_tcp, None);
     }
 }
 

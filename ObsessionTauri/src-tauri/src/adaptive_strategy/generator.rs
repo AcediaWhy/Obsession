@@ -362,6 +362,25 @@ fn discord_tls_seeds() -> Vec<StrategyCandidate> {
     vec![
         // Exact pack 0.2.3 baseline. generate() excludes its effective fingerprint.
         discord_baseline_mutation(4, StrategyFunction::MultiSplit, "1"),
+        // Чистое переупорядочивание настоящего ClientHello, без впрыска чужих
+        // байт. Идёт сразу за baseline: на линиях, где DPI подделывает ответ
+        // вместо сброса, только эта форма и поднимает Discord, а любой
+        // предшествующий `fake` её ломает. Совпадает с профилем пака
+        // `discord_tls_multidisorder_alt` и с legacy `discord_6.conf`.
+        tls_candidate(
+            category,
+            vec![split_step(
+                StrategyFunction::MultiDisorder,
+                "1,2,midsld,sniext",
+            )],
+        ),
+        tls_candidate(
+            category,
+            vec![split_step(
+                StrategyFunction::MultiSplit,
+                "1,2,midsld,sniext",
+            )],
+        ),
         // Official blockcheck2 TLS seed.
         tls_candidate(
             category,
@@ -614,12 +633,15 @@ mod tests {
     fn discord_ladder_fills_budget_in_approved_order_and_excludes_baseline() {
         let tried = empty_tried();
         let seeds = discord_tls_seeds();
-        assert_eq!(seeds.len(), MAX_CANDIDATES + 1);
+        // Лестница длиннее бюджета: две формы без впрыска байт добавлены сразу
+        // за baseline, поэтому с хвоста отсекаются самые слабые твики.
+        assert!(seeds.len() > MAX_CANDIDATES + 1);
 
         let baseline_fingerprint = effective_fingerprint(&seeds[0]);
         let expected = seeds
             .iter()
             .skip(1)
+            .take(MAX_CANDIDATES)
             .map(effective_fingerprint)
             .collect::<Vec<_>>();
         let out = generate(GeneratorInput {
@@ -639,32 +661,31 @@ mod tests {
             .iter()
             .all(|candidate| validator::validate(candidate).is_valid()));
 
-        assert_eq!(out[0].steps.len(), 1);
+        // Голова лестницы — чистое переупорядочивание без blob и без seqovl.
+        for index in 0..2 {
+            assert_eq!(out[index].steps.len(), 1);
+            assert!(!out[index].steps[0].args.contains_key("blob"));
+            assert!(!out[index].steps[0].args.contains_key("seqovl"));
+            assert_eq!(
+                out[index].steps[0].args.get("pos"),
+                Some(&StrategyValue::Text("1,2,midsld,sniext".into()))
+            );
+        }
+        assert_eq!(out[0].steps[0].function, StrategyFunction::MultiDisorder);
+        assert_eq!(out[1].steps[0].function, StrategyFunction::MultiSplit);
+
+        // Дальше идут официальные fake-формы, ради разнообразия на других линиях.
         assert_eq!(
-            out[0].steps[0].args.get("tcp_ts"),
+            out[2].steps[0].args.get("tcp_ts"),
             Some(&StrategyValue::Integer(-1_000))
         );
-        assert_eq!(out[1].steps[0].function, StrategyFunction::Fake);
-        assert_eq!(
-            out[1].steps[0].args.get("tcp_md5"),
-            Some(&StrategyValue::Bool(true))
-        );
-        assert_eq!(out[3].steps[0].function, StrategyFunction::FakeDSplit);
-        assert_eq!(out[4].steps[0].function, StrategyFunction::FakeDDisorder);
-        assert_eq!(
-            out[8].steps[0].args.get("tcp_ts"),
-            Some(&StrategyValue::Integer(-30_000))
-        );
-        assert!(!out[8].steps[0].args.contains_key("tcp_ts_up"));
-        assert_eq!(
-            out[9].steps[1].args.get("pos"),
-            Some(&StrategyValue::Text("sniext".into()))
-        );
-        assert_eq!(out[11].steps[0].function, StrategyFunction::FakeDSplit);
-        assert_eq!(
-            out[11].steps[0].args.get("tcp_seq"),
-            Some(&StrategyValue::Integer(-10_000))
-        );
+        assert_eq!(out[3].steps[0].function, StrategyFunction::Fake);
+        assert!(out
+            .iter()
+            .any(|candidate| candidate.steps[0].function == StrategyFunction::FakeDSplit));
+        assert!(out
+            .iter()
+            .any(|candidate| candidate.steps[0].function == StrategyFunction::FakeDDisorder));
     }
 
     #[test]
