@@ -251,7 +251,14 @@ mod tests {
         match load_pack(&pack_dir) {
             Ok(pack) => {
                 assert_eq!(pack.manifest.pack_id, "builtin.base");
-                assert_eq!(pack.manifest.pack_version, "0.5.0");
+                assert_eq!(pack.manifest.pack_version, "0.5.1");
+                // Уровень 4 поднимает TCP и QUIC вместе — как youtube на уровне 1.
+                let disc_alt = pack.profiles_for("discord", 4);
+                assert_eq!(disc_alt.len(), 2);
+                assert!(disc_alt
+                    .iter()
+                    .any(|s| s.id == "discord_tls_multidisorder_alt"));
+                assert!(disc_alt.iter().any(|s| s.id == "discord_quic_alt"));
                 // Discord-стратегии отсортированы по агрессивности.
                 let disc = pack.strategies_for("discord");
                 assert!(!disc.is_empty(), "должны быть discord-стратегии");
