@@ -140,33 +140,15 @@ pub fn run() {
             let adaptive = adaptive_strategy::runtime::start(handle.clone());
             *handle.state::<AppState>().adaptive.lock_recover() = Some(adaptive);
 
-            // Подчищаем зависшие winws ОТ ПРЕДЫДУЩЕГО жёсткого выхода больше не
-            // нужно автоматически: процессы DPI принадлежат защищённой службе и
-            // умирают вместе с ней (Job Object KILL_ON_JOB_CLOSE), а локальные
-            // спавны (тест/brain/crash-retry) закрываются kill_on_drop + bounded
-            // reaper. Слепой taskkill по имени образа здесь опасен: он убил бы
-            // легитимный winws службы после аварийного закрытия UI или чужой
-            // winws.exe параллельного инструмента. Оставляем только диагностику.
+            // Подчищаем зависшие winws ОТ ПРЕДЫДУЩЕГО жёсткого выхода (иначе новый
+            // инстанс падает «A copy of winws is already running»). Бьём точечно по
+            // обнаруженным PID, а не глобально по имени образа — иначе снесли бы
+            // ЧУЖОЙ winws.exe (параллельный Zapret/GoodbyeDPI пользователя).
             #[cfg(windows)]
             {
                 if security::protected_runtime_available() {
                     let orphans = dpi::detect_orphaned(&handle);
-                    if !orphans.is_empty() {
-                        util::emit_log(
-                            &handle,
-                            "warn",
-                            "dpi",
-                            &format!(
-                                "Обнаружены не отслеживаемые процессы обхода: PID [{}]. \
-                                 Если обход не работает — используйте аварийную остановку.",
-                                orphans
-                                    .iter()
-                                    .map(u32::to_string)
-                                    .collect::<Vec<_>>()
-                                    .join(", ")
-                            ),
-                        );
-                    }
+                    dpi::kill_orphans(&handle, &orphans);
                 } else {
                     util::emit_log(
                         &handle,
@@ -449,6 +431,10 @@ fn begin_exit(app: &tauri::AppHandle) {
             }
         });
         shutdown(&app).await;
+        // Хвост лога сбрасываем последним: LogSink живёт в static, деструкторы
+        // статиков при завершении процесса не выполняются, и без этого вызова
+        // последние строки teardown терялись вместе с буфером.
+        util::flush_log_file();
         SHUTDOWN_DONE.store(true, Ordering::SeqCst);
         app.exit(0);
     });

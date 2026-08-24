@@ -301,11 +301,52 @@ fn is_virtual_adapter(name: &str) -> bool {
     NEEDLES.iter().any(|needle| n.contains(needle))
 }
 
+/// Порог буфера, после которого сбрасываем строки на диск.
+const LOG_FLUSH_BYTES: usize = 4096;
+/// Максимальный возраст неслитых строк. Без него лог отставал часами: порог в
+/// 4 КБ набирается быстро только пока болтает Telegram-прокси или adaptive, а на
+/// тихой сессии свежие строки не доезжали до файла вообще.
+const LOG_FLUSH_INTERVAL: Duration = Duration::from_secs(2);
+
+/// Строки этих уровней сбрасываем немедленно: именно их читают, когда что-то
+/// пошло не так, и именно они обычно оказываются последними перед долгой тишиной
+/// — то есть раньше застревали в буфере до самого выхода из приложения.
+fn log_level_is_important(level: &str) -> bool {
+    matches!(level, "error" | "warn" | "success")
+}
+
+fn should_flush_log(level: &str, buffered: usize, since_flush: Duration) -> bool {
+    log_level_is_important(level)
+        || buffered >= LOG_FLUSH_BYTES
+        || since_flush >= LOG_FLUSH_INTERVAL
+}
+
+struct LogSink {
+    writer: std::io::BufWriter<std::fs::File>,
+    last_flush: Instant,
+}
+
+fn log_sink() -> &'static Mutex<Option<LogSink>> {
+    static SINK: Mutex<Option<LogSink>> = Mutex::new(None);
+    &SINK
+}
+
+/// Сбрасывает лог на диск. Вызывается из teardown: `LogSink` лежит в `static`,
+/// а деструкторы статиков при завершении процесса не выполняются, поэтому без
+/// явного вызова хвост буфера терялся при каждом выходе.
+pub fn flush_log_file() {
+    use std::io::Write;
+    let mut guard = log_sink().lock_recover();
+    if let Some(sink) = guard.as_mut() {
+        let _ = sink.writer.flush();
+        sink.last_flush = Instant::now();
+    }
+}
+
 /// Дописывает строку лога в файл на диске. Ошибки глушим — лог не критичен.
 /// Файл держится открытым в BufWriter: раньше каждое сообщение делало
 /// open/write/close под глобальным мьютексом — сотни syscalls в секунду из
-/// горячего потока Глаз. Flush — при накоплении 4КБ или раз в 2с (по таймеру
-/// в emit_log), чтобы лог был живым для чтения извне.
+/// горячего потока Глаз.
 fn append_log_file(app: &AppHandle, ts: &str, level: &str, source: &str, message: &str) {
     use std::io::Write;
     let Some(state) = app.try_state::<AppState>() else {
@@ -314,25 +355,58 @@ fn append_log_file(app: &AppHandle, ts: &str, level: &str, source: &str, message
     let file = state.paths.logs_dir().join("app.log");
     // Сериализуем аппенды из разных потоков (поток Глаз, async-задачи, главный):
     // без лока их writeln! могли бы переплестись в одной строке файла.
-    static LOG_WRITER: Mutex<Option<std::io::BufWriter<std::fs::File>>> = Mutex::new(None);
-    let mut guard = LOG_WRITER.lock_recover();
+    let mut guard = log_sink().lock_recover();
     if guard.is_none() {
         match std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(&file)
         {
-            Ok(f) => *guard = Some(std::io::BufWriter::with_capacity(8192, f)),
+            Ok(f) => {
+                *guard = Some(LogSink {
+                    writer: std::io::BufWriter::with_capacity(8192, f),
+                    last_flush: Instant::now(),
+                })
+            }
             Err(_) => return,
         }
     }
-    if let Some(w) = guard.as_mut() {
-        let _ = writeln!(w, "{ts} [{level}] {source}: {message}");
-        // Пороговый flush: BufWriter сбросит сам при заполнении, но для
-        // малообъёмных логов гарантируем периодический сброс (см. emit_log).
-        if w.buffer().len() >= 4096 {
-            let _ = w.flush();
+    if let Some(sink) = guard.as_mut() {
+        let _ = writeln!(sink.writer, "{ts} [{level}] {source}: {message}");
+        if should_flush_log(level, sink.writer.buffer().len(), sink.last_flush.elapsed()) {
+            let _ = sink.writer.flush();
+            sink.last_flush = Instant::now();
         }
+    }
+}
+
+#[cfg(test)]
+mod log_flush_tests {
+    use super::{should_flush_log, LOG_FLUSH_BYTES, LOG_FLUSH_INTERVAL};
+    use std::time::Duration;
+
+    #[test]
+    fn important_levels_flush_immediately() {
+        for level in ["error", "warn", "success"] {
+            assert!(should_flush_log(level, 0, Duration::ZERO));
+        }
+    }
+
+    #[test]
+    fn quiet_info_waits_for_the_interval_or_the_buffer() {
+        assert!(!should_flush_log("info", 0, Duration::ZERO));
+        assert!(!should_flush_log(
+            "info",
+            LOG_FLUSH_BYTES - 1,
+            LOG_FLUSH_INTERVAL - Duration::from_millis(1)
+        ));
+        assert!(should_flush_log("info", LOG_FLUSH_BYTES, Duration::ZERO));
+        assert!(should_flush_log("info", 0, LOG_FLUSH_INTERVAL));
+    }
+
+    #[test]
+    fn debug_is_not_treated_as_important() {
+        assert!(!should_flush_log("debug", 1, Duration::ZERO));
     }
 }
 
