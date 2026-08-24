@@ -134,20 +134,71 @@ fn filter_has_high_port(filter: &str) -> bool {
     })
 }
 
+/// Предел суммарного числа портов у high-port профиля без ipset. Совпадает с
+/// порогом в `dpi_engine::manifest` и в service-компиляторе.
+const MAX_SCOPED_HIGH_PORTS: u32 = 256;
+
+const RECOGNIZED_UDP_L7: &[&str] = &["discord", "stun"];
+const RECOGNIZED_UDP_PAYLOAD: &[&str] = &["discord_ip_discovery", "stun"];
+
+fn filter_port_count(filter: &str) -> Option<u32> {
+    filter
+        .split(',')
+        .map(|part| {
+            let (start, end) = match part.split_once('-') {
+                Some((start, end)) => (start.parse::<u16>().ok()?, end.parse::<u16>().ok()?),
+                None => {
+                    let port = part.parse::<u16>().ok()?;
+                    (port, port)
+                }
+            };
+            (start > 0 && start <= end).then(|| u32::from(end - start) + 1)
+        })
+        .sum()
+}
+
+fn bounded_high_ports(filter: &str) -> bool {
+    filter_port_count(filter).is_some_and(|count| count <= MAX_SCOPED_HIGH_PORTS)
+}
+
+fn recognized_udp_scope(filter_l7: &[String], payload: &[String]) -> bool {
+    !filter_l7.is_empty()
+        && filter_l7
+            .iter()
+            .all(|value| RECOGNIZED_UDP_L7.contains(&value.as_str()))
+        && payload
+            .iter()
+            .all(|value| RECOGNIZED_UDP_PAYLOAD.contains(&value.as_str()))
+}
+
 pub fn validate_profile_scope(profile: &Zapret2Profile) -> Result<(), String> {
-    let has_high_ports = profile
-        .filter_tcp
-        .as_deref()
-        .is_some_and(filter_has_high_port)
-        || profile
+    // Сужение high-port захвата: TCP — хостлистом, UDP — распознаванием
+    // протокола движком. Плюс ограничение размера захвата в обоих случаях.
+    if profile.ipset.is_none() {
+        if profile
+            .filter_tcp
+            .as_deref()
+            .is_some_and(|value| filter_has_high_port(value) && !bounded_high_ports(value))
+        {
+            return Err(format!(
+                "Zapret2 profile {} использует широкий high-port TCP filter без ipset",
+                profile.name
+            ));
+        }
+        if let Some(udp) = profile
             .filter_udp
             .as_deref()
-            .is_some_and(filter_has_high_port);
-    if has_high_ports && profile.ipset.is_none() {
-        return Err(format!(
-            "Zapret2 profile {} использует high-port filter без ipset",
-            profile.name
-        ));
+            .filter(|value| filter_has_high_port(value))
+        {
+            if !bounded_high_ports(udp)
+                || !recognized_udp_scope(&profile.filter_l7, &profile.payload)
+            {
+                return Err(format!(
+                    "Zapret2 profile {} использует high-port UDP filter без ipset и без распознаваемого L7",
+                    profile.name
+                ));
+            }
+        }
     }
     Ok(())
 }

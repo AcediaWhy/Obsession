@@ -251,7 +251,7 @@ mod tests {
         match load_pack(&pack_dir) {
             Ok(pack) => {
                 assert_eq!(pack.manifest.pack_id, "builtin.base");
-                assert_eq!(pack.manifest.pack_version, "0.3.0");
+                assert_eq!(pack.manifest.pack_version, "0.5.0");
                 // Discord-стратегии отсортированы по агрессивности.
                 let disc = pack.strategies_for("discord");
                 assert!(!disc.is_empty(), "должны быть discord-стратегии");

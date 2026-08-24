@@ -28,6 +28,12 @@ const MAX_PACK_FILES: usize = 256;
 const MAX_PACK_BLOBS: usize = 64;
 const MAX_PACK_STRATEGIES: usize = 512;
 const MAX_PROFILE_VALUES: usize = 64;
+/// Глубина лестницы агрессивности. Раньше здесь стояло жёсткое `3`, хотя
+/// `profiles_for` в приложении вычисляет максимум динамически и уровень 0 берёт
+/// самую агрессивную ступень. Из-за этого пак с четвёртой ступенью отвергался
+/// службой, а не приложением. Предел оставлен, но перестал диктовать длину
+/// лестницы: сколько ступеней в паке — решает пак.
+const MAX_AGGRESSIVENESS: u8 = 8;
 const MAX_VALUE_BYTES: usize = 512;
 const MAX_ARGUMENTS: usize = 2048;
 const MAX_ARGUMENT_BYTES: usize = 8 * 1024;
@@ -494,7 +500,7 @@ fn validate_strategy<'a>(
     if !valid_identifier(&strategy.id)
         || !categories.contains(strategy.category.as_str())
         || strategy.aggressiveness == 0
-        || strategy.aggressiveness > 3
+        || strategy.aggressiveness > MAX_AGGRESSIVENESS
         || !files.contains(strategy.lua.as_str())
         || strategy.desync.is_empty()
         || strategy.desync.len() > MAX_PROFILE_VALUES
@@ -541,10 +547,35 @@ fn validate_strategy<'a>(
     {
         return Err(Zapret2CompileError("unsafe Strategy Pack profile value"));
     }
-    let high_ports = strategy.filter_tcp.as_deref().is_some_and(has_high_ports)
-        || strategy.filter_udp.as_deref().is_some_and(has_high_ports);
-    if high_ports && strategy.ipset.is_none() {
-        return Err(Zapret2CompileError("high-port profile requires ipset"));
+    // High-port профиль без ipset допустим только когда он чем-то сужен. Для TCP
+    // сужение даёт хостлист: при отсутствии ipset `profile_from_strategy`
+    // подставляет `{category}.txt`, поэтому действие идёт только по известным
+    // доменам. Для UDP имени хоста нет, поэтому единственное допустимое сужение —
+    // распознавание протокола движком через filter_l7/payload. В обоих случаях
+    // дополнительно ограничен размер захвата.
+    if strategy.ipset.is_none() {
+        if strategy
+            .filter_tcp
+            .as_deref()
+            .is_some_and(|value| has_high_ports(value) && !bounded_high_ports(value))
+        {
+            return Err(Zapret2CompileError(
+                "high-port TCP profile requires ipset or a bounded port set",
+            ));
+        }
+        if let Some(udp) = strategy
+            .filter_udp
+            .as_deref()
+            .filter(|value| has_high_ports(value))
+        {
+            if !bounded_high_ports(udp)
+                || !recognized_udp_scope(&strategy.filter_l7, &strategy.payload)
+            {
+                return Err(Zapret2CompileError(
+                    "high-port UDP profile requires ipset or a recognized L7 scope",
+                ));
+            }
+        }
     }
     Ok(())
 }
@@ -743,6 +774,36 @@ fn has_high_ports(value: &str) -> bool {
     parse_ports(value).is_some_and(|ranges| ranges.iter().any(|(_, end)| *end > 1023))
 }
 
+/// Предел суммарного числа портов у high-port профиля без ipset. Discord media
+/// (443 плюс пять альтернативных портов Cloudflare) и voice (`19294-19344` +
+/// `50000-50100`, 152 порта) проходят; широкие диапазоны вида `1024-65535` — нет.
+const MAX_SCOPED_HIGH_PORTS: u32 = 256;
+
+const RECOGNIZED_UDP_L7: &[&str] = &["discord", "stun"];
+const RECOGNIZED_UDP_PAYLOAD: &[&str] = &["discord_ip_discovery", "stun"];
+
+fn bounded_high_ports(value: &str) -> bool {
+    parse_ports(value).is_some_and(|ranges| {
+        ranges
+            .iter()
+            .map(|(start, end)| u32::from(*end - *start) + 1)
+            .sum::<u32>()
+            <= MAX_SCOPED_HIGH_PORTS
+    })
+}
+
+/// UDP-профиль нельзя сузить хостлистом: в STUN и Discord IP discovery нет имени
+/// хоста. Поэтому допускаем только то, что движок распознаёт сам.
+fn recognized_udp_scope(filter_l7: &[String], payload: &[String]) -> bool {
+    !filter_l7.is_empty()
+        && filter_l7
+            .iter()
+            .all(|value| RECOGNIZED_UDP_L7.contains(&value.as_str()))
+        && payload
+            .iter()
+            .all(|value| RECOGNIZED_UDP_PAYLOAD.contains(&value.as_str()))
+}
+
 fn relative_key(path: &Path) -> Result<String, Zapret2CompileError> {
     if path.as_os_str().is_empty()
         || path.is_absolute()
@@ -858,5 +919,72 @@ fn protocol_category(value: &str) -> Option<DpiCategory> {
         "atrisk" => Some(DpiCategory::AtRisk),
         "universal" => Some(DpiCategory::Universal),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod high_port_scope_tests {
+    use super::*;
+
+    fn validate(extra: &str) -> Result<(), Zapret2CompileError> {
+        let json = format!(
+            r#"{{"id":"discord_probe","category":"discord","aggressiveness":1,
+                 "lua":"lua/zapret-antidpi.lua","desync":["multisplit:pos=1"]{extra}}}"#
+        );
+        let strategy: StrategyDef = serde_json::from_str(&json).expect("valid StrategyDef");
+        let categories = BTreeSet::from(["discord"]);
+        let protocols = BTreeSet::from(["tcp", "tls", "udp", "quic"]);
+        let files = BTreeSet::from(["lua/zapret-antidpi.lua"]);
+        validate_strategy(&strategy, &categories, &protocols, &files)
+    }
+
+    #[test]
+    fn accepts_bounded_high_tcp_ports_scoped_by_hostlist() {
+        // Альтернативные порты Cloudflare, на которых сидят CDN и часть клиента
+        // Discord. Сужение — хостлист категории, подставляемый компилятором.
+        assert!(validate(r#","filter_tcp":"443,2053,2083,2087,2096,8443""#).is_ok());
+    }
+
+    #[test]
+    fn rejects_wide_high_tcp_ports_even_with_hostlist() {
+        assert!(validate(r#","filter_tcp":"1024-65535""#).is_err());
+    }
+
+    #[test]
+    fn accepts_discord_voice_udp_with_recognized_l7_and_payload() {
+        assert!(validate(
+            r#","filter_udp":"3478-3480,19294-19344,50000-50100","filter_l7":["discord","stun"],"payload":["discord_ip_discovery","stun"]"#
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn rejects_high_udp_ports_without_l7_scope() {
+        assert!(validate(r#","filter_udp":"19294-19344""#).is_err());
+    }
+
+    #[test]
+    fn rejects_high_udp_ports_with_foreign_l7_or_payload() {
+        assert!(validate(
+            r#","filter_udp":"19294-19344","filter_l7":["tls"],"payload":["discord_ip_discovery"]"#
+        )
+        .is_err());
+        assert!(validate(
+            r#","filter_udp":"19294-19344","filter_l7":["discord"],"payload":["tls_client_hello"]"#
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn rejects_wide_udp_range_even_with_recognized_l7() {
+        assert!(validate(
+            r#","filter_udp":"1024-65535","filter_l7":["discord","stun"],"payload":["discord_ip_discovery"]"#
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn ipset_keeps_permitting_wide_ranges() {
+        assert!(validate(r#","filter_udp":"1024-65535","ipset":"ipset-global.txt""#).is_ok());
     }
 }

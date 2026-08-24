@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "pack_id": "builtin.base",
-  "pack_version": "0.3.0",
+  "pack_version": "0.5.0",
   "engine": {
     "winws2_min": ">=1.0.4",
     "lua_api": 6
@@ -66,6 +66,68 @@
       "desync": [
         "fake:blob=tls_google:tcp_ts=-30000:tcp_ts_up:repeats=4",
         "multisplit:pos=1"
+      ]
+    },
+    {
+      "id": "discord_tls_fakedsplit",
+      "category": "discord",
+      "aggressiveness": 2,
+      "lua": "lua/zapret-antidpi.lua",
+      "transports": [
+        "tcp",
+        "tls"
+      ],
+      "filter_l7": [
+        "tls"
+      ],
+      "payload": [
+        "tls_client_hello"
+      ],
+      "out_range": "-d10",
+      "desync": [
+        "fakedsplit:pos=midsld:seqovl=2:tcp_md5:repeats=2"
+      ]
+    },
+    {
+      "id": "discord_tls_fakeddisorder",
+      "category": "discord",
+      "aggressiveness": 3,
+      "lua": "lua/zapret-antidpi.lua",
+      "transports": [
+        "tcp",
+        "tls"
+      ],
+      "filter_l7": [
+        "tls"
+      ],
+      "payload": [
+        "tls_client_hello"
+      ],
+      "out_range": "-d10",
+      "desync": [
+        "fake:blob=fake_default_tls:tcp_md5:tcp_seq=-10000:tls_mod=rnd,rndsni,dupsid,padencap:repeats=2",
+        "fakeddisorder:pos=midsld:seqovl=4:tcp_md5:repeats=2"
+      ]
+    },
+    {
+      "id": "discord_tls_multidisorder_alt",
+      "category": "discord",
+      "aggressiveness": 4,
+      "lua": "lua/zapret-antidpi.lua",
+      "transports": [
+        "tcp",
+        "tls"
+      ],
+      "filter_tcp": "443,2053,2083,2087,2096,8443",
+      "filter_l7": [
+        "tls"
+      ],
+      "payload": [
+        "tls_client_hello"
+      ],
+      "out_range": "-d10",
+      "desync": [
+        "multidisorder:pos=1,2,midsld,sniext"
       ]
     },
     {
@@ -223,7 +285,7 @@
   ],
   "fallback": "discord_tls_text",
   "notes": {
-    "scope": "Discord, YouTube/Twitch, and Gaming + GitHub control/data profiles. Discord voice/media/STUN and adaptive game UDP verification remain out of scope.",
+    "scope": "Discord, YouTube/Twitch, and Gaming + GitHub control/data profiles. Discord ladder: lvl1 compatibility fake+multisplit, lvl2 real-ClientHello fakedsplit with server-rejected overlap, lvl3 randomized encapsulating fake plus real-ClientHello fakeddisorder. Discord voice/media/STUN and adaptive game UDP verification remain out of scope.",
     "profile_grammar": "Profiles are serialized completely and separated by bare --new only between profiles."
   }
 }

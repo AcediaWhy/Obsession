@@ -208,6 +208,36 @@ fn has_high_ports(value: &str) -> bool {
     parse_port_filter(value).is_some_and(|ranges| ranges.iter().any(|(_, end)| *end > 1023))
 }
 
+/// Предел суммарного числа портов у high-port профиля без ipset. Discord media
+/// (443 плюс пять альтернативных портов Cloudflare) и voice (`19294-19344` +
+/// `50000-50100`, 152 порта) проходят; широкие диапазоны вида `1024-65535` — нет.
+const MAX_SCOPED_HIGH_PORTS: u32 = 256;
+
+const RECOGNIZED_UDP_L7: &[&str] = &["discord", "stun"];
+const RECOGNIZED_UDP_PAYLOAD: &[&str] = &["discord_ip_discovery", "stun"];
+
+fn bounded_high_ports(value: &str) -> bool {
+    parse_port_filter(value).is_some_and(|ranges| {
+        ranges
+            .iter()
+            .map(|(start, end)| u32::from(*end - *start) + 1)
+            .sum::<u32>()
+            <= MAX_SCOPED_HIGH_PORTS
+    })
+}
+
+/// UDP-профиль нельзя сузить хостлистом: в STUN и Discord IP discovery нет имени
+/// хоста. Поэтому допускаем только то, что движок распознаёт сам.
+fn recognized_udp_scope(filter_l7: &[String], payload: &[String]) -> bool {
+    !filter_l7.is_empty()
+        && filter_l7
+            .iter()
+            .all(|value| RECOGNIZED_UDP_L7.contains(&value.as_str()))
+        && payload
+            .iter()
+            .all(|value| RECOGNIZED_UDP_PAYLOAD.contains(&value.as_str()))
+}
+
 /// Валидирует манифест пака. `caps` — возможности движка; `resolve` отдаёт байты
 /// файла пака по относительному пути (`None` = файла нет). Чистая функция.
 pub fn validate_pack<F>(
@@ -330,13 +360,34 @@ where
                 err(format!("стратегия {} содержит невалидный {label}", st.id));
             }
         }
-        let has_high_port_filter = st.filter_tcp.as_deref().is_some_and(has_high_ports)
-            || st.filter_udp.as_deref().is_some_and(has_high_ports);
-        if has_high_port_filter && st.ipset.is_none() {
-            err(format!(
-                "стратегия {} использует high-port filter без ipset",
-                st.id
-            ));
+        // High-port профиль без ipset допустим только суженным. TCP сужается
+        // хостлистом (при отсутствии ipset компилятор подставляет
+        // `{category}.txt`), UDP — распознаванием протокола движком, потому что
+        // в STUN и Discord IP discovery имени хоста нет. Размер захвата ограничен
+        // в обоих случаях.
+        if st.ipset.is_none() {
+            if st
+                .filter_tcp
+                .as_deref()
+                .is_some_and(|value| has_high_ports(value) && !bounded_high_ports(value))
+            {
+                err(format!(
+                    "стратегия {} использует широкий high-port TCP filter без ipset",
+                    st.id
+                ));
+            }
+            if let Some(udp) = st
+                .filter_udp
+                .as_deref()
+                .filter(|value| has_high_ports(value))
+            {
+                if !bounded_high_ports(udp) || !recognized_udp_scope(&st.filter_l7, &st.payload) {
+                    err(format!(
+                        "стратегия {} использует high-port UDP filter без ipset и без распознаваемого L7",
+                        st.id
+                    ));
+                }
+            }
         }
         for l7 in &st.filter_l7 {
             if !allowed_l7.contains(&l7.as_str()) {
@@ -638,7 +689,43 @@ mod tests {
         assert!(report
             .errors
             .iter()
-            .any(|error| error.contains("high-port filter без ipset")));
+            .any(|error| error.contains("high-port UDP filter")));
+
+        // Узкий UDP-диапазон всё равно отклоняется без распознаваемого L7.
+        let (mut m, files) = valid_manifest();
+        m.strategies[0].filter_udp = Some("19294-19344".into());
+        let report = validate_pack(&m, caps(), resolver(&files));
+        assert!(report
+            .errors
+            .iter()
+            .any(|error| error.contains("high-port UDP filter")));
+    }
+
+    #[test]
+    fn accepts_bounded_high_ports_when_scoped() {
+        // TCP: альтернативные порты Cloudflare сужены хостлистом категории.
+        let (mut m, files) = valid_manifest();
+        m.strategies[0].filter_tcp = Some("443,2053,2083,2087,2096,8443".into());
+        assert!(validate_pack(&m, caps(), resolver(&files))
+            .errors
+            .is_empty());
+
+        // UDP: голосовые диапазоны Discord сужены распознаванием протокола.
+        let (mut m, files) = valid_manifest();
+        m.strategies[0].filter_udp = Some("3478-3480,19294-19344,50000-50100".into());
+        m.strategies[0].filter_l7 = vec!["discord".into(), "stun".into()];
+        m.strategies[0].payload = vec!["discord_ip_discovery".into(), "stun".into()];
+        assert!(validate_pack(&m, caps(), resolver(&files))
+            .errors
+            .is_empty());
+
+        // Широкий TCP-диапазон не спасает даже хостлист.
+        let (mut m, files) = valid_manifest();
+        m.strategies[0].filter_tcp = Some("1024-65535".into());
+        assert!(validate_pack(&m, caps(), resolver(&files))
+            .errors
+            .iter()
+            .any(|error| error.contains("high-port TCP filter")));
     }
 
     #[test]
