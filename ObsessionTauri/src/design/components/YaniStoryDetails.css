@@ -1,0 +1,83 @@
+.yani-story-details {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  overflow: hidden;
+  pointer-events: none;
+  perspective: 900px;
+}
+
+.yani-story-details__world-status {
+  position: absolute;
+  z-index: 1;
+  left: 55.5%;
+  bottom: 7.5%;
+  color: rgba(37, 86, 57, .32);
+  font: 600 7px/1 "IBM Plex Mono", monospace;
+  letter-spacing: .16em;
+  text-shadow: 0 1px rgba(255,255,255,.3);
+  transform: translate3d(var(--yani-mid-x, 0px), var(--yani-mid-y, 0px), 0) rotate(1.5deg);
+}
+
+.yani-story-details__pancake {
+  position: absolute;
+  z-index: 1;
+  left: 33.5%;
+  bottom: 5%;
+  width: 34px;
+  height: 20px;
+  opacity: .48;
+  transform: translate3d(var(--yani-mid-x, 0px), var(--yani-mid-y, 0px), 0) rotate(8deg);
+}
+
+.yani-story-details__pancake i {
+  position: absolute;
+  left: 1px;
+  width: 31px;
+  height: 9px;
+  border: 1px solid rgba(117, 91, 47, .5);
+  border-radius: 50%;
+  background: rgba(222, 190, 116, .24);
+}
+
+.yani-story-details__pancake i:nth-child(1) { bottom: 0; }
+.yani-story-details__pancake i:nth-child(2) { bottom: 4px; left: 2px; width: 29px; }
+.yani-story-details__pancake i:nth-child(3) {
+  bottom: 8px;
+  left: 4px;
+  width: 26px;
+  background: radial-gradient(circle at 60% 42%, rgba(255,223,127,.42) 0 3px, rgba(222,190,116,.2) 4px);
+}
+
+.yani-story-details__glitch {
+  position: absolute;
+  z-index: 1;
+  width: 4px;
+  height: 4px;
+  background: rgba(70, 143, 103, .36);
+  box-shadow: 8px 0 rgba(255,255,255,.16), 4px 5px rgba(61,122,88,.24);
+  animation: yani-story-glitch 6.8s steps(1, end) infinite;
+}
+
+.yani-story-details__glitch--a { top: 27%; left: 46%; }
+.yani-story-details__glitch--b { top: 68%; left: 72%; animation-delay: -2.3s; }
+.yani-story-details__glitch--c { top: 16%; right: 12%; animation-delay: -4.7s; }
+
+@keyframes yani-story-glitch {
+  0%,84%,100% { opacity:.18; transform:translate(0); }
+  86% { opacity:.68; transform:translate(6px,-2px); }
+  87% { opacity:.2; transform:translate(-3px,1px); }
+}
+
+@media (max-width: 840px) {
+  .yani-story-details__world-status { left: 55%; bottom: 5%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .yani-story-details *,
+  .yani-story-details *::before,
+  .yani-story-details *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}

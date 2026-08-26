@@ -7,6 +7,7 @@ import { FallenField } from "./FallenField";
 import { RainFallback } from "./RainFallback";
 import { CatnapField } from "./CatnapField";
 import { MidnightField } from "./MidnightField";
+import { YaniNekoField } from "./YaniNekoField";
 import { ObsessionChoirField } from "./ObsessionChoirField";
 import { ObsessionChoirFallback } from "./ObsessionChoirFallback";
 import type { ObsessionVisualPhase } from "../obsessionVisualState";
@@ -14,6 +15,9 @@ import type { ObsessionVisualPhase } from "../obsessionVisualState";
 // Гибридная WebGL-сцена Rain грузится только после выбора темы. Suspense и
 // любая sync/async ошибка показывают композиционно совпадающий 2D-fallback.
 const RainHybridScene = lazy(() => import("./RainHybridScene"));
+const YaniCharacterField = lazy(() =>
+  import("./YaniCharacterField").then((module) => ({ default: module.YaniCharacterField })),
+);
 
 function webglSupported(): boolean {
   try {
@@ -64,7 +68,7 @@ class Fallback3D extends Component<{ children: ReactNode; fallback: ReactNode },
     return { failed: true };
   }
   componentDidCatch(err: unknown) {
-    console.warn("Rain 3D-сцена упала, откат на 2D:", err);
+    console.warn("3D-сцена темы упала, откат на 2D:", err);
   }
   render() {
     return this.state.failed ? this.props.fallback : this.props.children;
@@ -113,6 +117,30 @@ export function HeroField({
     scene = <CatnapField paused={frozen} />;
   } else if (theme === "midnight") {
     scene = <MidnightField paused={frozen} />;
+  } else if (theme === "yanineko") {
+    const fallback = <YaniNekoField paused={frozen} phase={phase} screen={screen} />;
+    const loading = (
+      <div
+        aria-hidden="true"
+        className="absolute inset-0"
+        style={{
+          background: "radial-gradient(ellipse at 52% 42%, rgba(100,174,126,.24), transparent 72%), linear-gradient(145deg, #e0eee1, #c8e1cd 43%, #9fc9aa)",
+        }}
+      />
+    );
+    scene = WEBGL2 ? (
+      <Fallback3D fallback={fallback}>
+        <Suspense fallback={loading}>
+          <YaniCharacterField
+            paused={frozen}
+            phase={phase}
+            screen={screen}
+            storyDensity="story"
+            storyDepth="deep"
+          />
+        </Suspense>
+      </Fallback3D>
+    ) : fallback;
   } else if (theme === "japan") {
     if (!WEBGL) {
       scene = <RainFallback paused={frozen} />;

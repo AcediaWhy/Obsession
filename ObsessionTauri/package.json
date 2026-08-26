@@ -10,7 +10,8 @@
     "tauri": "tauri",
     "test": "vitest run",
     "test:watch": "vitest",
-    "build:setup": "node scripts/build-setup.mjs"
+    "build:setup": "node scripts/build-setup.mjs",
+    "generate:yani-ear": "node scripts/generate-yani-ear-model.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.1.1",
@@ -20,6 +21,7 @@
     "qrcode": "^1.5.4",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "three": "^0.180.0",
     "zustand": "^5.0.2"
   },
   "devDependencies": {
@@ -27,6 +29,7 @@
     "@types/qrcode": "^1.5.6",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
+    "@types/three": "^0.180.0",
     "@vitejs/plugin-react": "^4.3.4",
     "autoprefixer": "^10.4.20",
     "postcss": "^8.4.49",
