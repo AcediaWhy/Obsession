@@ -28,6 +28,15 @@ export default defineConfig({
     hmr: { protocol: "ws", host, port: 1421 },
     watch: { ignored: ["**/src-tauri/**", "**/target/**"] },
   },
+  build: {
+    rollupOptions: {
+      input: {
+        app: fileURLToPath(new URL("./index.html", import.meta.url)),
+        yaniDev: fileURLToPath(new URL("./yani-dev.html", import.meta.url)),
+        earLab: fileURLToPath(new URL("./ear-lab.html", import.meta.url)),
+      },
+    },
+  },
   // Юнит-тесты редьюсеров сторов. Окружение node: тесты чистые (мокают ../lib/tauri),
   // DOM не нужен. Rust-тесты живут отдельно в src-tauri (cargo test).
   test: {
