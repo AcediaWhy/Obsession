@@ -461,6 +461,776 @@
   background: rgba(150, 180, 215, 0.42);
 }
 
+/* ─── Тема Yani Neko (секретная) ──────────────────────────────────────────────
+   Светлая мятная комната Янико: молочное стекло, прохладный шалфей и один
+   янтарный уголёк. Панели намеренно прозрачнее — за ними остаётся видна Yani. */
+[data-theme="yanineko"] {
+  --accent: 232 137 46;
+  --accent-cyan: 191 227 207;
+  --accent-violet: 127 168 150;
+
+  /* Холодное мятно-дымчатое стекло не прячет живую модель на дальнем плане. */
+  --glass-bg: linear-gradient(
+    145deg,
+    rgba(38, 66, 51, 0.43),
+    rgba(21, 42, 31, 0.35)
+  );
+  --glass-border: rgba(206, 238, 218, 0.21);
+  --glass-blur: 3.5px;
+  --glass-sat: 110%;
+  --glass-specular: rgba(239, 255, 244, 0.3);
+}
+
+/* Градиент заголовков: крем бумаги → мята волос → янтарный уголёк. */
+[data-theme="yanineko"] .text-gradient {
+  background: linear-gradient(120deg, #f7efdd 0%, #bfe3cf 45%, #e8892e 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+[data-theme="yanineko"] ::-webkit-scrollbar-thumb {
+  background: rgba(232, 180, 120, 0.2);
+}
+[data-theme="yanineko"] ::-webkit-scrollbar-thumb:hover {
+  background: rgba(232, 180, 120, 0.4);
+}
+
+[data-theme="yanineko"] .glass {
+  box-shadow:
+    inset 0 1px rgba(239, 255, 244, 0.18),
+    inset 0 -24px 50px rgba(16, 48, 30, 0.08),
+    0 5px 12px rgba(31, 70, 45, 0.11),
+    0 22px 52px rgba(24, 66, 40, 0.18);
+}
+[data-theme="yanineko"] .glass::before {
+  background: linear-gradient(125deg, rgba(239, 255, 244, 0.24), rgba(85, 146, 109, 0.025) 42%, rgba(232, 137, 46, 0.07) 100%);
+  box-shadow: inset 0 1px rgba(243, 255, 247, 0.18);
+}
+[data-theme="yanineko"] .spotlight::after {
+  background: radial-gradient(
+    420px circle at var(--mx, -100px) var(--my, -100px),
+    rgba(189, 226, 205, 0.095),
+    rgba(230, 139, 55, 0.035) 38%,
+    transparent 68%
+  );
+}
+[data-theme="yanineko"] .spotlight-ring {
+  background: radial-gradient(
+    270px circle at var(--mx, -200px) var(--my, -200px),
+    rgba(197, 231, 213, 0.48),
+    rgba(227, 146, 65, 0.15) 48%,
+    transparent 72%
+  );
+}
+
+/* Раскрытая пачка: пункты остаются обычными кнопками и занимают прежнюю
+   геометрию. Только выбранная секция выезжает вправо и становится сигаретой. */
+[data-theme="yanineko"] .nav-cig-pack {
+  isolation: isolate;
+  padding: 10px 8px 12px;
+  border: 1px solid rgba(116, 169, 151, 0.3);
+  border-top-color: rgba(179, 221, 203, 0.48);
+  border-radius: 5px 5px 15px 15px;
+  background:
+    linear-gradient(90deg, transparent 0 82%, rgba(62, 91, 143, 0.58) 82% 86%, transparent 86%),
+    linear-gradient(155deg, rgba(26, 37, 34, 0.98), rgba(9, 10, 9, 0.98) 70%);
+  box-shadow:
+    inset 0 1px 0 rgba(225, 241, 228, 0.12),
+    inset 0 -18px 30px rgba(0, 0, 0, 0.32),
+    0 18px 34px rgba(0, 0, 0, 0.35);
+}
+
+/* Разорванная внутренняя фольга и откинутая верхняя створка пачки. */
+[data-theme="yanineko"] .nav-cig-pack::before,
+[data-theme="yanineko"] .nav-cig-pack::after {
+  content: "";
+  position: absolute;
+  pointer-events: none;
+  z-index: -1;
+}
+[data-theme="yanineko"] .nav-cig-pack::before {
+  left: 7px;
+  right: 7px;
+  top: -9px;
+  height: 23px;
+  clip-path: polygon(0 38%, 8% 17%, 19% 38%, 31% 8%, 45% 34%, 59% 5%, 72% 31%, 87% 11%, 100% 34%, 100% 100%, 0 100%);
+  background: linear-gradient(180deg, #cbd4cc, #6f7b73 56%, #26302b);
+  opacity: 0.74;
+  box-shadow: inset 0 1px rgba(255, 255, 255, 0.38);
+}
+[data-theme="yanineko"] .nav-cig-pack::after {
+  left: 2px;
+  right: 2px;
+  top: -24px;
+  height: 22px;
+  border: 1px solid rgba(129, 184, 165, 0.28);
+  border-radius: 10px 10px 3px 3px;
+  background:
+    linear-gradient(90deg, transparent 0 79%, rgba(64, 92, 145, 0.7) 79% 84%, transparent 84%),
+    linear-gradient(180deg, #17221e, #090c0a);
+  transform: perspective(80px) rotateX(18deg);
+  transform-origin: bottom;
+}
+
+/* Закрытые тёмные секции пачки — спокойный негативный фон для одной яркой сигареты. */
+[data-theme="yanineko"] .nav-cig-pack .nav-item {
+  min-height: 40px;
+  border: 1px solid rgba(171, 206, 190, 0.055);
+  border-radius: 7px;
+  background: linear-gradient(90deg, rgba(37, 49, 43, 0.62), rgba(13, 16, 14, 0.48));
+  box-shadow: inset 0 1px rgba(219, 235, 225, 0.035);
+  transform: translateX(0);
+  transition:
+    transform var(--motion-base) var(--motion-ease-enter),
+    filter var(--motion-fast) var(--motion-ease-standard),
+    background-color var(--motion-fast) var(--motion-ease-standard);
+}
+[data-theme="yanineko"] .nav-cig-pack .nav-item:not([data-active])::before {
+  content: "";
+  position: absolute;
+  left: 8px;
+  top: 50%;
+  width: 3px;
+  height: 14px;
+  border-radius: 3px;
+  background: rgba(117, 164, 146, 0.28);
+  transform: translateY(-50%);
+}
+[data-theme="yanineko"] .nav-cig-pack .nav-item:not([data-active]) span {
+  color: #9ba9a1;
+}
+[data-theme="yanineko"] .nav-cig-pack .nav-item:not([data-active]):hover {
+  background: linear-gradient(90deg, rgba(44, 61, 53, 0.78), rgba(18, 22, 19, 0.66));
+  filter: brightness(1.12);
+}
+[data-theme="yanineko"] .nav-cig-pack .nav-item:focus-visible {
+  outline: 2px solid rgba(196, 231, 212, 0.86);
+  outline-offset: 2px;
+}
+
+/* Бумажный корпус активного пункта не меняет layout: он лишь выезжает transform-ом. */
+[data-theme="yanineko"] .nav-cig-pack .nav-item[data-active] {
+  z-index: 3;
+  border-color: rgba(244, 231, 202, 0.52);
+  border-radius: 9999px 6px 6px 9999px;
+  padding-right: 27px;
+  background:
+    linear-gradient(90deg, transparent 65%, rgba(154, 114, 67, 0.12) 88%, rgba(88, 76, 64, 0.2)),
+    repeating-linear-gradient(93deg, rgba(95, 80, 58, 0.035) 0 1px, transparent 1px 5px),
+    linear-gradient(180deg, #fffaf0 0%, #eee4cf 53%, #cfc0a4 100%);
+  box-shadow:
+    inset 0 1px rgba(255, 255, 255, 0.72),
+    inset 0 -1px rgba(84, 62, 36, 0.2),
+    0 7px 13px rgba(0, 0, 0, 0.32),
+    0 0 18px rgba(232, 137, 46, 0.11);
+  transform: translateX(13px);
+}
+
+/* Пробковый фильтр с мятно-синей полосой остаётся под настоящей иконкой кнопки. */
+[data-theme="yanineko"] .nav-cig-pack .nav-item[data-active]::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 42px;
+  border-radius: 9999px 0 0 9999px;
+  border-right: 4px solid #486896;
+  background:
+    radial-gradient(circle 1px at center, rgba(91, 53, 25, 0.42) 0 1px, transparent 1.5px),
+    linear-gradient(180deg, #dcb57c, #c9985b 58%, #aa7740);
+  background-size: 7px 7px, auto;
+  box-shadow: inset 0 1px rgba(255, 239, 209, 0.54);
+}
+[data-theme="yanineko"] .nav-cig-pack .nav-item[data-active] > span {
+  color: #4b3924;
+}
+[data-theme="yanineko"] .nav-cig-pack .nav-item[data-active] .text-ink {
+  color: #3d2d1c;
+  text-shadow: none;
+}
+[data-theme="yanineko"] .nav-active-plate {
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+/* Пепел, уголёк и струйка дыма принадлежат только активной сигарете. */
+[data-theme="yanineko"] .nav-cig-fire {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  width: 22px;
+  height: 14px;
+  margin-top: -7px;
+  pointer-events: none;
+  background:
+    repeating-linear-gradient(102deg, transparent 0 3px, rgba(68, 65, 59, 0.42) 3px 4px),
+    linear-gradient(180deg, #c4beb1, #918a7e 68%, #6d685f);
+  background-size: 9px 100%, 9px 100%;
+  background-repeat: no-repeat;
+  background-position: left center;
+}
+[data-theme="yanineko"] .nav-cig-fire::before {
+  content: "";
+  position: absolute;
+  right: 0;
+  top: 50%;
+  width: 12px;
+  height: 12px;
+  margin-top: -6px;
+  border-radius: 50%;
+  background: radial-gradient(circle, #fff0ce 0%, #f39a35 31%, #b84819 56%, #5f5b55 77%, transparent 96%);
+  box-shadow: 0 0 11px 2px rgba(232, 137, 46, 0.58);
+  animation: cig-ember 2.8s ease-in-out infinite;
+}
+[data-theme="yanineko"] .nav-cig-fire::after {
+  content: "";
+  position: absolute;
+  right: 4px;
+  bottom: 100%;
+  width: 4px;
+  height: 27px;
+  border-radius: 50%;
+  background: linear-gradient(180deg, transparent, rgba(190, 210, 199, 0.58));
+  filter: blur(1.3px);
+  transform-origin: bottom center;
+  animation: cig-smoke 3.4s ease-in-out infinite;
+}
+[data-theme="yanineko"] nav[data-burning] .nav-cig-fire::before {
+  animation-duration: 1.5s;
+  box-shadow: 0 0 16px 4px rgba(240, 150, 50, 0.82);
+}
+[data-theme="yanineko"] nav[data-burning] .nav-cig-fire::after {
+  height: 33px;
+  opacity: 0.9;
+  animation-duration: 2.2s;
+}
+
+/* Тление уголька — ленивое сердцебиение lub-dub. */
+@keyframes cig-ember {
+  0%, 100% { opacity: 0.7; filter: brightness(0.85); }
+  10% { opacity: 1; filter: brightness(1.3); }
+  20% { opacity: 0.8; filter: brightness(0.95); }
+  30% { opacity: 1; filter: brightness(1.18); }
+  55% { opacity: 0.75; filter: brightness(0.9); }
+}
+
+/* Струйка дыма: подъём, извив, растворение. */
+@keyframes cig-smoke {
+  0% { transform: translateY(4px) scaleY(0.5) rotate(0deg); opacity: 0; }
+  25% { opacity: 0.7; }
+  60% { transform: translateY(-6px) translateX(1.5px) scaleY(1) rotate(5deg); opacity: 0.45; }
+  100% { transform: translateY(-16px) translateX(-1px) scaleY(1.15) rotate(-4deg); opacity: 0; }
+}
+
+/* Лабораторный Yani-rail: вместо сигаретной пачки — тёмный кочан с живыми
+   слоями листьев. Разметка общая с NavRail, но оформление включается только
+   для секретной темы и не меняет навигационную логику приложения. */
+.yani-cabbage-number { display: none; }
+
+[data-theme="yanineko"] .yani-cabbage-rail {
+  overflow: visible;
+  padding-left: 16px;
+  padding-right: 16px;
+}
+[data-theme="yanineko"] .yani-cabbage-rail .app-nav-brand { margin-bottom: 20px; }
+[data-theme="yanineko"] .yani-cabbage-rail .app-nav-section-label,
+[data-theme="yanineko"] .yani-cabbage-rail .app-nav-footer { display: none; }
+
+[data-theme="yanineko"] .yani-cabbage-shell {
+  isolation: isolate;
+  width: 198px;
+  padding: 0 10px 11px;
+  overflow: visible;
+  border: 0;
+  border-radius: 34px;
+  background: transparent;
+  box-shadow: none;
+  filter: drop-shadow(0 24px 30px rgba(14, 37, 23, 0.32));
+}
+[data-theme="yanineko"] .yani-cabbage-shell::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  height: auto;
+  pointer-events: none;
+  border: 1px solid rgba(147, 202, 166, 0.3);
+  border-radius: 45% 49% 43% 48% / 10% 12% 17% 15%;
+  clip-path: polygon(28% 0, 43% 2%, 55% 0, 72% 3%, 86% 9%, 94% 18%, 91% 28%, 98% 39%, 94% 50%, 99% 61%, 93% 72%, 95% 82%, 84% 92%, 70% 97%, 54% 100%, 38% 97%, 23% 99%, 11% 91%, 5% 80%, 8% 68%, 2% 57%, 7% 45%, 2% 33%, 8% 22%, 6% 12%, 15% 4%);
+  opacity: 1;
+  background:
+    radial-gradient(ellipse 92% 13% at 49% 12%, transparent 61%, rgba(137, 192, 153, 0.14) 62% 64%, transparent 65%),
+    radial-gradient(ellipse 96% 18% at 52% 35%, transparent 67%, rgba(120, 178, 139, 0.12) 68% 69%, transparent 70%),
+    radial-gradient(ellipse at 9% 48%, rgba(135, 197, 155, 0.17), transparent 42%),
+    linear-gradient(104deg, rgba(174, 216, 187, 0.12), transparent 31%),
+    linear-gradient(165deg, rgba(26, 61, 38, 0.97), rgba(7, 23, 12, 0.97) 72%);
+  box-shadow: inset 0 1px rgba(230, 249, 235, 0.1), inset 7px 0 22px rgba(99, 160, 118, 0.08), inset -9px -18px 32px rgba(1, 12, 5, 0.25);
+  backdrop-filter: blur(15px) saturate(112%);
+  transform: none;
+}
+[data-theme="yanineko"] .yani-cabbage-shell::after {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  top: 43px;
+  right: auto;
+  bottom: 72px;
+  left: 36px;
+  width: 17px;
+  height: auto;
+  pointer-events: none;
+  border: 0;
+  border-left: 2px solid rgba(120, 179, 139, 0.42);
+  border-radius: 62% 0 0 48%;
+  opacity: 0.64;
+  background: transparent;
+  box-shadow: -3px 0 11px rgba(114, 178, 137, 0.11);
+  transform: rotate(-2.5deg);
+}
+
+[data-theme="yanineko"] .yani-cabbage-leaves {
+  position: absolute;
+  z-index: -2;
+  inset: -22px -24px -25px -23px;
+  pointer-events: none;
+}
+[data-theme="yanineko"] .yani-cabbage-leaves i {
+  position: absolute;
+  overflow: hidden;
+  border: 1px solid rgba(118, 181, 139, 0.48);
+  clip-path: polygon(50% 0, 65% 6%, 80% 18%, 91% 34%, 100% 53%, 94% 69%, 83% 84%, 67% 95%, 50% 100%, 33% 94%, 17% 83%, 5% 67%, 0 49%, 8% 30%, 20% 15%, 35% 5%);
+  background:
+    radial-gradient(ellipse at 31% 26%, rgba(202, 235, 207, 0.3), transparent 42%),
+    linear-gradient(142deg, rgba(87, 150, 102, 0.88), rgba(27, 83, 45, 0.86) 55%, rgba(13, 54, 28, 0.9));
+  box-shadow: inset 0 1px rgba(231, 250, 235, 0.16), inset -13px -16px 22px rgba(7, 37, 18, 0.18), 0 13px 26px rgba(20, 54, 33, 0.17);
+  backdrop-filter: blur(7px);
+}
+[data-theme="yanineko"] .yani-cabbage-leaves i::before {
+  content: "";
+  position: absolute;
+  inset: 12% 12% 13%;
+  border: 1px solid rgba(165, 213, 177, 0.16);
+  border-radius: 48% 52% 46% 54% / 24% 30% 66% 70%;
+  background:
+    linear-gradient(38deg, transparent 48.6%, rgba(177, 222, 188, 0.21) 49.4% 50.4%, transparent 51.2%) 0 18% / 100% 24% no-repeat,
+    linear-gradient(142deg, transparent 48.6%, rgba(177, 222, 188, 0.17) 49.4% 50.4%, transparent 51.2%) 0 55% / 100% 24% no-repeat;
+}
+[data-theme="yanineko"] .yani-cabbage-leaves i::after {
+  content: "";
+  position: absolute;
+  top: 9%;
+  bottom: 8%;
+  left: 43%;
+  width: 18%;
+  border-left: 1.5px solid rgba(194, 229, 202, 0.48);
+  border-radius: 65% 0 0 43%;
+  background: transparent;
+}
+[data-theme="yanineko"] .yani-cabbage-leaves i:nth-child(1) {
+  top: 52px; bottom: 54px; left: -3px; width: 112px;
+  transform: rotate(-15deg);
+}
+[data-theme="yanineko"] .yani-cabbage-leaves i:nth-child(2) {
+  top: 48px; right: -3px; bottom: 48px; width: 116px;
+  transform: rotate(15deg);
+}
+[data-theme="yanineko"] .yani-cabbage-leaves i:nth-child(3) {
+  top: -5px; left: 20px; width: 102px; height: 184px;
+  transform: rotate(-27deg);
+}
+[data-theme="yanineko"] .yani-cabbage-leaves i:nth-child(4) {
+  top: -7px; right: 18px; width: 104px; height: 188px;
+  transform: rotate(27deg);
+}
+[data-theme="yanineko"] .yani-cabbage-leaves i:nth-child(5) {
+  bottom: -5px; left: 2px; width: 127px; height: 190px;
+  transform: rotate(31deg);
+}
+[data-theme="yanineko"] .yani-cabbage-leaves i:nth-child(6) {
+  right: 0; bottom: -7px; width: 128px; height: 194px;
+  transform: rotate(-31deg);
+}
+[data-theme="yanineko"] .yani-cabbage-leaves i:nth-child(7) {
+  right: 30px; bottom: -24px; left: 29px; height: 154px;
+  transform: rotate(-1deg);
+}
+[data-theme="yanineko"] .yani-cabbage-leaves i:nth-child(1)::after { transform: rotate(-11deg); }
+[data-theme="yanineko"] .yani-cabbage-leaves i:nth-child(2)::after { transform: rotate(11deg); }
+[data-theme="yanineko"] .yani-cabbage-leaves i:nth-child(3)::after { transform: rotate(-8deg); }
+[data-theme="yanineko"] .yani-cabbage-leaves i:nth-child(4)::after { transform: rotate(8deg); }
+[data-theme="yanineko"] .yani-cabbage-leaves i:nth-child(5)::after { transform: rotate(10deg); }
+[data-theme="yanineko"] .yani-cabbage-leaves i:nth-child(6)::after { transform: rotate(-10deg); }
+[data-theme="yanineko"] .yani-cabbage-leaves i:nth-child(7)::after { left: 47%; width: 11%; transform: rotate(1deg); }
+
+[data-theme="yanineko"] .yani-cabbage-cap {
+  position: relative;
+  z-index: 2;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 9px;
+  color: #89a397;
+  font: 600 7px/1 "IBM Plex Mono", monospace;
+  letter-spacing: 0.16em;
+}
+[data-theme="yanineko"] .yani-cabbage-cap i {
+  height: 1px;
+  flex: 1;
+  background: linear-gradient(90deg, rgba(148, 188, 168, 0.25), transparent);
+}
+[data-theme="yanineko"] .yani-cabbage-cap span:last-child { color: #b19672; }
+[data-theme="yanineko"] .yani-cabbage-foil {
+  display: none;
+}
+
+[data-theme="yanineko"] .yani-cabbage-list {
+  z-index: 2;
+  gap: 1px;
+  padding-top: 7px;
+}
+[data-theme="yanineko"] .yani-cabbage-list .nav-item {
+  z-index: 1;
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  align-items: center;
+  width: 100%;
+  min-height: 37px;
+  padding: 0 7px 0 5px;
+  border: 1px solid rgba(137, 190, 158, 0.075);
+  border-radius: 48% 14px 45% 10px / 51% 14px 49% 11px;
+  color: #78877f;
+  background:
+    linear-gradient(91deg, transparent 0 19%, rgba(132, 190, 153, 0.09) 19.5% 20%, transparent 20.5%),
+    radial-gradient(ellipse at 11% 50%, rgba(119, 180, 140, 0.08), transparent 42%),
+    linear-gradient(90deg, rgba(111, 160, 133, 0.06), transparent 84%);
+  box-shadow: none;
+  transform: translateX(0);
+  transition: transform 240ms cubic-bezier(.22, .8, .24, 1), color 180ms ease, background-color 180ms ease, box-shadow 240ms ease;
+}
+[data-theme="yanineko"] .yani-cabbage-shell .yani-cabbage-list .nav-item::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  width: auto;
+  height: auto;
+  border: 0;
+  border-radius: 55% 10px 54% 10px / 53% 9px 50% 10px;
+  clip-path: polygon(0 13%, 87% 0, 100% 50%, 88% 100%, 0 88%, 4% 50%);
+  opacity: 0;
+  background:
+    repeating-linear-gradient(96deg, rgba(49, 92, 61, 0.035) 0 1px, transparent 1px 5px),
+    radial-gradient(ellipse at 12% 50%, rgba(93, 147, 101, 0.31), transparent 42%),
+    linear-gradient(102deg, #8fbd91 0%, #b9d9b2 16%, #d9e9cc 72%, #96bf8f 100%);
+  box-shadow: none;
+  transform: none;
+  transition: opacity 180ms ease;
+}
+[data-theme="yanineko"] .yani-cabbage-list .nav-item::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  right: 12px;
+  left: 35px;
+  width: auto;
+  height: 1px;
+  border-radius: 1px;
+  opacity: 0;
+  background: linear-gradient(90deg, rgba(51, 91, 61, 0.18), rgba(71, 124, 78, 0.52), #4f9664);
+  box-shadow: 0 -1px rgba(255, 255, 255, 0.16), 0 0 8px rgba(82, 151, 97, 0.17);
+  transition: opacity 180ms ease;
+}
+[data-theme="yanineko"] .yani-cabbage-list .nav-item:nth-child(even) {
+  width: calc(100% - 5px);
+  margin-left: 5px;
+  border-radius: 13px 48% 11px 46% / 13px 52% 11px 48%;
+}
+[data-theme="yanineko"] .yani-cabbage-list .nav-item:not([data-active]):hover {
+  color: #afc0b7;
+  background: linear-gradient(90deg, rgba(126, 164, 145, 0.075), transparent 84%);
+  filter: none;
+  transform: translateX(2px);
+}
+[data-theme="yanineko"] .yani-cabbage-list .nav-item[data-active] {
+  z-index: 3;
+  padding-right: 7px;
+  border-color: transparent;
+  border-radius: 48% 14px 45% 10px / 51% 14px 49% 11px;
+  color: #183222;
+  background: transparent;
+  box-shadow: 0 8px 23px rgba(18, 53, 30, 0.24), inset 0 1px rgba(242, 255, 238, 0.62), inset 0 -1px rgba(49, 104, 59, 0.19);
+  transform: translateX(8px) rotate(-0.35deg) scaleX(1.012);
+}
+[data-theme="yanineko"] .yani-cabbage-list .nav-item[data-active]::before,
+[data-theme="yanineko"] .yani-cabbage-list .nav-item[data-active]::after { opacity: 1; }
+[data-theme="yanineko"] .yani-cabbage-list .nav-item:not([data-active])::before { opacity: 0; }
+[data-theme="yanineko"] .yani-cabbage-list .nav-item:not([data-active]) span { color: #78877f; }
+[data-theme="yanineko"] .yani-cabbage-list .nav-item[data-active] > span { color: #315d3c; }
+[data-theme="yanineko"] .yani-cabbage-list .nav-item[data-active] .text-ink { color: #183222; text-shadow: none; }
+[data-theme="yanineko"] .yani-cabbage-list .nav-item > .yani-cabbage-number + span { min-width: 0; gap: 8px; }
+[data-theme="yanineko"] .yani-cabbage-number {
+  display: block;
+  color: #50645a;
+  font: 600 6px/1 "IBM Plex Mono", monospace;
+  letter-spacing: 0.08em;
+}
+[data-theme="yanineko"] .yani-cabbage-list .nav-item[data-active] .yani-cabbage-number { color: #426a4b; }
+[data-theme="yanineko"] .yani-cabbage-list .nav-item svg { width: 16px; height: 16px; }
+[data-theme="yanineko"] .yani-cabbage-list .nav-item .whitespace-nowrap { overflow: hidden; font-size: 11px; text-overflow: ellipsis; }
+[data-theme="yanineko"] .yani-cabbage-list .nav-active-plate,
+[data-theme="yanineko"] .yani-cabbage-list .nav-cig-fire { display: none !important; }
+
+[data-theme="yanineko"] .yani-cabbage-budget {
+  position: relative;
+  z-index: 2;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  grid-template-rows: auto auto auto;
+  align-items: end;
+  gap: 2px 8px;
+  min-height: 58px;
+  margin: 7px 7px 0;
+  padding: 9px 10px 8px;
+  overflow: hidden;
+  border: 1px solid rgba(132, 177, 151, 0.12);
+  border-radius: 38% 12px 36% 12px / 28% 12px 31% 12px;
+  color: #98ac9f;
+  background: linear-gradient(96deg, rgba(104, 159, 126, 0.12), transparent 55%), rgba(8, 17, 11, 0.5);
+  box-shadow: inset 0 1px rgba(230, 246, 234, 0.035);
+}
+[data-theme="yanineko"] .yani-cabbage-budget::before {
+  content: "";
+  position: absolute;
+  right: 10px;
+  bottom: 4px;
+  left: 10px;
+  height: 1px;
+  opacity: .48;
+  background: repeating-linear-gradient(90deg, #6fa17f 0 11px, transparent 11px 17px);
+}
+[data-theme="yanineko"] .yani-cabbage-budget > span {
+  grid-column: 1 / -1;
+  color: #64806f;
+  font: 600 6px/1 "IBM Plex Mono", monospace;
+  letter-spacing: .15em;
+}
+[data-theme="yanineko"] .yani-cabbage-budget strong {
+  grid-row: 2 / 4;
+  color: #d9e3d8;
+  font: 650 17px/1 "IBM Plex Mono", monospace;
+  letter-spacing: -.06em;
+  text-shadow: 0 0 16px rgba(144, 205, 163, 0.18);
+}
+[data-theme="yanineko"] .yani-cabbage-budget small {
+  color: #bd9b72;
+  font: 650 7px/1 "IBM Plex Mono", monospace;
+  letter-spacing: .05em;
+  white-space: nowrap;
+}
+[data-theme="yanineko"] .yani-cabbage-budget > i {
+  justify-self: end;
+  width: 22px;
+  height: 3px;
+  border-radius: 3px;
+  background: linear-gradient(90deg, #c8aa78 0 27%, #efebdc 27% 83%, #df7138 83%);
+  box-shadow: 0 0 5px rgba(218, 104, 49, 0.24);
+  transform: rotate(-6deg);
+}
+[data-theme="yanineko"] .yani-cabbage-foot {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  justify-content: space-between;
+  padding: 9px 8px 0;
+  color: #526159;
+  font: 600 6px/1 "IBM Plex Mono", monospace;
+  letter-spacing: 0.13em;
+}
+
+/* Mint rosette shared with the Yani laboratory. Depth comes from overlapping
+   leaves and veins, not from a dark container behind the navigation. */
+[data-theme="yanineko"] .yani-cabbage-shell {
+  width: 188px;
+  padding: 3px 10px 12px;
+  border-radius: 42% 46% 44% 48% / 8% 10% 11% 9%;
+  filter:
+    drop-shadow(0 5px 6px rgba(35, 72, 49, 0.14))
+    drop-shadow(0 23px 25px rgba(35, 72, 49, 0.2));
+}
+[data-theme="yanineko"] .yani-cabbage-shell::before {
+  inset: 5px 6px 4px;
+  border-color: rgba(66, 111, 78, 0.28);
+  border-radius: 46% 43% 48% 45% / 8% 9% 12% 11%;
+  clip-path: polygon(21% 0, 37% 2%, 50% 0, 65% 3%, 82% 7%, 94% 17%, 91% 29%, 97% 42%, 94% 55%, 98% 69%, 91% 83%, 79% 94%, 63% 99%, 48% 96%, 31% 100%, 16% 94%, 7% 83%, 10% 68%, 4% 54%, 9% 40%, 5% 26%, 11% 12%);
+  background:
+    linear-gradient(89deg, transparent 49.2%, rgba(63, 110, 76, 0.2) 49.6% 50.4%, transparent 50.8%),
+    radial-gradient(ellipse 86% 15% at 50% 11%, transparent 60%, rgba(210, 231, 214, 0.18) 61% 63%, transparent 64%),
+    radial-gradient(ellipse 94% 19% at 50% 35%, transparent 67%, rgba(68, 119, 82, 0.12) 68% 69%, transparent 70%),
+    radial-gradient(ellipse at 14% 42%, rgba(212, 232, 216, 0.2), transparent 38%),
+    linear-gradient(112deg, rgba(199, 224, 205, 0.24), transparent 31%),
+    linear-gradient(165deg, #9fbea6 0%, #94b59c 48%, #88aa91 100%);
+  box-shadow:
+    inset 0 1px rgba(239, 249, 240, 0.52),
+    inset 8px 0 22px rgba(213, 235, 218, 0.13),
+    inset -9px -14px 24px rgba(65, 111, 77, 0.12);
+  backdrop-filter: blur(10px) saturate(104%);
+}
+[data-theme="yanineko"] .yani-cabbage-shell::after {
+  top: 34px;
+  right: auto;
+  bottom: 24px;
+  left: 50%;
+  width: 2px;
+  border: 0;
+  border-radius: 50%;
+  opacity: 0.34;
+  background: linear-gradient(transparent, rgba(55, 103, 69, 0.68) 18% 84%, transparent);
+  box-shadow: 1px 0 rgba(226, 240, 228, 0.34);
+  transform: translateX(-50%) rotate(-1.2deg);
+}
+
+[data-theme="yanineko"] .yani-cabbage-leaves {
+  inset: -13px -15px -14px;
+  animation: yani-cabbage-breathe 9s ease-in-out infinite;
+}
+[data-theme="yanineko"] .yani-cabbage-leaves::before,
+[data-theme="yanineko"] .yani-cabbage-leaves::after,
+[data-theme="yanineko"] .yani-cabbage-leaves i {
+  content: "";
+  position: absolute;
+  overflow: hidden;
+  border: 0;
+  clip-path: polygon(50% 0, 64% 5%, 78% 15%, 88% 28%, 95% 44%, 92% 60%, 100% 75%, 84% 83%, 75% 96%, 59% 92%, 47% 100%, 35% 91%, 20% 95%, 18% 80%, 6% 70%, 12% 55%, 3% 42%, 12% 27%, 23% 15%, 38% 9%);
+  background:
+    linear-gradient(90deg, transparent 49%, rgba(65, 112, 78, 0.29) 49.4% 50.6%, transparent 51%),
+    linear-gradient(34deg, transparent 48%, rgba(74, 122, 87, 0.14) 49% 50%, transparent 51%) 50% 27% / 74% 28% no-repeat,
+    linear-gradient(146deg, transparent 48%, rgba(74, 122, 87, 0.14) 49% 50%, transparent 51%) 50% 52% / 72% 30% no-repeat,
+    radial-gradient(ellipse at 31% 27%, rgba(222, 239, 224, 0.32), transparent 45%),
+    linear-gradient(154deg, rgba(169, 201, 177, 0.97), rgba(139, 178, 150, 0.97));
+  box-shadow: none;
+  filter: drop-shadow(0 5px 7px rgba(46, 86, 59, 0.14));
+  backdrop-filter: none;
+}
+[data-theme="yanineko"] .yani-cabbage-leaves::before {
+  top: -2px;
+  left: 25px;
+  width: 76px;
+  height: 94px;
+  transform: rotate(-15deg);
+}
+[data-theme="yanineko"] .yani-cabbage-leaves::after {
+  top: -3px;
+  right: 24px;
+  width: 77px;
+  height: 96px;
+  transform: rotate(15deg);
+}
+[data-theme="yanineko"] .yani-cabbage-leaves i::before {
+  inset: auto;
+  top: 12%;
+  bottom: 9%;
+  left: 50%;
+  width: 1px;
+  border: 0;
+  border-radius: 0;
+  background: linear-gradient(transparent, rgba(65, 113, 79, 0.43), transparent);
+}
+[data-theme="yanineko"] .yani-cabbage-leaves i::after {
+  inset: 19% 16%;
+  width: auto;
+  border: 0;
+  border-radius: 0;
+  background:
+    linear-gradient(36deg, transparent 48.5%, rgba(75, 124, 88, 0.2) 49.5% 50.5%, transparent 51.5%) 50% 18% / 100% 28% no-repeat,
+    linear-gradient(144deg, transparent 48.5%, rgba(75, 124, 88, 0.2) 49.5% 50.5%, transparent 51.5%) 50% 55% / 100% 30% no-repeat;
+  transform: none;
+}
+[data-theme="yanineko"] .yani-cabbage-leaves i:nth-child(1) {
+  top: 64px; bottom: 116px; left: 0; width: 65px; height: auto;
+  transform: rotate(-9deg);
+  animation: yani-cabbage-left-leaf 11s ease-in-out infinite;
+}
+[data-theme="yanineko"] .yani-cabbage-leaves i:nth-child(2) {
+  top: 68px; right: 0; bottom: 112px; width: 64px; height: auto;
+  transform: rotate(9deg);
+  animation: yani-cabbage-right-leaf 12s ease-in-out infinite;
+}
+[data-theme="yanineko"] .yani-cabbage-leaves i:nth-child(3) {
+  top: auto; bottom: 50px; left: 13px; width: 68px; height: 132px;
+  transform: rotate(-7deg);
+}
+[data-theme="yanineko"] .yani-cabbage-leaves i:nth-child(4) {
+  top: auto; right: 13px; bottom: 47px; width: 67px; height: 133px;
+  transform: rotate(7deg);
+}
+[data-theme="yanineko"] .yani-cabbage-leaves i:nth-child(5) {
+  top: auto; bottom: -2px; left: 52px; width: 94px; height: 98px;
+  transform: rotate(-1deg);
+}
+[data-theme="yanineko"] .yani-cabbage-leaves i:nth-child(6) {
+  top: 18px; right: auto; bottom: auto; left: 62px; width: 75px; height: 104px;
+  opacity: 0.86;
+  transform: rotate(-3deg);
+}
+[data-theme="yanineko"] .yani-cabbage-leaves i:nth-child(7) {
+  top: auto; right: 35px; bottom: 16px; left: auto; width: 67px; height: 112px;
+  opacity: 0.9;
+  transform: rotate(4deg);
+}
+[data-theme="yanineko"] .yani-cabbage-leaves i:nth-child(n)::after { transform: none; }
+
+[data-theme="yanineko"] .yani-cabbage-cap { color: #355742; }
+[data-theme="yanineko"] .yani-cabbage-cap i {
+  background: linear-gradient(90deg, rgba(69, 113, 82, 0.34), transparent);
+}
+[data-theme="yanineko"] .yani-cabbage-cap span:last-child { color: #526d5a; }
+
+[data-theme="yanineko"] .yani-cabbage-list .nav-item {
+  border-color: rgba(69, 112, 81, 0.13);
+  color: #2e4b39;
+  background:
+    linear-gradient(91deg, transparent 0 19%, rgba(72, 119, 85, 0.11) 19.5% 20%, transparent 20.5%),
+    radial-gradient(ellipse at 11% 50%, rgba(224, 239, 226, 0.18), transparent 42%),
+    linear-gradient(90deg, rgba(209, 229, 213, 0.13), transparent 84%);
+}
+[data-theme="yanineko"] .yani-cabbage-shell .yani-cabbage-list .nav-item::before {
+  background:
+    repeating-linear-gradient(96deg, rgba(49, 92, 61, 0.035) 0 1px, transparent 1px 5px),
+    radial-gradient(ellipse at 12% 50%, rgba(93, 147, 101, 0.22), transparent 42%),
+    linear-gradient(102deg, #b3ccb7 0%, #c3d7c5 18%, #d3e2d3 72%, #adc8b2 100%);
+}
+[data-theme="yanineko"] .yani-cabbage-list .nav-item:not([data-active]):hover {
+  color: #203c2b;
+  background: linear-gradient(90deg, rgba(224, 238, 226, 0.2), transparent 84%);
+}
+[data-theme="yanineko"] .yani-cabbage-list .nav-item[data-active] {
+  color: #294735;
+  box-shadow: 0 8px 23px rgba(54, 91, 65, 0.2), inset 0 1px rgba(242, 255, 238, 0.62), inset 0 -1px rgba(49, 104, 59, 0.19);
+}
+[data-theme="yanineko"] .yani-cabbage-list .nav-item:not([data-active]) span { color: #2e4b39; }
+[data-theme="yanineko"] .yani-cabbage-list .nav-item[data-active] > span { color: #294735; }
+[data-theme="yanineko"] .yani-cabbage-list .nav-item[data-active] .text-ink { color: #294735; }
+[data-theme="yanineko"] .yani-cabbage-number { color: #557161; }
+[data-theme="yanineko"] .yani-cabbage-list .nav-item[data-active] .yani-cabbage-number { color: #476b51; }
+
+[data-theme="yanineko"] .yani-cabbage-budget { display: none; }
+[data-theme="yanineko"] .yani-cabbage-foot { color: #4e6b59; }
+
+@keyframes yani-cabbage-breathe {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.008, 1.004); }
+}
+@keyframes yani-cabbage-left-leaf {
+  0%, 100% { transform: rotate(-9deg); }
+  50% { transform: rotate(-7.8deg) translateX(-1px); }
+}
+@keyframes yani-cabbage-right-leaf {
+  0%, 100% { transform: rotate(9deg); }
+  50% { transform: rotate(7.7deg) translateX(1px); }
+}
+
 html,
 body,
 #root {
@@ -707,17 +1477,20 @@ body {
       фон там спокойный; заголовки и логотип сохраняют свои тени (правила выше). */
 [data-theme="catnap"] body,
 [data-theme="midnight"] body,
-[data-theme="japan"] body {
+[data-theme="japan"] body,
+[data-theme="yanineko"] body {
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
 }
 [data-theme="catnap"] .text-ink-muted,
 [data-theme="midnight"] .text-ink-muted,
-[data-theme="japan"] .text-ink-muted {
+[data-theme="japan"] .text-ink-muted,
+[data-theme="yanineko"] .text-ink-muted {
   color: rgb(156 164 187);
 }
 [data-theme="catnap"] .text-ink-soft,
 [data-theme="midnight"] .text-ink-soft,
-[data-theme="japan"] .text-ink-soft {
+[data-theme="japan"] .text-ink-soft,
+[data-theme="yanineko"] .text-ink-soft {
   color: rgb(205 212 228);
 }
 

@@ -4,6 +4,9 @@ import { Icon } from "./icons";
 import { EyeLogo } from "./EyeLogo";
 import { useMotionOff } from "../render";
 import { dur, ease, spring } from "../tokens";
+import { useThemeStore } from "../../store/themeStore";
+import { useDpiStore } from "../../store/dpiStore";
+import { useProxyStore } from "../../store/proxyStore";
 
 export type Tab = "overview" | "dpi" | "ai" | "telegram" | "lists" | "profiles" | "settings";
 
@@ -33,15 +36,25 @@ export function NavRail({
   const activeIndex = TAB_ORDER.indexOf(active);
   const farJump = Math.abs(activeIndex - previousIndex) > 1;
   const motionOff = useMotionOff();
+  // Сигаретная рестилизация меню живёт только в теме Yani Neko: здесь лишь
+  // класс-хук nav-item, флаг «горит» (включён обход/прокси) и декоративный
+  // огонёк в активном пункте. Весь вид — в globals.css под [data-theme].
+  const theme = useThemeStore((s) => s.theme);
+  const burning = useDpiStore((s) => s.active) || useProxyStore((s) => s.running);
 
   useLayoutEffect(() => {
     previousActiveRef.current = active;
   }, [active]);
 
   return (
-    <nav className="flex w-[220px] flex-col px-4 pb-4 pt-2">
+    <nav
+      className={`app-nav-rail flex w-[220px] flex-col px-4 pb-4 pt-2 ${
+        theme === "yanineko" ? "yani-cabbage-rail" : ""
+      }`}
+      data-burning={burning || undefined}
+    >
       {/* Лого — живой глаз (идентичность Obsession). */}
-      <div className="mb-8 flex items-center gap-3 px-2">
+      <div className="app-nav-brand mb-8 flex items-center gap-3 px-2">
         <EyeLogo size={40} />
         <div className="leading-tight">
           <div className="wordmark font-display text-lg font-semibold tracking-tight text-ink">Obsession</div>
@@ -49,19 +62,41 @@ export function NavRail({
         </div>
       </div>
 
-      <div className="mb-2 px-2 text-3xs font-semibold uppercase tracking-[0.14em] text-ink-muted">
+      <div className="app-nav-section-label mb-2 px-2 text-3xs font-semibold uppercase tracking-[0.14em] text-ink-muted">
         Меню
       </div>
 
-      <div className="flex flex-col gap-1">
-        {items.map((it) => {
+      <div className="nav-cig-pack yani-cabbage-shell relative">
+        {theme === "yanineko" && (
+          <>
+            <div className="yani-cabbage-leaves" aria-hidden="true">
+              <i />
+              <i />
+              <i />
+              <i />
+              <i />
+              <i />
+              <i />
+            </div>
+            <div className="yani-cabbage-cap" aria-hidden="true">
+              <span>YANI</span>
+              <i />
+              <span>03:17</span>
+            </div>
+            <div className="yani-cabbage-foil" aria-hidden="true" />
+          </>
+        )}
+
+        <div className="yani-cabbage-list relative flex flex-col gap-1">
+        {items.map((it, index) => {
           const isActive = active === it.id;
           return (
             <button
               key={it.id}
               onClick={() => onSelect(it.id)}
+              data-active={isActive || undefined}
               // group — для hover-сдвига связки иконка+текст ниже.
-              className="no-drag theme-morph group relative flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
+              className="nav-item no-drag theme-morph group relative flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
             >
               {isActive && (
                 <motion.div
@@ -87,6 +122,14 @@ export function NavRail({
                   />
                 </motion.div>
               )}
+              {/* Yani Neko: у активного пункта — тлеющий кончик сигареты со
+                  струйкой дыма. Декоративный элемент, весь вид — в globals.css. */}
+              {isActive && theme === "yanineko" && (
+                <span aria-hidden className="nav-cig-fire" />
+              )}
+              <span className="yani-cabbage-number" aria-hidden="true">
+                {String(index + 1).padStart(2, "0")}
+              </span>
               {/* Иконка: у активного пункта — акцент темы (цвет приезжает вместе
                   с пилюлей), у прочих — гаснет до soft и оживает на hover.
                   Связка иконка+текст на hover сдвигается на 2px вправо — жест
@@ -115,9 +158,25 @@ export function NavRail({
             </button>
           );
         })}
+        </div>
+
+        {theme === "yanineko" && (
+          <>
+            <div className="yani-cabbage-budget" aria-label="170 иен, 6 дней, 1 сигарета">
+              <span>YANI SURVIVAL BUDGET</span>
+              <strong>170円</strong>
+              <small>6 DAYS / 1 CIG</small>
+              <i aria-hidden="true" />
+            </div>
+            <div className="yani-cabbage-foot" aria-hidden="true">
+              <span>STILL AWAKE</span>
+              <span>NO. 07</span>
+            </div>
+          </>
+        )}
       </div>
 
-      <div className="mt-auto px-2 text-3xs text-ink-muted opacity-70">made by AcediaWhy</div>
+      <div className="app-nav-footer mt-auto px-2 text-3xs text-ink-muted opacity-70">made by AcediaWhy</div>
     </nav>
   );
 }

@@ -8,6 +8,7 @@ import { OphanimCore } from "./OphanimCore";
 import { FallenCore } from "./FallenCore";
 import { CatnapCore } from "./CatnapCore";
 import { MidnightCore } from "./MidnightCore";
+import { YaniCatCore } from "./YaniCatCore";
 import { ObsessionChoirCore } from "./ObsessionChoirCore";
 
 type Props = {
@@ -33,6 +34,8 @@ function ThemedCore({ theme, ...props }: Props & { theme: Theme }) {
   if (theme === "fallendown") return <FallenCore {...coreProps} />;
   if (theme === "catnap") return <CatnapCore {...coreProps} />;
   if (theme === "midnight") return <MidnightCore {...coreProps} />;
+  // «Yani Neko»: самостоятельная пиксельная кошка отражает состояние защиты.
+  if (theme === "yanineko") return <YaniCatCore {...coreProps} />;
   // «Rain» (id japan): янтарный фонарь за холодным мокрым стеклом.
   if (theme === "japan") return <RainLanternCore {...coreProps} />;
   // Aurora — исходное ядро (световые шторы).

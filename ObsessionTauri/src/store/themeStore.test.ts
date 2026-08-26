@@ -7,7 +7,7 @@ describe("theme availability", () => {
     useSecretStore.setState({ unlocked: [] });
   });
 
-  it("puts five regular themes after the flagship and keeps two themes secret", () => {
+  it("puts five regular themes after the flagship and keeps three themes secret", () => {
     expect(THEMES.filter((theme) => !theme.secret).map((theme) => theme.id)).toEqual([
       "obsession",
       "aurora",
@@ -18,6 +18,7 @@ describe("theme availability", () => {
     expect(THEMES.filter((theme) => theme.secret).map((theme) => theme.id)).toEqual([
       "catnap",
       "fallendown",
+      "yanineko",
     ]);
   });
 
@@ -26,6 +27,7 @@ describe("theme availability", () => {
     expect(resolveStoredTheme("unknown-theme")).toBe("obsession");
     expect(resolveStoredTheme("aurora")).toBe("aurora");
     expect(resolveStoredTheme("midnight")).toBe("midnight");
+    expect(resolveStoredTheme("yanineko")).toBe("yanineko");
   });
 
   it("no longer treats Midnight as a secret code", () => {
@@ -38,5 +40,10 @@ describe("theme availability", () => {
       status: "unlocked",
       id: "fallendown",
     });
+    expect(useSecretStore.getState().redeem("Янинеко")).toMatchObject({
+      status: "unlocked",
+      id: "yanineko",
+    });
+    expect(useSecretStore.getState().redeem("yanikasu")).toEqual({ status: "unknown" });
   });
 });

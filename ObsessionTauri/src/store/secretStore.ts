@@ -19,6 +19,8 @@ function norm(s: string): string {
 const REGISTRY: Reward[] = [
   { id: "catnap", title: "Catnap", keys: ["catnap", "мурлыка", "мур"] },
   { id: "fallendown", title: "Fallen Down", keys: ["fallendown"] },
+  // «Яникас» — прозвище Янико от соседских детей.
+  { id: "yanineko", title: "Yani Neko", keys: ["yanineko", "янинеко", "янико", "yaniko", "яникас"] },
 ];
 
 export type RedeemResult =

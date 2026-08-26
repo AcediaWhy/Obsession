@@ -9,7 +9,8 @@ export type Theme =
   | "japan"
   | "midnight"
   | "catnap"
-  | "fallendown";
+  | "fallendown"
+  | "yanineko";
 
 const THEME_IDS: Theme[] = [
   "obsession",
@@ -19,6 +20,7 @@ const THEME_IDS: Theme[] = [
   "midnight",
   "catnap",
   "fallendown",
+  "yanineko",
 ];
 
 // `secret` — id пасхалки в secretStore; такая тема появляется в выборе только
@@ -31,6 +33,7 @@ export const THEMES: { id: Theme; label: string; secret?: string }[] = [
   { id: "midnight", label: "Midnight" },
   { id: "catnap", label: "Catnap", secret: "catnap" },
   { id: "fallendown", label: "Fallen Down", secret: "fallendown" },
+  { id: "yanineko", label: "Yani Neko", secret: "yanineko" },
 ];
 
 const KEY = "obsession.theme";

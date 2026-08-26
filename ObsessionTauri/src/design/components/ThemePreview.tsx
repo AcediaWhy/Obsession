@@ -3,6 +3,7 @@ import { AuroraCore } from "./AuroraCore";
 import { CatnapCore } from "./CatnapCore";
 import { FallenCore } from "./FallenCore";
 import { MidnightCore } from "./MidnightCore";
+import { YaniCatCore } from "./YaniCatCore";
 import { OphanimCore } from "./OphanimCore";
 import { RainLanternCore } from "./RainLanternCore";
 import { ObsessionChoirCore } from "./ObsessionChoirCore";
@@ -37,6 +38,7 @@ export function ThemePreview({
       {theme === "fallendown" && <FallenCore {...shared} interactive={false} />}
       {theme === "catnap" && <CatnapCore {...shared} interactive={false} />}
       {theme === "midnight" && <MidnightCore {...shared} interactive={false} />}
+      {theme === "yanineko" && <YaniCatCore {...shared} interactive={false} />}
     </div>
   );
 }
