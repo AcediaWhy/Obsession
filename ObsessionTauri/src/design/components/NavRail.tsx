@@ -40,7 +40,14 @@ export function NavRail({
   // класс-хук nav-item, флаг «горит» (включён обход/прокси) и декоративный
   // огонёк в активном пункте. Весь вид — в globals.css под [data-theme].
   const theme = useThemeStore((s) => s.theme);
-  const burning = useDpiStore((s) => s.active) || useProxyStore((s) => s.running);
+  // Два отдельных вызова, а не `useDpiStore(...) || useProxyStore(...)`: `||`
+  // короткозамкнут, и при активном обходе второй хук не вызывался вовсе. Порядок
+  // хуков менялся между рендерами, React отдавал состояние не того хука и падал
+  // на `useLayoutEffect` ниже (`Cannot read properties of undefined`), а вместе с
+  // ним размонтировалось всё дерево — окно уходило в чёрный фон body.
+  const dpiActive = useDpiStore((s) => s.active);
+  const proxyRunning = useProxyStore((s) => s.running);
+  const burning = dpiActive || proxyRunning;
 
   useLayoutEffect(() => {
     previousActiveRef.current = active;
