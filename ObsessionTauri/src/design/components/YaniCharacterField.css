@@ -34,9 +34,11 @@
     linear-gradient(180deg, transparent 0 17.8%, rgba(47, 108, 76, 0.06) 17.9% 18.05%, transparent 18.15% 70.8%, rgba(47, 108, 76, 0.085) 70.9% 71.05%, transparent 71.15%);
   mask-image: linear-gradient(100deg, rgba(0,0,0,.68), rgba(0,0,0,.26) 43%, rgba(0,0,0,.7));
   /* Только translate: любое изменение scale заставляет Chromium заново
-     растрировать маску и градиенты этого полноэкранного слоя каждый кадр. */
+     растрировать маску и градиенты этого полноэкранного слоя каждый кадр.
+     will-change здесь не нужен: слой шагает 5 раз в секунду, постоянный
+     промоушен только держал текстуру в видеопамяти (замер: −37 МБ рабочего
+     набора и −0.6 п.п. CPU, когда промоушен снят со всех слоёв поля). */
   animation: yani-character-detail-drift 25s steps(125, end) infinite alternate;
-  will-change: transform;
 }
 
 .yani-character-field::after {
@@ -70,43 +72,43 @@
      полноэкранном слое переприменяет фильтр каждый кадр (≈27% кадрового
      бюджета темы), opacity композитор двигает бесплатно. */
   animation: yani-character-mint-breathe 11s steps(55, end) infinite;
-  will-change: opacity;
 }
 
+/* Мятное свечение без `filter: blur(48px)`. Блюр этого слоя (он на 34% больше
+   поля) стоил 36 МБ видеопамяти, 44 МБ рабочего набора и 0.75 п.п. CPU — при
+   том, что размывать в нём было нечего: радиальные градиенты и так мягкие, а
+   резкие края были только у conic-градиента. Тот заменён двумя мягкими пятнами,
+   радиусы растянуты — блюр как раз растягивал и снижал контраст. */
 .yani-character-field__ambient::before {
   content: "";
   position: absolute;
   inset: -17%;
-  opacity: 0.72;
+  opacity: 0.66;
   background:
-    radial-gradient(ellipse 18% 46% at 28% 41%, rgba(96, 190, 133, 0.42), transparent 72%),
-    radial-gradient(ellipse 22% 40% at 72% 51%, rgba(246, 255, 248, 0.5), transparent 73%),
-    radial-gradient(ellipse 28% 30% at 58% 15%, rgba(147, 218, 164, 0.4), transparent 74%),
-    conic-gradient(from 208deg at 50% 86%, transparent 0 13%, rgba(89, 177, 124, 0.22) 18%, transparent 26% 69%, rgba(248, 255, 250, 0.32) 78%, transparent 87%);
-  filter: blur(48px) saturate(108%);
-  /* scale вынесен в базовый transform и одинаков в обоих кейфреймах: при
-     анимации scale блюр 48px пересчитывался бы на каждом кадре. */
+    radial-gradient(ellipse 26% 58% at 28% 41%, rgba(96, 190, 133, 0.34), transparent 88%),
+    radial-gradient(ellipse 30% 52% at 72% 51%, rgba(246, 255, 248, 0.42), transparent 88%),
+    radial-gradient(ellipse 36% 40% at 58% 15%, rgba(147, 218, 164, 0.32), transparent 88%),
+    radial-gradient(ellipse 34% 27% at 33% 88%, rgba(89, 177, 124, 0.2), transparent 84%),
+    radial-gradient(ellipse 30% 24% at 70% 92%, rgba(248, 255, 250, 0.24), transparent 84%);
   transform: translate3d(0, 0, 0) scale(1.075);
   animation: yani-character-mint-drift 19s steps(95, end) infinite alternate;
-  will-change: transform;
 }
 
-/* Световой мазок, который раньше жил в background-position анимации
-   .__ambient::after. Анимация background-position перерисовывала весь
-   полноэкранный слой каждый кадр — самая дорогая строка темы (≈35% её
-   нагрузки). Здесь тот же мазок едет transform'ом на своём слое. */
+/* Световой мазок. Раньше он лежал на слое `inset: -10% -34%` (в 1.68 раза шире
+   поля) и смешивался в soft-light: 30 МБ видеопамяти и 0.75 п.п. CPU за одну
+   полоску света. Blend-режим убран (soft-light над почти ровным мятным фоном
+   отличается от обычной прозрачности едва заметно), слой сужен до того, что
+   реально проезжает по кадру. */
 .yani-character-field__sweep {
   z-index: 0;
-  inset: -10% -34%;
-  opacity: 0.58;
+  inset: -10% -18%;
+  opacity: 0.34;
   pointer-events: none;
-  background: linear-gradient(112deg, transparent 27%, rgba(255, 255, 255, 0.64) 43%, rgba(255, 255, 255, 0.12) 51%, transparent 66%);
-  mix-blend-mode: soft-light;
+  background: linear-gradient(112deg, transparent 27%, rgba(255, 255, 255, 0.72) 43%, rgba(255, 255, 255, 0.14) 51%, transparent 66%);
   /* База совпадает с первым кадром: под prefers-reduced-motion анимация
      выключается целиком, и мазок должен остаться там, где начинался. */
-  transform: translate3d(-260px, 0, 0);
+  transform: translate3d(-190px, 0, 0);
   animation: yani-character-mint-sweep 16s steps(240, end) infinite;
-  will-change: transform;
 }
 
 /* Абстрактные следы Yani. Большие тени статичны: градиенты растрируются один
@@ -409,13 +411,15 @@
   position: absolute;
   inset: -10%;
   pointer-events: none;
-  opacity: 0.58;
+  /* Без mix-blend-mode: soft-light. Режим смешивания заставлял композитор
+     расплющивать всё, что лежит ниже, в отдельную текстуру; над почти ровным
+     мятным фоном разница с обычной прозрачностью не читается. */
+  opacity: 0.42;
   background:
     repeating-linear-gradient(108deg, transparent 0 76px, rgba(45, 86, 61, 0.105) 78px 103px, transparent 105px 166px),
     radial-gradient(ellipse 40% 8% at 50% 77%, rgba(255, 255, 255, 0.58), transparent 72%),
     repeating-linear-gradient(90deg, transparent 0 118px, rgba(91, 168, 123, 0.035) 119px 120px);
   background-position: 92px -34px, 0 0, 0 0;
-  mix-blend-mode: soft-light;
 }
 
 .yani-character-field__details {
@@ -451,7 +455,7 @@
     repeating-linear-gradient(0deg, transparent 0 16px, rgba(66, 128, 87, 0.12) 17px 18px),
     linear-gradient(94deg, rgba(247, 255, 244, 0.62), rgba(221, 239, 222, 0.36));
   box-shadow: 0 12px 22px rgba(44, 91, 61, 0.14), 2px 3px 0 rgba(66, 117, 79, 0.035), inset 0 1px rgba(255, 255, 255, 0.52);
-  content: "YANI MART / NO.07\A\A170円\A6 DAYS · CAT MODE\A\A03:17";
+  content: "YANI MART / NO.07\A \A 170円\A 6 DAYS · CAT MODE\A \A 03:17";
   white-space: pre;
   font-size: 7px;
   font-weight: 600;
@@ -493,7 +497,6 @@
      при том, что подложка под ними — почти ровный мятный градиент. */
   background: linear-gradient(135deg, rgba(246, 255, 248, 0.34), rgba(111, 178, 135, 0.13));
   box-shadow: inset 0 1px rgba(255, 255, 255, 0.38), 0 18px 42px rgba(42, 91, 63, 0.07);
-  will-change: transform;
 }
 
 .yani-character-field__panel::before {
@@ -535,6 +538,10 @@
   animation: yani-character-panel-c 24s steps(120, end) infinite;
 }
 
+/* Кольцо статично. Вращать его целиком было незачем: и окружность, и обе её тени
+   симметричны — на глаз вращение читалось только по точке. А перерисовка
+   box-shadow'ов 30 раз в секунду (steps(1080) за 36с) стоила 1.75 п.п. CPU —
+   больше любого другого слоя темы, включая саму 3D-сцену. */
 .yani-character-field__orbit {
   position: absolute;
   top: 20%;
@@ -544,7 +551,6 @@
   border: 1px solid rgba(47, 106, 73, 0.15);
   border-radius: 50%;
   box-shadow: inset 0 0 34px rgba(74, 153, 106, 0.08), 0 0 0 16px rgba(255,255,255,.03);
-  animation: yani-character-orbit 36s steps(1080, end) infinite;
 }
 
 .yani-character-field__orbit::before,
@@ -555,13 +561,15 @@
 }
 
 .yani-character-field__orbit::before { inset: 18%; border: 1px dashed rgba(47, 106, 73, 0.14); }
+/* Едет только точка. Свечение — градиентом, а не box-shadow: слой без тени
+   промоутится в текстуру один раз, дальше композитор крутит её бесплатно.
+   Шагов вдвое с половиной меньше: точка проходит ~22 px/с, 12 обновлений в
+   секунду дают меньше 2 px на шаг — та же плавность. */
 .yani-character-field__orbit::after {
-  top: 12%;
-  left: 49%;
-  width: 7px;
-  height: 7px;
-  background: #65ad80;
-  box-shadow: 0 0 13px rgba(58, 139, 91, 0.35);
+  inset: 0;
+  background: radial-gradient(circle 10px at 50% 12%, #65ad80 0 3.5px, rgba(58, 139, 91, 0.34) 4px 8px, transparent 10px);
+  animation: yani-character-orbit 36s steps(432, end) infinite;
+  will-change: transform;
 }
 
 .yani-character-field__particles {
@@ -670,24 +678,33 @@
   filter: drop-shadow(0 5px 5px rgba(37, 77, 51, 0.08));
 }
 
+/* Канвас лежит ровно по полю. Раньше он был 120%×108% и ещё раз растягивался
+   transform'ом translateX(18%) scale(1.08), а overflow:hidden поля обрезал 38%
+   отрисованных пикселей. Та же композиция теперь живёт в камере
+   (yaniCharacterFrame.ts + camera.setViewOffset), поэтому transform здесь не
+   нужен — и апскейла на 1.08 больше нет, модель рисуется 1:1. */
 .yani-character-field__model {
   position: absolute;
   z-index: 3;
-  inset: -4% -10%;
-  width: 120%;
-  height: 108%;
-  transform: translateX(18%) scale(1.08);
-  transform-origin: center;
-  filter: saturate(1.08) contrast(1.04) drop-shadow(0 22px 34px rgba(31, 77, 49, 0.16));
-  transition: transform 700ms ease, filter 700ms ease;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  /* Одна тень вместо цепочки `saturate contrast drop-shadow(18px)
+     drop-shadow(44px)`. Цепочка перезапускалась на каждый кадр и стоила 0.8 п.п.
+     CPU и 17 МБ; одна тень умеренного радиуса по замеру не даёт видимой разницы
+     в CPU и берёт 10 МБ — за них модель перестаёт выглядеть наклейкой на стекле.
+     saturate/contrast сняты как незаметные: ACES-тонмаппинг рендера уже даёт
+     контраст, а +8% насыщенности на мятной палитре не читались. */
+  filter: drop-shadow(0 20px 26px rgba(25, 63, 39, 0.18));
+  transition: filter 700ms ease;
 }
 
 .yani-character-field[data-story]:not([data-story="off"]) .yani-character-field__details::before {
-  content: "YANI MART / NO.07\A\A1 BULB\A0 PANCAKES\A\A03:17";
+  content: "YANI MART / NO.07\A \A 1 BULB\A 0 PANCAKES\A \A 03:17";
 }
 
 .yani-character-field[data-depth="flat"] .yani-character-field__model {
-  filter: saturate(1.04) contrast(1.02) drop-shadow(0 8px 12px rgba(31, 77, 49, 0.08));
+  filter: drop-shadow(0 8px 12px rgba(31, 77, 49, 0.1));
 }
 .yani-character-field[data-depth="flat"] .yani-character-field__room-depth,
 .yani-character-field[data-depth="flat"] .yani-character-field__foreground-depth {
@@ -705,19 +722,18 @@
     inset 58px -34px 92px rgba(20, 57, 34, 0.14),
     inset -42px -26px 78px rgba(20, 57, 34, 0.11);
 }
+/* Глубокий проход добавляет тени немного веса — но по-прежнему одной, а не
+   цепочкой из двух размытий с цветокоррекцией поверх живого канваса. */
 .yani-character-field[data-depth="deep"] .yani-character-field__model {
-  filter:
-    saturate(1.1)
-    contrast(1.055)
-    drop-shadow(-8px 13px 18px rgba(31, 77, 49, 0.12))
-    drop-shadow(0 34px 44px rgba(25, 63, 39, 0.22));
+  filter: drop-shadow(0 20px 26px rgba(25, 63, 39, 0.22));
 }
 .yani-character-field[data-depth="deep"] .yani-character-field__panel {
   box-shadow: inset 0 1px rgba(255, 255, 255, 0.42), 0 24px 52px rgba(31, 73, 48, 0.13);
 }
 
-.yani-character-field[data-screen="settings"] .yani-character-field__model,
-.yani-character-field[data-screen="profiles"] .yani-character-field__model { transform: translateX(21%) scale(1.06); }
+/* Композиция по экрану (бывшие translateX(21%) scale(1.06) для settings/profiles)
+   переехала в камеру — см. yaniFramingForScreen(). Здесь остались только
+   правила, которые меняют цвет и тень. */
 
 .yani-character-field .yani-ear-error { opacity: 0; }
 
@@ -738,7 +754,9 @@
   /* Приглушение тревоги живёт в кейфреймах: opacity здесь уже занята дыханием. */
   animation-name: yani-character-mint-breathe-alarm;
 }
-.yani-character-field[data-mood="alarm"] .yani-character-field__orbit::after { background: #d18c70; }
+.yani-character-field[data-mood="alarm"] .yani-character-field__orbit::after {
+  background: radial-gradient(circle 10px at 50% 12%, #d18c70 0 3.5px, rgba(198, 124, 96, 0.34) 4px 8px, transparent 10px);
+}
 .yani-character-field[data-motion="still"] *,
 .yani-character-field[data-motion="still"] *::before,
 .yani-character-field[data-motion="still"] *::after { animation-play-state: paused !important; }
@@ -756,7 +774,7 @@
 @keyframes yani-character-mint-breathe { 0%,100% { opacity: .94; } 50% { opacity: 1; } }
 @keyframes yani-character-mint-breathe-alarm { 0%,100% { opacity: .85; } 50% { opacity: .9; } }
 @keyframes yani-character-mint-drift { from { transform: translate3d(-2.5%,-1%,0) scale(1.075); } to { transform: translate3d(3%,1%,0) scale(1.075); } }
-@keyframes yani-character-mint-sweep { from { transform: translate3d(-260px,0,0); } to { transform: translate3d(260px,0,0); } }
+@keyframes yani-character-mint-sweep { from { transform: translate3d(-190px,0,0); } to { transform: translate3d(190px,0,0); } }
 @keyframes yani-character-detail-drift { from { transform: translate3d(-5px,-2px,0); } to { transform: translate3d(7px,4px,0); } }
 @keyframes yani-character-panel-a { 0%,100% { transform: rotate(-4deg) translateY(0); } 50% { transform: rotate(-2.5deg) translate(8px,-7px); } }
 @keyframes yani-character-panel-b { 0%,100% { transform: rotate(5deg) translateY(0); } 50% { transform: rotate(3deg) translate(-7px,9px); } }

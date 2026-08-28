@@ -2,7 +2,13 @@ import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 
-import { createRenderLoop, type RenderLoop } from "../render";
+import { createRenderLoop, renderStill, type RenderLoop } from "../render";
+import {
+  lerpYaniFraming,
+  yaniCharacterViewFrame,
+  yaniFramingForScreen,
+  type YaniFraming,
+} from "./yaniCharacterFrame";
 import { earQualityProfile } from "./yaniEar/quality";
 import type { EarMood, EarQuality, YaniArtPass } from "./yaniEar/types";
 
@@ -10,11 +16,22 @@ type Props = {
   mood: EarMood;
   quality: EarQuality;
   paused?: boolean;
+  /**
+   * Экран приложения. Задан — сцена кадрируется как поле темы (модель справа,
+   * зум как у бывшего CSS-трансформа). Не задан (лаборатории) — камера смотрит
+   * ровно на канвас, без выреза фрустума.
+   */
+  screen?: string;
   className?: string;
   debugCapture?: boolean;
   modelUrl?: string;
   art?: YaniArtPass;
 };
+
+// Длительность бывшего CSS-перехода `transition: transform 700ms ease` у
+// .yani-character-field__model: композиция экрана переехала в камеру, значит и
+// переход между композициями теперь считается здесь.
+const FRAMING_TRANSITION_S = 0.7;
 
 // Схемы света по художественному проходу. base/swing — это то, чем каждый кадр
 // перетираются intensity ключевого и тёплого источников в цикле, поэтому
@@ -110,19 +127,28 @@ function disposeSubtree(root: THREE.Object3D) {
 // на всё поле). Обнуление размера канваса освобождает его сразу: важно для
 // ухода в трей, где сцена размонтируется целиком.
 //
-// forceContextLoss() здесь НЕ подходит: React в StrictMode прогоняет эффект
-// дважды на ОДНОМ и том же элементе canvas, и второй WebGLRenderer получил бы
-// уже убитый контекст (getShaderPrecisionFormat → null).
+// forceContextLoss() добивает то, что не отдаёт ни dispose(), ни обнуление
+// размера: сам контекст с его декодером команд в GPU-процессе, transfer buffer,
+// состоянием устройства и кэшем программ. Иначе всё это ждёт сборки мусора, а в
+// трее её не бывает — рендерер задушен, аллокаций нет, idle-задач нет.
+//
+// Ровно так делает rain/pipeline.ts, и опасение про StrictMode (эффект идёт
+// дважды по одному канвасу, второй рендерер получит потерянный контекст) на
+// живом приложении не подтвердилось: сцена собирается на том же элементе и
+// после потери контекста. Проверено сравнением с принудительным 2D-фолбэком —
+// картинки разные, значит работает настоящий конвейер.
 function releaseRenderer(renderer: THREE.WebGLRenderer, canvas: HTMLCanvasElement) {
   renderer.dispose();
   canvas.width = 0;
   canvas.height = 0;
+  renderer.forceContextLoss();
 }
 
 export function YaniCharacterScene({
   mood,
   quality,
   paused = false,
+  screen,
   className = "",
   debugCapture = false,
   modelUrl = "/yani/yani-character.glb",
@@ -130,8 +156,8 @@ export function YaniCharacterScene({
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const loopRef = useRef<RenderLoop | null>(null);
-  const stateRef = useRef({ mood, quality, paused });
-  stateRef.current = { mood, quality, paused };
+  const stateRef = useRef({ mood, quality, paused, screen });
+  stateRef.current = { mood, quality, paused, screen };
   const [failed, setFailed] = useState(false);
   const [debugFrame, setDebugFrame] = useState<string | null>(null);
 
@@ -142,6 +168,7 @@ export function YaniCharacterScene({
     let renderer: THREE.WebGLRenderer | null = null;
     let resizeObserver: ResizeObserver | null = null;
     let cleanupScene: (() => void) | null = null;
+    let environmentTarget: THREE.WebGLRenderTarget | null = null;
 
     const initialize = async () => {
       // Каким проходом собрана живая сцена: канвас переиспользуется между
@@ -215,8 +242,12 @@ export function YaniCharacterScene({
         addStrip(strip.color, new THREE.Vector3(...strip.position), strip.width, strip.height);
       }
       const pmrem = new THREE.PMREMGenerator(activeRenderer);
-      const environmentTarget = pmrem.fromScene(environmentScene, 0.04, 0.1, 12);
-      scene.environment = environmentTarget.texture;
+      // Цель PMREM держим в scope эффекта, а не только внутри initialize: она
+      // создаётся ДО await за GLB, и при смене темы во время загрузки уборка
+      // раньше её не видела — cubemap утекал до смерти контекста.
+      const target = pmrem.fromScene(environmentScene, 0.04, 0.1, 12);
+      environmentTarget = target;
+      scene.environment = target.texture;
       // Окружение — один снимок на всю жизнь сцены: генератор и его временные
       // цели, как и сами полоски, больше не нужны и освобождаются сразу.
       pmrem.dispose();
@@ -249,6 +280,13 @@ export function YaniCharacterScene({
           if (material instanceof THREE.MeshStandardMaterial) {
             material.envMapIntensity = scheme.envMapIntensity;
           }
+          // `doubleSided: true` в GLB — дефолт экспорта Blender, а не решение:
+          // персонаж замкнут, задние грани всё равно перекрыты передними, но
+          // без culling они шейдятся. Плоскому мешу контактной тени culling
+          // противопоказан — квад может смотреть от камеры.
+          if (material.name !== "YaniContactShadowMaterial") {
+            material.side = THREE.FrontSide;
+          }
         });
       });
       scene.add(character);
@@ -264,16 +302,47 @@ export function YaniCharacterScene({
       let elapsed = 0;
       let capturedMood: EarMood | null = null;
 
+      // Композиция кадра: канвас лежит ровно по полю, а бывшая CSS-рамка
+      // (120%×108% + translateX/scale) воспроизводится вырезом фрустума. Раньше
+      // 38% отрисованных пикселей обрезал overflow:hidden поля.
+      let framingScreen = stateRef.current.screen;
+      let framing: YaniFraming = yaniFramingForScreen(framingScreen ?? "overview");
+      let framingFrom = framing;
+      let framingProgress = 1;
+      let fieldWidth = 1;
+      let fieldHeight = 1;
+
+      const applyFrame = () => {
+        if (framingScreen === undefined) {
+          // Лаборатории смотрят на сцену целиком: канвас и есть весь кадр.
+          camera.clearViewOffset();
+          camera.aspect = fieldWidth / fieldHeight;
+          camera.updateProjectionMatrix();
+          return;
+        }
+        const frame = yaniCharacterViewFrame(fieldWidth, fieldHeight, framing);
+        // setViewOffset сам ставит aspect = fullWidth/fullHeight и вызывает
+        // updateProjectionMatrix, поэтому отдельно их трогать не нужно.
+        camera.setViewOffset(
+          frame.fullWidth,
+          frame.fullHeight,
+          frame.offsetX,
+          frame.offsetY,
+          frame.width,
+          frame.height,
+        );
+      };
+
       const resize = () => {
         const rect = canvas.getBoundingClientRect();
-        // Канвас растянут в CSS до 120%×108% поля и ещё раз scale(1.08), так что
-        // часть пикселей уходит за кадр. Больше 1.5 device-пикселя на CSS-пиксель
-        // здесь не читается, а 4× MSAA от такого буфера стоит десятки мегабайт.
+        // Больше 1.5 device-пикселя на CSS-пиксель здесь не читается, а 4× MSAA
+        // от такого буфера стоит десятки мегабайт.
         const pixelRatio = Math.min(window.devicePixelRatio || 1, profile.pixelRatio, 1.5);
         activeRenderer.setPixelRatio(pixelRatio);
-        activeRenderer.setSize(Math.max(1, rect.width), Math.max(1, rect.height), false);
-        camera.aspect = Math.max(1, rect.width) / Math.max(1, rect.height);
-        camera.updateProjectionMatrix();
+        fieldWidth = Math.max(1, rect.width);
+        fieldHeight = Math.max(1, rect.height);
+        activeRenderer.setSize(fieldWidth, fieldHeight, false);
+        applyFrame();
       };
       resizeObserver = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(resize);
       resizeObserver?.observe(canvas);
@@ -294,6 +363,27 @@ export function YaniCharacterScene({
           currentClipName = desiredClipName;
           currentAction = nextAction;
           capturedMood = null;
+        }
+        // Смена экрана: под reduce-motion CSS сбрасывал transition в 0.01ms, то
+        // есть прыгал в цель — повторяем это, иначе замерший кадр остался бы на
+        // полпути между композициями. Лаборатории (screen === undefined) вообще
+        // не кадрируются, поэтому и переход им не нужен.
+        if (state.screen !== framingScreen) {
+          framingFrom = framing;
+          framingScreen = state.screen;
+          framingProgress = state.screen === undefined || renderStill() ? 1 : 0;
+          if (framingProgress === 1) {
+            framing = yaniFramingForScreen(state.screen ?? "overview");
+            applyFrame();
+          }
+        }
+        if (framingProgress < 1 && framingScreen !== undefined) {
+          framingProgress = Math.min(1, framingProgress + Math.max(0, dt) / FRAMING_TRANSITION_S);
+          // smoothstep вместо cubic-bezier(.25,.1,.25,1): на 3% сдвига разница
+          // между кривыми не читается, а считается это одной строкой.
+          const eased = framingProgress * framingProgress * (3 - 2 * framingProgress);
+          framing = lerpYaniFraming(framingFrom, yaniFramingForScreen(framingScreen), eased);
+          applyFrame();
         }
         const effectiveDt = state.paused ? 0 : Math.min(dt, 0.1);
         elapsed += effectiveDt;
@@ -328,7 +418,8 @@ export function YaniCharacterScene({
         mixer.stopAllAction();
         mixer.uncacheRoot(character);
         disposeSubtree(character);
-        environmentTarget.dispose();
+        environmentTarget?.dispose();
+        environmentTarget = null;
         releaseRenderer(activeRenderer, canvas);
         renderer = null;
       };
@@ -344,17 +435,29 @@ export function YaniCharacterScene({
     return () => {
       cancelled = true;
       resizeObserver?.disconnect();
-      if (cleanupScene) cleanupScene();
-      else if (renderer) {
-        releaseRenderer(renderer, canvas);
-        renderer = null;
+      if (cleanupScene) {
+        cleanupScene();
+      } else {
+        // Уборка до того, как сцена собралась: за GLB ушли в await, а цель PMREM
+        // и рендерер уже созданы. Раньше эта ветка отпускала только рендерер, и
+        // при смене темы во время загрузки модели cubemap оставался висеть.
+        environmentTarget?.dispose();
+        environmentTarget = null;
+        if (renderer) {
+          releaseRenderer(renderer, canvas);
+          renderer = null;
+        }
       }
     };
   }, [art, debugCapture, modelUrl]);
 
+  // invalidate() как в YaniNekoField: под reduce-motion цикл рисует один кадр и
+  // замирает, поэтому смену настроения, качества или экрана нужно попросить
+  // перерисовать вручную — иначе стоп-кадр остаётся от прошлого состояния.
   useEffect(() => {
     loopRef.current?.setPaused(paused);
-  }, [paused]);
+    loopRef.current?.invalidate();
+  }, [mood, paused, quality, screen]);
 
   if (failed) return <div className={`yani-ear-error ${className}`}>Animated Yani GLB unavailable</div>;
   return (

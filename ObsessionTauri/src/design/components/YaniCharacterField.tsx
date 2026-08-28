@@ -88,6 +88,7 @@ export function YaniCharacterField({
           mood={mood}
           quality={qualityTier}
           paused={paused}
+          screen={screen}
           art={art}
           className="yani-character-field__model"
         />
