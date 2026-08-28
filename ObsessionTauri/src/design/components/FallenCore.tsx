@@ -223,6 +223,10 @@ function SoulCanvas({ active, busy, size, paused }: { active: boolean; busy: boo
     return () => {
       loop.dispose();
       loopRef.current = null;
+      // Backing store канваса освобождаем сразу: ядро размонтируется при уходе
+      // в трей и на каждой смене темы, а в трее GC не приходит.
+      canvas.width = 0;
+      canvas.height = 0;
     };
   }, [size]);
 

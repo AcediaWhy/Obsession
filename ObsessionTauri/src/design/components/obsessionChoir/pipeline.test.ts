@@ -48,6 +48,9 @@ function fakeGl() {
     uniform4fv: vi.fn(), uniform1fv: vi.fn(), activeTexture: vi.fn(), drawArrays: vi.fn(),
     deleteProgram: vi.fn(), deleteTexture: vi.fn(), deleteFramebuffer: vi.fn(),
     deleteBuffer: vi.fn(), deleteVertexArray: vi.fn(), isContextLost: vi.fn(() => false),
+    // destroy() отдаёт контекст сразу, а не ждёт сборки мусора — расширение
+    // WEBGL_lose_context должно быть в заглушке, иначе уборка не проверяется.
+    getExtension: vi.fn(() => ({ loseContext: vi.fn() })),
   };
 }
 
@@ -98,6 +101,9 @@ describe("Black Choir two-pass pipeline", () => {
     expect(gl.deleteTexture).toHaveBeenCalledOnce();
     expect(gl.deleteFramebuffer).toHaveBeenCalledOnce();
     expect(gl.deleteBuffer).toHaveBeenCalledTimes(2);
+    // Контекст отпущен ровно один раз, повторный destroy() его не трогает.
+    expect(gl.getExtension).toHaveBeenCalledWith("WEBGL_lose_context");
+    expect(gl.getExtension).toHaveBeenCalledOnce();
     expect(gl.deleteVertexArray).toHaveBeenCalledTimes(2);
   });
 

@@ -259,5 +259,8 @@ export class YaniNekoPipeline {
     deleteTarget(gl, this.smokeWrite);
     gl.deleteBuffer(this.geometry.buffer);
     gl.deleteVertexArray(this.geometry.vao);
+    // Контекст отдаём сразу, как в rain/pipeline.ts: без этого он ждёт сборки
+    // мусора, которой в трее не бывает, и занимает слот из лимита Chromium.
+    gl.getExtension("WEBGL_lose_context")?.loseContext();
   }
 }

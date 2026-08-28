@@ -440,6 +440,11 @@ export function OphanimField({ paused = false }: { paused?: boolean }) {
       loop.dispose();
       loopRef.current = null;
       window.removeEventListener("resize", onResize);
+      // Backing store канваса освобождаем сразу, а не ждём сборки мусора:
+      // размонтирование идёт при уходе в трей и на каждой смене темы, а в трее
+      // GC не приходит. Тот же приём документирован у WebGL-сцен.
+      canvas.width = 0;
+      canvas.height = 0;
     };
   }, []);
 

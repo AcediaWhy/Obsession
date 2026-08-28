@@ -242,5 +242,9 @@ export class ObsessionChoirPipeline {
     gl.deleteVertexArray(this.fullscreen.vao);
     gl.deleteBuffer(this.ribbons.buffer);
     gl.deleteVertexArray(this.ribbons.vao);
+    // Контекст отдаём сразу, как в rain/pipeline.ts: deleteProgram/deleteTexture
+    // освобождают объекты, но сам контекст с его декодером команд в GPU-процессе
+    // живёт до сборки мусора — а в трее её не бывает.
+    gl.getExtension("WEBGL_lose_context")?.loseContext();
   }
 }
