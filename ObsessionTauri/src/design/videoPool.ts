@@ -64,7 +64,12 @@ export function videoPoolSize(): number {
   return pool.size;
 }
 
-/** Полный сброс. Нужен тестам: модульное состояние иначе течёт между кейсами. */
+/**
+ * Полный сброс пула: releaseMediaSource + снять элементы. Основной вызов —
+ * трей-выгрузка (gl/trayStageRelease): конвейеры Catnap/Midnight (~15 МБ за
+ * декодер) не нужны, пока окно скрыто; возврат в тему пересоздаст элемент и
+ * подгрузит src заново. Тесты используют его же как изоляцию состояния.
+ */
 export function resetVideoPool(): void {
   pool.forEach((video) => {
     releaseMediaSource(video);

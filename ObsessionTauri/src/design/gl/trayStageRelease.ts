@@ -9,6 +9,7 @@
 // чаще раза за трей-цикл означали бы возврат цикла «создать→убить», который
 // и был исходной болезнью.
 import { onRenderActiveChange } from "../render";
+import { resetVideoPool } from "../videoPool";
 import { choirFieldSession } from "../components/obsessionChoir/fieldSession";
 import { rainFieldSession } from "../components/rain/fieldSession";
 import { releaseYaniStages } from "../components/YaniCharacterScene";
@@ -24,6 +25,9 @@ function releaseAll() {
   choirFieldSession.release();
   rainFieldSession.release();
   releaseYaniStages();
+  // Видео-декодеры Catnap/Midnight (~15 МБ за конвейер) в трее тоже не нужны;
+  // возврат в тему пересоздаст элемент и подгрузит src заново.
+  resetVideoPool();
 }
 
 /** Подписка один раз на старте приложения. Возвращает отписку. */
