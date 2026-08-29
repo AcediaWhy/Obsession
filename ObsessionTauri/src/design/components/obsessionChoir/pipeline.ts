@@ -122,7 +122,6 @@ export class ObsessionChoirPipeline {
       antialias: false,
       depth: false,
       stencil: false,
-      powerPreference: "high-performance",
     });
     if (!gl) throw new Error("Black Choir requires WebGL2");
     this.gl = gl;
@@ -227,6 +226,11 @@ export class ObsessionChoirPipeline {
 
   abandonAfterContextLoss() {
     this.disposed = true;
+  }
+
+  /** Жив ли пайплайн для персистентной сессии (см. gl/persistentGlSession). */
+  isAlive(): boolean {
+    return !this.disposed && !this.gl.isContextLost();
   }
 
   destroy() {

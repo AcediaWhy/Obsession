@@ -325,4 +325,9 @@ export class RainPipeline {
     this.worldProgram.dispose();
     this.compositeProgram.dispose();
   }
+
+  /** Жив ли пайплайн для персистентной сессии (см. gl/persistentGlSession). */
+  isAlive(): boolean {
+    return !this.destroyed && !this.gl.isContextLost();
+  }
 }

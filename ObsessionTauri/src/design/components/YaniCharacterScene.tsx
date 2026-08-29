@@ -107,9 +107,9 @@ function disposeMaterial(material: THREE.Material) {
 THREE.Cache.enabled = true;
 const sharedLoader = new GLTFLoader();
 
-// Геометрия + материалы + текстуры поддерева. Вызывается и на обычном
-// размонтировании, и когда окно скрылось, пока GLB ещё грузился: иначе 2×2048²
-// текстуры персонажа оставались висеть до сборки мусора.
+// Геометрия + материалы + текстуры поддерева. Вызывается при выпуске сцены
+// (потеря контекста) — на обычном размонтировании поля сцена больше не
+// разбирается, она живёт в персистентном кэше модуля.
 function disposeSubtree(root: THREE.Object3D) {
   const materials = new Set<THREE.Material>();
   root.traverse((object) => {
@@ -122,76 +122,92 @@ function disposeSubtree(root: THREE.Object3D) {
   materials.forEach(disposeMaterial);
 }
 
-// renderer.dispose() отдаёт программы, текстуры и цели рендера, но не буфер
-// отрисовки самого канваса — а это самый крупный кусок (4× MSAA цвет + глубина
-// на всё поле). Обнуление размера канваса освобождает его сразу: важно для
-// ухода в трей, где сцена размонтируется целиком.
-//
-// forceContextLoss() добивает то, что не отдаёт ни dispose(), ни обнуление
-// размера: сам контекст с его декодером команд в GPU-процессе, transfer buffer,
-// состоянием устройства и кэшем программ. Иначе всё это ждёт сборки мусора, а в
-// трее её не бывает — рендерер задушен, аллокаций нет, idle-задач нет.
-//
-// Ровно так делает rain/pipeline.ts, и опасение про StrictMode (эффект идёт
-// дважды по одному канвасу, второй рендерер получит потерянный контекст) на
-// живом приложении не подтвердилось: сцена собирается на том же элементе и
-// после потери контекста. Проверено сравнением с принудительным 2D-фолбэком —
-// картинки разные, значит работает настоящий конвейер.
-function releaseRenderer(renderer: THREE.WebGLRenderer, canvas: HTMLCanvasElement) {
-  renderer.dispose();
-  canvas.width = 0;
-  canvas.height = 0;
-  renderer.forceContextLoss();
+// ─── Персистентная сцена персонажа ───────────────────────────────────────────
+// Каждое переключение темы раньше собирало новый THREE.WebGLRenderer (PMREM +
+// разбор GLB) и добивало его forceContextLoss() на размонтировании. Замер на
+// установленном приложении (CDP-проба, 2026-08-29): каждый визит WebGL-темы
+// стоил renderer-процессу +13..46 МБ приватной памяти, невозвратных ни по
+// idle, ни по memory pressure — цикл «создать контекст → forceContextLoss»
+// гонит ретенцию в WebView2 так же, как в raw-GL темах. Теперь сцена
+// (канвас + рендерер + персонаж + миксер) собирается ОДИН раз на ключ
+// (model|art|capture) и живёт в кэше модуля всю страницу; маунт поля только
+// подключает канвас к контейнеру и запускает свой цикл. Потеря контекста
+// (GPU reset) помечает сцену broken — следующий acquire собирает новую.
+type YaniStage = {
+  canvas: HTMLCanvasElement;
+  renderer: THREE.WebGLRenderer;
+  scene: THREE.Scene;
+  camera: THREE.PerspectiveCamera;
+  mixer: THREE.AnimationMixer;
+  actions: Map<string, THREE.AnimationAction>;
+  character: THREE.Object3D;
+  scheme: LightScheme;
+  keyLight: THREE.DirectionalLight;
+  warmLight: THREE.PointLight;
+  // Достаточно для дыхания (position.y каждый кадр): -centerY*fitScale + 0.08.
+  breathBase: number;
+  environmentTarget: THREE.WebGLRenderTarget;
+  broken: boolean;
+};
+
+const stageCache = new Map<string, Promise<YaniStage>>();
+
+function releaseStage(stage: YaniStage) {
+  stage.broken = true;
+  try {
+    // Поля могут быть null: сцена умеет падать ДО миксера/модели (нет WebGL,
+    // CSP срезал fetch GLB, упал PMREM) — выпуск не должен маскировать ту
+    // ошибку своей собственной.
+    if (stage.mixer) {
+      stage.mixer.stopAllAction();
+      stage.mixer.uncacheRoot(stage.character);
+    }
+    if (stage.character) disposeSubtree(stage.character);
+    stage.environmentTarget?.dispose();
+    stage.renderer?.dispose();
+  } finally {
+    // Сцена выпускается только вместе с контекстом (потеря/пересборка), поэтому
+    // добить контекст здесь — то, ради чего releaseRenderer существовал раньше.
+    stage.canvas.width = 0;
+    stage.canvas.height = 0;
+    stage.renderer?.forceContextLoss();
+  }
 }
 
-export function YaniCharacterScene({
-  mood,
-  quality,
-  paused = false,
-  screen,
-  className = "",
-  debugCapture = false,
-  modelUrl = "/yani/yani-character.glb",
-  art = "current",
-}: Props) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const loopRef = useRef<RenderLoop | null>(null);
-  const stateRef = useRef({ mood, quality, paused, screen });
-  stateRef.current = { mood, quality, paused, screen };
-  const [failed, setFailed] = useState(false);
-  const [debugFrame, setDebugFrame] = useState<string | null>(null);
-
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    let cancelled = false;
-    let renderer: THREE.WebGLRenderer | null = null;
-    let resizeObserver: ResizeObserver | null = null;
-    let cleanupScene: (() => void) | null = null;
-    let environmentTarget: THREE.WebGLRenderTarget | null = null;
-
-    const initialize = async () => {
-      // Каким проходом собрана живая сцена: канвас переиспользуется между
-      // проходами, и по селекту в лабе этого не видно.
-      canvas.dataset.pass = art;
-      let profile = earQualityProfile(stateRef.current.quality);
-      const activeRenderer = new THREE.WebGLRenderer({
-        canvas,
-        alpha: true,
-        antialias: true,
-        depth: true,
-        powerPreference: "high-performance",
-        premultipliedAlpha: true,
-        preserveDrawingBuffer: debugCapture,
-      });
-      renderer = activeRenderer;
-      activeRenderer.outputColorSpace = THREE.SRGBColorSpace;
-      activeRenderer.toneMapping = THREE.ACESFilmicToneMapping;
-      const scheme = LIGHT_SCHEMES[art];
-      activeRenderer.toneMappingExposure = scheme.exposure;
-      activeRenderer.setClearColor(0x000000, 0);
+function buildStage(modelUrl: string, art: YaniArtPass, debugCapture: boolean): Promise<YaniStage> {
+  return (async () => {
+    const canvas = document.createElement("canvas");
+    const renderer = new THREE.WebGLRenderer({
+      canvas,
+      alpha: true,
+      antialias: true,
+      depth: true,
+      premultipliedAlpha: true,
+      preserveDrawingBuffer: debugCapture,
+    });
+    const stage: YaniStage = {
+      canvas,
+      renderer,
+      scene: new THREE.Scene(),
+      camera: new THREE.PerspectiveCamera(29, 1, 0.1, 30),
+      mixer: null as unknown as THREE.AnimationMixer,
+      actions: new Map(),
+      character: null as unknown as THREE.Object3D,
+      scheme: LIGHT_SCHEMES[art],
+      keyLight: null as unknown as THREE.DirectionalLight,
+      warmLight: null as unknown as THREE.PointLight,
+      breathBase: 0,
+      environmentTarget: null as unknown as THREE.WebGLRenderTarget,
+      broken: false,
+    };
+    try {
+      renderer.outputColorSpace = THREE.SRGBColorSpace;
+      renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      const scheme = stage.scheme;
+      renderer.toneMappingExposure = scheme.exposure;
+      renderer.setClearColor(0x000000, 0);
       if (debugCapture) {
-        activeRenderer.debug.onShaderError = (gl, program, vertexShader, fragmentShader) => {
+        renderer.debug.onShaderError = (gl, program, vertexShader, fragmentShader) => {
           canvas.dataset.shaderError = [
             gl.getProgramInfoLog(program),
             gl.getShaderInfoLog(vertexShader),
@@ -200,8 +216,7 @@ export function YaniCharacterScene({
         };
       }
 
-      const scene = new THREE.Scene();
-      const camera = new THREE.PerspectiveCamera(29, 1, 0.1, 30);
+      const { scene, camera } = stage;
       camera.position.set(3.4, 2.4, 3.4);
       camera.lookAt(0, 0.18, 0);
 
@@ -219,6 +234,8 @@ export function YaniCharacterScene({
         scheme.warm.decay,
       );
       warm.position.set(...scheme.warm.position);
+      stage.keyLight = key;
+      stage.warmLight = warm;
       const rim = new THREE.DirectionalLight(scheme.rim.color, scheme.rim.intensity);
       rim.position.set(...scheme.rim.position);
       // RectAreaLight здесь не было смысла: без RectAreaLightUniformsLib.init()
@@ -241,12 +258,9 @@ export function YaniCharacterScene({
       for (const strip of scheme.environment.strips) {
         addStrip(strip.color, new THREE.Vector3(...strip.position), strip.width, strip.height);
       }
-      const pmrem = new THREE.PMREMGenerator(activeRenderer);
-      // Цель PMREM держим в scope эффекта, а не только внутри initialize: она
-      // создаётся ДО await за GLB, и при смене темы во время загрузки уборка
-      // раньше её не видела — cubemap утекал до смерти контекста.
+      const pmrem = new THREE.PMREMGenerator(renderer);
       const target = pmrem.fromScene(environmentScene, 0.04, 0.1, 12);
-      environmentTarget = target;
+      stage.environmentTarget = target;
       scene.environment = target.texture;
       // Окружение — один снимок на всю жизнь сцены: генератор и его временные
       // цели, как и сами полоски, больше не нужны и освобождаются сразу.
@@ -254,11 +268,8 @@ export function YaniCharacterScene({
       disposeSubtree(environmentScene);
 
       const gltf = await sharedLoader.loadAsync(modelUrl);
-      if (cancelled) {
-        disposeSubtree(gltf.scene);
-        return;
-      }
       const character = gltf.scene;
+      stage.character = character;
       character.name = "yani-character-animated";
       const bounds = new THREE.Box3().setFromObject(character);
       const center = bounds.getCenter(new THREE.Vector3());
@@ -290,11 +301,105 @@ export function YaniCharacterScene({
         });
       });
       scene.add(character);
+      stage.breathBase = -center.y * fitScale + 0.08;
       canvas.dataset.modelReady = "true";
       canvas.dataset.modelSize = `${size.x.toFixed(3)},${size.y.toFixed(3)},${size.z.toFixed(3)}`;
 
-      const mixer = new THREE.AnimationMixer(character);
-      const actions = new Map(gltf.animations.map((clip) => [clip.name, mixer.clipAction(clip)]));
+      stage.mixer = new THREE.AnimationMixer(character);
+      stage.actions = new Map(gltf.animations.map((clip) => [clip.name, stage.mixer.clipAction(clip)]));
+      canvas.addEventListener("webglcontextlost", () => {
+        stage.broken = true;
+      });
+      return stage;
+    } catch (error) {
+      releaseStage(stage);
+      throw error;
+    }
+  })();
+}
+
+function acquireStage(modelUrl: string, art: YaniArtPass, debugCapture: boolean): Promise<YaniStage> {
+  const key = `${modelUrl}|${art}|${debugCapture ? "capture" : "live"}`;
+  let pending = stageCache.get(key);
+  if (!pending) {
+    pending = buildStage(modelUrl, art, debugCapture).then(
+      (stage) => {
+        if (!stage.broken) return stage;
+        // Контекст сцены потерян: выпускаем мёртвый этап и собираем новый.
+        releaseStage(stage);
+        const retry = buildStage(modelUrl, art, debugCapture);
+        stageCache.set(key, retry);
+        return retry;
+      },
+      (error) => {
+        // Упавшую сборку из кэша выкидываем: следующий маунт пробует заново,
+        // а не наследует чужой rejection навсегда.
+        stageCache.delete(key);
+        throw error;
+      },
+    );
+    stageCache.set(key, pending);
+  }
+  return pending;
+}
+
+/** Выгрузить все живые сцены (трей-выгрузка): контексты и модель уходят из
+ *  памяти, возврат в тему пересобирает стейдж один раз (~1 с). */
+export function releaseYaniStages(): void {
+  for (const pending of stageCache.values()) {
+    void pending
+      .then((stage) => {
+        if (!stage.broken) releaseStage(stage);
+      })
+      .catch(() => {});
+  }
+  stageCache.clear();
+}
+
+export function YaniCharacterScene({
+  mood,
+  quality,
+  paused = false,
+  screen,
+  className = "",
+  debugCapture = false,
+  modelUrl = "/yani/yani-character.glb",
+  art = "current",
+}: Props) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const loopRef = useRef<RenderLoop | null>(null);
+  const stateRef = useRef({ mood, quality, paused, screen });
+  stateRef.current = { mood, quality, paused, screen };
+  const [failed, setFailed] = useState(false);
+  const [debugFrame, setDebugFrame] = useState<string | null>(null);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    let cancelled = false;
+    let loop: RenderLoop | null = null;
+    let boundCanvas: HTMLCanvasElement | null = null;
+    let onContextLost: ((event: Event) => void) | null = null;
+
+    const initialize = async () => {
+      const stage = await acquireStage(modelUrl, art, debugCapture);
+      if (cancelled) return;
+      const canvas = stage.canvas;
+      // Каким проходом собрана живая сцена: канвас переиспользуется между
+      // проходами, и по селекту в лабе этого не видно.
+      canvas.dataset.pass = art;
+      canvas.className = className;
+      container.appendChild(canvas);
+      boundCanvas = canvas;
+      onContextLost = (event: Event) => {
+        event.preventDefault();
+        stage.broken = true;
+        setFailed(true);
+      };
+      canvas.addEventListener("webglcontextlost", onContextLost);
+
+      const { renderer, scene, camera, mixer, actions, character, scheme, keyLight, warmLight } = stage;
+      let profile = earQualityProfile(stateRef.current.quality);
       let currentClipName = CLIP_FOR_MOOD[stateRef.current.mood];
       let currentAction = actions.get(currentClipName) ?? null;
       currentAction?.reset().fadeIn(0).play();
@@ -338,17 +443,17 @@ export function YaniCharacterScene({
         // Больше 1.5 device-пикселя на CSS-пиксель здесь не читается, а 4× MSAA
         // от такого буфера стоит десятки мегабайт.
         const pixelRatio = Math.min(window.devicePixelRatio || 1, profile.pixelRatio, 1.5);
-        activeRenderer.setPixelRatio(pixelRatio);
+        renderer.setPixelRatio(pixelRatio);
         fieldWidth = Math.max(1, rect.width);
         fieldHeight = Math.max(1, rect.height);
-        activeRenderer.setSize(fieldWidth, fieldHeight, false);
+        renderer.setSize(fieldWidth, fieldHeight, false);
         applyFrame();
       };
-      resizeObserver = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(resize);
+      const resizeObserver = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(resize);
       resizeObserver?.observe(canvas);
       resize();
 
-      const loop = createRenderLoop((dt) => {
+      loop = createRenderLoop((dt) => {
         const state = stateRef.current;
         if (state.quality !== appliedQuality) {
           profile = earQualityProfile(state.quality);
@@ -389,15 +494,16 @@ export function YaniCharacterScene({
         elapsed += effectiveDt;
         mixer.update(effectiveDt);
         const breath = Math.sin(elapsed * 0.7) * 0.008;
-        character.position.y = -center.y * fitScale + 0.08 + breath;
+        character.position.y = stage.breathBase + breath;
         // Эти две строки перетирают конструкторские intensity каждый кадр,
         // поэтому базы и амплитуды берутся из схемы прохода.
-        warm.intensity = scheme.warm.base + Math.sin(elapsed * 0.61) * scheme.warm.swing;
-        key.intensity = scheme.key.base + Math.sin(elapsed * 0.37 + 1.2) * scheme.key.swing;
-        activeRenderer.render(scene, camera);
+        warmLight.intensity = scheme.warm.base + Math.sin(elapsed * 0.61) * scheme.warm.swing;
+        keyLight.intensity = scheme.key.base + Math.sin(elapsed * 0.37 + 1.2) * scheme.key.swing;
+        renderer.render(scene, camera);
         if (debugCapture && elapsed > 0.55 && capturedMood !== state.mood) {
           const frame = canvas.toDataURL("image/png");
           canvas.dataset.frameCapture = frame;
+          canvas.classList.add("yani-ear-capture-source");
           setDebugFrame(frame);
           capturedMood = state.mood;
         }
@@ -412,44 +518,32 @@ export function YaniCharacterScene({
       loopRef.current = loop;
       loop.start();
 
-      cleanupScene = () => {
-        loop.dispose();
-        loopRef.current = null;
-        mixer.stopAllAction();
-        mixer.uncacheRoot(character);
-        disposeSubtree(character);
-        environmentTarget?.dispose();
-        environmentTarget = null;
-        releaseRenderer(activeRenderer, canvas);
-        renderer = null;
-      };
+      // Канвас мог быть обнулён при прошлом размонтировании — после bind и
+      // resize() буфер снова живой, но первый кадр просим нарисовать сразу.
+      loop.invalidate();
     };
 
     initialize().catch((error) => {
       console.error("Yani character scene failed", error);
       if (!cancelled) {
-        canvas.dataset.modelError = error instanceof Error ? error.message : String(error);
         setFailed(true);
       }
     });
     return () => {
       cancelled = true;
-      resizeObserver?.disconnect();
-      if (cleanupScene) {
-        cleanupScene();
-      } else {
-        // Уборка до того, как сцена собралась: за GLB ушли в await, а цель PMREM
-        // и рендерер уже созданы. Раньше эта ветка отпускала только рендерер, и
-        // при смене темы во время загрузки модели cubemap оставался висеть.
-        environmentTarget?.dispose();
-        environmentTarget = null;
-        if (renderer) {
-          releaseRenderer(renderer, canvas);
-          renderer = null;
-        }
+      if (boundCanvas && onContextLost) {
+        boundCanvas.removeEventListener("webglcontextlost", onContextLost);
+      }
+      loop?.dispose();
+      loopRef.current = null;
+      // Сцена остаётся жить в кэше модуля (gl-сессия темы); drawing buffer
+      // отпускаем, чтобы скрытое поле не держало полноэкранный буфер в трее.
+      if (boundCanvas) {
+        boundCanvas.width = 0;
+        boundCanvas.height = 0;
       }
     };
-  }, [art, debugCapture, modelUrl]);
+  }, [art, className, debugCapture, modelUrl]);
 
   // invalidate() как в YaniNekoField: под reduce-motion цикл рисует один кадр и
   // замирает, поэтому смену настроения, качества или экрана нужно попросить
@@ -462,13 +556,16 @@ export function YaniCharacterScene({
   if (failed) return <div className={`yani-ear-error ${className}`}>Animated Yani GLB unavailable</div>;
   return (
     <>
-      <canvas
-        ref={canvasRef}
-        aria-label="Animated Yani Neko character prototype"
+      {/* Контейнер не участвует в раскладке: канвас персистентен и позиционируется
+          собственным классом (например .yani-character-field__model) относительно
+          общего предка, как и раньше. */}
+      <div
+        ref={containerRef}
+        aria-hidden="true"
         data-yani-character-scene="field"
         data-mood={mood}
         data-quality={quality}
-        className={`${className}${debugFrame ? " yani-ear-capture-source" : ""}`}
+        style={{ display: "contents" }}
       />
       {debugCapture && debugFrame && (
         <img src={debugFrame} aria-hidden="true" className={`${className} yani-ear-capture-frame`} />

@@ -5,8 +5,9 @@ import { useProxyStore } from "../../store/proxyStore";
 import { createRenderLoop, useMotionOff } from "../render";
 import { subscribePointerFrame } from "../pointerBus";
 import { RainBackdrop } from "./RainFallback";
+import { rainFieldSession } from "./rain/fieldSession";
 import { runHybridRainFrame, type HybridRainFramePhases } from "./rain/hybridFramePipeline";
-import { RainPipeline } from "./rain/pipeline";
+import type { RainPipeline } from "./rain/pipeline";
 import { normalizeRainPointer, smoothRainValue } from "./rain/rainFramePipeline";
 import { rainQualityProfile } from "./rain/quality";
 import { RainSimulation, type RainDropSprites } from "./rain/simulation";
@@ -48,7 +49,7 @@ function loadRainTextures(): Promise<RainTextures> {
 }
 
 export default function RainHybridScene({ paused = false }: { paused?: boolean }) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
   const loopRef = useRef<ReturnType<typeof createRenderLoop> | null>(null);
   const dpiActive = useDpiStore((state) => state.active);
   const proxyRunning = useProxyStore((state) => state.running);
@@ -59,16 +60,20 @@ export default function RainHybridScene({ paused = false }: { paused?: boolean }
   const [fatalError, setFatalError] = useState<Error | null>(null);
 
   useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
+    const container = containerRef.current;
+    if (!container) return;
     let disposed = false;
     let simulation: RainSimulation | null = null;
     let pipeline: RainPipeline | null = null;
+    // Канвас персистентен (rain/fieldSession): между маунтами он живёт в
+    // сессии темы, unmount поля НЕ убивает контекст.
+    let canvas: HTMLCanvasElement | null = null;
+    let boundCanvas: HTMLCanvasElement | null = null;
     let resizeTimer: ReturnType<typeof setTimeout> | null = null;
     let restoreTimer: ReturnType<typeof setTimeout> | null = null;
     let restoreAttempts = 0;
     let awaitingContextRestore = false;
-    let canvasRect = canvas.getBoundingClientRect();
+    let canvasRect = container.getBoundingClientRect();
     let quality = rainQualityProfile("high");
     let elapsed = 0;
     const weather = new RainWeatherModel(stateRef.current.active);
@@ -82,6 +87,7 @@ export default function RainHybridScene({ paused = false }: { paused?: boolean }
 
     const resizeScene = () => {
       resizeTimer = null;
+      if (!canvas) return;
       canvasRect = canvas.getBoundingClientRect();
       const cssWidth = canvasRect.width || window.innerWidth;
       const cssHeight = canvasRect.height || window.innerHeight;
@@ -93,7 +99,6 @@ export default function RainHybridScene({ paused = false }: { paused?: boolean }
       pipeline?.resize(width, height, quality);
       loopRef.current?.invalidate();
     };
-    resizeScene();
 
     const phases: HybridRainFramePhases = {
       input: () => {
@@ -142,19 +147,82 @@ export default function RainHybridScene({ paused = false }: { paused?: boolean }
     loop.start();
 
     let sprites: RainTextures | null = null;
+
+    const clearRestoreTimer = () => {
+      if (restoreTimer == null) return;
+      clearTimeout(restoreTimer);
+      restoreTimer = null;
+    };
+
+    const bindCanvas = (next: HTMLCanvasElement) => {
+      if (boundCanvas === next) return;
+      if (boundCanvas) {
+        boundCanvas.removeEventListener("webglcontextlost", onContextLost);
+        boundCanvas.removeEventListener("webglcontextrestored", onContextRestored);
+      }
+      boundCanvas = next;
+      next.className = "block h-full w-full";
+      container.appendChild(next);
+      next.addEventListener("webglcontextlost", onContextLost);
+      next.addEventListener("webglcontextrestored", onContextRestored);
+    };
+
+    const onContextLost = (event: Event) => {
+      event.preventDefault();
+      if (awaitingContextRestore) return;
+      setReady(false);
+      pipeline?.abandonAfterContextLoss();
+      pipeline = null;
+      // Контекст потерян — сессии с ним не место: следующий acquire соберёт
+      // новый canvas+контекст, не дожидаясь браузерного restore.
+      rainFieldSession.invalidate();
+      simulation?.destroy();
+      simulation = null;
+      if (restoreAttempts >= 1) {
+        setFatalError(new Error("Rain: WebGL context lost repeatedly"));
+        return;
+      }
+      restoreAttempts += 1;
+      awaitingContextRestore = true;
+      restoreTimer = setTimeout(() => {
+        if (!awaitingContextRestore || disposed) return;
+        awaitingContextRestore = false;
+        initializeScene();
+      }, 500);
+    };
+    const onContextRestored = () => {
+      if (!awaitingContextRestore || disposed) return;
+      awaitingContextRestore = false;
+      clearRestoreTimer();
+      initializeScene();
+    };
+
     const initializeScene = () => {
       if (disposed || !sprites) return;
       try {
+        const acquired = rainFieldSession.acquire();
+        const nextCanvas = acquired.canvas;
+        const nextPipeline = acquired.pipeline;
+        bindCanvas(nextCanvas);
+        // Канвас приходит обнулённым после unmount или совсем свежим —
+        // выставляем размер до симуляции и пайплайна.
+        canvasRect = nextCanvas.getBoundingClientRect();
+        const cssWidth = canvasRect.width || window.innerWidth;
+        const cssHeight = canvasRect.height || window.innerHeight;
+        const width = Math.max(1, Math.round(cssWidth * quality.waterScale));
+        const height = Math.max(1, Math.round(cssHeight * quality.waterScale));
+        nextCanvas.width = width;
+        nextCanvas.height = height;
+        canvas = nextCanvas;
         const nextSimulation = new RainSimulation(
-          canvas.width,
-          canvas.height,
+          width,
+          height,
           quality.waterScale,
           quality,
           sprites,
         );
-        let nextPipeline: RainPipeline | null = null;
         try {
-          nextPipeline = new RainPipeline(canvas, canvas.width, canvas.height, quality);
+          nextPipeline.resize(width, height, quality);
           nextPipeline.updateWaterTexture(nextSimulation.waterMap);
           nextPipeline.updateMistTexture(nextSimulation.mistMap);
           nextPipeline.updateShineTexture(sprites.dropShine);
@@ -167,10 +235,8 @@ export default function RainHybridScene({ paused = false }: { paused?: boolean }
           nextSimulation.destroy();
           throw error;
         }
-        pipeline?.destroy();
-        simulation?.destroy();
-        simulation = nextSimulation;
         pipeline = nextPipeline;
+        simulation = nextSimulation;
         // Dev-хук: дев-харнесс (rain-dev.html?warp=1) прогревает water map.
         if (import.meta.env.DEV) {
           (window as unknown as Record<string, unknown>).__rainSim = simulation;
@@ -194,7 +260,7 @@ export default function RainHybridScene({ paused = false }: { paused?: boolean }
       });
 
     const unsubscribePointer = subscribePointerFrame((pointer) => {
-      if (pointer.layoutChanged) canvasRect = canvas.getBoundingClientRect();
+      if (pointer.layoutChanged && canvas) canvasRect = canvas.getBoundingClientRect();
       const next = normalizeRainPointer(pointer.clientX, pointer.clientY, canvasRect);
       pendingPointer.x = next.x;
       pendingPointer.y = next.y;
@@ -203,40 +269,7 @@ export default function RainHybridScene({ paused = false }: { paused?: boolean }
       if (resizeTimer != null) clearTimeout(resizeTimer);
       resizeTimer = setTimeout(resizeScene, 120);
     };
-    const clearRestoreTimer = () => {
-      if (restoreTimer == null) return;
-      clearTimeout(restoreTimer);
-      restoreTimer = null;
-    };
-    const onContextLost = (event: Event) => {
-      event.preventDefault();
-      if (awaitingContextRestore) return;
-      setReady(false);
-      pipeline?.abandonAfterContextLoss();
-      pipeline = null;
-      simulation?.destroy();
-      simulation = null;
-      if (restoreAttempts >= 1) {
-        setFatalError(new Error("Rain: WebGL context lost repeatedly"));
-        return;
-      }
-      restoreAttempts += 1;
-      awaitingContextRestore = true;
-      restoreTimer = setTimeout(() => {
-        if (!awaitingContextRestore || disposed) return;
-        awaitingContextRestore = false;
-        setFatalError(new Error("Rain: WebGL context restore timed out"));
-      }, 2000);
-    };
-    const onContextRestored = () => {
-      if (!awaitingContextRestore || disposed) return;
-      awaitingContextRestore = false;
-      clearRestoreTimer();
-      initializeScene();
-    };
     window.addEventListener("resize", onResize);
-    canvas.addEventListener("webglcontextlost", onContextLost);
-    canvas.addEventListener("webglcontextrestored", onContextRestored);
 
     return () => {
       disposed = true;
@@ -246,12 +279,14 @@ export default function RainHybridScene({ paused = false }: { paused?: boolean }
       clearRestoreTimer();
       unsubscribePointer();
       window.removeEventListener("resize", onResize);
-      canvas.removeEventListener("webglcontextlost", onContextLost);
-      canvas.removeEventListener("webglcontextrestored", onContextRestored);
-      pipeline?.destroy();
+      if (boundCanvas) {
+        boundCanvas.removeEventListener("webglcontextlost", onContextLost);
+        boundCanvas.removeEventListener("webglcontextrestored", onContextRestored);
+        // Drawing buffer отпускаем; контекст остаётся в персистентной сессии.
+        boundCanvas.width = 0;
+        boundCanvas.height = 0;
+      }
       simulation?.destroy();
-      canvas.width = 0;
-      canvas.height = 0;
     };
   }, []);
 
@@ -264,8 +299,12 @@ export default function RainHybridScene({ paused = false }: { paused?: boolean }
   return (
     <div className="pointer-events-none absolute inset-0">
       {!ready && <RainBackdrop />}
-      <canvas
-        ref={canvasRef}
+      {/* Fade готовности переехал с канваса на контейнер: канвас персистентен
+          и переиспользуется между маунтами (gl/persistentGlSession). */}
+      <div
+        ref={containerRef}
+        aria-hidden="true"
+        data-rain-field
         className="absolute inset-0 h-full w-full transition-opacity duration-500"
         style={{ opacity: ready ? 1 : 0 }}
       />

@@ -102,7 +102,6 @@ export class YaniNekoPipeline {
       antialias: false,
       depth: false,
       stencil: false,
-      powerPreference: "high-performance",
     });
     if (!gl) throw new Error("Yani Neko requires WebGL2");
     this.gl = gl;
@@ -241,6 +240,18 @@ export class YaniNekoPipeline {
 
   abandonAfterContextLoss(): void {
     this.disposed = true;
+  }
+
+  /** Жив ли пайплайн для персистентной сессии (см. gl/persistentGlSession):
+   *  после context loss или destroy() держатель обязан собрать новый контекст. */
+  isAlive(): boolean {
+    return !this.disposed && !this.gl.isContextLost();
+  }
+
+  /** Сброс smoke-фидбэка на новом маунте поля: комната начинается с чистого кадра,
+   *  а не с дымом предыдущей сессии. */
+  resetFeedback(): void {
+    this.resetSmoke = true;
   }
 
   loseContextForTesting(): void {

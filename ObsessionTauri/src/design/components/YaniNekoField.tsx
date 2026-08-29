@@ -4,8 +4,9 @@ import type { ObsessionVisualPhase } from "../obsessionVisualState";
 import { subscribePointerFrame } from "../pointerBus";
 import { createRenderLoop, useMotionOff, type QualityTier, type RenderLoop } from "../render";
 import { YaniNekoFallback } from "./YaniNekoFallback";
+import { yaniFieldSession } from "./yanineko/fieldSession";
 import { readYaniPanelLenses } from "./yanineko/panelLenses";
-import { YaniNekoPipeline } from "./yanineko/pipeline";
+import type { YaniNekoPipeline } from "./yanineko/pipeline";
 import { yaniQuality } from "./yanineko/quality";
 
 type Props = {
@@ -30,7 +31,7 @@ export function YaniNekoField({
   qualityTier,
   forceFallback = false,
 }: Props) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
   const loopRef = useRef<RenderLoop | null>(null);
   const motionOff = useMotionOff();
   const stateRef = useRef({ phase, screen, paused, motionOff, qualityTier });
@@ -39,16 +40,26 @@ export function YaniNekoField({
 
   useEffect(() => {
     if (forceFallback) return;
-    const canvas = canvasRef.current;
-    if (!canvas) return;
+    const container = containerRef.current;
+    if (!container) return;
+    // Канвас+контекст персистентны (gl/persistentGlSession): unmount поля
+    // ОБЯЗАН оставлять их жить, иначе каждое переключение темы снова гонит
+    // цикл создания/потери WebGL-контекста.
+    let canvas: HTMLCanvasElement;
     let pipeline: YaniNekoPipeline;
     try {
-      pipeline = new YaniNekoPipeline(canvas, yaniQuality(stateRef.current.qualityTier ?? "high"));
+      const session = yaniFieldSession.acquire();
+      canvas = session.canvas;
+      pipeline = session.pipeline;
     } catch (error) {
       console.warn("Yani Neko WebGL failed; using the cinematic Canvas fallback", error);
       setFailed(true);
       return;
     }
+    canvas.className = "block h-full w-full";
+    container.appendChild(canvas);
+    pipeline.setQuality(yaniQuality(stateRef.current.qualityTier ?? "high"));
+    pipeline.resetFeedback();
 
     let width = 1;
     let height = 1;
@@ -155,7 +166,8 @@ export function YaniNekoField({
       canvas.removeEventListener("webglcontextlost", onContextLost);
       loop.dispose();
       loopRef.current = null;
-      pipeline.destroy();
+      // Контекст остаётся в персистентной сессии; обнуляем только drawing
+      // buffer, чтобы скрытый канвас не держал полноэкранный буфер в трее.
       canvas.width = 0;
       canvas.height = 0;
     };
@@ -171,14 +183,14 @@ export function YaniNekoField({
   }
 
   return (
-    <canvas
-      ref={canvasRef}
+    <div
+      ref={containerRef}
       aria-hidden="true"
       data-yani-field
       data-phase={phase}
       data-quality={qualityTier ?? "adaptive"}
       data-motion={paused ? "still" : "running"}
-      className="absolute inset-0 h-full w-full"
+      className="absolute inset-0"
     />
   );
 }
