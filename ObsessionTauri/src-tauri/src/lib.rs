@@ -422,6 +422,28 @@ pub fn run() {
         });
 }
 
+/// Показ окна из трея/команды `show`. Голый `show()` — это SW_SHOW: свернутое
+/// окно он помечает видимым прямо в точке минимизации (−32000), и клик по трею
+/// становится вечным no-op — окно «видимо», но его нигде нет (после долгого
+/// трея туда же успевает протухнуть и rcNormalPosition, тогда не спасает даже
+/// честный restore). Поэтому: unminimize (честный SW_RESTORE) до показа, затем
+/// защита — если окно все равно вне экрана, возвращаем его руками.
+fn show_main_window(app: &tauri::AppHandle) {
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.unminimize();
+        let _ = win.show();
+        if let Ok(pos) = win.outer_position() {
+            if pos.x < -10_000 || pos.y < -10_000 {
+                let _ = win.set_position(tauri::Position::Physical(
+                    tauri::PhysicalPosition::new(100, 80),
+                ));
+            }
+        }
+        let _ = win.set_focus();
+        let _ = app.emit("window-visibility", true);
+    }
+}
+
 /// Запускает завершение приложения, НЕ блокируя главный поток (event loop).
 fn begin_exit(app: &tauri::AppHandle) {
     if SHUTTING_DOWN.swap(true, Ordering::SeqCst) {
@@ -553,13 +575,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
         .on_menu_event(|app, event| match event.id.as_ref() {
             "toggle_dpi" => toggle_dpi(app),
             "toggle_proxy" => toggle_proxy(app),
-            "show" => {
-                if let Some(win) = app.get_webview_window("main") {
-                    let _ = win.show();
-                    let _ = win.set_focus();
-                    let _ = app.emit("window-visibility", true);
-                }
-            }
+            "show" => show_main_window(app),
             "quit" => begin_exit(app),
             _ => {}
         })
@@ -570,12 +586,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                 ..
             } = event
             {
-                let app = tray.app_handle();
-                if let Some(win) = app.get_webview_window("main") {
-                    let _ = win.show();
-                    let _ = win.set_focus();
-                    let _ = app.emit("window-visibility", true);
-                }
+                show_main_window(tray.app_handle());
             }
         });
 
