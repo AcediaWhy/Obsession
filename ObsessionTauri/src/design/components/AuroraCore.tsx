@@ -9,6 +9,7 @@ import {
   type RenderLoop,
 } from "../render";
 import { createSpriteCache } from "./glowSprite";
+import { createGradientMemo, quant } from "./gradientCache";
 import { CoreShell } from "./CoreShell";
 
 type Props = {
@@ -178,6 +179,8 @@ function AuroraCanvas({ active, busy, size, paused }: { active: boolean; busy: b
     const baseDpr = role === "hero" ? Math.min(window.devicePixelRatio || 1, 2) : 1;
     let backingDpr = 0;
     let mask: CanvasGradient;
+    // Покадровые градиенты лент/ядра — из кэша (gradientCache.ts), не new на каждый кадр.
+    const grad = createGradientMemo();
     const resizeBacking = (qualityTier: QualityTier) => {
       const qualityScale = frameQualityScale(qualityTier);
       const nextDpr = role === "hero"
@@ -188,6 +191,7 @@ function AuroraCanvas({ active, busy, size, paused }: { active: boolean; busy: b
       canvas.width = Math.max(1, Math.round(size * backingDpr));
       canvas.height = Math.max(1, Math.round(size * backingDpr));
       ctx.setTransform(backingDpr, 0, 0, backingDpr, 0, 0);
+      grad.clear();
       mask = ctx.createRadialGradient(size / 2, size / 2, size * 0.2, size / 2, size / 2, size * 0.5);
       mask.addColorStop(0, "rgba(0,0,0,1)");
       mask.addColorStop(0.72, "rgba(0,0,0,1)");
@@ -221,7 +225,7 @@ function AuroraCanvas({ active, busy, size, paused }: { active: boolean; busy: b
       ctx.globalAlpha = 1;
 
       const step = 6;
-      for (const rb of RIBBONS) {
+      for (const [ri, rb] of RIBBONS.entries()) {
         const cx = rb.x * size;
         const half = (rb.width * size) / 2;
         const amp = rb.amp * size * (1 + warm * 0.4);
@@ -257,21 +261,27 @@ function AuroraCanvas({ active, busy, size, paused }: { active: boolean; busy: b
         const flick = loading ? 0.75 + Math.sin(t * 6 + rb.phase) * 0.25 : 1;
         const peak = (0.16 + warm * 0.22) * flick;
 
-        const grad = ctx.createLinearGradient(0, 0, 0, size);
-        grad.addColorStop(0.0, `rgba(${r},${g},${b},0)`);
-        grad.addColorStop(0.35, `rgba(${r},${g},${b},${peak})`);
-        grad.addColorStop(0.6, `rgba(${r},${g},${b},${peak * 0.7})`);
-        grad.addColorStop(1.0, `rgba(${r},${g},${b},0)`);
-        ctx.fillStyle = grad;
+        const ribbonGrad = grad(ctx, `rib${ri}|${size}|${r},${g},${b}|${quant(peak)}`, () => {
+          const rg4 = ctx.createLinearGradient(0, 0, 0, size);
+          rg4.addColorStop(0.0, `rgba(${r},${g},${b},0)`);
+          rg4.addColorStop(0.35, `rgba(${r},${g},${b},${peak})`);
+          rg4.addColorStop(0.6, `rgba(${r},${g},${b},${peak * 0.7})`);
+          rg4.addColorStop(1.0, `rgba(${r},${g},${b},0)`);
+          return rg4;
+        });
+        ctx.fillStyle = ribbonGrad;
         ctx.fill();
 
         // Лучи-полосы внутри ленты — «расчёсанная» текстура сияния (как в фоне).
         const rr = Math.min(r + 40, 255);
         const rg = Math.min(g + 40, 255);
-        const rayGrad = ctx.createLinearGradient(0, 0, 0, size);
-        rayGrad.addColorStop(0.0, `rgba(${rr},${rg},${b},0)`);
-        rayGrad.addColorStop(0.4, `rgba(${rr},${rg},${b},1)`);
-        rayGrad.addColorStop(1.0, `rgba(${rr},${rg},${b},0)`);
+        const rayGrad = grad(ctx, `ray${ri}|${size}|${rr},${rg},${b}`, () => {
+          const rg5 = ctx.createLinearGradient(0, 0, 0, size);
+          rg5.addColorStop(0.0, `rgba(${rr},${rg},${b},0)`);
+          rg5.addColorStop(0.4, `rgba(${rr},${rg},${b},1)`);
+          rg5.addColorStop(1.0, `rgba(${rr},${rg},${b},0)`);
+          return rg5;
+        });
         ctx.strokeStyle = rayGrad;
         ctx.lineWidth = 1;
         for (let i = 0; i < rb.rays; i++) {
@@ -291,11 +301,18 @@ function AuroraCanvas({ active, busy, size, paused }: { active: boolean; busy: b
       // Мягкое ядро-свечение в центре — «дышит».
       const breathe = 0.5 + Math.sin(t * 1.6) * 0.5;
       const coreR = size * (0.16 + warm * 0.05 + breathe * 0.02);
-      const core = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, coreR);
       const ca = 0.35 + warm * 0.35;
-      core.addColorStop(0, `rgba(${235},${240},${255},${ca})`);
-      core.addColorStop(0.5, warm > 0.5 ? `rgba(240,171,252,${ca * 0.5})` : `rgba(129,140,248,${ca * 0.5})`);
-      core.addColorStop(1, "rgba(0,0,0,0)");
+      const core = grad(
+        ctx,
+        `core|${Math.round(coreR)}|${quant(ca)}|${warm > 0.5 ? "hot" : "cold"}`,
+        () => {
+          const cg6 = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, coreR);
+          cg6.addColorStop(0, `rgba(${235},${240},${255},${ca})`);
+          cg6.addColorStop(0.5, warm > 0.5 ? `rgba(240,171,252,${ca * 0.5})` : `rgba(129,140,248,${ca * 0.5})`);
+          cg6.addColorStop(1, "rgba(0,0,0,0)");
+          return cg6;
+        },
+      );
       ctx.fillStyle = core;
       ctx.beginPath();
       ctx.arc(size / 2, size / 2, coreR, 0, Math.PI * 2);

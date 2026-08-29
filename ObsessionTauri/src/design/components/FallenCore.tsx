@@ -8,6 +8,7 @@ import {
   type QualityTier,
   type RenderLoop,
 } from "../render";
+import { createGradientMemo, quant } from "./gradientCache";
 import { CoreShell } from "./CoreShell";
 
 type Props = {
@@ -123,6 +124,8 @@ function SoulCanvas({ active, busy, size, paused }: { active: boolean; busy: boo
     const role = size >= CORE_HERO_MIN_SIZE ? "hero" : "preview";
     const baseDpr = role === "hero" ? Math.min(window.devicePixelRatio || 1, 2) : 1;
     let backingDpr = 0;
+    // Свечение сердца — из кэша градиентов (gradientCache.ts), не new на каждый кадр.
+    const gradMemo = createGradientMemo();
     const resizeBacking = (qualityTier: QualityTier) => {
       const qualityScale = frameQualityScale(qualityTier);
       const nextDpr = role === "hero"
@@ -134,6 +137,7 @@ function SoulCanvas({ active, busy, size, paused }: { active: boolean; busy: boo
       canvas.height = Math.max(1, Math.round(size * backingDpr));
       ctx.setTransform(backingDpr, 0, 0, backingDpr, 0, 0);
       ctx.imageSmoothingEnabled = false;
+      gradMemo.clear();
     };
     resizeBacking("high");
 
@@ -179,9 +183,12 @@ function SoulCanvas({ active, busy, size, paused }: { active: boolean; busy: boo
       ctx.globalCompositeOperation = "lighter";
       const glowR = size * (0.2 + warm * 0.05) * (1 + beat * 0.16);
       const ga = 0.14 + warm * 0.2 + beat * 0.14;
-      const glow = ctx.createRadialGradient(cx, cy, 0, cx, cy, glowR);
-      glow.addColorStop(0, `rgba(${cr},${cg},${cb},${ga})`);
-      glow.addColorStop(1, "rgba(0,0,0,0)");
+      const glow = gradMemo(ctx, `glow|${Math.round(glowR)}|${cr},${cg},${cb}|${quant(ga)}`, () => {
+        const g2 = ctx.createRadialGradient(cx, cy, 0, cx, cy, glowR);
+        g2.addColorStop(0, `rgba(${cr},${cg},${cb},${ga})`);
+        g2.addColorStop(1, "rgba(0,0,0,0)");
+        return g2;
+      });
       ctx.fillStyle = glow;
       ctx.fillRect(cx - glowR, cy - glowR, glowR * 2, glowR * 2);
 

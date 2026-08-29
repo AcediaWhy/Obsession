@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import { useDpiStore } from "../../store/dpiStore";
 import { useProxyStore } from "../../store/proxyStore";
 import { createRenderLoop, frameQualityScale, type QualityTier, type RenderLoop } from "../render";
+import { createGradientMemo, quant } from "./gradientCache";
 import { createSpriteCache } from "./glowSprite";
 
 // Реактивная среда «Aurora»: звёздное небо, над ним — шторы полярного сияния с
@@ -62,6 +63,10 @@ export function AuroraField({ paused = false }: { paused?: boolean }) {
     let w = 0;
     let h = 0;
 
+    // Градиенты кадра кэшируются: 3–5 createLinearGradient на кадр при каденции
+    // монитора — сотни нативных аллокаций в секунду (см. gradientCache.ts).
+    const grad = createGradientMemo();
+
     // Звезда: позиция (px), радиус, флаг «крупная» (получает глинт-спрайт), фазы.
     type Star = { x: number; y: number; r: number; big: boolean; twSpd: number; twPh: number; base: number };
     let stars: Star[] = [];
@@ -95,6 +100,7 @@ export function AuroraField({ paused = false }: { paused?: boolean }) {
       canvas.width = Math.max(1, Math.round(w * backingScale));
       canvas.height = Math.max(1, Math.round(h * backingScale));
       ctx.setTransform(backingScale, 0, 0, backingScale, 0, 0); // рисуем в координатах CSS-пикселей
+      grad.clear(); // геометрия в ключах кэша умерла
       if (reseed) seedStars();
     };
     resize();
@@ -163,16 +169,19 @@ export function AuroraField({ paused = false }: { paused?: boolean }) {
       }
       ctx.lineTo(w, h);
       ctx.closePath();
-      const horGrad = ctx.createLinearGradient(0, horY - 40, 0, h);
       const horA = 0.06 + warm * 0.06;
-      horGrad.addColorStop(0, `rgba(${gr},${gg},${gb},0)`);
-      horGrad.addColorStop(1, `rgba(${gr},${gg},${gb},${horA})`);
+      const horGrad = grad(ctx, `hor|${Math.round(horY)}|${gr},${gg},${gb}|${quant(horA)}`, () => {
+        const hg = ctx.createLinearGradient(0, horY - 40, 0, h);
+        hg.addColorStop(0, `rgba(${gr},${gg},${gb},0)`);
+        hg.addColorStop(1, `rgba(${gr},${gg},${gb},${horA})`);
+        return hg;
+      });
       ctx.fillStyle = horGrad;
       ctx.fill();
 
       // ── Шторы сияния + вертикальные лучи. ──
       const step = 14;
-      for (const c of curtains) {
+      for (const [ci, c] of curtains.entries()) {
         const cx = c.x * w;
         const half = (c.width * w) / 2;
         const amp = c.amp * w * (1 + warm * 0.5);
@@ -200,19 +209,27 @@ export function AuroraField({ paused = false }: { paused?: boolean }) {
           ctx.lineTo(centerAt(y) + half, y);
         }
         ctx.closePath();
-        const grad = ctx.createLinearGradient(0, 0, 0, h);
-        grad.addColorStop(0.0, `rgba(${r},${g},${b},0)`);
-        grad.addColorStop(0.4, `rgba(${r},${g},${b},${peak})`);
-        grad.addColorStop(1.0, `rgba(${r},${g},${b},0)`);
-        ctx.fillStyle = grad;
+        const curtainGrad = grad(ctx, `cur${ci}|${h}|${r},${g},${b}|${quant(peak)}`, () => {
+          const cg2 = ctx.createLinearGradient(0, 0, 0, h);
+          cg2.addColorStop(0.0, `rgba(${r},${g},${b},0)`);
+          cg2.addColorStop(0.4, `rgba(${r},${g},${b},${peak})`);
+          cg2.addColorStop(1.0, `rgba(${r},${g},${b},0)`);
+          return cg2;
+        });
+        ctx.fillStyle = curtainGrad;
         ctx.fill();
 
         // Лучи: тонкие вертикальные штрихи внутри шторы, мерцают по фазе —
         // «расчёсанная» текстура настоящего сияния. Один градиент на штору.
-        const rayGrad = ctx.createLinearGradient(0, 0, 0, h);
-        rayGrad.addColorStop(0.0, `rgba(${Math.min(r + 40, 255)},${Math.min(g + 40, 255)},${b},0)`);
-        rayGrad.addColorStop(0.42, `rgba(${Math.min(r + 40, 255)},${Math.min(g + 40, 255)},${b},1)`);
-        rayGrad.addColorStop(1.0, `rgba(${Math.min(r + 40, 255)},${Math.min(g + 40, 255)},${b},0)`);
+        const rr = Math.min(r + 40, 255);
+        const rg2 = Math.min(g + 40, 255);
+        const rayGrad = grad(ctx, `ray${ci}|${h}|${rr},${rg2},${b}`, () => {
+          const rg3 = ctx.createLinearGradient(0, 0, 0, h);
+          rg3.addColorStop(0.0, `rgba(${rr},${rg2},${b},0)`);
+          rg3.addColorStop(0.42, `rgba(${rr},${rg2},${b},1)`);
+          rg3.addColorStop(1.0, `rgba(${rr},${rg2},${b},0)`);
+          return rg3;
+        });
         ctx.strokeStyle = rayGrad;
         ctx.lineWidth = 1.4;
         for (let i = 0; i < c.rays; i++) {

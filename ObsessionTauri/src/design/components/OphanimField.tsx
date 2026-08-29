@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import { useDpiStore } from "../../store/dpiStore";
 import { useProxyStore } from "../../store/proxyStore";
 import { createRenderLoop, frameQualityScale, type QualityTier, type RenderLoop } from "../render";
+import { createGradientMemo, quant } from "./gradientCache";
 import { createSpriteCache } from "./glowSprite";
 import { drawGreatEye } from "./ophanimEye";
 
@@ -99,12 +100,15 @@ export function OphanimField({ paused = false }: { paused?: boolean }) {
     let backingScale = 0.75 * frameQualityScale("high");
     let w = 0;
     let h = 0;
+    // Градиенты столпов — из кэша (gradientCache.ts), не new на каждый кадр.
+    const grad = createGradientMemo();
     const resize = () => {
       w = canvas.clientWidth;
       h = canvas.clientHeight;
       canvas.width = Math.max(1, Math.round(w * backingScale));
       canvas.height = Math.max(1, Math.round(h * backingScale));
       ctx.setTransform(backingScale, 0, 0, backingScale, 0, 0);
+      grad.clear();
     };
     resize();
     // resize стирает кадр — под reduce-motion дорисуем стоп-кадр (живому — no-op).
@@ -261,7 +265,7 @@ export function OphanimField({ paused = false }: { paused?: boolean }) {
       ctx.globalCompositeOperation = "lighter";
 
       // ── Столпы света: трапеции сверху вниз, дышат шириной. ──
-      for (const sh of shafts) {
+      for (const [si, sh] of shafts.entries()) {
         const topX = sh.x * w;
         const botX = topX + sh.lean * w;
         const half = ((sh.width * w) / 2) * (1 + 0.08 * Math.sin(t * 0.25 + sh.phase));
@@ -277,11 +281,18 @@ export function OphanimField({ paused = false }: { paused?: boolean }) {
         ctx.lineTo(botX - half, h);
         ctx.closePath();
 
-        const grad = ctx.createLinearGradient(0, 0, 0, h);
-        grad.addColorStop(0.0, `rgba(${r},${g},${b},${peak})`);
-        grad.addColorStop(0.55, `rgba(${r},${g},${b},${peak * 0.6})`);
-        grad.addColorStop(1.0, `rgba(${r},${g},${b},0)`);
-        ctx.fillStyle = grad;
+        const beamGrad = grad(
+          ctx,
+          `beam${si}|${h}|${Math.round(r)},${Math.round(g)},${Math.round(b)}|${quant(peak)}`,
+          () => {
+            const g2 = ctx.createLinearGradient(0, 0, 0, h);
+            g2.addColorStop(0.0, `rgba(${r},${g},${b},${peak})`);
+            g2.addColorStop(0.55, `rgba(${r},${g},${b},${peak * 0.6})`);
+            g2.addColorStop(1.0, `rgba(${r},${g},${b},0)`);
+            return g2;
+          },
+        );
+        ctx.fillStyle = beamGrad;
         ctx.fill();
       }
 
