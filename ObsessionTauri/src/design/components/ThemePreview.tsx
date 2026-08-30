@@ -5,7 +5,7 @@ import { FallenCore } from "./FallenCore";
 import { MidnightCore } from "./MidnightCore";
 import { YaniCatCore } from "./YaniCatCore";
 import { OphanimCore } from "./OphanimCore";
-import { RainLanternCore } from "./RainLanternCore";
+import { RainBenchCore } from "./RainBenchCore";
 import { ObsessionChoirCore } from "./ObsessionChoirCore";
 
 const noop = () => {};
@@ -34,7 +34,7 @@ export function ThemePreview({
       {theme === "obsession" && <ObsessionChoirCore {...shared} interactive={false} />}
       {theme === "aurora" && <AuroraCore {...shared} interactive={false} />}
       {theme === "ophanim" && <OphanimCore {...shared} interactive={false} />}
-      {theme === "japan" && <RainLanternCore {...shared} variant="preview" />}
+      {theme === "japan" && <RainBenchCore {...shared} interactive={false} />}
       {theme === "fallendown" && <FallenCore {...shared} interactive={false} />}
       {theme === "catnap" && <CatnapCore {...shared} interactive={false} />}
       {theme === "midnight" && <MidnightCore {...shared} interactive={false} />}

@@ -1,7 +1,7 @@
 import type { ObsessionVisualPhase } from "../obsessionVisualState";
 import { useRenderActive } from "../render";
 import { CoreShell } from "./CoreShell";
-import { MidnightSpriteLab } from "./MidnightSpriteLab";
+import { RainUmbrellaSpriteLab } from "./RainUmbrellaSpriteLab";
 
 type Props = {
   active: boolean;
@@ -27,8 +27,7 @@ function phaseForSignals({
   return "idle";
 }
 
-// Живое пиксельное ядро «Midnight»: уличный фонарь и сонный черный котик в ночной мороси.
-export function MidnightCore({
+export function RainBenchCore({
   active,
   busy = false,
   scanning = false,
@@ -45,11 +44,11 @@ export function MidnightCore({
     <CoreShell interactive={interactive} onClick={onClick} busy={busy} size={size}>
       <div
         aria-hidden="true"
-        className="midnight-core"
-        data-midnight-core
+        className="rain-bench-core"
+        data-rain-bench-core
         style={{ width: size, height: size }}
       >
-        <MidnightSpriteLab phase={phase} paused={!motionOn} size={size} />
+        <RainUmbrellaSpriteLab phase={phase} paused={!motionOn} size={size} />
       </div>
     </CoreShell>
   );

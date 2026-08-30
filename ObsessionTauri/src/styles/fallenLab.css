@@ -1,0 +1,199 @@
+﻿:root {
+  --fallen-lab-bg: #09060b;
+  --fallen-lab-panel: rgba(22, 14, 26, 0.85);
+  --fallen-lab-border: rgba(239, 68, 68, 0.22);
+  --fallen-lab-border-hover: rgba(250, 204, 21, 0.45);
+  --fallen-lab-ink: #fdf2f8;
+  --fallen-lab-ink-muted: #cbd5e1;
+  --fallen-lab-accent: #ef4444;
+  --fallen-lab-accent-gold: #facc15;
+  --fallen-lab-glow: rgba(239, 68, 68, 0.25);
+}
+
+.fallen-lab-shell {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+  background: radial-gradient(circle at 50% 25%, #231221 0%, #09060b 75%);
+  color: var(--fallen-lab-ink);
+  font-family: IBM Plex Sans, -apple-system, BlinkMacSystemFont, sans-serif;
+  box-sizing: border-box;
+}
+
+.fallen-lab-stage {
+  width: 100%;
+  max-width: 960px;
+  background: var(--fallen-lab-panel);
+  border: 1px solid var(--fallen-lab-border);
+  border-radius: 20px;
+  padding: 2rem;
+  backdrop-filter: blur(16px);
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.7), 0 0 45px var(--fallen-lab-glow);
+}
+
+.fallen-lab-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  align-items: center;
+  padding-bottom: 1.5rem;
+  border-bottom: 1px solid var(--fallen-lab-border);
+  margin-bottom: 2rem;
+}
+
+.fallen-lab-controls label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--fallen-lab-ink-muted);
+}
+
+.fallen-lab-controls select,
+.fallen-lab-controls button {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--fallen-lab-border);
+  color: var(--fallen-lab-ink);
+  border-radius: 8px;
+  padding: 0.4rem 0.8rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.fallen-lab-controls select:hover,
+.fallen-lab-controls button:hover {
+  border-color: var(--fallen-lab-border-hover);
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.fallen-lab-content {
+  display: flex;
+  flex-direction: column;
+  gap: 2.5rem;
+}
+
+.fallen-lab-hero {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 3rem;
+  align-items: center;
+}
+
+.fallen-lab-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.fallen-lab-kicker {
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.15em;
+  color: var(--fallen-lab-accent-gold);
+}
+
+.fallen-lab-copy h1 {
+  margin: 0;
+  font-size: 2.2rem;
+  line-height: 1.15;
+  font-weight: 800;
+  background: linear-gradient(135deg, #ffffff 30%, #fca5a5 70%, #facc15 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.fallen-lab-copy strong {
+  font-size: 1.1rem;
+  color: #fef08a;
+}
+
+.fallen-lab-copy p {
+  margin: 0;
+  color: var(--fallen-lab-ink-muted);
+  line-height: 1.6;
+  font-size: 0.95rem;
+}
+
+.fallen-lab-copy small {
+  margin-top: 0.5rem;
+  font-size: 0.75rem;
+  color: #94a3b8;
+  font-family: IBM Plex Mono, monospace;
+}
+
+.fallen-lab-core-well {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+}
+
+.fallen-lab-core-button {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.fallen-lab-core-button:hover {
+  transform: scale(1.04);
+}
+
+.fallen-lab-core-button:active {
+  transform: scale(0.97);
+}
+
+.fallen-lab-core-well span {
+  font-family: IBM Plex Mono, monospace;
+  font-size: 0.75rem;
+  letter-spacing: 0.2em;
+  color: #ef4444;
+  font-weight: 700;
+}
+
+.fallen-lab-state-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 1rem;
+}
+
+.fallen-lab-state-card {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--fallen-lab-border);
+  border-radius: 12px;
+  padding: 1rem 0.5rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.fallen-lab-state-card:hover {
+  border-color: var(--fallen-lab-border-hover);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.fallen-lab-state-card[data-selected] {
+  border-color: var(--fallen-lab-accent);
+  background: rgba(239, 68, 68, 0.15);
+  box-shadow: 0 0 20px rgba(239, 68, 68, 0.3);
+}
+
+.fallen-lab-state-card span {
+  font-family: IBM Plex Mono, monospace;
+  font-size: 0.78rem;
+  color: var(--fallen-lab-ink-muted);
+  text-transform: uppercase;
+}

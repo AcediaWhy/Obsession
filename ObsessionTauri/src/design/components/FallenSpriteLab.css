@@ -1,0 +1,208 @@
+.fallen-sprite-lab {
+  display: block;
+  width: var(--fallen-core-size);
+  height: var(--fallen-core-size);
+  overflow: visible;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  isolation: isolate;
+}
+
+.fallen-sprite-lab__scene--base .fallen-sprite-lab__hero-detail {
+  display: none;
+}
+
+/* ================== COLORS & STYLING ================== */
+
+/* 1px Black Undertale Contour */
+.fallen-sprite-lab__tem-outline,
+.fallen-sprite-lab__soul-outline,
+.fallen-sprite-lab__zzz-outline,
+.fallen-sprite-lab__save-star-outline {
+  fill: #09090b;
+}
+
+/* Hair & Ears */
+.fallen-sprite-lab__tem-hair-black { fill: #09090b; }
+.fallen-sprite-lab__tem-ear-grey { fill: #94a3b8; }
+.fallen-sprite-lab__tem-fur-white { fill: #ffffff; }
+
+/* Palette traced from the attached 64×52 canonical Temmie sprite. */
+.fallen-sprite-lab__reference-black { fill: #050507; }
+.fallen-sprite-lab__reference-white { fill: #ffffff; }
+.fallen-sprite-lab__reference-grey { fill: #9e9e9e; }
+.fallen-sprite-lab__reference-blue { fill: #0d94bd; }
+.fallen-sprite-lab__reference-cyan { fill: #12c8ff; }
+
+.fallen-sprite-lab__core-backlight {
+  fill: #fdf2f8;
+  opacity: 0.055;
+}
+
+/* Cyan Undertale Sweater */
+.fallen-sprite-lab__sweater-cyan { fill: #00b4d8; }
+
+/* Red SOUL (Determination) */
+.fallen-sprite-lab__soul-red { fill: #ef4444; }
+.fallen-sprite-lab__soul-glint { fill: #ffffff; }
+.fallen-sprite-lab__soul-halo { fill: #ef4444; opacity: 0.16; }
+
+/* Golden Buttercups & Cave */
+.fallen-sprite-lab__ground-shadow { fill: #09090b; opacity: 0.85; }
+.fallen-sprite-lab__flower-stem { fill: #15803d; }
+.fallen-sprite-lab__flower-petal { fill: #facc15; }
+.fallen-sprite-lab__flower-core { fill: #f97316; }
+
+.fallen-sprite-lab__star { fill: #e0f2fe; opacity: 0.75; }
+.fallen-sprite-lab__sparkle { fill: #fef08a; opacity: 0.9; }
+.fallen-sprite-lab__zzz-core { fill: #fef08a; }
+.fallen-sprite-lab__save-star-core { fill: #facc15; }
+.fallen-sprite-lab__active-spark { fill: #fde047; }
+
+/* State Indicators */
+.fallen-sprite-lab__scan-spark { fill: #facc15; opacity: 0; }
+.fallen-sprite-lab__alarm-mark { fill: #ef4444; opacity: 0; }
+
+/* ================== STATE ACCENTS ================== */
+
+/* Temmie's canonical face never changes; mood is carried by motion and FX. */
+.fallen-sprite-lab__active-sparks { opacity: 0; }
+
+.fallen-sprite-lab[data-mood="busy"] .fallen-sprite-lab__dream-zzz { opacity: 0; }
+
+.fallen-sprite-lab[data-mood="scanning"] .fallen-sprite-lab__scan-spark { opacity: 1; }
+.fallen-sprite-lab[data-mood="scanning"] .fallen-sprite-lab__dream-zzz { opacity: 0; }
+
+.fallen-sprite-lab[data-mood="active"] .fallen-sprite-lab__dream-zzz { opacity: 0; }
+.fallen-sprite-lab[data-mood="active"] .fallen-sprite-lab__active-sparks { opacity: 1; }
+.fallen-sprite-lab[data-mood="active"] .fallen-sprite-lab__soul-halo { opacity: 0.35; fill: #ef4444; }
+
+.fallen-sprite-lab[data-mood="alarm"] .fallen-sprite-lab__alarm-mark { opacity: 1; }
+.fallen-sprite-lab[data-mood="alarm"] .fallen-sprite-lab__dream-zzz { opacity: 0; }
+
+/* ================== TRANSFORMS & ANCHORS ================== */
+
+.fallen-sprite-lab__soul-halo-group,
+.fallen-sprite-lab__soul-heart-group,
+.fallen-sprite-lab__temmie,
+.fallen-sprite-lab__head-group,
+.fallen-sprite-lab__puppy-ears,
+.fallen-sprite-lab__cave-stars,
+.fallen-sprite-lab__dream-zzz,
+.fallen-sprite-lab__active-sparks {
+  transform-box: fill-box;
+}
+
+.fallen-sprite-lab__soul-halo-group { transform-origin: 50% 50%; }
+.fallen-sprite-lab__soul-heart-group { transform-origin: 50% 50%; }
+.fallen-sprite-lab__temmie { transform-origin: 50% 100%; }
+.fallen-sprite-lab__head-group { transform-origin: 50% 90%; }
+.fallen-sprite-lab__puppy-ears { transform-origin: 50% 40%; }
+.fallen-sprite-lab__dream-zzz { transform-origin: 50% 50%; }
+
+/* ================== ANIMATIONS ================== */
+
+.fallen-sprite-lab[data-motion="running"] .fallen-sprite-lab__soul-heart-group {
+  animation: fallen-soul-heartbeat 1.8s ease-in-out infinite;
+}
+.fallen-sprite-lab[data-motion="running"] .fallen-sprite-lab__soul-halo-group {
+  animation: fallen-soul-halo-pulse 1.8s ease-in-out infinite;
+}
+.fallen-sprite-lab[data-motion="running"] .fallen-sprite-lab__temmie {
+  animation: fallen-tem-breathe 3.6s steps(2, end) infinite;
+}
+.fallen-sprite-lab[data-motion="running"] .fallen-sprite-lab__cave-stars {
+  animation: fallen-stars-twinkle 3.2s ease-in-out infinite alternate;
+}
+.fallen-sprite-lab[data-motion="running"] .fallen-sprite-lab__dream-zzz {
+  animation: fallen-zzz-drift 3.6s ease-in-out infinite;
+}
+.fallen-sprite-lab[data-motion="running"] .fallen-sprite-lab__active-sparks {
+  animation: fallen-sparks-float 2.4s ease-in-out infinite alternate;
+}
+
+/* ================== PIXEL MOTION BY STATE ================== */
+
+.fallen-sprite-lab[data-mood="busy"][data-motion="running"] .fallen-sprite-lab__temmie {
+  animation: fallen-tem-engage 1.1s steps(2, end) infinite;
+}
+
+.fallen-sprite-lab[data-mood="scanning"][data-motion="running"] .fallen-sprite-lab__temmie {
+  animation: fallen-tem-vibrate 0.14s steps(2, end) infinite;
+}
+
+.fallen-sprite-lab[data-mood="active"][data-motion="running"] .fallen-sprite-lab__temmie {
+  animation: fallen-tem-determined 1.4s steps(2, end) infinite;
+}
+
+.fallen-sprite-lab[data-mood="alarm"][data-motion="running"] .fallen-sprite-lab__temmie {
+  animation: fallen-tem-alarm 0.34s steps(2, end) infinite;
+}
+
+@keyframes fallen-soul-heartbeat {
+  0% { transform: scale(1); }
+  14% { transform: scale(1.15); }
+  28% { transform: scale(1); }
+  42% { transform: scale(1.08); }
+  70%, 100% { transform: scale(1); }
+}
+
+@keyframes fallen-soul-halo-pulse {
+  0% { transform: scale(0.95); opacity: 0.8; }
+  14% { transform: scale(1.18); opacity: 1; }
+  28% { transform: scale(0.95); opacity: 0.8; }
+  42% { transform: scale(1.1); opacity: 0.95; }
+  70%, 100% { transform: scale(0.95); opacity: 0.8; }
+}
+
+@keyframes fallen-tem-breathe {
+  0%, 40%, 100% { transform: translateY(0); }
+  50%, 60% { transform: translateY(-0.5px); }
+}
+
+@keyframes fallen-tem-engage {
+  0%, 34%, 68%, 100% { transform: translateY(0); }
+  17%, 51% { transform: translateY(-1px); }
+}
+
+@keyframes fallen-tem-vibrate {
+  0% { transform: translate(0px, 0px); }
+  25% { transform: translate(-1px, 0px); }
+  50% { transform: translate(1px, -1px); }
+  75% { transform: translate(-1px, -1px); }
+  100% { transform: translate(0px, 0px); }
+}
+
+@keyframes fallen-tem-determined {
+  0%, 18%, 42%, 100% { transform: translateY(0); }
+  10% { transform: translateY(-1px); }
+  30% { transform: translateY(-0.5px); }
+}
+
+@keyframes fallen-tem-alarm {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-1px); }
+  50% { transform: translateX(1px); }
+  75% { transform: translateX(-1px); }
+}
+
+@keyframes fallen-stars-twinkle {
+  0% { opacity: 0.5; transform: scale(0.95); }
+  100% { opacity: 1; transform: scale(1.05); }
+}
+
+@keyframes fallen-zzz-drift {
+  0% { transform: translate(0, 0) scale(0.85); opacity: 0; }
+  25% { opacity: 0.95; }
+  75% { opacity: 0.85; }
+  100% { transform: translate(2px, -4px) scale(1.1); opacity: 0; }
+}
+
+@keyframes fallen-sparks-float {
+  0% { transform: translateY(0px); opacity: 0.7; }
+  100% { transform: translateY(-2px); opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fallen-sprite-lab * { animation: none !important; }
+}

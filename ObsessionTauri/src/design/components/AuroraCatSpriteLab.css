@@ -1,0 +1,170 @@
+.aurora-cat-sprite-lab {
+  display: block;
+  width: var(--aurora-cat-size);
+  height: var(--aurora-cat-size);
+  overflow: visible;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  isolation: isolate;
+}
+
+/* Outlines - Soft plum / dark indigo */
+.aurora-cat-sprite-lab__cat-outline,
+.aurora-cat-sprite-lab__tail-outline,
+.aurora-cat-sprite-lab__star-outline { fill: #26193c; }
+
+/* Kawaii White & Lavender Polar Cat */
+.aurora-cat-sprite-lab__cat-fur,
+.aurora-cat-sprite-lab__tail-fur { fill: #ffffff; }
+.aurora-cat-sprite-lab__cat-shadow { fill: #c6d3ee; }
+.aurora-cat-sprite-lab__cat-light,
+.aurora-cat-sprite-lab__tail-light { fill: #ffffff; }
+.aurora-cat-sprite-lab__inner-ear { fill: #fca5ba; }
+.aurora-cat-sprite-lab__blush,
+.aurora-cat-sprite-lab__paw { fill: #ffaec4; }
+.aurora-cat-sprite-lab__nose { fill: #f472b6; }
+.aurora-cat-sprite-lab__mouth { fill: #26193c; }
+.aurora-cat-sprite-lab__collar { fill: #38bdf8; }
+.aurora-cat-sprite-lab__collar-gem { fill: #2de2b8; }
+
+/* Eyes */
+.aurora-cat-sprite-lab__eye--sleep { fill: #26193c; }
+.aurora-cat-sprite-lab__eye-awake-group { opacity: 0; }
+.aurora-cat-sprite-lab__eye--awake { fill: #2de2b8; }
+.aurora-cat-sprite-lab__eye-pupil { fill: #160e26; }
+.aurora-cat-sprite-lab__eye-glint { fill: #ffffff; }
+
+/* Wide Celestial Aurora Waves */
+.aurora-cat-sprite-lab__ribbon--violet { fill: #7479d8; opacity: 0.92; }
+.aurora-cat-sprite-lab__ribbon--cyan { fill: #22d3ee; opacity: 0.95; }
+.aurora-cat-sprite-lab__ribbon--teal { fill: #72f1cf; opacity: 1; }
+.aurora-cat-sprite-lab__ribbon-glint { fill: #ffffff; opacity: 0.9; }
+
+/* Ground Contact Shadow & Celestial Stars */
+.aurora-cat-sprite-lab__snow-shadow { fill: #1a102a; }
+.aurora-cat-sprite-lab__snow-ambient { fill: #2b1d42; opacity: 0.35; }
+.aurora-cat-sprite-lab__star { fill: #7e8eb8; opacity: 0.75; }
+.aurora-cat-sprite-lab__star--1 { opacity: 0.85; }
+.aurora-cat-sprite-lab__star--2 { opacity: 0.55; }
+.aurora-cat-sprite-lab__star-halo { fill: #fef08a; opacity: 0.35; }
+.aurora-cat-sprite-lab__star-core { fill: #fef08a; }
+.aurora-cat-sprite-lab__star-spark { fill: #ffffff; }
+.aurora-cat-sprite-lab__scan-spark { fill: #2de2b8; opacity: 0; }
+.aurora-cat-sprite-lab__alarm-mark { fill: #fb7185; opacity: 0; }
+
+/* Mood Overrides */
+.aurora-cat-sprite-lab[data-mood="busy"] .aurora-cat-sprite-lab__eye--sleep,
+.aurora-cat-sprite-lab[data-mood="scanning"] .aurora-cat-sprite-lab__eye--sleep,
+.aurora-cat-sprite-lab[data-mood="active"] .aurora-cat-sprite-lab__eye--sleep,
+.aurora-cat-sprite-lab[data-mood="alarm"] .aurora-cat-sprite-lab__eye--sleep { opacity: 0; }
+
+.aurora-cat-sprite-lab[data-mood="busy"] .aurora-cat-sprite-lab__eye-awake-group,
+.aurora-cat-sprite-lab[data-mood="scanning"] .aurora-cat-sprite-lab__eye-awake-group,
+.aurora-cat-sprite-lab[data-mood="active"] .aurora-cat-sprite-lab__eye-awake-group,
+.aurora-cat-sprite-lab[data-mood="alarm"] .aurora-cat-sprite-lab__eye-awake-group { opacity: 1; }
+
+.aurora-cat-sprite-lab[data-mood="scanning"] .aurora-cat-sprite-lab__scan-spark { opacity: 1; }
+
+/* Active (Radiant Celestial Aurora) */
+.aurora-cat-sprite-lab[data-mood="active"] .aurora-cat-sprite-lab__ribbon--violet { fill: #9d4edd; opacity: 1; }
+.aurora-cat-sprite-lab[data-mood="active"] .aurora-cat-sprite-lab__ribbon--cyan { fill: #ec4899; opacity: 1; }
+.aurora-cat-sprite-lab[data-mood="active"] .aurora-cat-sprite-lab__ribbon--teal { fill: #f9a8d4; }
+.aurora-cat-sprite-lab[data-mood="active"] .aurora-cat-sprite-lab__collar { fill: #a855f7; }
+.aurora-cat-sprite-lab[data-mood="active"] .aurora-cat-sprite-lab__collar-gem { fill: #fef08a; }
+.aurora-cat-sprite-lab[data-mood="active"] .aurora-cat-sprite-lab__star-core { fill: #fff7cc; }
+
+.aurora-cat-sprite-lab[data-mood="alarm"] .aurora-cat-sprite-lab__alarm-mark { opacity: 1; }
+
+/* Transform Rigging for Smooth Thematic Animations */
+.aurora-cat-sprite-lab__cat,
+.aurora-cat-sprite-lab__head,
+.aurora-cat-sprite-lab__tail-group,
+.aurora-cat-sprite-lab__guiding-star,
+.aurora-cat-sprite-lab__right-stars,
+.aurora-cat-sprite-lab__tail-ribbon,
+.aurora-cat-sprite-lab__ribbon-glint,
+.aurora-cat-sprite-lab__scan-spark {
+  transform-box: fill-box;
+}
+.aurora-cat-sprite-lab__cat { transform-origin: 50% 100%; }
+.aurora-cat-sprite-lab__head { transform-origin: 50% 85%; }
+.aurora-cat-sprite-lab__tail-group { transform-origin: 20% 90%; }
+.aurora-cat-sprite-lab__guiding-star,
+.aurora-cat-sprite-lab__right-stars,
+.aurora-cat-sprite-lab__scan-spark { transform-origin: 50% 50%; }
+.aurora-cat-sprite-lab__tail-ribbon { transform-origin: 50% 30%; }
+
+/* Idle Animations: Cat breathing, tail swaying, aurora flowing, stars twinkling */
+.aurora-cat-sprite-lab[data-motion="running"] .aurora-cat-sprite-lab__cat {
+  animation: aurora-cat-breathe 3.6s ease-in-out infinite;
+}
+.aurora-cat-sprite-lab[data-motion="running"] .aurora-cat-sprite-lab__tail-group {
+  animation: aurora-tail-sway 3.6s ease-in-out infinite;
+}
+.aurora-cat-sprite-lab[data-motion="running"] .aurora-cat-sprite-lab__tail-ribbon {
+  animation: aurora-curtain-flow 4.8s ease-in-out infinite alternate;
+}
+.aurora-cat-sprite-lab[data-motion="running"] .aurora-cat-sprite-lab__ribbon-glint--a {
+  animation: aurora-sparkle-a 2.4s ease-in-out infinite alternate;
+}
+.aurora-cat-sprite-lab[data-motion="running"] .aurora-cat-sprite-lab__ribbon-glint--b {
+  animation: aurora-sparkle-b 2.8s ease-in-out infinite alternate;
+}
+.aurora-cat-sprite-lab[data-motion="running"] .aurora-cat-sprite-lab__guiding-star {
+  animation: aurora-star-float 3s ease-in-out infinite alternate;
+}
+.aurora-cat-sprite-lab[data-motion="running"] .aurora-cat-sprite-lab__right-stars {
+  animation: aurora-star-float 3.6s ease-in-out infinite alternate 0.8s;
+}
+
+/* State specific animation overrides */
+.aurora-cat-sprite-lab[data-motion="running"][data-mood="busy"] .aurora-cat-sprite-lab__tail-ribbon,
+.aurora-cat-sprite-lab[data-motion="running"][data-mood="scanning"] .aurora-cat-sprite-lab__tail-ribbon,
+.aurora-cat-sprite-lab[data-motion="running"][data-mood="active"] .aurora-cat-sprite-lab__tail-ribbon {
+  animation-duration: 2.4s;
+}
+.aurora-cat-sprite-lab[data-motion="running"][data-mood="scanning"] .aurora-cat-sprite-lab__scan-spark {
+  animation: aurora-cat-scan 2.2s ease-in-out infinite;
+}
+.aurora-cat-sprite-lab[data-motion="running"][data-mood="alarm"] .aurora-cat-sprite-lab__head {
+  animation: aurora-cat-startle 0.4s ease-in-out infinite alternate;
+}
+
+@keyframes aurora-cat-breathe {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-0.8px); }
+}
+@keyframes aurora-tail-sway {
+  0%, 100% { transform: rotate(0deg); }
+  50% { transform: rotate(-3.5deg) translateY(-0.6px); }
+}
+@keyframes aurora-curtain-flow {
+  0% { transform: translateY(0) scaleY(1); }
+  50% { transform: translateY(-0.8px) scaleY(1.04); }
+  100% { transform: translateY(0.4px) scaleY(0.98); }
+}
+@keyframes aurora-star-float {
+  0% { transform: translateY(0) scale(0.95); opacity: 0.8; }
+  100% { transform: translateY(-1px) scale(1.08); opacity: 1; }
+}
+@keyframes aurora-sparkle-a {
+  0%, 100% { opacity: 0.3; transform: scale(0.85); }
+  50% { opacity: 1; transform: scale(1.2); }
+}
+@keyframes aurora-sparkle-b {
+  0%, 100% { opacity: 0.9; transform: scale(1.15); }
+  50% { opacity: 0.2; transform: scale(0.8); }
+}
+@keyframes aurora-cat-scan {
+  0% { transform: translate(-6px, 4px); opacity: 0; }
+  25%, 75% { opacity: 1; }
+  100% { transform: translate(6px, -4px); opacity: 0; }
+}
+@keyframes aurora-cat-startle {
+  0% { transform: translateX(-0.8px); }
+  100% { transform: translateX(0.8px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .aurora-cat-sprite-lab * { animation: none !important; }
+}

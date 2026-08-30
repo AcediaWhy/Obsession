@@ -1,0 +1,155 @@
+.rain-umbrella-sprite-lab {
+  display: block;
+  overflow: hidden;
+  pointer-events: none;
+  image-rendering: pixelated;
+  filter: drop-shadow(0 15px 18px rgba(7, 8, 18, 0.42));
+}
+
+.rain-umbrella-sprite-lab__stars { fill: #45506b; opacity: 0.72; }
+.rain-umbrella-sprite-lab__rain-field { opacity: 0.34; }
+.rain-umbrella-sprite-lab__rain-field--b { opacity: 0.2; }
+.rain-umbrella-sprite-lab__rain-drop { fill: #8291aa; }
+
+.rain-umbrella-sprite-lab__umbrella-outline { fill: #171522; }
+.rain-umbrella-sprite-lab__umbrella-fabric { fill: #5c5064; }
+.rain-umbrella-sprite-lab__umbrella-panel--light { fill: #776477; }
+.rain-umbrella-sprite-lab__umbrella-panel--dark { fill: #443b50; }
+.rain-umbrella-sprite-lab__umbrella-ribs { fill: #302b3d; opacity: 0.92; }
+.rain-umbrella-sprite-lab__umbrella-glint { fill: #a0808e; }
+
+.rain-umbrella-sprite-lab__handle-outline { fill: #161520; }
+.rain-umbrella-sprite-lab__handle-metal { fill: #5d6579; }
+.rain-umbrella-sprite-lab__handle-glint { fill: #a3acbd; }
+.rain-umbrella-sprite-lab__drip,
+.rain-umbrella-sprite-lab__splash { fill: #aab8c9; opacity: 0; }
+
+.rain-umbrella-sprite-lab__puddle-outline { fill: #101322; }
+.rain-umbrella-sprite-lab__puddle-mid { fill: #292e46; }
+.rain-umbrella-sprite-lab__puddle-light { fill: #555b74; }
+.rain-umbrella-sprite-lab__puddle-warm { fill: #775b69; }
+
+.rain-umbrella-sprite-lab__cat-shadow { fill: #0c0c16; opacity: 0.64; }
+.rain-umbrella-sprite-lab__cat-outline { fill: #12111c; }
+.rain-umbrella-sprite-lab__cat-fur,
+.rain-umbrella-sprite-lab__tail-base,
+.rain-umbrella-sprite-lab__tail-tip { fill: #39384c; }
+.rain-umbrella-sprite-lab__cat-white { fill: #d5ced0; }
+.rain-umbrella-sprite-lab__cat-breath { fill: #625f75; opacity: 0.35; }
+.rain-umbrella-sprite-lab__inner-ear { fill: #95687f; }
+.rain-umbrella-sprite-lab__paw { fill: #bdb5bb; }
+.rain-umbrella-sprite-lab__eye { fill: #211823; }
+.rain-umbrella-sprite-lab__eye--awake,
+.rain-umbrella-sprite-lab__eye-glint { opacity: 0; }
+.rain-umbrella-sprite-lab__eye-glint { fill: #e7e0d9; }
+.rain-umbrella-sprite-lab__nose { fill: #b77789; }
+.rain-umbrella-sprite-lab__tail-tip--flick { opacity: 0; }
+
+.rain-umbrella-sprite-lab__boat-outline { fill: #1d1a24; }
+.rain-umbrella-sprite-lab__boat-paper { fill: #d9d3c8; }
+.rain-umbrella-sprite-lab__boat-fold { fill: #f0e8d8; }
+.rain-umbrella-sprite-lab__boat-shadow { fill: #9d929a; }
+.rain-umbrella-sprite-lab__alarm-mark { fill: #caa0aa; opacity: 0; }
+
+.rain-umbrella-sprite-lab[data-mood="busy"] .rain-umbrella-sprite-lab__eye--sleep,
+.rain-umbrella-sprite-lab[data-mood="scanning"] .rain-umbrella-sprite-lab__eye--sleep,
+.rain-umbrella-sprite-lab[data-mood="alarm"] .rain-umbrella-sprite-lab__eye--sleep { opacity: 0; }
+.rain-umbrella-sprite-lab[data-mood="busy"] .rain-umbrella-sprite-lab__eye--awake,
+.rain-umbrella-sprite-lab[data-mood="scanning"] .rain-umbrella-sprite-lab__eye--awake,
+.rain-umbrella-sprite-lab[data-mood="alarm"] .rain-umbrella-sprite-lab__eye--awake { opacity: 1; }
+.rain-umbrella-sprite-lab[data-mood="alarm"] .rain-umbrella-sprite-lab__eye-glint { opacity: 1; }
+.rain-umbrella-sprite-lab[data-mood="active"] .rain-umbrella-sprite-lab__boat-paper { fill: #e5d8c3; }
+.rain-umbrella-sprite-lab[data-mood="active"] .rain-umbrella-sprite-lab__boat-fold { fill: #fff0d4; }
+.rain-umbrella-sprite-lab[data-mood="alarm"] .rain-umbrella-sprite-lab__umbrella-fabric { fill: #695663; }
+.rain-umbrella-sprite-lab[data-mood="alarm"] .rain-umbrella-sprite-lab__alarm-mark { opacity: 1; }
+
+.rain-umbrella-sprite-lab__rain-field,
+.rain-umbrella-sprite-lab__umbrella-rig,
+.rain-umbrella-sprite-lab__cat,
+.rain-umbrella-sprite-lab__cat-head,
+.rain-umbrella-sprite-lab__boat,
+.rain-umbrella-sprite-lab__drip,
+.rain-umbrella-sprite-lab__splash {
+  transform-box: fill-box;
+}
+.rain-umbrella-sprite-lab__umbrella-rig { transform-origin: 58% 82%; }
+.rain-umbrella-sprite-lab__cat { transform-origin: 50% 100%; }
+.rain-umbrella-sprite-lab__boat { transform-origin: 50% 100%; }
+
+.rain-umbrella-sprite-lab[data-motion="running"][data-detail="hero"] .rain-umbrella-sprite-lab__rain-field {
+  animation: rain-umbrella-loop-hero 4.05s steps(48, end) infinite;
+}
+.rain-umbrella-sprite-lab[data-motion="running"][data-detail="base"] .rain-umbrella-sprite-lab__rain-field {
+  animation: rain-umbrella-loop-mini 3.3s steps(24, end) infinite;
+}
+.rain-umbrella-sprite-lab[data-motion="running"] .rain-umbrella-sprite-lab__rain-field--b { animation-delay: -1.9s; }
+.rain-umbrella-sprite-lab[data-motion="running"] .rain-umbrella-sprite-lab__drip--left { animation: rain-umbrella-drip 2.7s steps(4, end) infinite; }
+.rain-umbrella-sprite-lab[data-motion="running"] .rain-umbrella-sprite-lab__drip--right { animation: rain-umbrella-drip 3.1s -1.4s steps(4, end) infinite; }
+.rain-umbrella-sprite-lab[data-motion="running"] .rain-umbrella-sprite-lab__drip--middle { animation: rain-umbrella-drip 3.6s -2.2s steps(4, end) infinite; }
+.rain-umbrella-sprite-lab[data-motion="running"] .rain-umbrella-sprite-lab__cat { animation: rain-umbrella-breathe 4.5s steps(1, end) infinite; }
+.rain-umbrella-sprite-lab[data-motion="running"] .rain-umbrella-sprite-lab__boat { animation: rain-umbrella-boat 4.5s steps(2, end) infinite; }
+.rain-umbrella-sprite-lab[data-motion="running"] .rain-umbrella-sprite-lab__splash--a { animation: rain-umbrella-splash-a 3s steps(1, end) infinite; }
+.rain-umbrella-sprite-lab[data-motion="running"] .rain-umbrella-sprite-lab__splash--b { animation: rain-umbrella-splash-b 3s steps(1, end) infinite; }
+.rain-umbrella-sprite-lab[data-motion="running"][data-mood="busy"] .rain-umbrella-sprite-lab__umbrella-rig,
+.rain-umbrella-sprite-lab[data-motion="running"][data-mood="scanning"] .rain-umbrella-sprite-lab__umbrella-rig { animation: rain-umbrella-brace 1.8s steps(2, end) infinite; }
+.rain-umbrella-sprite-lab[data-motion="running"][data-mood="active"] .rain-umbrella-sprite-lab__tail-tip--rest { animation: rain-umbrella-tail-rest 2.6s steps(1, end) infinite; }
+.rain-umbrella-sprite-lab[data-motion="running"][data-mood="active"] .rain-umbrella-sprite-lab__tail-tip--flick { animation: rain-umbrella-tail-flick 2.6s steps(1, end) infinite; }
+.rain-umbrella-sprite-lab[data-motion="running"][data-mood="alarm"] .rain-umbrella-sprite-lab__umbrella-rig,
+.rain-umbrella-sprite-lab[data-motion="running"][data-mood="alarm"] .rain-umbrella-sprite-lab__cat-head { animation: rain-umbrella-shake 0.56s steps(2, end) infinite; }
+.rain-umbrella-sprite-lab[data-motion="running"][data-mood="busy"] .rain-umbrella-sprite-lab__rain-field,
+.rain-umbrella-sprite-lab[data-motion="running"][data-mood="scanning"] .rain-umbrella-sprite-lab__rain-field { animation-duration: 2.85s; }
+.rain-umbrella-sprite-lab[data-motion="running"][data-mood="active"] .rain-umbrella-sprite-lab__rain-field { animation-duration: 2.25s; }
+.rain-umbrella-sprite-lab[data-motion="running"][data-mood="alarm"] .rain-umbrella-sprite-lab__rain-field { animation-duration: 1.44s; }
+
+@keyframes rain-umbrella-loop-hero {
+  from { transform: translateY(0); }
+  to { transform: translateY(48px); }
+}
+@keyframes rain-umbrella-loop-mini {
+  from { transform: translateY(0); }
+  to { transform: translateY(24px); }
+}
+@keyframes rain-umbrella-drip {
+  0%, 55%, 100% { opacity: 0; transform: translateY(0); }
+  60% { opacity: 0.9; transform: translateY(0); }
+  82% { opacity: 0.65; transform: translateY(5px); }
+  90% { opacity: 0; transform: translateY(8px); }
+}
+@keyframes rain-umbrella-breathe {
+  0%, 43%, 63%, 100% { transform: translateY(0); }
+  44%, 62% { transform: translateY(-1px); }
+}
+@keyframes rain-umbrella-boat {
+  0%, 43%, 63%, 100% { transform: translateY(0) rotate(0); }
+  44%, 52% { transform: translateY(-1px) rotate(-1deg); }
+  53%, 62% { transform: translateY(-1px) rotate(1deg); }
+}
+@keyframes rain-umbrella-splash-a {
+  0%, 58%, 100% { opacity: 0; }
+  60%, 66% { opacity: 0.9; }
+}
+@keyframes rain-umbrella-splash-b {
+  0%, 66%, 100% { opacity: 0; }
+  68%, 75% { opacity: 0.75; }
+}
+@keyframes rain-umbrella-brace {
+  0%, 49%, 100% { transform: translateX(0); }
+  50%, 74% { transform: translateX(-1px); }
+  75%, 99% { transform: translateX(1px); }
+}
+@keyframes rain-umbrella-tail-rest {
+  0%, 60%, 76%, 100% { opacity: 1; }
+  61%, 75% { opacity: 0; }
+}
+@keyframes rain-umbrella-tail-flick {
+  0%, 60%, 76%, 100% { opacity: 0; }
+  61%, 75% { opacity: 1; }
+}
+@keyframes rain-umbrella-shake {
+  0%, 49% { transform: translateX(-1px); }
+  50%, 100% { transform: translateX(1px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rain-umbrella-sprite-lab * { animation: none !important; }
+}

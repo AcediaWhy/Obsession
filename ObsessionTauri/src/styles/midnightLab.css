@@ -1,0 +1,198 @@
+﻿:root {
+  --midnight-lab-bg: #060913;
+  --midnight-lab-panel: rgba(14, 22, 41, 0.82);
+  --midnight-lab-border: rgba(148, 184, 219, 0.16);
+  --midnight-lab-border-hover: rgba(186, 215, 245, 0.35);
+  --midnight-lab-ink: #f1f5f9;
+  --midnight-lab-ink-muted: #94a3b8;
+  --midnight-lab-accent: #60a5fa;
+  --midnight-lab-glow: rgba(96, 165, 250, 0.25);
+}
+
+.midnight-lab-shell {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+  background: radial-gradient(circle at 50% 20%, #0f1a30 0%, #060913 70%);
+  color: var(--midnight-lab-ink);
+  font-family: IBM Plex Sans, -apple-system, BlinkMacSystemFont, sans-serif;
+  box-sizing: border-box;
+}
+
+.midnight-lab-stage {
+  width: 100%;
+  max-width: 960px;
+  background: var(--midnight-lab-panel);
+  border: 1px solid var(--midnight-lab-border);
+  border-radius: 20px;
+  padding: 2rem;
+  backdrop-filter: blur(16px);
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.6), 0 0 40px var(--midnight-lab-glow);
+}
+
+.midnight-lab-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  align-items: center;
+  padding-bottom: 1.5rem;
+  border-bottom: 1px solid var(--midnight-lab-border);
+  margin-bottom: 2rem;
+}
+
+.midnight-lab-controls label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--midnight-lab-ink-muted);
+}
+
+.midnight-lab-controls select,
+.midnight-lab-controls button {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--midnight-lab-border);
+  color: var(--midnight-lab-ink);
+  border-radius: 8px;
+  padding: 0.4rem 0.8rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.midnight-lab-controls select:hover,
+.midnight-lab-controls button:hover {
+  border-color: var(--midnight-lab-border-hover);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.midnight-lab-content {
+  display: flex;
+  flex-direction: column;
+  gap: 2.5rem;
+}
+
+.midnight-lab-hero {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 3rem;
+  align-items: center;
+}
+
+.midnight-lab-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.midnight-lab-kicker {
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.15em;
+  color: var(--midnight-lab-accent);
+}
+
+.midnight-lab-copy h1 {
+  margin: 0;
+  font-size: 2.2rem;
+  line-height: 1.15;
+  font-weight: 800;
+  background: linear-gradient(135deg, #ffffff 30%, #93c5fd 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.midnight-lab-copy strong {
+  font-size: 1.1rem;
+  color: #bfdbfe;
+}
+
+.midnight-lab-copy p {
+  margin: 0;
+  color: var(--midnight-lab-ink-muted);
+  line-height: 1.6;
+  font-size: 0.95rem;
+}
+
+.midnight-lab-copy small {
+  margin-top: 0.5rem;
+  font-size: 0.75rem;
+  color: #64748b;
+  font-family: IBM Plex Mono, monospace;
+}
+
+.midnight-lab-core-well {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+}
+
+.midnight-lab-core-button {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.midnight-lab-core-button:hover {
+  transform: scale(1.04);
+}
+
+.midnight-lab-core-button:active {
+  transform: scale(0.97);
+}
+
+.midnight-lab-core-well span {
+  font-family: IBM Plex Mono, monospace;
+  font-size: 0.75rem;
+  letter-spacing: 0.2em;
+  color: #60a5fa;
+  font-weight: 700;
+}
+
+.midnight-lab-state-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 1rem;
+}
+
+.midnight-lab-state-card {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--midnight-lab-border);
+  border-radius: 12px;
+  padding: 1rem 0.5rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.midnight-lab-state-card:hover {
+  border-color: var(--midnight-lab-border-hover);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.midnight-lab-state-card[data-selected] {
+  border-color: var(--midnight-lab-accent);
+  background: rgba(96, 165, 250, 0.12);
+  box-shadow: 0 0 20px rgba(96, 165, 250, 0.2);
+}
+
+.midnight-lab-state-card span {
+  font-family: IBM Plex Mono, monospace;
+  font-size: 0.78rem;
+  color: var(--midnight-lab-ink-muted);
+  text-transform: uppercase;
+}

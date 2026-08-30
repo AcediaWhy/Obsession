@@ -3,7 +3,7 @@ import { useThemeStore, type Theme } from "../../store/themeStore";
 import { useMotionOff, useRenderHidden } from "../render";
 import { dur, ease } from "../tokens";
 import { AuroraCore } from "./AuroraCore";
-import { RainLanternCore } from "./RainLanternCore";
+import { RainBenchCore } from "./RainBenchCore";
 import { OphanimCore } from "./OphanimCore";
 import { FallenCore } from "./FallenCore";
 import { CatnapCore } from "./CatnapCore";
@@ -36,8 +36,8 @@ function ThemedCore({ theme, ...props }: Props & { theme: Theme }) {
   if (theme === "midnight") return <MidnightCore {...coreProps} />;
   // «Yani Neko»: самостоятельная пиксельная кошка отражает состояние защиты.
   if (theme === "yanineko") return <YaniCatCore {...coreProps} />;
-  // «Rain» (id japan): янтарный фонарь за холодным мокрым стеклом.
-  if (theme === "japan") return <RainLanternCore {...coreProps} />;
+  // «Rain» (id japan): свернувшийся кот под старым пиксельным зонтом.
+  if (theme === "japan") return <RainBenchCore {...coreProps} />;
   // Aurora — исходное ядро (световые шторы).
   return <AuroraCore {...coreProps} />;
 }

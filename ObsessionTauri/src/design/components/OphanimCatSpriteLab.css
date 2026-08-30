@@ -1,0 +1,299 @@
+.ophanim-cat-sprite-lab {
+  --ophanim-cat-rim: #facc15;
+  --ophanim-cat-rim-soft: #fff3a3;
+  --ophanim-cat-hot: #f0abfc;
+  --ophanim-cat-deep: #080911;
+  --ophanim-cat-mid: #171224;
+  display: block;
+  width: var(--ophanim-cat-size);
+  height: var(--ophanim-cat-size);
+  overflow: visible;
+  isolation: isolate;
+  image-rendering: pixelated;
+}
+
+.ophanim-cat-sprite-lab[data-mood="busy"] {
+  --ophanim-cat-rim: #fde047;
+  --ophanim-cat-hot: #e879f9;
+}
+
+.ophanim-cat-sprite-lab[data-mood="scanning"] {
+  --ophanim-cat-rim: #fef08a;
+  --ophanim-cat-hot: #d946ef;
+}
+
+.ophanim-cat-sprite-lab[data-mood="active"] {
+  --ophanim-cat-rim: #f0abfc;
+  --ophanim-cat-rim-soft: #fdf4ff;
+  --ophanim-cat-hot: #d946ef;
+}
+
+.ophanim-cat-sprite-lab[data-mood="alarm"] {
+  --ophanim-cat-rim: #fb7185;
+  --ophanim-cat-rim-soft: #ffe4e6;
+  --ophanim-cat-hot: #ef4444;
+}
+
+.ophanim-cat-sprite-lab__scene--base .ophanim-cat-sprite-lab__detail-eye,
+.ophanim-cat-sprite-lab__scene--base .ophanim-cat-sprite-lab__glory-rays {
+  display: none;
+}
+
+.ophanim-cat-sprite-lab__glory-rays {
+  fill: var(--ophanim-cat-rim-soft);
+  opacity: 0.42;
+}
+
+.ophanim-cat-sprite-lab__halo {
+  fill: color-mix(in srgb, var(--ophanim-cat-rim) 5%, transparent);
+  stroke: color-mix(in srgb, var(--ophanim-cat-rim) 30%, transparent);
+  stroke-width: 1;
+}
+
+.ophanim-cat-sprite-lab__wheel {
+  fill: none;
+  stroke: var(--ophanim-cat-rim);
+  stroke-dasharray: 1 2;
+  stroke-linecap: square;
+  stroke-linejoin: miter;
+}
+
+.ophanim-cat-sprite-lab__wheel--outer { stroke-width: 1; opacity: 0.78; }
+.ophanim-cat-sprite-lab__wheel--cross { stroke-width: 1; opacity: 0.48; }
+.ophanim-cat-sprite-lab__wheel--inner { stroke-width: 1; opacity: 0.9; }
+
+.ophanim-cat-sprite-lab__ring-eye-lid {
+  fill: var(--ophanim-cat-rim-soft);
+}
+
+.ophanim-cat-sprite-lab__ring-eye-socket {
+  fill: var(--ophanim-cat-deep);
+  stroke: var(--ophanim-cat-rim-soft);
+  stroke-width: 1;
+  opacity: 0;
+}
+
+.ophanim-cat-sprite-lab__ring-eye-pupil {
+  fill: var(--ophanim-cat-hot);
+  opacity: 0;
+}
+
+.ophanim-cat-sprite-lab__tail-ring {
+  fill: none;
+  stroke: var(--ophanim-cat-rim);
+  stroke-linecap: square;
+  stroke-linejoin: miter;
+  stroke-width: 3;
+}
+
+.ophanim-cat-sprite-lab__body,
+.ophanim-cat-sprite-lab__head {
+  fill: var(--ophanim-cat-deep);
+  stroke: var(--ophanim-cat-rim-soft);
+  stroke-linejoin: miter;
+  stroke-width: 1;
+}
+
+.ophanim-cat-sprite-lab__belly {
+  fill: var(--ophanim-cat-mid);
+}
+
+.ophanim-cat-sprite-lab__ear-inlay {
+  fill: var(--ophanim-cat-hot);
+  opacity: 0.62;
+}
+
+.ophanim-cat-sprite-lab__sleep-eyes,
+.ophanim-cat-sprite-lab__muzzle,
+.ophanim-cat-sprite-lab__whiskers {
+  fill: var(--ophanim-cat-rim-soft);
+}
+
+.ophanim-cat-sprite-lab__whiskers {
+  opacity: 0.58;
+}
+
+.ophanim-cat-sprite-lab__paws {
+  fill: var(--ophanim-cat-rim-soft);
+  stroke: var(--ophanim-cat-deep);
+  stroke-width: 1;
+}
+
+.ophanim-cat-sprite-lab__third-eye {
+  opacity: 0;
+}
+
+.ophanim-cat-sprite-lab__third-eye-socket {
+  fill: #fffdf2;
+  stroke: var(--ophanim-cat-rim);
+  stroke-width: 1;
+}
+
+.ophanim-cat-sprite-lab__third-eye-iris { fill: var(--ophanim-cat-hot); }
+.ophanim-cat-sprite-lab__third-eye-pupil { fill: #06060a; }
+.ophanim-cat-sprite-lab__third-eye-glint { fill: #ffffff; }
+
+.ophanim-cat-sprite-lab__scan-reticle,
+.ophanim-cat-sprite-lab__alarm-ring {
+  fill: none;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.ophanim-cat-sprite-lab__scan-reticle {
+  fill: var(--ophanim-cat-rim-soft);
+}
+
+.ophanim-cat-sprite-lab__scan-beam {
+  fill: none;
+  stroke: var(--ophanim-cat-hot);
+  stroke-dasharray: 2 2;
+  stroke-width: 1;
+}
+
+.ophanim-cat-sprite-lab__alarm-ring {
+  stroke: #fb7185;
+  stroke-dasharray: 3 2;
+  stroke-width: 2;
+}
+
+.ophanim-cat-sprite-lab[data-mood="busy"] .ophanim-cat-sprite-lab__third-eye {
+  opacity: 0.32;
+}
+
+.ophanim-cat-sprite-lab[data-mood="busy"] .ophanim-cat-sprite-lab__ring-eye-socket,
+.ophanim-cat-sprite-lab[data-mood="busy"] .ophanim-cat-sprite-lab__ring-eye-pupil {
+  opacity: 0.55;
+}
+
+.ophanim-cat-sprite-lab[data-mood="scanning"] .ophanim-cat-sprite-lab__third-eye,
+.ophanim-cat-sprite-lab[data-mood="active"] .ophanim-cat-sprite-lab__third-eye,
+.ophanim-cat-sprite-lab[data-mood="alarm"] .ophanim-cat-sprite-lab__third-eye,
+.ophanim-cat-sprite-lab[data-mood="scanning"] .ophanim-cat-sprite-lab__ring-eye-socket,
+.ophanim-cat-sprite-lab[data-mood="scanning"] .ophanim-cat-sprite-lab__ring-eye-pupil,
+.ophanim-cat-sprite-lab[data-mood="active"] .ophanim-cat-sprite-lab__ring-eye-socket,
+.ophanim-cat-sprite-lab[data-mood="active"] .ophanim-cat-sprite-lab__ring-eye-pupil,
+.ophanim-cat-sprite-lab[data-mood="alarm"] .ophanim-cat-sprite-lab__ring-eye-socket,
+.ophanim-cat-sprite-lab[data-mood="alarm"] .ophanim-cat-sprite-lab__ring-eye-pupil {
+  opacity: 1;
+}
+
+.ophanim-cat-sprite-lab[data-mood="scanning"] .ophanim-cat-sprite-lab__scan-reticle {
+  opacity: 0.74;
+}
+
+.ophanim-cat-sprite-lab[data-mood="alarm"] .ophanim-cat-sprite-lab__alarm-ring {
+  opacity: 0.92;
+}
+
+.ophanim-cat-sprite-lab[data-motion="running"] .ophanim-cat-sprite-lab__halo {
+  animation: ophanim-pixel-halo 2.8s steps(2, end) infinite;
+}
+
+.ophanim-cat-sprite-lab[data-motion="running"] .ophanim-cat-sprite-lab__wheel--outer {
+  animation: ophanim-pixel-wheel 3.2s steps(8, end) infinite;
+}
+
+.ophanim-cat-sprite-lab[data-motion="running"] .ophanim-cat-sprite-lab__wheel--cross {
+  animation: ophanim-pixel-wheel 4.4s steps(8, end) infinite reverse;
+}
+
+.ophanim-cat-sprite-lab[data-motion="running"] .ophanim-cat-sprite-lab__wheel--inner {
+  animation: ophanim-pixel-wheel 2.4s steps(8, end) infinite;
+}
+
+.ophanim-cat-sprite-lab[data-motion="running"] .ophanim-cat-sprite-lab__cat {
+  animation: ophanim-pixel-sleep 3s steps(2, end) infinite;
+}
+
+.ophanim-cat-sprite-lab[data-mood="busy"][data-motion="running"] .ophanim-cat-sprite-lab__ring-eye-socket,
+.ophanim-cat-sprite-lab[data-mood="busy"][data-motion="running"] .ophanim-cat-sprite-lab__ring-eye-pupil {
+  animation: ophanim-pixel-eye-wake 1.4s steps(1, end) infinite;
+  animation-delay: var(--ophanim-eye-delay);
+}
+
+.ophanim-cat-sprite-lab[data-mood="busy"][data-motion="running"] .ophanim-cat-sprite-lab__cat {
+  animation: ophanim-pixel-ears-up 1.2s steps(2, end) infinite;
+}
+
+.ophanim-cat-sprite-lab[data-mood="scanning"][data-motion="running"] .ophanim-cat-sprite-lab__third-eye-pupil {
+  animation: ophanim-pixel-pupil-scan 0.8s steps(2, end) infinite alternate;
+}
+
+.ophanim-cat-sprite-lab[data-mood="scanning"][data-motion="running"] .ophanim-cat-sprite-lab__scan-reticle {
+  animation: ophanim-pixel-reticle 1.2s steps(2, end) infinite;
+}
+
+.ophanim-cat-sprite-lab[data-mood="active"][data-motion="running"] .ophanim-cat-sprite-lab__cat {
+  animation: ophanim-pixel-guardian 1.8s steps(2, end) infinite;
+}
+
+.ophanim-cat-sprite-lab[data-mood="active"][data-motion="running"] .ophanim-cat-sprite-lab__third-eye {
+  animation: ophanim-pixel-third-eye 1.2s steps(2, end) infinite;
+}
+
+.ophanim-cat-sprite-lab[data-mood="alarm"][data-motion="running"] .ophanim-cat-sprite-lab__cat {
+  animation: ophanim-pixel-alarm 0.18s steps(2, end) infinite;
+}
+
+.ophanim-cat-sprite-lab[data-mood="alarm"][data-motion="running"] .ophanim-cat-sprite-lab__alarm-ring {
+  animation: ophanim-pixel-alarm-ring 0.5s steps(2, end) infinite;
+}
+
+@keyframes ophanim-pixel-halo {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 0.9; }
+}
+
+@keyframes ophanim-pixel-wheel {
+  to { stroke-dashoffset: -16; }
+}
+
+@keyframes ophanim-pixel-sleep {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(1px); }
+}
+
+@keyframes ophanim-pixel-eye-wake {
+  0%, 68%, 100% { opacity: 0; }
+  24%, 48% { opacity: 1; }
+}
+
+@keyframes ophanim-pixel-ears-up {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-1px); }
+}
+
+@keyframes ophanim-pixel-pupil-scan {
+  from { transform: translateX(-1px); }
+  to { transform: translateX(1px); }
+}
+
+@keyframes ophanim-pixel-reticle {
+  0%, 100% { opacity: 0.35; transform: translateX(-1px); }
+  50% { opacity: 0.88; transform: translateX(1px); }
+}
+
+@keyframes ophanim-pixel-guardian {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-1px); }
+}
+
+@keyframes ophanim-pixel-third-eye {
+  0%, 100% { filter: drop-shadow(0 0 0 var(--ophanim-cat-hot)); }
+  50% { filter: drop-shadow(0 0 2px var(--ophanim-cat-hot)); }
+}
+
+@keyframes ophanim-pixel-alarm {
+  0%, 100% { transform: translateX(0); }
+  50% { transform: translateX(1px); }
+}
+
+@keyframes ophanim-pixel-alarm-ring {
+  0%, 100% { opacity: 0.25; }
+  50% { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ophanim-cat-sprite-lab * { animation: none !important; }
+}

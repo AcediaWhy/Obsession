@@ -1,0 +1,159 @@
+.midnight-sprite-lab {
+  display: block;
+  width: var(--midnight-core-size);
+  height: var(--midnight-core-size);
+  overflow: visible;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  isolation: isolate;
+}
+
+/* Outlines & Ironwork */
+.midnight-sprite-lab__cat-outline,
+.midnight-sprite-lab__iron { fill: #040711; }
+
+/* Streetlamp & Soft Light Cone */
+.midnight-sprite-lab__lamp-glass { fill: #e0f2fe; }
+.midnight-sprite-lab__lamp-filament { fill: #ffffff; }
+.midnight-sprite-lab__lamp-halo { fill: #0284c7; opacity: 0.18; }
+.midnight-sprite-lab__lamp-mid { fill: #38bdf8; opacity: 0.28; }
+
+.midnight-sprite-lab__light-cone { fill: #38bdf8; opacity: 0.14; }
+.midnight-sprite-lab__light-core { fill: #bae6fd; opacity: 0.24; }
+
+/* Ground Shadows */
+.midnight-sprite-lab__ground-shadow { fill: #02040a; opacity: 0.85; }
+.midnight-sprite-lab__ground-ambient { fill: #02040a; opacity: 0.4; }
+
+/* Cat Fur - Deep Charcoal Obsidian & Highlights */
+.midnight-sprite-lab__cat-body { fill: #111827; }
+.midnight-sprite-lab__cat-sheen { fill: #374151; }
+.midnight-sprite-lab__cat-shadow { fill: #080d1a; }
+.midnight-sprite-lab__cat-tail-stripe { fill: #1e293b; }
+.midnight-sprite-lab__cat-white { fill: #ffffff; }
+.midnight-sprite-lab__inner-ear { fill: #c084fc; opacity: 0.8; }
+.midnight-sprite-lab__blush { fill: #818cf8; opacity: 0.45; }
+.midnight-sprite-lab__nose { fill: #040711; }
+.midnight-sprite-lab__mouth { fill: #040711; }
+
+/* Knitted Midnight Scarf */
+.midnight-sprite-lab__scarf-main { fill: #0284c7; }
+.midnight-sprite-lab__scarf-stripe { fill: #38bdf8; }
+.midnight-sprite-lab__scarf-tail { fill: #0369a1; }
+.midnight-sprite-lab__scarf-fringe { fill: #bae6fd; }
+
+/* Eyes */
+.midnight-sprite-lab__eye--sleep { fill: #374151; }
+.midnight-sprite-lab__eye-awake-group { opacity: 0; }
+.midnight-sprite-lab__eye-contour { fill: #040711; }
+.midnight-sprite-lab__eye--awake { fill: #38bdf8; }
+.midnight-sprite-lab__eye-pupil { fill: #082f49; }
+.midnight-sprite-lab__eye-glint { fill: #ffffff; }
+
+/* Stars & Dreams */
+.midnight-sprite-lab__star { fill: #7dd3fc; opacity: 0.75; }
+.midnight-sprite-lab__star-cross { fill: #bae6fd; opacity: 0.9; }
+.midnight-sprite-lab__zzz-outline { fill: #040711; }
+.midnight-sprite-lab__zzz-core { fill: #93c5fd; }
+.midnight-sprite-lab__active-sparks { opacity: 0; }
+.midnight-sprite-lab__active-spark { fill: #38bdf8; }
+
+/* State Indicators */
+.midnight-sprite-lab__scan-spark { fill: #38bdf8; opacity: 0; }
+.midnight-sprite-lab__alarm-mark { fill: #f43f5e; opacity: 0; }
+
+/* Mood Overrides */
+.midnight-sprite-lab[data-mood="busy"] .midnight-sprite-lab__eye--sleep,
+.midnight-sprite-lab[data-mood="scanning"] .midnight-sprite-lab__eye--sleep,
+.midnight-sprite-lab[data-mood="active"] .midnight-sprite-lab__eye--sleep,
+.midnight-sprite-lab[data-mood="alarm"] .midnight-sprite-lab__eye--sleep { opacity: 0; }
+
+.midnight-sprite-lab[data-mood="busy"] .midnight-sprite-lab__eye-awake-group,
+.midnight-sprite-lab[data-mood="scanning"] .midnight-sprite-lab__eye-awake-group,
+.midnight-sprite-lab[data-mood="active"] .midnight-sprite-lab__eye-awake-group,
+.midnight-sprite-lab[data-mood="alarm"] .midnight-sprite-lab__eye-awake-group { opacity: 1; }
+
+.midnight-sprite-lab[data-mood="scanning"] .midnight-sprite-lab__scan-spark { opacity: 1; }
+.midnight-sprite-lab[data-mood="alarm"] .midnight-sprite-lab__alarm-mark { opacity: 1; }
+
+/* Active (Radiant Streetlight Flare) */
+.midnight-sprite-lab[data-mood="active"] .midnight-sprite-lab__lamp-halo { opacity: 0.38; fill: #38bdf8; }
+.midnight-sprite-lab[data-mood="active"] .midnight-sprite-lab__lamp-mid { opacity: 0.55; fill: #bae6fd; }
+.midnight-sprite-lab[data-mood="active"] .midnight-sprite-lab__light-cone { opacity: 0.24; }
+.midnight-sprite-lab[data-mood="active"] .midnight-sprite-lab__light-core { opacity: 0.38; }
+.midnight-sprite-lab[data-mood="active"] .midnight-sprite-lab__dream-zzz { opacity: 0; }
+.midnight-sprite-lab[data-mood="active"] .midnight-sprite-lab__active-sparks { opacity: 1; }
+
+/* Transforms */
+.midnight-sprite-lab__lantern-group,
+.midnight-sprite-lab__light-cone-group,
+.midnight-sprite-lab__cat,
+.midnight-sprite-lab__body,
+.midnight-sprite-lab__tail-group,
+.midnight-sprite-lab__stars,
+.midnight-sprite-lab__dream-zzz,
+.midnight-sprite-lab__active-sparks {
+  transform-box: fill-box;
+}
+
+.midnight-sprite-lab__lantern-group { transform-origin: 50% 0%; }
+.midnight-sprite-lab__light-cone-group { transform-origin: 50% 0%; }
+.midnight-sprite-lab__cat { transform-origin: 50% 90%; }
+.midnight-sprite-lab__tail-group { transform-origin: 10% 80%; }
+.midnight-sprite-lab__dream-zzz { transform-origin: 50% 50%; }
+
+/* Animations */
+.midnight-sprite-lab[data-motion="running"] .midnight-sprite-lab__light-cone-group {
+  animation: midnight-cone-breathe 5.6s ease-in-out infinite alternate;
+}
+.midnight-sprite-lab[data-motion="running"] .midnight-sprite-lab__cat {
+  animation: midnight-cat-breathe 4s ease-in-out infinite;
+}
+.midnight-sprite-lab[data-motion="running"] .midnight-sprite-lab__tail-group {
+  animation: midnight-tail-sway 4s ease-in-out infinite;
+}
+.midnight-sprite-lab[data-motion="running"] .midnight-sprite-lab__stars {
+  animation: midnight-stars-twinkle 3.6s ease-in-out infinite alternate;
+}
+.midnight-sprite-lab[data-motion="running"] .midnight-sprite-lab__dream-zzz {
+  animation: midnight-zzz-drift 3.6s ease-in-out infinite;
+}
+.midnight-sprite-lab[data-motion="running"] .midnight-sprite-lab__active-sparks {
+  animation: midnight-sparks-float 2.8s ease-in-out infinite alternate;
+}
+
+@keyframes midnight-cone-breathe {
+  0% { transform: scaleX(0.97); opacity: 0.9; }
+  100% { transform: scaleX(1.03); opacity: 1; }
+}
+
+@keyframes midnight-cat-breathe {
+  0%, 100% { transform: translateY(0) scale(1, 1); }
+  50% { transform: translateY(-0.7px) scale(0.99, 1.02); }
+}
+
+@keyframes midnight-tail-sway {
+  0%, 100% { transform: rotate(0deg); }
+  50% { transform: rotate(3deg) translateY(-0.4px); }
+}
+
+@keyframes midnight-stars-twinkle {
+  0% { opacity: 0.6; transform: scale(0.95); }
+  100% { opacity: 1; transform: scale(1.05); }
+}
+
+@keyframes midnight-zzz-drift {
+  0% { transform: translate(0, 0) scale(0.85); opacity: 0; }
+  25% { opacity: 0.95; }
+  75% { opacity: 0.85; }
+  100% { transform: translate(2px, -4px) scale(1.1); opacity: 0; }
+}
+
+@keyframes midnight-sparks-float {
+  0% { transform: translateY(0px); opacity: 0.7; }
+  100% { transform: translateY(-1.5px); opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .midnight-sprite-lab * { animation: none !important; }
+}

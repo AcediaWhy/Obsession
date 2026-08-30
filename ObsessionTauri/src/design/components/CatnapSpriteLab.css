@@ -1,0 +1,138 @@
+.catnap-sprite-lab {
+  display: block;
+  width: var(--catnap-cat-size);
+  height: var(--catnap-cat-size);
+  overflow: visible;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  isolation: isolate;
+}
+
+/* Outlines - Warm dark chocolate / espresso */
+.catnap-sprite-lab__cat-outline { fill: #241108; }
+
+/* Fur Colors - Reference 1 Fluffy Orange Tabby */
+.catnap-sprite-lab__cat-fur-orange { fill: #f97316; }
+.catnap-sprite-lab__cat-fur-light { fill: #fb923c; }
+.catnap-sprite-lab__cat-stripes { fill: #9a3412; }
+.catnap-sprite-lab__cat-fur-white { fill: #fffbeb; }
+.catnap-sprite-lab__cat-shadow { fill: #c2410c; }
+.catnap-sprite-lab__inner-ear { fill: #fca5a5; }
+.catnap-sprite-lab__blush { fill: #fca5a5; opacity: 0.75; }
+.catnap-sprite-lab__nose { fill: #241108; }
+.catnap-sprite-lab__mouth { fill: #241108; }
+
+/* Eyes */
+.catnap-sprite-lab__eye--sleep { fill: #241108; }
+.catnap-sprite-lab__eye-awake-group { opacity: 0; }
+.catnap-sprite-lab__eye-contour { fill: #241108; }
+.catnap-sprite-lab__eye--awake { fill: #f59e0b; }
+.catnap-sprite-lab__eye-pupil { fill: #1c0a03; }
+.catnap-sprite-lab__eye-glint { fill: #ffffff; }
+
+/* Ground Contact & Paw Shadows */
+.catnap-sprite-lab__ground-shadow { fill: #1a0a04; }
+.catnap-sprite-lab__ground-ambient { fill: #2e1208; opacity: 0.4; }
+
+/* Dream Zzz & Golden Motes */
+.catnap-sprite-lab__zzz-outline,
+.catnap-sprite-lab__dream-star-outline { fill: #241108; }
+.catnap-sprite-lab__zzz-core { fill: #fef08a; }
+.catnap-sprite-lab__dream-star-core { fill: #fde047; }
+.catnap-sprite-lab__mote { fill: #fef08a; opacity: 0.75; }
+.catnap-sprite-lab__mote--1 { opacity: 0.9; }
+.catnap-sprite-lab__mote--2 { opacity: 0.55; }
+.catnap-sprite-lab__active-sparks { opacity: 0; }
+.catnap-sprite-lab__active-spark { fill: #fef08a; }
+
+/* State Indicators */
+.catnap-sprite-lab__scan-spark { fill: #f59e0b; opacity: 0; }
+.catnap-sprite-lab__alarm-mark { fill: #ef4444; opacity: 0; }
+
+/* Mood Overrides */
+.catnap-sprite-lab[data-mood="busy"] .catnap-sprite-lab__eye--sleep,
+.catnap-sprite-lab[data-mood="scanning"] .catnap-sprite-lab__eye--sleep,
+.catnap-sprite-lab[data-mood="active"] .catnap-sprite-lab__eye--sleep,
+.catnap-sprite-lab[data-mood="alarm"] .catnap-sprite-lab__eye--sleep { opacity: 0; }
+
+.catnap-sprite-lab[data-mood="busy"] .catnap-sprite-lab__eye-awake-group,
+.catnap-sprite-lab[data-mood="scanning"] .catnap-sprite-lab__eye-awake-group,
+.catnap-sprite-lab[data-mood="active"] .catnap-sprite-lab__eye-awake-group,
+.catnap-sprite-lab[data-mood="alarm"] .catnap-sprite-lab__eye-awake-group { opacity: 1; }
+
+.catnap-sprite-lab[data-mood="scanning"] .catnap-sprite-lab__scan-spark { opacity: 1; }
+.catnap-sprite-lab[data-mood="alarm"] .catnap-sprite-lab__alarm-mark { opacity: 1; }
+
+/* Active (Radiant Golden Hour Sun Glow) */
+.catnap-sprite-lab[data-mood="active"] .catnap-sprite-lab__active-sparks { opacity: 1; }
+.catnap-sprite-lab[data-mood="active"] .catnap-sprite-lab__dream-zzz { opacity: 0; }
+
+/* Transform Rigging for Smooth Thematic Animations */
+.catnap-sprite-lab__cat,
+.catnap-sprite-lab__body,
+.catnap-sprite-lab__tail-group,
+.catnap-sprite-lab__dream-zzz,
+.catnap-sprite-lab__motes,
+.catnap-sprite-lab__scan-spark {
+  transform-box: fill-box;
+}
+.catnap-sprite-lab__cat { transform-origin: 50% 100%; }
+.catnap-sprite-lab__body { transform-origin: 50% 90%; }
+.catnap-sprite-lab__tail-group { transform-origin: 10% 80%; }
+.catnap-sprite-lab__dream-zzz { transform-origin: 50% 50%; }
+
+/* Idle & Motion Animations */
+.catnap-sprite-lab[data-motion="running"] .catnap-sprite-lab__cat {
+  animation: catnap-tabby-breathe 3.8s ease-in-out infinite;
+}
+.catnap-sprite-lab[data-motion="running"] .catnap-sprite-lab__tail-group {
+  animation: catnap-tabby-tail-sway 3.8s ease-in-out infinite;
+}
+.catnap-sprite-lab[data-motion="running"] .catnap-sprite-lab__dream-zzz {
+  animation: catnap-zzz-float 3.6s ease-in-out infinite;
+}
+.catnap-sprite-lab[data-motion="running"] .catnap-sprite-lab__motes {
+  animation: catnap-motes-drift 6.8s ease-in-out infinite alternate;
+}
+
+.catnap-sprite-lab[data-motion="running"][data-mood="busy"] .catnap-sprite-lab__cat {
+  animation-duration: 2.2s;
+}
+.catnap-sprite-lab[data-motion="running"][data-mood="scanning"] .catnap-sprite-lab__scan-spark {
+  animation: catnap-scan-drift 2.2s ease-in-out infinite;
+}
+.catnap-sprite-lab[data-motion="running"][data-mood="alarm"] .catnap-sprite-lab__body {
+  animation: catnap-startle 0.4s ease-in-out infinite alternate;
+}
+
+@keyframes catnap-tabby-breathe {
+  0%, 100% { transform: translateY(0) scaleY(1); }
+  50% { transform: translateY(-0.8px) scaleY(1.02); }
+}
+@keyframes catnap-tabby-tail-sway {
+  0%, 100% { transform: rotate(0deg); }
+  50% { transform: rotate(-3deg) translateY(-0.5px); }
+}
+@keyframes catnap-zzz-float {
+  0% { transform: translate(0, 0) scale(0.8); opacity: 0; }
+  25% { opacity: 0.95; }
+  75% { opacity: 0.85; }
+  100% { transform: translate(3px, -5px) scale(1.1); opacity: 0; }
+}
+@keyframes catnap-motes-drift {
+  0% { transform: translateY(1px); }
+  100% { transform: translateY(-2px); }
+}
+@keyframes catnap-scan-drift {
+  0% { transform: translate(-6px, 4px); opacity: 0; }
+  25%, 75% { opacity: 1; }
+  100% { transform: translate(6px, -4px); opacity: 0; }
+}
+@keyframes catnap-startle {
+  0% { transform: translateX(-0.8px); }
+  100% { transform: translateX(0.8px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .catnap-sprite-lab * { animation: none !important; }
+}

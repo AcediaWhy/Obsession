@@ -1,0 +1,225 @@
+:root {
+  color-scheme: dark;
+  --catnap-lab-bg: #140a06;
+  --catnap-lab-card: rgba(36, 18, 10, 0.72);
+  --catnap-lab-border: rgba(255, 184, 112, 0.16);
+  --catnap-lab-amber: #ffb870;
+  --catnap-lab-gold: #fef08a;
+  --catnap-lab-warm: #e27834;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--catnap-lab-bg);
+  color: #fff7ed;
+  font-family:
+    "JetBrains Mono",
+    ui-monospace,
+    SFMono-Regular,
+    monospace;
+}
+
+.catnap-lab-shell {
+  min-height: 100vh;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 24px;
+  box-sizing: border-box;
+}
+
+.catnap-lab-stage {
+  position: relative;
+  width: min(1040px, 100%);
+  border-radius: 24px;
+  border: 1px solid var(--catnap-lab-border);
+  background:
+    radial-gradient(ellipse at 50% 20%, rgba(226, 120, 52, 0.15), transparent 60%),
+    radial-gradient(ellipse at 80% 80%, rgba(255, 184, 112, 0.08), transparent 50%),
+    linear-gradient(180deg, #1f0f08 0%, #120704 100%);
+  overflow: hidden;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
+}
+
+.catnap-lab-stage[data-backdrop="field"] {
+  background:
+    radial-gradient(circle at 50% 45%, rgba(255, 184, 112, 0.22), transparent 45%),
+    radial-gradient(circle at 50% 50%, rgba(226, 120, 52, 0.16), transparent 65%),
+    linear-gradient(180deg, #1c0d07 0%, #0d0402 100%);
+}
+
+.catnap-lab-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--catnap-lab-border);
+  background: rgba(20, 9, 5, 0.6);
+  backdrop-filter: blur(12px);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.catnap-lab-controls label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #fdba74;
+}
+
+.catnap-lab-controls select,
+.catnap-lab-controls button {
+  background: rgba(46, 22, 12, 0.8);
+  border: 1px solid rgba(255, 184, 112, 0.24);
+  color: #fff7ed;
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-family: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.catnap-lab-controls select:hover,
+.catnap-lab-controls button:hover {
+  background: rgba(66, 32, 18, 0.9);
+  border-color: var(--catnap-lab-amber);
+}
+
+.catnap-lab-controls button[data-on] {
+  background: rgba(226, 120, 52, 0.35);
+  border-color: var(--catnap-lab-amber);
+  color: #fef08a;
+}
+
+.catnap-lab-content {
+  padding: 32px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+}
+
+.catnap-lab-hero {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 32px;
+  align-items: center;
+}
+
+@media (max-width: 768px) {
+  .catnap-lab-hero {
+    grid-template-columns: 1fr;
+  }
+}
+
+.catnap-lab-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.catnap-lab-kicker {
+  color: var(--catnap-lab-amber);
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  font-weight: 700;
+}
+
+.catnap-lab-copy h1 {
+  margin: 0;
+  font-size: 32px;
+  line-height: 1.15;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: #fff7ed;
+}
+
+.catnap-lab-copy strong {
+  color: #fcd34d;
+  font-size: 14px;
+  margin-top: 4px;
+}
+
+.catnap-lab-copy p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.6;
+  color: #fed7aa;
+}
+
+.catnap-lab-copy small {
+  color: #9a684c;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+}
+
+.catnap-lab-core-well {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+
+.catnap-lab-core-button {
+  background: transparent;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.catnap-lab-core-button:hover {
+  transform: scale(1.04);
+}
+
+.catnap-lab-core-well span {
+  font-size: 10px;
+  letter-spacing: 0.2em;
+  color: #fdba74;
+  font-weight: 700;
+}
+
+.catnap-lab-state-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 16px;
+}
+
+.catnap-lab-state-card {
+  background: rgba(30, 14, 8, 0.6);
+  border: 1px solid rgba(255, 184, 112, 0.12);
+  border-radius: 16px;
+  padding: 16px 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  color: #fed7aa;
+}
+
+.catnap-lab-state-card:hover {
+  background: rgba(45, 20, 12, 0.8);
+  border-color: rgba(255, 184, 112, 0.3);
+  transform: translateY(-2px);
+}
+
+.catnap-lab-state-card[data-selected] {
+  background: rgba(60, 26, 14, 0.9);
+  border-color: var(--catnap-lab-amber);
+  color: #fef08a;
+  box-shadow: 0 0 20px rgba(226, 120, 52, 0.3);
+}
+
+.catnap-lab-state-card span {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
