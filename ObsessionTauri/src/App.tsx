@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactElement } from "react";
 import {
   AnimatePresence,
   motion,
@@ -25,9 +25,10 @@ import { useSettingsStore } from "./store/settingsStore";
 import { useOnboardingStore } from "./store/onboardingStore";
 import { Onboarding } from "./design/components/Onboarding";
 import { Toaster } from "./design/components/Toaster";
-import { on, win } from "./lib/tauri";
-import { setWindowShown, useMotionOff } from "./design/render";
+import { on } from "./lib/tauri";
+import { setWindowShown, useMotionOff, useRenderHidden } from "./design/render";
 import { screenVariants } from "./design/screenTransition";
+import { initTrayStageRelease } from "./design/gl/trayStageRelease";
 import { dur, ease, spring } from "./design/tokens";
 import { toast } from "./store/toastStore";
 import { useObsessionVisualPhase } from "./design/useObsessionVisualPhase";
@@ -55,12 +56,22 @@ function ThemeScene({
       exit={{ opacity: 0 }}
       transition={{ duration: motionOff ? 0 : dur.slow, ease: ease.xfade }}
     >
-      <HeroField
-        theme={theme}
-        frozen={!isPresent || paused}
-        phase={phase}
-        screen={screen}
-      />
+      {isPresent ? (
+        <HeroField
+          theme={theme}
+          frozen={paused}
+          phase={phase}
+          screen={screen}
+        />
+      ) : (
+        // Exit-обёртка остаётся для плавного fade, но тяжёлая сцена (canvas,
+        // WebGL/video и её compositor-слои) должна уйти сразу при начале exit.
+        <div
+          aria-hidden="true"
+          data-theme-scene-exit-placeholder
+          className="absolute inset-0"
+        />
+      )}
     </motion.div>
   );
 }
@@ -80,6 +91,11 @@ export default function App() {
   const reduceMotion = useSettingsStore((s) => s.settings?.reduce_motion);
   const settingsLoaded = useSettingsStore((s) => s.loaded);
   const motionOff = useMotionOff();
+  // Заморозка скрытого окна: пока окно в трее, рендер отдаёт предыдущее
+  // дерево как есть — React видит тот же элемент и пропускает согласование
+  // поддерева целиком (см. кэш перед return ниже).
+  const hidden = useRenderHidden();
+  const hiddenCache = useRef<ReactElement | null>(null);
   const onboardingSnapshot = useOnboardingStore((s) => s.snapshot);
   const onboardingLoaded = useOnboardingStore((s) => s.loaded);
   const initializeOnboarding = useOnboardingStore((s) => s.initialize);
@@ -159,6 +175,9 @@ export default function App() {
   useEffect(() => {
     const unlisten = initLogStream();
     const releaseBootstrap = launcherBootstrap.acquire();
+    // Трей-выгрузка WebGL-стейджей: 3+ минуты скрытого окна — стейджи уходят
+    // из памяти, возврат пересобирает сцену один раз.
+    const releaseTrayStages = initTrayStageRelease();
     let disposed = false;
     let bootstrapRefreshQueue = Promise.resolve();
     const scheduleBootstrapRefresh = (refreshSnapshot: boolean) => {
@@ -192,24 +211,17 @@ export default function App() {
 
     // Пауза анимаций + suspend-разгрузка при скрытии окна в трей (сигнал из Rust
     // дополняет Visibility API, который в WebView2 не всегда срабатывает на
-    // hide()). Плюс гасим/возвращаем рендер веб-вью: свёрнутое (iconic) окно
-    // композитор WebView2 продолжает рисовать, а hide() веб-вью убирает эту
-    // нагрузку до ~0%. При ВОЗВРАТЕ догоняем backend-снимок (трей/хоткей могли
-    // переключить DPI/прокси, пока висели в трее) и прогреваем сцену.
+    // hide()). Сам WebView здесь намеренно не прячем: асинхронные hide()/show()
+    // способны завершиться в обратном порядке, оставив уже видимое нативное окно
+    // с чёрным фоном. Память скрытого окна по-прежнему ужимает Rust/webmem.
+    // При ВОЗВРАТЕ догоняем backend-снимок (трей/хоткей могли переключить
+    // DPI/прокси, пока висели в трее) и прогреваем сцену.
     const unlistenVis = on.windowVisibility((visible) => {
       setWindowShown(visible);
       if (visible) {
-        void win.showWebview();
         scheduleBootstrapRefresh(true);
         scheduleWarm();
-      } else {
-        void win.hideWebview();
       }
-    });
-    // Мгновенный возврат рендера при развороте (фокус приходит раньше, чем
-    // подтверждение 300мс-поллера) — чтобы не мелькнул пустой кадр.
-    const unlistenFocus = win.onFocusChanged((focused) => {
-      if (focused) void win.showWebview();
     });
 
     // Значимые ошибки бэкенда (падение winws, сбой Глаз/прокси) — всплывают
@@ -221,14 +233,22 @@ export default function App() {
     return () => {
       disposed = true;
       releaseBootstrap();
+      releaseTrayStages();
       unlisten.then((fn) => fn()).catch(() => {});
       unlistenVis.then((fn) => fn()).catch(() => {});
-      unlistenFocus.then((fn) => fn()).catch(() => {});
       unlistenErr.then((fn) => fn()).catch(() => {});
     };
   }, []);
 
-  return (
+  // Пока окно скрыто — отдаём закэшированное дерево: идентичная ссылка
+  // элемента заставляет React пропустить согласование всего поддерева.
+  // Невидимый UI перестаёт перерисовывать поток событий живой сессии
+  // (фазы Eyes, статусы, логи); сторы копят состояние, на показе дерево
+  // строится заново одним рендером и догоняет актуальное.
+  if (hidden && hiddenCache.current) {
+    return hiddenCache.current;
+  }
+  const tree = (
     <MotionConfig reducedMotion={reduceMotion ? "always" : "user"}>
       {/* Единый effective-флаг: настройка приложения ИЛИ системный
           prefers-reduced-motion. Иначе CSS продолжал animate-pulse/transition,
@@ -341,4 +361,6 @@ export default function App() {
       </div>
     </MotionConfig>
   );
+  hiddenCache.current = tree;
+  return tree;
 }
