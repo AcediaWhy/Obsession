@@ -1,0 +1,39 @@
+{
+  "size": 1024,
+  "leaf": {
+    "x": 651,
+    "y": 206,
+    "w": 373,
+    "h": 240
+  },
+  "leafBacking": {
+    "x": 648,
+    "y": 203,
+    "w": 376,
+    "h": 246
+  },
+  "parts": [
+    {
+      "name": "ear",
+      "x": 392,
+      "y": 272,
+      "w": 164,
+      "h": 118,
+      "anchorY": 345,
+      "anchorEnd": 373,
+      "frames": 49,
+      "columns": 7
+    },
+    {
+      "name": "paw",
+      "x": 476,
+      "y": 582,
+      "w": 132,
+      "h": 102,
+      "anchorY": 599,
+      "anchorEnd": 584,
+      "frames": 49,
+      "columns": 7
+    }
+  ]
+}

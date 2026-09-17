@@ -1,7 +1,7 @@
 import type { ObsessionVisualPhase } from "../obsessionVisualState";
 import { useRenderActive } from "../render";
 import { CoreShell } from "./CoreShell";
-import { RainUmbrellaSpriteLab } from "./RainUmbrellaSpriteLab";
+import { RainCatSprite } from "./rain/RainCatSprite";
 
 type Props = {
   active: boolean;
@@ -42,13 +42,15 @@ export function RainBenchCore({
 
   return (
     <CoreShell interactive={interactive} onClick={onClick} busy={busy} size={size}>
+      {interactive && <span className="sr-only">{active ? "Отключить защиту" : "Активировать защиту"}</span>}
       <div
         aria-hidden="true"
         className="rain-bench-core"
         data-rain-bench-core
+        data-placement={interactive ? "hero" : "preview"}
         style={{ width: size, height: size }}
       >
-        <RainUmbrellaSpriteLab phase={phase} paused={!motionOn} size={size} />
+        <RainCatSprite phase={phase} paused={!motionOn} size={size} />
       </div>
     </CoreShell>
   );

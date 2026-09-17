@@ -1,10 +1,11 @@
 import type { Theme } from "../../store/themeStore";
 import { AuroraCore } from "./AuroraCore";
+import { GoldenMeadowCore } from "./GoldenMeadowCore";
 import { CatnapCore } from "./CatnapCore";
 import { FallenCore } from "./FallenCore";
 import { MidnightCore } from "./MidnightCore";
 import { YaniCatCore } from "./YaniCatCore";
-import { OphanimCore } from "./OphanimCore";
+import { AlchemistCore } from "./AlchemistCore";
 import { RainBenchCore } from "./RainBenchCore";
 import { ObsessionChoirCore } from "./ObsessionChoirCore";
 
@@ -32,8 +33,9 @@ export function ThemePreview({
   return (
     <div aria-hidden="true" className="relative shrink-0" style={{ width: size, height: size }}>
       {theme === "obsession" && <ObsessionChoirCore {...shared} interactive={false} />}
+      {theme === "goldenmeadow" && <GoldenMeadowCore {...shared} interactive={false} />}
       {theme === "aurora" && <AuroraCore {...shared} interactive={false} />}
-      {theme === "ophanim" && <OphanimCore {...shared} interactive={false} />}
+      {theme === "ophanim" && <AlchemistCore {...shared} interactive={false} />}
       {theme === "japan" && <RainBenchCore {...shared} interactive={false} />}
       {theme === "fallendown" && <FallenCore {...shared} interactive={false} />}
       {theme === "catnap" && <CatnapCore {...shared} interactive={false} />}

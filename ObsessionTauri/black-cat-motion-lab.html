@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Кот · проба плавного движения</title>
+    <link rel="stylesheet" href="/src/styles/blackCatMotionLab.css" />
+  </head>
+  <body>
+    <header><a href="/">obsession <span>/ лаборатория</span></a><span>ПРОБА ДВИЖЕНИЯ · 01</span></header>
+    <main>
+      <div class="intro"><div><p class="eyebrow">ТОТ ЖЕ КОТ</p><h1>Чуть больше жизни.</h1></div><p>Исходный рисунок, два способа движения.<br />Сравни хвост, дыхание и наклон головы.</p></div>
+      <section class="comparison" aria-label="Сравнение анимаций">
+        <article class="card original">
+          <div class="card-top"><span class="tag">СЕЙЧАС</span><span>8 кадров · 6,7 кадра/с</span></div>
+          <div class="stage"><div class="ground"></div><img id="original" src="/lab-assets/black-cat-states/idle-256.webp" width="256" height="256" alt="Исходная покадровая анимация чёрного кота" /></div>
+          <div class="card-bottom"><h2>Покадровый idle</h2><p>Восемь готовых поз сменяют друг друга.</p><span id="original-size" class="size">Загрузка…</span></div>
+        </article>
+        <article class="card layered">
+          <div class="card-top"><span class="tag">ПРОБА</span><span id="motion-state">Подготовка слоёв…</span></div>
+          <div class="stage"><div class="ground"></div><div id="rig" role="img" aria-label="Тот же чёрный кот с плавным движением головы, тела и хвоста"></div></div>
+          <div class="card-bottom"><h2>Один рисунок, живые слои</h2><p>Дыхание, хвост, наклон головы и моргание.</p><span id="rig-size" class="size">Загрузка…</span></div>
+        </article>
+      </section>
+      <div class="controls">
+        <div class="buttons"><button id="pause" class="primary" aria-pressed="false">Пауза</button><button id="blink">Моргнуть</button><button id="attention">Позвать кота</button><button id="neutral" aria-pressed="false">Сравнить стоп-кадры</button></div>
+        <div class="adjustments"><label>Характер движения <input id="strength" type="range" min="0.4" max="1.6" step="0.1" value="1" /><output id="strength-value">1,0×</output></label><label>Размер <select id="display-size"><option value="128">128 px</option><option value="240" selected>240 px</option><option value="384">384 px</option></select></label><label class="layers-toggle"><input id="layers" type="checkbox" /> Показать слои</label></div>
+      </div>
+      <p id="notice" role="status">Проба обычного idle. Сложные состояния — зевок, поиск и тревога — пока остаются покадровыми.</p>
+      <p class="technical">Справа используется исходный стоп-кадр без перерисовки кота. Движение частей вычисляется кодом; размер картинки не растёт с числом кадров. Во время показа слоёв видны места их разделения.</p>
+    </main>
+    <footer><span>BLACK CAT / MOTION STUDY</span><a href="/">Вернуться в приложение ↗</a></footer>
+    <script type="module" src="/src/blackCatMotionLab.js"></script>
+  </body>
+</html>

@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="ru">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Rain · кот под зонтом</title><link rel="stylesheet" href="/src/styles/rainCatMotionLab.css"></head>
+<body>
+<main>
+<header><a href="/">obsession / лаборатория</a><span>RAIN · MOTION STUDY</span></header>
+<section class="intro"><div><p class="eyebrow">ТВОЙ РИСУНОК · ПЯТЬ СОСТОЯНИЙ</p><h1>Переждём дождь.</h1></div><p>Выбери состояние — посмотрим крупнее.<br>Слева — исходная сборка, справа — выбранное движение.</p></section>
+<section class="states" aria-label="Пять состояний кота">
+<button data-state="idle" aria-pressed="true"><span>01 · IDLE</span><canvas data-preview="idle" width="320" height="320" aria-hidden="true"></canvas><strong>Отдыхает</strong><small>Одобренное движение</small></button>
+<button data-state="engaging" aria-pressed="false"><span>02 · ENGAGING</span><canvas data-preview="engaging" width="320" height="320" aria-hidden="true"></canvas><strong>Собирается</strong><small>Подобрался → выпрямился → пауза</small></button>
+<button data-state="scanning" aria-pressed="false"><span>03 · SCANNING</span><canvas data-preview="scanning" width="320" height="320" aria-hidden="true"></canvas><strong>Осматривается</strong><small>Взгляд и наклоны в стороны</small></button>
+<button data-state="focused" aria-pressed="false"><span>04 · FOCUSED</span><canvas data-preview="focused" width="320" height="320" aria-hidden="true"></canvas><strong>Сосредоточен</strong><small>Замер, прищурился, держит зонт</small></button>
+<button data-state="fault" aria-pressed="false"><span>05 · FAULT</span><canvas data-preview="fault" width="320" height="320" aria-hidden="true"></canvas><strong>Насторожился</strong><small>Испуг · повтор превью / 7 с</small></button>
+</section>
+<section class="comparison">
+<article><div class="card-top"><span>СТОП-КАДР</span><small>Без движения</small></div><div class="stage"><img src="/lab-assets/rain-cat-user-v2/still.webp" alt="Одобренный кот с жёлтым зонтом" width="512" height="512"></div></article>
+<article><div class="card-top"><span id="state-title">IDLE</span><small id="status" aria-live="polite">Загрузка слоёв…</small></div><div class="stage"><canvas id="cat" width="1024" height="1024" role="img" aria-label="Анимированный кот с зонтом"></canvas></div></article>
+</section>
+<section class="controls"><button id="pause" aria-pressed="false">Пауза</button><button id="replay">Повторить состояние</button><button id="wind">Порыв ветра</button><button id="blink">Моргнуть</button><button id="neutral" aria-pressed="false">Исходная поза</button><label>Движение <input id="strength" type="range" min="0.5" max="1.5" step="0.1" value="1"><output id="amount">1,0×</output></label><label><input id="rain" type="checkbox" checked> Капли и круги</label><label>Фон <select id="background"><option value="dark">Тёмный</option><option value="light">Светлый</option></select></label></section>
+<p class="note">Эти пять анимаций подключены к теме Rain в приложении. Лаборатория остаётся для сравнения. Основание хвоста закреплено у тела; зонт и держащая лапа двигаются вместе.</p>
+</main><script type="module" src="/src/rainCatMotionLab.js"></script>
+</body></html>

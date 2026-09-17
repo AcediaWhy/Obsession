@@ -1,0 +1,12 @@
+.alchemist-sprite { position: relative; isolation: isolate; width: var(--sprite-size); max-width: 100%; aspect-ratio: 1; flex-shrink: 0; }
+.alchemist-sprite[data-reference='true'] .alchemist-flask-effects, .alchemist-sprite[data-reference='true'] .alchemist-aura { display: none; }
+.alchemist-character { width: 100%; height: 100%; position: relative; }
+.alchemist-character img { display: block; width: 100%; height: 100%; object-fit: contain; image-rendering: pixelated; user-select: none; }
+.alchemist-frame { position: absolute; inset: 0; width: 100%; height: 100%; image-rendering: pixelated; visibility: hidden; }
+.alchemist-character[data-loaded='true'] .alchemist-fallback { visibility: hidden; }
+.alchemist-character[data-loaded='true'] .alchemist-frame { visibility: visible; }
+.alchemist-flask-effects { position: absolute; inset: 0; pointer-events: none; }
+.alchemist-potion-frame { display: block; width: 100%; height: 100%; image-rendering: pixelated; visibility: hidden; }
+.alchemist-character[data-loaded='true'] .alchemist-potion-frame { visibility: visible; }
+.alchemist-aura { position: absolute; inset: 47% 23% 2%; border-radius: 50%; background: radial-gradient(ellipse, #b7d79515, transparent 68%); z-index: -1; }
+.alchemist-sprite[data-mood='ready'] .alchemist-aura { background: radial-gradient(ellipse, #b7d7952b, transparent 68%); }

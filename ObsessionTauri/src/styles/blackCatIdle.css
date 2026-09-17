@@ -1,0 +1,13 @@
+.black-cat-idle { position: relative; display: block; pointer-events: none; user-select: none; }
+.black-cat-idle > .black-cat-idle-fallback,
+.black-cat-idle > .black-cat-idle-rig,
+.black-cat-idle .cat-rig-part,
+.black-cat-idle .cat-rig-head-group { position: absolute; inset: 0; width: 100%; height: 100%; }
+.black-cat-idle-fallback, .black-cat-idle .cat-rig-part { image-rendering: pixelated; }
+.black-cat-idle > .black-cat-idle-rig { visibility: hidden; }
+.black-cat-idle[data-rig-ready="true"] > .black-cat-idle-fallback { visibility: hidden; }
+.black-cat-idle[data-rig-ready="true"] > .black-cat-idle-rig { visibility: visible; }
+.black-cat-idle .cat-rig-body,
+.black-cat-idle .cat-rig-tail,
+.black-cat-idle .cat-rig-head-group,
+.black-cat-idle .cat-rig-eyes { will-change: transform; }

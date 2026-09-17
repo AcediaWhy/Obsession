@@ -81,16 +81,16 @@ export default function App() {
   // Направление последнего перехода по меню: +1 — вниз по списку, −1 — вверх.
   // Ref, а не state: значение нужно в том же рендере, что и смена tab.
   const tabDir = useRef(1);
-  const selectTab = (next: Tab) => {
-    if (next === tab) return;
-    tabDir.current = TAB_ORDER.indexOf(next) > TAB_ORDER.indexOf(tab) ? 1 : -1;
-    setTab(next);
-  };
   const theme = useThemeStore((s) => s.theme);
   const obsessionPhase = useObsessionVisualPhase();
   const reduceMotion = useSettingsStore((s) => s.settings?.reduce_motion);
   const settingsLoaded = useSettingsStore((s) => s.loaded);
   const motionOff = useMotionOff();
+  const selectTab = (next: Tab) => {
+    if (next === tab) return;
+    tabDir.current = TAB_ORDER.indexOf(next) > TAB_ORDER.indexOf(tab) ? 1 : -1;
+    setTab(next);
+  };
   // Заморозка скрытого окна: пока окно в трее, рендер отдаёт предыдущее
   // дерево как есть — React видит тот же элемент и пропускает согласование
   // поддерева целиком (см. кэш перед return ниже).
@@ -272,7 +272,11 @@ export default function App() {
                 живут ~0.42 с (тема уходящей ветки заморожена пропом, см.
                 HeroField), поверх старой проявляется новая. На холодном старте
                 initial-фейд даёт мягкое появление фона. */}
-            <Parallax depth={-12} className="absolute" style={{ inset: -32 }}>
+            <Parallax
+              depth={theme === "goldenmeadow" || theme === "ophanim" ? 0 : -12}
+              className="absolute"
+              style={{ inset: theme === "goldenmeadow" || theme === "ophanim" ? 0 : -32 }}
+            >
               <AnimatePresence mode="sync">
                 <ThemeScene
                   key={theme}

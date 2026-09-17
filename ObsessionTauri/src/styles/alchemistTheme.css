@@ -1,0 +1,10 @@
+.alchemist-core { position: relative; display: block; flex-shrink: 0; padding: 0; border: 0; background: transparent; color: inherit; }
+button.alchemist-core { cursor: pointer; border-radius: 18px; touch-action: manipulation; }
+button.alchemist-core:focus-visible { outline: 2px solid #b9d89b; outline-offset: 4px; }
+button.alchemist-core:disabled { cursor: wait; }
+.alchemist-core[data-phase='fault']::after { content: ''; position: absolute; bottom: 3%; left: 46%; width: 8%; height: 3px; border-radius: 2px; background: rgb(var(--danger, 248 113 113)); }
+.alchemist-field { position: absolute; inset: 0; overflow: hidden; container-type: size; background: #211a29; }
+/* One common 3:2 plane: overlays and the room always crop/scale together. */
+.alchemist-field > .alchemist-room { position: absolute; width: max(100cqw, 150cqh); left: 50%; top: 50%; transform: translate(-50%, -50%); }
+.alchemist-field .composition-scene { border: 0; border-radius: 0; }
+.alchemist-field-shade { position: absolute; inset: 0; background: linear-gradient(180deg, #160f2338, #160f2308 45%, #160f2318); }

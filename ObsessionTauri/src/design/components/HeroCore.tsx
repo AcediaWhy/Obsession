@@ -3,8 +3,9 @@ import { useThemeStore, type Theme } from "../../store/themeStore";
 import { useMotionOff, useRenderHidden } from "../render";
 import { dur, ease } from "../tokens";
 import { AuroraCore } from "./AuroraCore";
+import { GoldenMeadowCore } from "./GoldenMeadowCore";
 import { RainBenchCore } from "./RainBenchCore";
-import { OphanimCore } from "./OphanimCore";
+import { AlchemistCore } from "./AlchemistCore";
 import { FallenCore } from "./FallenCore";
 import { CatnapCore } from "./CatnapCore";
 import { MidnightCore } from "./MidnightCore";
@@ -16,8 +17,7 @@ type Props = {
   busy?: boolean;
   onClick: () => void;
   size?: number;
-  // Реактивная телеметрия щита — читает только Ophanim (Великое Око). Остальные
-  // ядра игнорируют лишние пропсы; экраны, не знающие про тему, могут их не слать.
+  // Реактивная телеметрия: ядра отражают проверку, переход и ошибку защиты.
   scanning?: boolean;
   alarm?: boolean;
   paused?: boolean;
@@ -29,8 +29,9 @@ type Props = {
 function ThemedCore({ theme, ...props }: Props & { theme: Theme }) {
   const isPresent = useIsPresent();
   const coreProps = { ...props, paused: props.paused || !isPresent };
+  if (theme === "goldenmeadow") return <GoldenMeadowCore {...coreProps} />;
   if (theme === "obsession") return <ObsessionChoirCore {...coreProps} />;
-  if (theme === "ophanim") return <OphanimCore {...coreProps} />;
+  if (theme === "ophanim") return <AlchemistCore {...coreProps} />;
   if (theme === "fallendown") return <FallenCore {...coreProps} />;
   if (theme === "catnap") return <CatnapCore {...coreProps} />;
   if (theme === "midnight") return <MidnightCore {...coreProps} />;

@@ -1,0 +1,9 @@
+.rain-cat-sprite{display:block;position:relative;pointer-events:none;isolation:isolate}
+.rain-cat-sprite__still,.rain-cat-sprite__canvas{position:absolute;inset:0;display:block;width:100%;height:100%;object-fit:contain}
+.rain-cat-sprite__canvas{opacity:0}
+.rain-cat-sprite__still img{position:absolute;inset:0;display:block;width:100%;height:100%;object-fit:contain}
+.rain-cat-sprite[data-rig-ready=true] .rain-cat-sprite__canvas{opacity:1}
+.rain-cat-sprite[data-rig-ready=true] .rain-cat-sprite__still{visibility:hidden}
+/* The full illustration has generous margins. Fill the theme tile optically,
+   without changing the hero size or cropping the umbrella/animated ear tips. */
+.rain-bench-core[data-placement=preview] .rain-cat-sprite{transform:translateY(5%) scale(1.65);transform-origin:50% 50%}

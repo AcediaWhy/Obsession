@@ -1,0 +1,70 @@
+:root { font-family: 'IBM Plex Sans', sans-serif; color: #eee7f2; background: #19151f; font-synthesis: none; color-scheme: dark; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+button, input { font: inherit; }
+button, a, input { -webkit-tap-highlight-color: transparent; }
+button { cursor: pointer; }
+a { color: inherit; text-decoration: none; }
+button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid #c3daa6; outline-offset: 5px; }
+.alchemist-lab { min-height: 100vh; background: radial-gradient(ellipse at 15% 0%, #4c305329, transparent 55%); }
+.alchemist-shell { width: min(1160px, calc(100% - 72px)); margin: auto; }
+.alchemist-header { min-height: 86px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #b795cb25; gap: 20px; }
+.alchemist-header a { font-size: 21px; font-weight: 600; letter-spacing: -.6px; }
+.alchemist-header a span { color: #ab9bae; font-size: 13px; font-weight: 400; letter-spacing: 0; }
+.alchemist-header > span, .alchemist-eyebrow { font: 10px/1.6 'IBM Plex Mono', monospace; letter-spacing: 1.7px; color: #b9a6c3; }
+.alchemist-intro { display: flex; align-items: end; justify-content: space-between; gap: 32px; padding: 38px 0 32px; }
+.alchemist-eyebrow { margin: 0 0 14px; }
+h1 { margin: 0; font-size: clamp(36px, 5.4vw, 66px); line-height: 1.08; letter-spacing: -2.5px; font-weight: 500; }
+h1 em { font-style: normal; color: #c4a0d3; }
+.alchemist-intro > p { color: #b7a9bc; font-size: 14px; line-height: 1.7; margin: 0 0 3px; }
+.alchemist-workbench { display: grid; grid-template-columns: minmax(0, 1fr) 285px; gap: 22px; }
+.alchemist-stage { background: radial-gradient(ellipse at 49% 65%, #38413228, transparent 45%), #211a29; border: 1px solid #bb91d02b; border-radius: 18px; display: flex; flex-direction: column; align-items: center; overflow: hidden; padding: 22px 24px 16px; transition: background-color .25s; }
+.alchemist-stage[data-light='true'] { background: #e7dfdb; color: #4c3d54; }
+.alchemist-stage-top, .alchemist-stage-bottom { width: 100%; display: flex; justify-content: space-between; align-items: center; gap: 14px; font: 9px/1.5 'IBM Plex Mono', monospace; letter-spacing: .7px; color: #b6a5bf; }
+.alchemist-stage-top > span:first-child { font-family: 'IBM Plex Sans', sans-serif; font-size: 12px; letter-spacing: 0; color: #c5d6b5; }
+.alchemist-stage[data-light='true'] .alchemist-stage-top, .alchemist-stage[data-light='true'] .alchemist-stage-bottom { color: #706079; }
+.alchemist-stage[data-light='true'] .alchemist-stage-top > span:first-child { color: #536342; }
+.alchemist-stage-top i, .alchemist-ready i { display: inline-block; width: 5px; height: 5px; margin-right: 7px; border-radius: 50%; background: #bddb9b; }
+.alchemist-stage-bottom button { border: 1px solid #a58bae50; border-radius: 7px; color: inherit; padding: 7px 13px; background: transparent; }
+.alchemist-stage-bottom button:hover { background: #9980a420; }
+.alchemist-stage-bottom { flex-wrap: wrap; }
+.alchemist-playback { display: flex; flex-wrap: wrap; gap: 8px; }
+.alchemist-controls { border: 1px solid #bb91d024; border-radius: 18px; padding: 24px; background: #241d2a66; }
+h2 { margin: 0 0 22px; font-size: 26px; font-weight: 500; letter-spacing: -.7px; line-height: 1.2; }
+.alchemist-moods { display: grid; gap: 6px; }
+.alchemist-moods button { display: flex; gap: 13px; align-items: center; text-align: left; border: 1px solid transparent; background: transparent; color: #c7bacd; padding: 10px 11px; border-radius: 8px; font-size: 13px; }
+.alchemist-moods button > span { font: 10px 'IBM Plex Mono', monospace; color: #aa92b5; }
+.alchemist-moods button i { width: 5px; height: 5px; border-radius: 50%; margin-left: auto; background: transparent; }
+.alchemist-moods button:hover { background: #ffffff06; }
+.alchemist-moods button[aria-pressed='true'] { background: #70508030; border-color: #b396c53b; color: #f2eaf6; }
+.alchemist-moods button[aria-pressed='true'] i { background: #c9dda8; }
+.alchemist-description { color: #b8a8c0; font-size: 12px; line-height: 1.8; min-height: 65px; margin: 17px 0 24px; }
+.alchemist-palette { border-top: 1px solid #b795cb25; padding-top: 23px; }
+.alchemist-swatches { display: flex; gap: 9px; }
+.alchemist-swatches span { width: 35px; height: 27px; border-radius: 6px; border: 1px solid #ffffff20; }
+.alchemist-palette p:not(.alchemist-eyebrow) { font-size: 12px; color: #b8a8c0; line-height: 1.8; }
+.alchemist-palette label { display: flex; align-items: center; gap: 7px; font-size: 11px; color: #c6b6cc; margin-top: 19px; cursor: pointer; }
+input { accent-color: #b8d69d; }
+.alchemist-exact-controls { margin-top: 20px; border-top: 1px solid #b795cb25; padding-top: 12px; }
+.alchemist-exact-controls label { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; font-size: 11px; color: #c6b6cc; margin: 12px 0; }
+.alchemist-exact-controls select { width: 100%; padding: 7px; background: #211a29; color: #eee7f2; border: 1px solid #b795cb40; border-radius: 6px; }
+/* Keep raster contours stationary: fractional transforms shimmer at preview sizes. */
+.alchemist-eye-select { flex-wrap: wrap; }
+.alchemist-eye-select select { padding: 6px 8px; border: 1px solid #b795cb40; border-radius: 6px; background: #211a29; color: #eee7f2; font: inherit; }
+.alchemist-eye-select select:focus-visible { outline: 2px solid #c3daa6; outline-offset: 3px; }
+.alchemist-scale { display: grid; grid-template-columns: 1fr 180px 300px; gap: 22px; align-items: center; padding: 38px 0; }
+.alchemist-scale-copy p:not(.alchemist-eyebrow) { color: #b8a8c0; font-size: 13px; line-height: 1.8; }
+.alchemist-scale-copy small { color: #9c8ea5; font-size: 11px; }
+.alchemist-theme-tile, .alchemist-core-preview { display: flex; flex-direction: column; align-items: center; border: 1px solid #bb91d02b; border-radius: 15px; background: #211a29; padding: 19px 14px; }
+.alchemist-theme-tile { border-color: #b698c861; }
+.alchemist-theme-tile > .alchemist-eyebrow, .alchemist-core-preview > .alchemist-eyebrow { font-size: 9px; letter-spacing: 1px; margin-bottom: 6px; }
+.alchemist-theme-tile strong { font-size: 13px; font-weight: 500; margin-top: 9px; }
+.alchemist-tile-note { font-size: 10px; color: #b4a0bf; margin-top: 3px; }
+.alchemist-ready { font-size: 11px; color: #c5d6b5; }
+footer { padding: 20px 0 28px; border-top: 1px solid #b795cb25; display: flex; justify-content: space-between; gap: 16px; color: #a697af; font-size: 11px; line-height: 1.6; }
+footer a { color: #c4d7b0; }
+.alchemist-lab[data-paused='true'] *, .alchemist-lab[data-paused='true'] *::before, .alchemist-lab[data-paused='true'] *::after { animation-play-state: paused !important; }
+@media (prefers-reduced-motion: reduce) { .alchemist-lab * { animation: none !important; transition: none !important; } .alchemist-bubbles { display: none; } }
+@media (max-width: 900px) { .alchemist-shell { width: calc(100% - 40px); } .alchemist-intro { align-items: start; flex-direction: column; gap: 17px; } .alchemist-workbench { grid-template-columns: minmax(0, 1fr) 245px; gap: 14px; } .alchemist-controls { padding: 20px 17px; } .alchemist-stage { padding: 20px 17px 14px; justify-content: space-between; } .alchemist-stage-top > span:last-child { display: none; } .alchemist-stage-bottom > span { max-width: 150px; } .alchemist-scale { grid-template-columns: 1fr 1fr; } .alchemist-scale-copy { grid-column: 1 / -1; } .alchemist-scale-copy h2 br { display: none; } .alchemist-theme-tile { justify-self: center; width: 180px; } }
+@media (max-width: 620px) { .alchemist-shell { width: calc(100% - 32px); } .alchemist-header { min-height: 65px; } .alchemist-header > span { font-size: 8px; letter-spacing: .7px; text-align: right; max-width: 92px; } .alchemist-header a span { display: none; } .alchemist-intro { padding: 27px 0 24px; } h1 { letter-spacing: -1.4px; } .alchemist-workbench { grid-template-columns: 1fr; } .alchemist-stage > .alchemist-sprite { width: min(100%, 380px); } .alchemist-controls { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 20px; } .alchemist-controls h2 { font-size: 21px; } .alchemist-palette { border-top: 0; padding-top: 0; } .alchemist-description { margin-bottom: 0; } .alchemist-moods button { padding: 10px 5px; gap: 7px; font-size: 12px; } .alchemist-swatches { gap: 5px; } .alchemist-swatches span { width: 26px; } .alchemist-scale { grid-template-columns: 1fr; padding: 30px 0; } .alchemist-scale-copy { grid-column: auto; } .alchemist-core-preview { width: 100%; } footer { flex-direction: column; } }
+@media (max-width: 360px) { .alchemist-controls { grid-template-columns: 1fr; } .alchemist-palette { border-top: 1px solid #b795cb25; padding-top: 20px; } }

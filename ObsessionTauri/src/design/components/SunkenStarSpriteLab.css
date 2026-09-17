@@ -1,0 +1,32 @@
+/* Спрайт рисуется в буфер 64×64 и растягивается CSS-ом. Для честного nearest-neighbour
+   размер должен быть кратен 64 (см. стенд инспектора: 64 / 128 / 192 / 256). */
+.sunken-star-sprite-lab {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--sunken-star-size, 240px);
+  height: var(--sunken-star-size, 240px);
+  flex: 0 0 auto;
+  background: transparent;
+  image-rendering: pixelated;
+  user-select: none;
+}
+
+.sunken-star-sprite-lab__canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  image-rendering: crisp-edges;
+  image-rendering: pixelated;
+}
+
+/* Тревожное состояние НЕ получает filter: drop-shadow — мягкая тень на пиксель-арте
+   вносит полупрозрачные цвета вне палитры. Двоение силуэта рисует сам рендерер,
+   сдвигая дубль ровно на один арт-пиксель (см. drawSunkenStarSprite). */
+
+@media (prefers-reduced-motion: reduce) {
+  .sunken-star-sprite-lab__canvas {
+    animation: none !important;
+  }
+}

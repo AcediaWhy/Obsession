@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="dark" />
+  <title>Тихая осень · растровая проба</title>
+  <link rel="stylesheet" href="/src/styles/catttsRasterLab.css" />
+</head>
+<body>
+  <header class="masthead">
+    <a class="wordmark" href="/cattts-raster-lab.html">obsession<span> / лаборатория</span></a>
+    <span class="edition">ОСЕНЬ · ПРОБА 02</span>
+  </header>
+  <main class="workspace">
+    <section class="preview" aria-label="Предпросмотр анимации">
+      <div class="art-wrap">
+        <canvas id="scene" width="1024" height="1024" aria-label="Чёрный кот и мышонок в осенних листьях. Анимируются левое ухо кота, нижняя лапка и правый лист."></canvas>
+        <span class="view-badge" id="view-badge">Исходный рисунок</span>
+        <span class="loading" id="loading" role="status">Подготавливаю сцену…</span>
+      </div>
+      <div class="view-controls" aria-label="Масштаб просмотра">
+        <button type="button" data-view="all" aria-pressed="true">Весь рисунок</button>
+        <button type="button" data-view="ear" aria-pressed="false">Ухо крупно</button>
+        <button type="button" data-view="paw" aria-pressed="false">Лапка крупно</button>
+        <button type="button" data-view="leaf" aria-pressed="false">Лист крупно</button>
+      </div>
+    </section>
+    <aside class="controls">
+      <div class="intro"><span class="eyebrow">ОДИН ТИХИЙ МИГ</span><h1>Тихая осень</h1><p>Кот прислушивается.<br />Лапка прячется в листве.<br />По листу проходит ветер.</p></div>
+      <div class="playback"><button type="button" id="play" class="primary" disabled>Пауза</button><button type="button" id="replay" disabled>Повторить</button></div>
+      <div class="rule"></div>
+      <fieldset disabled id="parts"><legend>Посмотреть движение</legend>
+        <button type="button" data-action="ear"><span>01</span> Ухо <span class="arrow">↗</span></button>
+        <button type="button" data-action="paw"><span>02</span> Лапка <span class="arrow">↗</span></button>
+        <button type="button" data-action="leaf"><span>03</span> Лист <span class="arrow">↗</span></button>
+      </fieldset>
+      <div class="scrubber"><label for="pose">Рассмотреть по кадрам <output id="pose-value">0%</output></label><input type="range" id="pose" min="0" max="100" step="1" value="0" disabled /><p>Ползунок останавливает сцену и показывает переход к новой позе.</p></div>
+      <button type="button" id="compare" class="compare" aria-pressed="false" disabled>Сравнить с исходником</button>
+      <p class="note">Проба на исходном PNG.<br />Одно ухо, одна лапка и один лист.</p>
+      <p id="status" class="status" role="status" aria-live="polite">Загрузка рисунка</p>
+    </aside>
+  </main>
+  <footer>OBSESSION <span>Движение начинается с малых вещей.</span><a href="/cattts-motion-lab.html">Предыдущая SVG-проба ↗</a></footer>
+  <script type="module" src="/src/catttsRasterLab.js"></script>
+</body>
+</html>

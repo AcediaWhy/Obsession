@@ -292,36 +292,34 @@
   background: rgba(129, 140, 248, 0.4);
 }
 
-/* Тема Ophanim — тёплое золото → магента/фуксия. Переключается data-атрибутом
-   на корне (см. App.tsx). Все accent-утилиты Tailwind теплеют автоматически.
-   Стекло — тёплое тёмное золото: панели как закопчённые витражи. */
+/* Алхимик: старый persisted id ophanim, новая лаванда, шалфей и медь. */
 [data-theme="ophanim"] {
-  --accent: 234 179 8;
-  --accent-cyan: 240 171 252;
-  --accent-violet: 217 70 239;
+  --accent: 185 216 155;
+  --accent-cyan: 207 181 221;
+  --accent-violet: 156 123 172;
 
   --glass-bg: linear-gradient(
     180deg,
-    rgba(36, 26, 10, 0.5),
-    rgba(20, 14, 6, 0.44)
+    rgba(36, 27, 44, 0.79),
+    rgba(24, 18, 31, 0.75)
   );
-  --glass-border: rgba(253, 224, 71, 0.14);
-  --glass-specular: rgba(255, 236, 180, 0.2);
+  --glass-border: rgba(193, 139, 101, 0.24);
+  --glass-specular: rgba(226, 204, 234, 0.18);
 }
 
-/* Градиент заголовков: золото → магента, как разогрев глориоли. */
+/* Тёплый молочный → лаванда. */
 [data-theme="ophanim"] .text-gradient {
-  background: linear-gradient(120deg, #fff7df 0%, #fde68a 45%, #e879f9 100%);
+  background: linear-gradient(120deg, #f2e5d5 0%, #dcc6e4 45%, #b69ac7 100%);
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
 }
 
 [data-theme="ophanim"] ::-webkit-scrollbar-thumb {
-  background: rgba(253, 224, 71, 0.2);
+  background: rgba(185, 155, 200, 0.25);
 }
 [data-theme="ophanim"] ::-webkit-scrollbar-thumb:hover {
-  background: rgba(253, 224, 71, 0.4);
+  background: rgba(185, 155, 200, 0.45);
 }
 
 /* Скрытая тема Fallen Down — монохромная пустота (вайб Undertale): чёрный фон,
@@ -469,21 +467,23 @@
   --accent-cyan: 191 227 207;
   --accent-violet: 127 168 150;
 
-  /* Холодное мятно-дымчатое стекло не прячет живую модель на дальнем плане. */
+  /* Холодное мятно-дымчатое стекло не прячет живую модель на дальнем плане.
+     Плотность подложки чуть выше стандартной: backdrop-filter у этой темы
+     отключён (см. ниже), и потерянные блюр с насыщением компенсируются альфой. */
   --glass-bg: linear-gradient(
     145deg,
-    rgba(38, 66, 51, 0.43),
-    rgba(21, 42, 31, 0.35)
+    rgba(38, 66, 51, 0.47),
+    rgba(21, 42, 31, 0.4)
   );
   --glass-border: rgba(206, 238, 218, 0.21);
-  --glass-blur: 3.5px;
-  --glass-sat: 110%;
+  --glass-blur: 0px;
+  --glass-sat: 100%;
   --glass-specular: rgba(239, 255, 244, 0.3);
 }
 
 /* Градиент заголовков: крем бумаги → мята волос → янтарный уголёк. */
 [data-theme="yanineko"] .text-gradient {
-  background: linear-gradient(120deg, #f7efdd 0%, #bfe3cf 45%, #e8892e 100%);
+  background: linear-gradient(120deg, #264934 0%, #4f725b 52%, #9d5a18 100%);
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
@@ -496,7 +496,14 @@
   background: rgba(232, 180, 120, 0.4);
 }
 
+/* backdrop-filter выключен только у этой темы. Её подложка — живой WebGL-канвас,
+   поэтому размытие фона под каждой панелью пересчитывалось на каждый кадр:
+   замер дал 1.7 п.п. CPU и 21 МБ видеопамяти за 3.5 px блюра, которых на почти
+   ровном мятном градиенте всё равно не видно. `blur(0)` тут не помогает —
+   saturate() сам по себе тоже требует снимка фона. */
 [data-theme="yanineko"] .glass {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
   box-shadow:
     inset 0 1px rgba(239, 255, 244, 0.18),
     inset 0 -24px 50px rgba(16, 48, 30, 0.08),
@@ -1477,21 +1484,65 @@ body {
       фон там спокойный; заголовки и логотип сохраняют свои тени (правила выше). */
 [data-theme="catnap"] body,
 [data-theme="midnight"] body,
-[data-theme="japan"] body,
-[data-theme="yanineko"] body {
+[data-theme="japan"] body {
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+}
+
+/* Yani — единственная СВЕТЛАЯ тема в наборе, и чёрный ореол из правила выше
+   работал против неё: под тёмным текстом на бледной мяте он читается грязной
+   обводкой, а под светлым — единственным, что вообще делало текст видимым.
+   Отсюда и «вырвиглазность»: почти белый ink.DEFAULT (#F4F5FB) поверх пастельного
+   фона держался только на тени. Вне стекла даём тёмную зелёную тушь и светлый
+   бумажный ореол; внутри стекла (тёмное зелёное стекло) текст остаётся светлым со
+   своей тёмной тенью — правила ниже. */
+[data-theme="yanineko"] body {
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.5);
+}
+[data-theme="yanineko"] .text-ink {
+  color: rgb(24 50 34);
+}
+[data-theme="yanineko"] .wordmark {
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.55);
 }
 [data-theme="catnap"] .text-ink-muted,
 [data-theme="midnight"] .text-ink-muted,
-[data-theme="japan"] .text-ink-muted,
-[data-theme="yanineko"] .text-ink-muted {
+[data-theme="japan"] .text-ink-muted {
   color: rgb(156 164 187);
 }
 [data-theme="catnap"] .text-ink-soft,
 [data-theme="midnight"] .text-ink-soft,
-[data-theme="japan"] .text-ink-soft,
-[data-theme="yanineko"] .text-ink-soft {
+[data-theme="japan"] .text-ink-soft {
   color: rgb(205 212 228);
+}
+
+/* Yani lives on a pale mint scene, while its cards use dark green glass.
+   Keep page copy dark, then flip only text inside glass back to a light ink. */
+[data-theme="yanineko"] .text-ink-muted {
+  color: rgb(58 86 68);
+}
+[data-theme="yanineko"] .text-ink-soft {
+  color: rgb(37 68 48);
+}
+[data-theme="yanineko"] .glass .text-gradient {
+  background: linear-gradient(120deg, #fffaf0 0%, #d9eee0 58%, #efad68 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+[data-theme="yanineko"] .glass .text-ink,
+[data-theme="yanineko"] .glass .text-ink-soft,
+[data-theme="yanineko"] .glass .text-ink-muted {
+  text-shadow: 0 1px 3px rgba(8, 31, 18, 0.72);
+}
+[data-theme="yanineko"] .glass .text-ink {
+  color: rgb(250 253 249);
+}
+[data-theme="yanineko"] .glass .text-ink-soft {
+  color: rgb(239 246 240);
+}
+[data-theme="yanineko"] .glass .text-ink-muted {
+  color: rgb(215 229 218);
+  font-weight: 600;
 }
 
 input,

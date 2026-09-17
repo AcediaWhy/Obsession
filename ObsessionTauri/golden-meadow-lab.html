@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Золотое поле · процедурная проба</title><link rel="stylesheet" href="/src/styles/goldenMeadowLab.css"/></head>
+<body>
+<header><a href="/golden-meadow-lab.html" class="brand">obsession<span> / лаборатория</span></a><span class="edition">ОСЕННИЕ ЭТЮДЫ · 03</span></header>
+<main>
+  <div class="intro"><div><p class="eyebrow">ПО РЕФЕРЕНСУ №2</p><h1>Золотое поле</h1></div><p class="description">Чёрный котик, спелые тыквы<br/>и шелест сухой травы.</p></div>
+  <div class="scene-grid">
+    <figure class="scene-panel"><div class="canvas-wrap"><canvas id="meadow" tabindex="0" aria-describedby="pet-hint" aria-label="Чёрный кот среди тыкв и золотистой травы. Можно погладить котика движением курсора по голове или нажатием Enter, когда рисунок в фокусе."></canvas><span id="loading">Рисую поле…</span></div><figcaption><span>Процедурная версия</span><span id="state" role="status">Подготовка</span></figcaption></figure>
+    <figure class="scene-panel" id="reference-panel" hidden><img src="/lab-assets/golden-meadow/reference.jpg" alt="Предоставленный референс jeeklaart: чёрный кот в густой жёлтой траве среди тыкв"/><figcaption><span>Твой референс</span><span>jeeklaart.jpg</span></figcaption></figure>
+  </div>
+  <div class="controls"><div class="actions"><button type="button" id="pause" aria-pressed="false" class="primary">Пауза</button><button type="button" id="blink">Моргнуть</button><button type="button" id="tail">Шевельнуть хвостом</button><button type="button" id="ears">Пошевелить ушками</button></div><label class="wind">Ветер <input id="wind" type="range" min="0" max="2" step="0.1" value="1"/><output id="wind-value">1.0×</output></label><button type="button" id="compare" aria-pressed="false">Рядом с референсом</button></div>
+  <p class="pet-hint" id="pet-hint">Подвигай мышью после короткой остановки — котик прислушается и шевельнёт хвостом. Проведи шире — по траве пройдёт ветер и качнётся ветка. Работает и поверх плашек. Открытую голову по-прежнему можно погладить; с клавиатуры — Tab до рисунка, затем Enter. На паузе котик отдыхает.</p>
+  <p class="footnote">Проба форм, фактуры и движения. Рисунок создаётся кодом; исходная иллюстрация используется только для сравнения.</p>
+</main>
+<footer><span>OBSESSION / GOLDEN MEADOW</span><a href="/cattts-raster-lab.html">Предыдущая проба ↗</a></footer>
+<script type="module" src="/src/goldenMeadowLab.js"></script>
+</body></html>

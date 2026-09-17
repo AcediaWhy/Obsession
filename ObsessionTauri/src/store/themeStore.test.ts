@@ -7,8 +7,9 @@ describe("theme availability", () => {
     useSecretStore.setState({ unlocked: [] });
   });
 
-  it("puts five regular themes after the flagship and keeps three themes secret", () => {
+  it("offers Golden Meadow first among six regular themes and keeps three themes secret", () => {
     expect(THEMES.filter((theme) => !theme.secret).map((theme) => theme.id)).toEqual([
+      "goldenmeadow",
       "obsession",
       "aurora",
       "ophanim",
@@ -28,6 +29,8 @@ describe("theme availability", () => {
     expect(resolveStoredTheme("aurora")).toBe("aurora");
     expect(resolveStoredTheme("midnight")).toBe("midnight");
     expect(resolveStoredTheme("yanineko")).toBe("yanineko");
+    expect(resolveStoredTheme("goldenmeadow")).toBe("goldenmeadow");
+    expect(resolveStoredTheme("quietpond")).toBe("goldenmeadow");
   });
 
   it("no longer treats Midnight as a secret code", () => {

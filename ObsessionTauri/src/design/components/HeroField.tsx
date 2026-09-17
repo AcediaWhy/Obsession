@@ -2,7 +2,8 @@ import { Component, lazy, Suspense, type ReactNode } from "react";
 import type { Theme } from "../../store/themeStore";
 import { useRenderHidden } from "../render";
 import { AuroraField } from "./AuroraField";
-import { OphanimField } from "./OphanimField";
+import { GoldenMeadowField } from "./GoldenMeadowField";
+import { AlchemistField } from "./AlchemistField";
 import { FallenField } from "./FallenField";
 import { RainFallback } from "./RainFallback";
 import { CatnapField } from "./CatnapField";
@@ -102,7 +103,9 @@ export function HeroField({
   }
 
   let scene: ReactNode;
-  if (theme === "obsession") {
+  if (theme === "goldenmeadow") {
+    scene = <GoldenMeadowField paused={frozen} />;
+  } else if (theme === "obsession") {
     const fallback = <ObsessionChoirFallback paused={frozen} phase={phase} screen={screen} />;
     scene = WEBGL2 ? (
       <ObsessionBoundary fallback={fallback}>
@@ -110,7 +113,7 @@ export function HeroField({
       </ObsessionBoundary>
     ) : fallback;
   } else if (theme === "ophanim") {
-    scene = <OphanimField paused={frozen} />;
+    scene = <AlchemistField paused={frozen} />;
   } else if (theme === "fallendown") {
     scene = <FallenField paused={frozen} />;
   } else if (theme === "catnap") {

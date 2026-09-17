@@ -2,6 +2,7 @@ import { useLayoutEffect, useRef } from "react";
 import { motion } from "framer-motion";
 import { Icon } from "./icons";
 import { EyeLogo } from "./EyeLogo";
+import { GoldenMeadowCore } from "./GoldenMeadowCore";
 import { useMotionOff } from "../render";
 import { dur, ease, spring } from "../tokens";
 import { useThemeStore } from "../../store/themeStore";
@@ -60,9 +61,13 @@ export function NavRail({
       }`}
       data-burning={burning || undefined}
     >
-      {/* Лого — живой глаз (идентичность Obsession). */}
+      {/* Лого следует выбранной теме, а имя продукта остаётся неизменным. */}
       <div className="app-nav-brand mb-8 flex items-center gap-3 px-2">
-        <EyeLogo size={40} />
+        {theme === "goldenmeadow" ? (
+          <GoldenMeadowCore size={40} active={burning} interactive={false} paused={motionOff} />
+        ) : (
+          <EyeLogo size={40} />
+        )}
         <div className="leading-tight">
           <div className="wordmark font-display text-lg font-semibold tracking-tight text-ink">Obsession</div>
           <div className="font-mono text-2xs tabular-nums tracking-widest text-ink-muted">V{__APP_VERSION__}</div>
