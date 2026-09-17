@@ -1,0 +1,6 @@
+<!doctype html><meta charset="utf-8"><title>Golden Meadow poster export</title><p id="status">Preparing poster…</p>
+<script type="module">
+const worker=new Worker(new URL('./poster.worker.js',import.meta.url),{type:'module'});
+worker.onmessage=event=>document.querySelector('#status').textContent=event.data;
+worker.onerror=event=>document.querySelector('#status').textContent=event.message;
+</script>

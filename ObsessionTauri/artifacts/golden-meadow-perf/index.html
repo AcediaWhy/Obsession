@@ -1,0 +1,7 @@
+<!doctype html><meta charset="utf-8"><title>Golden Meadow performance comparison</title>
+<style>
+body{margin:0;background:#a97327;color:#fff;font:15px system-ui}#stage{position:fixed;inset:0;contain:strict}canvas{width:100%;height:100%;object-fit:cover}header{position:relative;z-index:2;padding:16px;background:#21180fed}button{padding:10px 20px}main{position:absolute;inset:90px 30px 24px 220px;display:flex;gap:20px;pointer-events:none}.panel{flex:1;overflow:auto;border-radius:20px;background:#21180fd0;border:1px solid #fff3;box-shadow:0 12px 30px #35200c30}.row{padding:22px;border-bottom:1px solid #fff2}pre{position:relative;z-index:3;max-height:75vh;overflow:auto;background:#111e;white-space:pre-wrap;margin:16px;padding:16px}pre:empty{display:none}
+</style>
+<div id="stage"></div><header><button id="run">Run comparison</button> <span id="status">Ready — 8 seconds per renderer</span></header>
+<main><div class="panel"></div><div class="panel"></div></main><pre id="results"></pre>
+<script type="module" src="./bench.ts"></script>

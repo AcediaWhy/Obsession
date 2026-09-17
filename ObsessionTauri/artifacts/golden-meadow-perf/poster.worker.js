@@ -1,0 +1,12 @@
+import {createGoldenMeadow} from '../../src/labs/goldenMeadowScene.js';
+const canvas=new OffscreenCanvas(1,1);
+const scene=createGoldenMeadow(canvas,{scale:1.5,cacheBackground:true});
+scene.render(0);
+const bytes=new Uint8Array(await (await canvas.convertToBlob({type:'image/webp',quality:.9})).arrayBuffer());
+let binary='';
+for(let i=0;i<bytes.length;i+=16384) binary+=String.fromCharCode(...bytes.subarray(i,i+16384));
+await fetch('/__meadow-perf',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({poster:btoa(binary)})});
+scene.dispose();
+canvas.width=canvas.height=1;
+self.postMessage(`Poster exported: ${bytes.length} bytes`);
+self.close();

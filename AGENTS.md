@@ -1,7 +1,7 @@
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **VlarpSu** (12063 symbols, 61816 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **Obsession** (29845 symbols, 72194 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > Index stale? Run `node .gitnexus/run.cjs analyze` from the project root — it auto-selects an available runner. No `.gitnexus/run.cjs` yet? `npx gitnexus analyze` (npm 11 crash → `npm i -g gitnexus`; #1939).
 
@@ -25,10 +25,10 @@ This project is indexed by GitNexus as **VlarpSu** (12063 symbols, 61816 relatio
 
 | Resource | Use for |
 |----------|---------|
-| `gitnexus://repo/VlarpSu/context` | Codebase overview, check index freshness |
-| `gitnexus://repo/VlarpSu/clusters` | All functional areas |
-| `gitnexus://repo/VlarpSu/processes` | All execution flows |
-| `gitnexus://repo/VlarpSu/process/{name}` | Step-by-step execution trace |
+| `gitnexus://repo/Obsession/context` | Codebase overview, check index freshness |
+| `gitnexus://repo/Obsession/clusters` | All functional areas |
+| `gitnexus://repo/Obsession/processes` | All execution flows |
+| `gitnexus://repo/Obsession/process/{name}` | Step-by-step execution trace |
 
 ## CLI
 
