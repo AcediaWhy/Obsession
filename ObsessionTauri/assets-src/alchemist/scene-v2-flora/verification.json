@@ -1,0 +1,17 @@
+{
+  "crop": {
+    "left": 1380,
+    "top": 480,
+    "width": 156,
+    "height": 210
+  },
+  "extractedPixels": 5810,
+  "neutralDifferentPixels": 0,
+  "losslessVerified": true,
+  "sizes": {
+    "backing": 5342,
+    "tall": 4088,
+    "left": 3414,
+    "right": 4384
+  }
+}

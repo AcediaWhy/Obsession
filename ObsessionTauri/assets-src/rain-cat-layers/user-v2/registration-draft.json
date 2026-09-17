@@ -1,0 +1,59 @@
+{
+  "canvas": [
+    1254,
+    1254
+  ],
+  "order": [
+    "puddle",
+    "umbrella",
+    "tail",
+    "body",
+    "paw",
+    "eyes"
+  ],
+  "transforms": {
+    "body": {
+      "scale": 1,
+      "offset": [
+        0,
+        0
+      ]
+    },
+    "tail": {
+      "scale": 1,
+      "offset": [
+        0,
+        0
+      ]
+    },
+    "eyes": {
+      "scale": 0.72,
+      "offset": [
+        179,
+        196
+      ]
+    },
+    "umbrella": {
+      "scale": 0.6,
+      "offset": [
+        113,
+        220
+      ]
+    },
+    "paw": {
+      "scale": 1,
+      "offset": [
+        0,
+        0
+      ]
+    },
+    "puddle": {
+      "scale": 1,
+      "offset": [
+        0,
+        0
+      ]
+    }
+  },
+  "status": "static registration draft, not animation-ready"
+}

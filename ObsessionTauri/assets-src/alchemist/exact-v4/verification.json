@@ -1,0 +1,10 @@
+{
+  "sourceSha256": "95ad964ef009a35c768f21a1868637e5f06ff52d7682789639ef42cb35804440",
+  "width": 1254,
+  "height": 1254,
+  "sourceAlphaDifferences": 0,
+  "sourceVisibleRgbDifferences": 0,
+  "reassemblyDifferentPixels": 0,
+  "webpDecodedDifferentVisiblePixels": 0,
+  "note": "Original user alpha preserved. No background removal or edge erosion. backing and skin are separate cloned occlusion plates."
+}

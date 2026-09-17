@@ -1,0 +1,99 @@
+{
+  "canvas": [
+    1254,
+    1254
+  ],
+  "source": "C:\\Users\\Usogui\\Downloads\\ChatGPT Image Sep 14, 2026, 08_59_00 AM.png",
+  "order": [
+    "puddle",
+    "umbrella",
+    "tail",
+    "cat-body",
+    "holding-paw",
+    "eyes"
+  ],
+  "pivots": {
+    "cat-body": [
+      634,
+      918
+    ],
+    "eyes": [
+      617,
+      675
+    ],
+    "tail": [
+      776,
+      892
+    ],
+    "umbrella": [
+      512,
+      764
+    ],
+    "holding-paw": [
+      520,
+      763
+    ]
+  },
+  "layers": {
+    "puddle": {
+      "file": "puddle.webp",
+      "bbox": [
+        124,
+        852,
+        1081,
+        1057
+      ],
+      "bytes": 100490
+    },
+    "umbrella": {
+      "file": "umbrella.webp",
+      "bbox": [
+        252,
+        248,
+        979,
+        830
+      ],
+      "bytes": 218714
+    },
+    "tail": {
+      "file": "tail.webp",
+      "bbox": [
+        746,
+        738,
+        861,
+        920
+      ],
+      "bytes": 10810
+    },
+    "cat-body": {
+      "file": "cat-body.webp",
+      "bbox": [
+        436,
+        477,
+        817,
+        935
+      ],
+      "bytes": 79516
+    },
+    "holding-paw": {
+      "file": "holding-paw.webp",
+      "bbox": [
+        487,
+        733,
+        533,
+        787
+      ],
+      "bytes": 3844
+    },
+    "eyes": {
+      "file": "eyes.webp",
+      "bbox": [
+        523,
+        641,
+        706,
+        709
+      ],
+      "bytes": 7666
+    }
+  }
+}

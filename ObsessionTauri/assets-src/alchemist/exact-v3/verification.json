@@ -1,0 +1,13 @@
+{
+  "sourceSha256": "612e0abd1b574af3919e42984604b3b45d0bd73b85054f3fd90518e287f3f9f4",
+  "width": 1254,
+  "height": 1254,
+  "removedBackgroundPixels": 874332,
+  "removedFringePixels": 11968,
+  "exteriorTrimSourcePixels": 2,
+  "retainedPixels": 686216,
+  "retainedRgbChanges": 0,
+  "reassemblyDifferentPixels": 0,
+  "webpDecodedDifferentVisiblePixels": 0,
+  "note": "Background alpha extraction plus two-source-pixel exterior fringe trim; neutral cutouts exact to cleaned reference. backing and skin are separately identified clone-painted occlusion plates, not original art."
+}
