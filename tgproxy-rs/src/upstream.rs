@@ -123,16 +123,26 @@ impl UpstreamReader {
                 buffer.truncate(count);
                 Ok((count != 0).then_some(count))
             }
-            Self::TelegramMessages(read) => match read.recv().await {
-                Some(data) => {
-                    let count = data.len();
-                    *buffer = data;
-                    Ok(Some(count))
+            Self::TelegramMessages(read) => {
+                // Предыдущее сообщение уже обработано pump_down. Отдаём его
+                // allocation до await, чтобы idle-сессия не удерживала до
+                // MAX_MESSAGE_LEN и старый/новый frames не жили одновременно.
+                release_consumed_message(buffer);
+                match read.recv().await {
+                    Some(data) => {
+                        let count = data.len();
+                        *buffer = data;
+                        Ok(Some(count))
+                    }
+                    None => Ok(None),
                 }
-                None => Ok(None),
-            },
+            }
         }
     }
+}
+
+fn release_consumed_message(buffer: &mut Vec<u8>) {
+    drop(std::mem::take(buffer));
 }
 
 #[derive(Clone)]
@@ -160,11 +170,11 @@ impl UpstreamWriter {
         }
     }
 
-    pub async fn send_batch(&self, parts: &[Vec<u8>]) -> io::Result<()> {
+    pub async fn send_batch(&self, parts: Vec<Vec<u8>>) -> io::Result<()> {
         match self {
             Self::ByteStream(write) => tokio::time::timeout(STREAM_WRITE_TIMEOUT, async {
                 let mut write = write.lock().await;
-                for part in parts {
+                for part in &parts {
                     write.write_all(part).await?;
                 }
                 Ok(())
@@ -197,6 +207,14 @@ mod tests {
     use super::*;
     use tokio::net::TcpListener;
 
+    #[test]
+    fn consumed_websocket_message_releases_its_capacity() {
+        let mut buffer = vec![0xa5; 2 * 1024 * 1024];
+        release_consumed_message(&mut buffer);
+        assert!(buffer.is_empty());
+        assert_eq!(buffer.capacity(), 0);
+    }
+
     #[tokio::test]
     async fn tcp_upstream_is_a_byte_stream_and_round_trips() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -212,5 +230,17 @@ mod tests {
         let mut received = [0u8; 4];
         server.read_exact(&mut received).await.unwrap();
         assert_eq!(&received, b"init");
+
+        let (mut upstream_read, _upstream_write) = upstream.into_parts();
+        let mut buffer = Vec::new();
+        server.write_all(b"one").await.unwrap();
+        assert_eq!(upstream_read.recv_into(&mut buffer).await.unwrap(), Some(3));
+        assert_eq!(&buffer, b"one");
+        let capacity = buffer.capacity();
+
+        server.write_all(b"two").await.unwrap();
+        assert_eq!(upstream_read.recv_into(&mut buffer).await.unwrap(), Some(3));
+        assert_eq!(&buffer, b"two");
+        assert_eq!(buffer.capacity(), capacity);
     }
 }

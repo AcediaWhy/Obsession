@@ -3,6 +3,7 @@
 //! Отличие от апстрима: TLS к DC верифицируется по webpki-корням с
 //! проверкой SNI — вместо `CERT_NONE`.
 
+use std::io::IoSlice;
 use std::sync::Arc;
 
 use base64::Engine;
@@ -89,12 +90,10 @@ impl WsWriter {
     }
 
     /// Пакеты одного чанка уходят очередью фреймов с одним flush.
-    pub async fn send_batch(&self, parts: &[Vec<u8>]) -> std::io::Result<()> {
+    pub async fn send_batch(&self, mut parts: Vec<Vec<u8>>) -> std::io::Result<()> {
         tokio::time::timeout(WS_WRITE_TIMEOUT, async {
             let mut write = self.write.lock().await;
-            for part in parts {
-                send_frame(&mut *write, OP_BINARY, part).await?;
-            }
+            send_owned_frames(&mut *write, OP_BINARY, &mut parts).await?;
             write.flush().await
         })
         .await
@@ -159,10 +158,10 @@ impl WsReader {
                     if !fragmenting {
                         return None; // continuation без начального data frame
                     }
-                    fragment.extend_from_slice(&frame.payload);
-                    if fragment.len() > MAX_MESSAGE_LEN {
+                    if !fragment_length_is_valid(fragment.len(), frame.payload.len()) {
                         return None;
                     }
+                    fragment.extend_from_slice(&frame.payload);
                     if frame.fin {
                         return Some(std::mem::take(&mut fragment));
                     }
@@ -186,6 +185,10 @@ impl WsReader {
             }
         }
     }
+}
+
+fn fragment_length_is_valid(current: usize, incoming: usize) -> bool {
+    current <= MAX_MESSAGE_LEN && incoming <= MAX_MESSAGE_LEN - current
 }
 
 /// TCP к `ip:443`, TLS с SNI/верификацией `domain`, HTTP Upgrade на
@@ -381,28 +384,94 @@ where
     write.write_all(&frame).await
 }
 
+/// Отправляет принадлежащие writer'у payload'ы без полной копии WebSocket-фрейма.
+/// После маскирования эти буферы больше не нужны вызывающему коду, поэтому их
+/// можно безопасно изменить на месте и сразу освободить после записи.
+async fn send_owned_frames<W>(
+    write: &mut W,
+    opcode: u8,
+    payloads: &mut [Vec<u8>],
+) -> std::io::Result<()>
+where
+    W: AsyncWriteExt + Unpin,
+{
+    for payload in payloads {
+        send_owned_frame(write, opcode, payload).await?;
+    }
+    Ok(())
+}
+
+async fn send_owned_frame<W>(write: &mut W, opcode: u8, payload: &mut [u8]) -> std::io::Result<()>
+where
+    W: AsyncWriteExt + Unpin,
+{
+    let mut mask = [0u8; 4];
+    rand::rngs::OsRng.fill_bytes(&mut mask);
+    apply_mask(payload, &mask);
+
+    let (header, header_len) = frame_header(opcode, payload.len(), mask);
+    write_frame_parts(write, &header[..header_len], payload).await
+}
+
+async fn write_frame_parts<W>(write: &mut W, header: &[u8], payload: &[u8]) -> std::io::Result<()>
+where
+    W: AsyncWriteExt + Unpin,
+{
+    let slices = [IoSlice::new(header), IoSlice::new(payload)];
+    let written = write.write_vectored(&slices).await?;
+    if written == 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::WriteZero,
+            "failed to write websocket frame",
+        ));
+    }
+
+    if written < header.len() {
+        write.write_all(&header[written..]).await?;
+        write.write_all(payload).await
+    } else {
+        write.write_all(&payload[written - header.len()..]).await
+    }
+}
+
 /// Кодирование клиентского фрейма: FIN=1, маска обязательна для
 /// клиентских фреймов по RFC 6455.
 pub fn encode_frame(out: &mut Vec<u8>, opcode: u8, payload: &[u8]) {
     let mut mask = [0u8; 4];
     rand::rngs::OsRng.fill_bytes(&mut mask);
 
-    out.push(0x80 | opcode);
-    let len = payload.len();
-    if len < 126 {
-        out.push(0x80 | len as u8);
-    } else if len <= u16::MAX as usize {
-        out.push(0x80 | 126);
-        out.extend_from_slice(&(len as u16).to_be_bytes());
-    } else {
-        out.push(0x80 | 127);
-        out.extend_from_slice(&(len as u64).to_be_bytes());
-    }
-    out.extend_from_slice(&mask);
+    let (header, header_len) = frame_header(opcode, payload.len(), mask);
+    out.extend_from_slice(&header[..header_len]);
     let start = out.len();
     out.extend_from_slice(payload);
-    for (i, byte) in out[start..].iter_mut().enumerate() {
-        *byte ^= mask[i % 4];
+    apply_mask(&mut out[start..], &mask);
+}
+
+fn frame_header(opcode: u8, payload_len: usize, mask: [u8; 4]) -> ([u8; 14], usize) {
+    let mut header = [0u8; 14];
+    header[0] = 0x80 | opcode;
+    let mut header_len = 2;
+    if payload_len < 126 {
+        header[1] = 0x80 | payload_len as u8;
+    } else if payload_len <= u16::MAX as usize {
+        header[1] = 0x80 | 126;
+        header[2..4].copy_from_slice(&(payload_len as u16).to_be_bytes());
+        header_len = 4;
+    } else {
+        header[1] = 0x80 | 127;
+        header[2..10].copy_from_slice(&(payload_len as u64).to_be_bytes());
+        header_len = 10;
+    }
+    header[header_len..header_len + mask.len()].copy_from_slice(&mask);
+    header_len += mask.len();
+    (header, header_len)
+}
+
+fn apply_mask(payload: &mut [u8], mask: &[u8; 4]) {
+    for chunk in payload.chunks_mut(mask.len()) {
+        for (byte, mask_byte) in chunk.iter_mut().zip(mask) {
+            *byte ^= mask_byte;
+        }
     }
 }
 
@@ -493,6 +562,80 @@ mod tests {
 
         fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
             Poll::Ready(Ok(()))
+        }
+    }
+
+    struct PartialWriter {
+        bytes: Vec<u8>,
+        max_write: usize,
+    }
+
+    impl AsyncWrite for PartialWriter {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            data: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            let count = data.len().min(self.max_write);
+            self.bytes.extend_from_slice(&data[..count]);
+            Poll::Ready(Ok(count))
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    struct VectoredPartialWriter {
+        bytes: Vec<u8>,
+        first_write_limit: usize,
+        vectored_calls: usize,
+    }
+
+    impl AsyncWrite for VectoredPartialWriter {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            data: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            self.bytes.extend_from_slice(data);
+            Poll::Ready(Ok(data.len()))
+        }
+
+        fn poll_write_vectored(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buffers: &[IoSlice<'_>],
+        ) -> Poll<std::io::Result<usize>> {
+            self.vectored_calls += 1;
+            let available: usize = buffers.iter().map(|buffer| buffer.len()).sum();
+            let mut remaining = self.first_write_limit.min(available);
+            let written = remaining;
+            for buffer in buffers {
+                let count = remaining.min(buffer.len());
+                self.bytes.extend_from_slice(&buffer[..count]);
+                remaining -= count;
+                if remaining == 0 {
+                    break;
+                }
+            }
+            Poll::Ready(Ok(written))
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn is_write_vectored(&self) -> bool {
+            true
         }
     }
 
@@ -609,9 +752,10 @@ mod tests {
     #[tokio::test]
     async fn batched_frames_are_committed_with_one_flush() {
         let mut write = CountingWriter::default();
-        send_frame(&mut write, OP_BINARY, b"one").await.unwrap();
-        send_frame(&mut write, OP_BINARY, b"two").await.unwrap();
-        send_frame(&mut write, OP_BINARY, b"three").await.unwrap();
+        let mut parts = vec![b"one".to_vec(), b"two".to_vec(), b"three".to_vec()];
+        send_owned_frames(&mut write, OP_BINARY, &mut parts)
+            .await
+            .unwrap();
 
         assert_eq!(write.flushes, 0, "frame writes must not flush individually");
         write.flush().await.unwrap();
@@ -622,6 +766,64 @@ mod tests {
         assert_eq!(frames[0].payload, b"one");
         assert_eq!(frames[1].payload, b"two");
         assert_eq!(frames[2].payload, b"three");
+    }
+
+    #[tokio::test]
+    async fn owned_frame_roundtrips_all_length_encodings_without_a_frame_copy() {
+        for len in [0usize, 125, 126, 65_535, 65_536, 1024 * 1024] {
+            let original: Vec<u8> = (0..len).map(|index| index as u8).collect();
+            let mut payload = original.clone();
+            let mut write = CountingWriter::default();
+
+            send_owned_frame(&mut write, OP_BINARY, &mut payload)
+                .await
+                .unwrap();
+
+            let frames = decode_frames(&write.bytes);
+            assert_eq!(frames.len(), 1, "len {len}");
+            assert_eq!(frames[0].payload, original, "len {len}");
+        }
+    }
+
+    #[tokio::test]
+    async fn owned_frame_completes_after_partial_vectored_writes() {
+        let original: Vec<u8> = (0..257).map(|index| index as u8).collect();
+        let mut payload = original.clone();
+        let mut write = PartialWriter {
+            bytes: Vec::new(),
+            max_write: 3,
+        };
+
+        send_owned_frame(&mut write, OP_BINARY, &mut payload)
+            .await
+            .unwrap();
+
+        let frames = decode_frames(&write.bytes);
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].payload, original);
+    }
+
+    #[tokio::test]
+    async fn owned_frame_handles_vectored_writes_at_and_inside_payload_boundary() {
+        // Payload 257 использует 8-байтный WS-заголовок: 4 байта длины и mask.
+        for first_write_limit in [8usize, 8 + 17] {
+            let original: Vec<u8> = (0..257).map(|index| index as u8).collect();
+            let mut payload = original.clone();
+            let mut write = VectoredPartialWriter {
+                bytes: Vec::new(),
+                first_write_limit,
+                vectored_calls: 0,
+            };
+
+            send_owned_frame(&mut write, OP_BINARY, &mut payload)
+                .await
+                .unwrap();
+
+            assert_eq!(write.vectored_calls, 1);
+            let frames = decode_frames(&write.bytes);
+            assert_eq!(frames.len(), 1);
+            assert_eq!(frames[0].payload, original);
+        }
     }
 
     #[test]
@@ -663,6 +865,14 @@ Sec-WebSocket-Protocol: binary\r\n\r\n";
         assert!(read_frame(&mut read).await.is_none());
     }
 
+    #[test]
+    fn fragmented_message_is_rejected_before_exceeding_the_limit() {
+        assert!(fragment_length_is_valid(MAX_MESSAGE_LEN - 1, 1));
+        assert!(!fragment_length_is_valid(MAX_MESSAGE_LEN - 1, 2));
+        assert!(!fragment_length_is_valid(MAX_MESSAGE_LEN, 1));
+        assert!(!fragment_length_is_valid(MAX_MESSAGE_LEN + 1, 0));
+    }
+
     /// Живая проверка против настоящего DC2 Telegram: WS-хендшейк с
     /// верифицированным TLS, отправка relay init + настоящего req_pq_multi,
     /// ожидание непустого ответа DC. Требует сеть — запускать явно:
@@ -688,7 +898,7 @@ Sec-WebSocket-Protocol: binary\r\n\r\n";
         );
         writer.send(&relay).await.expect("send relay init");
         writer
-            .send(&encrypted_req_pq(&relay))
+            .send_batch(vec![encrypted_req_pq(&relay)])
             .await
             .expect("send req_pq_multi");
 

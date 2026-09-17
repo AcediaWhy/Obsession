@@ -12,6 +12,7 @@ publish = false
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync", "signal"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 aes = "0.8"
+ctr = "0.9"
 sha2 = "0.10"
 sha1 = "0.10"
 hmac = "0.12"

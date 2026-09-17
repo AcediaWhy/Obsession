@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 use std::io;
+use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
@@ -721,6 +722,26 @@ async fn dial_dc(
 
 /// Два насоса: client→DC и DC→client. Первый завершившийся гасит второй
 /// и закрывает обе стороны (порт `bridge_ws_reencrypt`).
+#[derive(Default)]
+struct SessionStats {
+    bytes: AtomicUsize,
+    units: AtomicUsize,
+}
+
+impl SessionStats {
+    fn record(&self, bytes: usize, units: usize) {
+        self.bytes.fetch_add(bytes, AtomicOrdering::Relaxed);
+        self.units.fetch_add(units, AtomicOrdering::Relaxed);
+    }
+
+    fn snapshot(&self) -> (usize, usize) {
+        (
+            self.bytes.load(AtomicOrdering::Relaxed),
+            self.units.load(AtomicOrdering::Relaxed),
+        )
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_session(
     client_read: ClientRead,
@@ -742,8 +763,8 @@ async fn run_session(
     let relay_feedback = upstream.relay_feedback();
     let (upstream_read, upstream_write) = upstream.into_parts();
 
-    let up_stats = Arc::new(std::sync::Mutex::new((0usize, 0usize)));
-    let down_stats = Arc::new(std::sync::Mutex::new((0usize, 0usize)));
+    let up_stats = Arc::new(SessionStats::default());
+    let down_stats = Arc::new(SessionStats::default());
     let close_reason = Arc::new(std::sync::Mutex::new("normal".to_string()));
     let started = Instant::now();
 
@@ -776,8 +797,8 @@ async fn run_session(
         }
     }
 
-    let (up_bytes, up_packets) = *up_stats.lock().unwrap();
-    let (down_bytes, down_packets) = *down_stats.lock().unwrap();
+    let (up_bytes, up_packets) = up_stats.snapshot();
+    let (down_bytes, down_packets) = down_stats.snapshot();
     let reason = close_reason.lock().unwrap().clone();
     let media_tag = if is_media { "m" } else { "" };
     let elapsed = started.elapsed();
@@ -822,39 +843,44 @@ async fn pump_up(
     mut clt_dec: CtrCipher,
     mut tg_enc: CtrCipher,
     mut splitter: MsgSplitter,
-    stats: Arc<std::sync::Mutex<(usize, usize)>>,
+    stats: Arc<SessionStats>,
     close_reason: Arc<std::sync::Mutex<String>>,
 ) {
+    let framing = upstream.framing();
     let mut buf = vec![0u8; READ_CHUNK];
+    let mut cipher_scratch = Vec::new();
     loop {
         match read.read(&mut buf).await {
             Ok(0) => {
                 if let Some(tail) = splitter.flush() {
-                    let _ = upstream.send(&tail).await;
+                    let _ = upstream.send_batch(vec![tail]).await;
                 }
                 return;
             }
             Ok(n) => {
                 let chunk = &mut buf[..n];
-                clt_dec.apply(chunk);
-                let mut cipher = chunk.to_vec();
-                tg_enc.apply(&mut cipher);
-                let parts =
-                    prepare_upstream_payloads(upstream.framing(), &mut splitter, chunk, cipher);
-                {
-                    let mut stats = stats.lock().unwrap();
-                    stats.0 += n;
-                    stats.1 += parts.len();
-                }
-                if parts.is_empty() {
-                    continue;
-                }
-                let result = if parts.len() > 1 {
-                    upstream.send_batch(&parts).await
-                } else {
-                    upstream.send(&parts[0]).await
+                let result = match framing {
+                    Framing::ByteStream => {
+                        reencrypt_direct_chunk(&mut clt_dec, &mut tg_enc, chunk);
+                        stats.record(n, 1);
+                        Some(upstream.send(chunk).await)
+                    }
+                    Framing::TelegramMessages => {
+                        clt_dec.apply(chunk);
+                        cipher_scratch.clear();
+                        cipher_scratch.extend_from_slice(chunk);
+                        tg_enc.apply(&mut cipher_scratch);
+
+                        let parts = splitter.split(chunk, &cipher_scratch);
+                        stats.record(n, parts.len());
+                        if parts.is_empty() {
+                            None
+                        } else {
+                            Some(upstream.send_batch(parts).await)
+                        }
+                    }
                 };
-                if let Err(error) = result {
+                if let Some(Err(error)) = result {
                     *close_reason.lock().unwrap() = format!("upstream: {error}");
                     return;
                 }
@@ -867,16 +893,9 @@ async fn pump_up(
     }
 }
 
-fn prepare_upstream_payloads(
-    framing: Framing,
-    splitter: &mut MsgSplitter,
-    plain: &[u8],
-    cipher: Vec<u8>,
-) -> Vec<Vec<u8>> {
-    match framing {
-        Framing::ByteStream => vec![cipher],
-        Framing::TelegramMessages => splitter.split(plain, &cipher),
-    }
+fn reencrypt_direct_chunk(clt_dec: &mut CtrCipher, tg_enc: &mut CtrCipher, chunk: &mut [u8]) {
+    clt_dec.apply(chunk);
+    tg_enc.apply(chunk);
 }
 
 async fn pump_down(
@@ -884,21 +903,17 @@ async fn pump_down(
     mut client_write: ClientWrite,
     mut tg_dec: CtrCipher,
     mut clt_enc: CtrCipher,
-    stats: Arc<std::sync::Mutex<(usize, usize)>>,
+    stats: Arc<SessionStats>,
     close_reason: Arc<std::sync::Mutex<String>>,
 ) {
-    let mut data = Vec::with_capacity(READ_CHUNK);
+    let mut data = Vec::new();
     loop {
         match upstream_read.recv_into(&mut data).await {
             Ok(Some(count)) => {
                 let chunk = &mut data[..count];
                 tg_dec.apply(chunk);
                 clt_enc.apply(chunk);
-                {
-                    let mut stats = stats.lock().unwrap();
-                    stats.0 += count;
-                    stats.1 += 1;
-                }
+                stats.record(count, 1);
                 match tokio::time::timeout(SESSION_WRITE_TIMEOUT, client_write.write_all(chunk))
                     .await
                 {
@@ -955,6 +970,14 @@ mod tests {
         dc: 2,
         is_media: true,
     };
+
+    #[test]
+    fn session_stats_accumulate_without_a_mutex() {
+        let stats = SessionStats::default();
+        stats.record(64, 1);
+        stats.record(128, 3);
+        assert_eq!(stats.snapshot(), (192, 4));
+    }
 
     #[test]
     fn fresh_direct_route_uses_full_timeout() {
@@ -1191,27 +1214,48 @@ mod tests {
     }
 
     #[test]
-    fn byte_stream_bypasses_packet_splitter_but_websocket_waits_for_packet() {
+    fn websocket_waits_for_a_complete_mtproto_packet() {
         let partial_plain = [0x02u8, 0xaa, 0xbb];
-        let partial_cipher = vec![0x10, 0x20, 0x30];
-
-        let mut tcp_splitter = MsgSplitter::new(Proto::Abridged);
-        let tcp_parts = prepare_upstream_payloads(
-            Framing::ByteStream,
-            &mut tcp_splitter,
-            &partial_plain,
-            partial_cipher.clone(),
-        );
-        assert_eq!(tcp_parts, vec![partial_cipher.clone()]);
-
+        let partial_cipher = [0x10, 0x20, 0x30];
         let mut websocket_splitter = MsgSplitter::new(Proto::Abridged);
-        let websocket_parts = prepare_upstream_payloads(
-            Framing::TelegramMessages,
-            &mut websocket_splitter,
-            &partial_plain,
-            partial_cipher,
-        );
+        let websocket_parts = websocket_splitter.split(&partial_plain, &partial_cipher);
         assert!(websocket_parts.is_empty());
+    }
+
+    #[test]
+    fn direct_reencryption_matches_the_copying_path_across_chunk_boundaries() {
+        let client_key = [0x11; 32];
+        let client_iv = [0x22; 16];
+        let telegram_key = [0x33; 32];
+        let telegram_iv = [0x44; 16];
+        let input: Vec<u8> = (0..137)
+            .map(|value| (value as u8).wrapping_mul(37))
+            .collect();
+        let boundaries = [1usize, 18, 65, input.len()];
+
+        let mut old_client = CtrCipher::new(&client_key, &client_iv);
+        let mut old_telegram = CtrCipher::new(&telegram_key, &telegram_iv);
+        let mut expected = Vec::with_capacity(input.len());
+        let mut start = 0;
+        for end in boundaries {
+            let mut plain = input[start..end].to_vec();
+            old_client.apply(&mut plain);
+            let mut cipher = plain.clone();
+            old_telegram.apply(&mut cipher);
+            expected.extend_from_slice(&cipher);
+            start = end;
+        }
+
+        let mut actual = input;
+        let mut new_client = CtrCipher::new(&client_key, &client_iv);
+        let mut new_telegram = CtrCipher::new(&telegram_key, &telegram_iv);
+        let mut start = 0;
+        for end in boundaries {
+            reencrypt_direct_chunk(&mut new_client, &mut new_telegram, &mut actual[start..end]);
+            start = end;
+        }
+
+        assert_eq!(actual, expected);
     }
 
     #[test]
