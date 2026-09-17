@@ -4,13 +4,6 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 
-[features]
-# Exposes SecureNamedPipeServer::new_for_test so integration tests in other
-# crates (runtime-client) can run a same-process pipe server on a process-scoped
-# endpoint whose client policy trusts the current test executable. This feature
-# never changes the production SecureNamedPipeServer::new configuration.
-client-test-policy = []
-
 [dependencies]
 obsession-runtime-protocol = { path = "../runtime-protocol" }
 obsession-runtime-reliability = { path = "../runtime-reliability" }

@@ -1,14 +1,13 @@
-//! Fail-closed граница для устаревших прямых runtime-путей внутри UI-процесса.
+//! Временная fail-closed граница до установки защищённого Windows helper/service.
 //!
-//! Текущий code-bearing runtime ставится только в защищённый Program Files и
-//! запускается службой. Ничего исполняемого из AppData этот модуль не разрешает;
-//! старые прямые вызовы остаются закрытыми, пока их не удалит отдельная миграция.
+//! Старый runtime распаковывает EXE/DLL/SYS/Lua в пользовательский AppData.
+//! Запускать или загружать эти файлы из процесса с повышенными правами нельзя.
 
 /// Стабильный префикс ошибки для frontend и журналов.
 pub const PROTECTED_RUNTIME_UNAVAILABLE_CODE: &str = "secure_runtime_unavailable";
 
-/// Устаревшие прямые code-bearing пути всегда закрыты. Доступ к установленной
-/// службе проверяется отдельно через `protected_runtime`.
+/// Станет динамической проверкой установленного подписанного helper/service.
+/// Пока такого компонента нет, любые code-bearing runtime-пути закрыты.
 pub const fn protected_runtime_available() -> bool {
     false
 }
