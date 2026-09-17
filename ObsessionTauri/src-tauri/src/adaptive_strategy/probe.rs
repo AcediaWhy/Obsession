@@ -1034,17 +1034,43 @@ fn classify_reqwest_error(error: &reqwest::Error) -> FailureStage {
         return FailureStage::Https;
     }
     if error.is_connect() {
-        let chain = reqwest_error_chain(error).to_ascii_lowercase();
-        if chain.contains("tls")
-            || chain.contains("certificate")
-            || chain.contains("handshake")
-            || chain.contains("rustls")
-        {
+        let chain = reqwest_error_chain(error);
+        if reqwest_error_has_rustls_source(error) || connect_error_chain_is_tls(&chain) {
             return FailureStage::Tls;
         }
         return FailureStage::Tcp;
     }
     FailureStage::Https
+}
+
+fn reqwest_error_has_rustls_source(error: &reqwest::Error) -> bool {
+    let mut source = error.source();
+    while let Some(error) = source {
+        if error.downcast_ref::<rustls::Error>().is_some() {
+            return true;
+        }
+        source = error.source();
+    }
+    false
+}
+
+fn connect_error_chain_is_tls(chain: &str) -> bool {
+    let chain = chain.to_ascii_lowercase();
+    [
+        "tls",
+        "certificate",
+        "handshake",
+        "rustls",
+        // rustls record-layer failures can be boxed by hyper without keeping
+        // the concrete rustls::Error type. They still prove that TCP was
+        // established and the failure happened while decoding TLS records.
+        "invalidcontenttype",
+        "invalid content type",
+        "invalidmessage",
+        "corrupt message",
+    ]
+    .iter()
+    .any(|marker| chain.contains(marker))
 }
 
 fn reqwest_error_establishes_tcp(error: &reqwest::Error) -> bool {
@@ -1166,6 +1192,20 @@ fn finish(mut result: TargetProbeResult, started: Instant) -> TargetProbeResult 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rustls_record_errors_are_classified_as_tls_connect_failures() {
+        for detail in [
+            "received corrupt message of type InvalidContentType",
+            "invalid content type in TLS record",
+            "rustls handshake failure",
+        ] {
+            assert!(connect_error_chain_is_tls(detail), "{detail}");
+        }
+        assert!(!connect_error_chain_is_tls(
+            "tcp: connection refused (os error 10061)"
+        ));
+    }
 
     fn result(round: u8, host: &str, core: bool, ok: bool) -> TargetProbeResult {
         TargetProbeResult {

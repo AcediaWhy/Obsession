@@ -251,7 +251,7 @@ mod tests {
         match load_pack(&pack_dir) {
             Ok(pack) => {
                 assert_eq!(pack.manifest.pack_id, "builtin.base");
-                assert_eq!(pack.manifest.pack_version, "0.5.1");
+                assert_eq!(pack.manifest.pack_version, "0.6.0");
                 // Уровень 4 поднимает TCP и QUIC вместе — как youtube на уровне 1.
                 let disc_alt = pack.profiles_for("discord", 4);
                 assert_eq!(disc_alt.len(), 2);
@@ -271,9 +271,12 @@ mod tests {
                 let youtube = pack.profiles_for("youtube_twitch", 1);
                 assert_eq!(youtube.len(), 2);
                 assert_eq!(youtube[0].id, "youtube_tls");
-                assert_eq!(youtube[0].desync, ["multidisorder_legacy:pos=1,midsld"]);
+                // pos=1 давал пустой первый сегмент, поэтому режем только midsld.
+                assert_eq!(youtube[0].desync, ["multidisorder_legacy:pos=midsld"]);
                 assert_eq!(youtube[1].id, "youtube_quic");
-                assert_eq!(youtube[1].desync, ["fake:blob=fake_default_quic:repeats=6"]);
+                // QUIC-фейк должен быть настоящим Initial, а не 0x40 + 619 нулей.
+                assert_eq!(youtube[1].desync, ["fake:blob=quic_google:repeats=6"]);
+                assert_eq!(youtube[1].out_range.as_deref(), Some("-d10"));
 
                 let gaming = pack.profiles_for("gaming", 1);
                 assert_eq!(gaming.len(), 5);
