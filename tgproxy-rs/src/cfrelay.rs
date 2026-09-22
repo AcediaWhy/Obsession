@@ -148,36 +148,61 @@ impl CfRelay {
         peer: &str,
     ) -> Option<(ws::WsReader, Arc<ws::WsWriter>, String)> {
         let media_tag = if is_media { " media" } else { "" };
-        let attempts = async {
-            for base in self.attempt_order(dc) {
-                let host = public_relay_host(dc, is_media, &base);
-                let ip = match dns::resolve(&host).await {
-                    Ok(ip) => ip,
-                    Err(error) => {
-                        self.forget_failed_domain(dc, &base);
-                        logger::warn(format!(
-                            "[{peer}] DC{dc}{media_tag} relay {host}: dns: {error}"
+        let attempts = crate::connect_race::first_ready(
+            self.attempt_order(dc),
+            Duration::from_millis(200),
+            3,
+            |base| {
+                let connector = connector.clone();
+                let peer = peer.to_owned();
+                async move {
+                    let host = public_relay_host(dc, is_media, &base);
+                    let attempt = async {
+                        let ip = match dns::resolve(&host).await {
+                            Ok(ip) => ip,
+                            Err(error) => {
+                                logger::warn(format!(
+                                    "[{peer}] DC{dc}{media_tag} relay {host}: dns: {error}"
+                                ));
+                                return None;
+                            }
+                        };
+                        logger::info(format!(
+                            "[{peer}] DC{dc}{media_tag} -> wss://{host}/apiws via {ip} (cf relay)"
                         ));
-                        continue;
-                    }
-                };
-                logger::info(format!(
-                    "[{peer}] DC{dc}{media_tag} -> wss://{host}/apiws via {ip} (cf relay)"
-                ));
-                match ws::connect(&ip.to_string(), &host, "/apiws", CONNECT_TIMEOUT, connector)
-                    .await
-                {
-                    Ok((reader, writer)) => return Some((reader, writer, base)),
-                    Err(error) => {
-                        self.forget_failed_domain(dc, &base);
-                        logger::warn(format!(
-                            "[{peer}] DC{dc}{media_tag} relay {host} failed: {error}"
-                        ));
+                        match ws::connect(
+                            &ip.to_string(),
+                            &host,
+                            "/apiws",
+                            CONNECT_TIMEOUT,
+                            &connector,
+                        )
+                        .await
+                        {
+                            Ok((reader, writer)) => return Some((reader, writer, base)),
+                            Err(error) => {
+                                logger::warn(format!(
+                                    "[{peer}] DC{dc}{media_tag} relay {host} failed: {error}"
+                                ));
+                            }
+                        }
+                        None
+                    };
+                    // DNS and TLS share one deadline, so neither can occupy a
+                    // race slot indefinitely. A cancelled loser isn't demoted.
+                    match tokio::time::timeout(CONNECT_TIMEOUT, attempt).await {
+                        Ok(result) => result,
+                        Err(_) => {
+                            logger::warn(format!(
+                                "[{peer}] DC{dc}{media_tag} relay attempt timed out"
+                            ));
+                            None
+                        }
                     }
                 }
-            }
-            None
-        };
+            },
+            |base| self.forget_failed_domain(dc, &base),
+        );
         match tokio::time::timeout(FALLBACK_BUDGET, attempts).await {
             Ok(result) => result,
             Err(_) => {

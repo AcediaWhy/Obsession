@@ -633,22 +633,33 @@ async fn dial_tcp_dc(dc: u16, is_test_dc: bool, is_media: bool, peer: &str) -> O
         return None;
     }
 
-    for &(ip, port) in endpoints {
-        logger::info(format!(
-            "[{peer}] DC{dc}{media_tag} -> tcp://{ip}:{port} (direct)"
-        ));
-        match tokio::time::timeout(TCP_CONNECT_TIMEOUT, TcpStream::connect((ip, port))).await {
-            Ok(Ok(stream)) => return Some(Upstream::from_tcp(stream, "direct-tcp")),
-            Ok(Err(error)) => logger::warn(format!(
-                "[{peer}] DC{dc}{media_tag} direct TCP {ip}:{port} failed: {error}"
-            )),
-            Err(_) => logger::warn(format!(
-                "[{peer}] DC{dc}{media_tag} direct TCP {ip}:{port} timed out"
-            )),
-        }
-    }
-
-    None
+    crate::connect_race::first_ready(
+        endpoints.to_vec(),
+        Duration::from_millis(100),
+        2,
+        |(ip, port)| {
+            let peer = peer.to_owned();
+            async move {
+                logger::info(format!(
+                    "[{peer}] DC{dc}{media_tag} -> tcp://{ip}:{port} (direct)"
+                ));
+                match tokio::time::timeout(TCP_CONNECT_TIMEOUT, TcpStream::connect((ip, port)))
+                    .await
+                {
+                    Ok(Ok(stream)) => return Some(Upstream::from_tcp(stream, "direct-tcp")),
+                    Ok(Err(error)) => logger::warn(format!(
+                        "[{peer}] DC{dc}{media_tag} direct TCP {ip}:{port} failed: {error}"
+                    )),
+                    Err(_) => logger::warn(format!(
+                        "[{peer}] DC{dc}{media_tag} direct TCP {ip}:{port} timed out"
+                    )),
+                }
+                None
+            }
+        },
+        |_| {},
+    )
+    .await
 }
 
 async fn dial_dc(
@@ -828,7 +839,9 @@ fn relay_session_verdict(
     down_bytes: usize,
     close_reason: &str,
 ) -> RelaySessionVerdict {
-    if elapsed >= RELAY_CONFIDENCE_TIME && down_bytes > 0 {
+    // Short, substantial downloads also establish a useful relay. Previously
+    // media sessions finishing in <30s never trained the last-good cache.
+    if (elapsed >= RELAY_CONFIDENCE_TIME && down_bytes > 0) || down_bytes >= 1024 * 1024 {
         RelaySessionVerdict::Success
     } else if close_reason.starts_with("upstream:") || down_bytes == 0 {
         RelaySessionVerdict::Failure
@@ -959,6 +972,21 @@ async fn drain_and_close(mut read: ClientRead) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn short_media_download_teaches_relay_cache() {
+        assert!(matches!(
+            super::relay_session_verdict(std::time::Duration::from_secs(10), 1024 * 1024, "normal"),
+            super::RelaySessionVerdict::Success
+        ));
+        assert!(matches!(
+            super::relay_session_verdict(
+                std::time::Duration::from_secs(10),
+                128,
+                "upstream: closed"
+            ),
+            super::RelaySessionVerdict::Failure
+        ));
+    }
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
 

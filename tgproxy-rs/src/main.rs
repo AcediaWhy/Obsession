@@ -8,6 +8,7 @@
 mod bridge;
 mod cfrelay;
 mod cli;
+mod connect_race;
 mod crypto;
 mod dc;
 mod dns;
