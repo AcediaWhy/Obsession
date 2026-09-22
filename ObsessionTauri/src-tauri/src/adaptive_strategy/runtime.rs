@@ -1374,12 +1374,16 @@ async fn prepare_search_data(
             Err(error) => {
                 crate::util::emit_log(
                     app,
-                    "error",
+                    "warn",
                     "adaptive",
-                    &format!(
-                        "baseline calibration failed at {}: probe environment unreliable",
-                        calibration_result.failure_stage.as_str()
-                    ),
+                    &if calibration_result.failure_stage == super::evidence::FailureStage::Dns {
+                        "Подбор приостановлен: системный DNS не разрешает проверочные адреса. Конфиг не оценён; повторите подбор после восстановления DNS.".to_string()
+                    } else {
+                        format!(
+                            "baseline calibration failed at {}: probe environment unreliable",
+                            calibration_result.failure_stage.as_str()
+                        )
+                    },
                 );
                 return Err(error);
             }
@@ -1907,8 +1911,8 @@ fn category_scope_fingerprint(
     )
 }
 fn engine_version() -> String {
-    let (major, minor, patch) = crate::dpi_engine::zapret2::WINWS2_VERSION;
-    format!("{major}.{minor}.{patch}")
+    let (major, minor, patch, revision) = crate::dpi_engine::zapret2::WINWS2_VERSION;
+    format!("{major}.{minor}.{patch}.{revision}")
 }
 
 fn elapsed_ms(started: Instant) -> u64 {

@@ -6,6 +6,7 @@
 //! backend with no privileged capabilities.
 
 pub mod dpi_materializer;
+mod legacy_pack;
 #[cfg(windows)]
 mod hosts_controller;
 #[cfg(windows)]
@@ -34,6 +35,9 @@ mod legacy_cleanup;
 
 #[cfg(windows)]
 pub mod dpi_executor;
+
+#[cfg(windows)]
+mod tcp_timestamps;
 
 #[cfg(windows)]
 pub mod named_pipe;

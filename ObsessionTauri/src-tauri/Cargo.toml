@@ -24,6 +24,10 @@ serde_json = "1"
 tokio = { version = "1", features = ["process", "io-util", "rt-multi-thread", "macros", "time", "net", "sync"] }
 reqwest = { version = "0.12", features = ["rustls-tls"], default-features = false }
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
+h3 = "0.0.8"
+h3-quinn = { version = "0.0.10", default-features = false }
+http = "1"
+bytes = "1"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 webpki-roots = "1"
 regex = "1"
@@ -33,6 +37,9 @@ sha2 = "0.10"
 # Перечисление сетевых адаптеров: выбрать LAN-адрес для QR телефона, отсекая
 # VPN/виртуальные интерфейсы (см. util::lan_ip_for_phone).
 if-addrs = "0.15"
+
+[dev-dependencies]
+rcgen = "0.13"
 
 [target.'cfg(windows)'.dependencies]
 libloading = "0.8"

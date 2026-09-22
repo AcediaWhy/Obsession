@@ -6,6 +6,7 @@ import {
   type ConfStat,
   type DpiProc,
   type DpiStatus,
+  type DpiTestReport,
   type EngineOption,
   type Settings,
   type VersionedSection,
@@ -37,6 +38,7 @@ interface DpiState {
   testCancel: boolean;
   testingLabel: string;
   testResults: Record<string, boolean>;
+  testReports: Record<string, DpiTestReport>;
   netStats: Record<string, ConfStat>;
   error: string;
   engines: EngineOption[];
@@ -87,6 +89,7 @@ export const useDpiStore = create<DpiState>((set, get) => ({
   testCancel: false,
   testingLabel: "",
   testResults: {},
+  testReports: {},
   netStats: {},
   error: "",
   engines: [],
@@ -200,9 +203,11 @@ export const useDpiStore = create<DpiState>((set, get) => ({
   },
 
   setEngine: async (kind) => {
-    if (get().active) return; // не меняем движок при активном обходе
+    if (get().active || get().transitioning || get().testing) return;
+    set({ transitioning: true, error: "" });
     try {
-      await api.dpiEngineSet(kind);
+      await withDeadline(api.dpiEngineSet(kind), TRANSITION_WATCHDOG_MS,
+        "Смена движка не ответила вовремя. Проверяем состояние службы.");
       const selectedCategories =
         kind === "zapret2"
           ? get().categorySelections.zapret2
@@ -211,6 +216,9 @@ export const useDpiStore = create<DpiState>((set, get) => ({
       await Promise.all([get().loadEngines(), get().loadZapret2Profiles()]);
     } catch (e) {
       set({ error: String(e) });
+    } finally {
+      await refreshDpiAfterOperation();
+      set({ transitioning: false });
     }
   },
 
@@ -269,7 +277,9 @@ export const useDpiStore = create<DpiState>((set, get) => ({
       // потеряться/опоздать. Versioned status или следующий snapshot уточнит итог.
       set({ error: String(e) });
     } finally {
-      // Держим блокировку до конца операции (включая старт Глаз на бэкенде).
+      // Also reconcile rejected/timed-out commands: the service can have
+      // completed them even when their response/event never reached the UI.
+      await refreshDpiAfterOperation();
       set({ transitioning: false });
     }
   },
@@ -286,6 +296,7 @@ export const useDpiStore = create<DpiState>((set, get) => ({
     } catch (e) {
       set({ error: String(e) });
     } finally {
+      await refreshDpiAfterOperation();
       set({ transitioning: false });
     }
   },
@@ -294,8 +305,9 @@ export const useDpiStore = create<DpiState>((set, get) => ({
   // категорию — быстро и покрывает весь выбор). Полный перебор конфигов делает
   // autoConfigure. Прерывается флагом testCancel между категориями.
   testAll: async () => {
+    if (get().testing || get().transitioning || get().active) return;
     const { selectedCategories, selectedConfigs, config } = get();
-    set({ testing: true, testCancel: false, testResults: {} });
+    set({ testing: true, testCancel: false, testResults: {}, testReports: {}, error: "" });
     const results: Record<string, boolean> = {};
     try {
       for (const cat of selectedCategories) {
@@ -304,7 +316,10 @@ export const useDpiStore = create<DpiState>((set, get) => ({
         const file = selectedConfigs[cat] || defaultConfig(files);
         if (!file) continue;
         set({ testingLabel: `${cat}: ${file}` });
-        const ok = await api.dpiTest(cat, file);
+        const report = await api.dpiTest(cat, file);
+        if (get().testCancel || report.status === "cancelled") break;
+        const ok = report.passed;
+        set((state) => ({ testReports: { ...state.testReports, [file]: report } }));
         results[file] = ok;
         if (ok) await api.recordWorkingConfig(cat, file);
         set({ testResults: { ...results } });
@@ -314,6 +329,7 @@ export const useDpiStore = create<DpiState>((set, get) => ({
       // навсегда (кнопки Тест/Авто-подбор залипли бы на «Отменить» до рестарта).
       set({ error: String(e) });
     } finally {
+      await refreshDpiAfterOperation();
       set({ testing: false, testingLabel: "", testCancel: false });
     }
     await get().loadStats(); // Обновить статистику надёжности
@@ -328,28 +344,39 @@ export const useDpiStore = create<DpiState>((set, get) => ({
   },
 
   autoConfigure: async () => {
+    if (get().testing || get().transitioning || get().active) return;
     const { selectedCategories, config } = get();
-    set({ testing: true, testCancel: false, testResults: {} });
+    set({ testing: true, testCancel: false, testResults: {}, testReports: {}, error: "" });
     const selected = { ...get().selectedConfigs };
+    const failed: string[] = [];
     try {
       outer: for (const cat of selectedCategories) {
         const files = config?.configs[cat] ?? [];
+        let found = false;
         set({ testingLabel: cat });
         for (const file of files) {
           if (get().testCancel) break outer;
           set({ testingLabel: `${cat}: ${file}` });
-          const ok = await api.dpiTest(cat, file);
+          const report = await api.dpiTest(cat, file);
+          if (get().testCancel || report.status === "cancelled") break outer;
+          const ok = report.passed;
+          set((state) => ({ testReports: { ...state.testReports, [file]: report } }));
+          set((state) => ({ testResults: { ...state.testResults, [file]: ok } }));
           if (ok) {
             await api.recordWorkingConfig(cat, file);
             selected[cat] = file;
+            found = true;
             break;
           }
         }
+        if (!found) failed.push(cat);
       }
+      if (failed.length) set({ error: `Не найден конфиг, прошедший все проверки: ${failed.join(", ")}. Предыдущий выбор сохранён. Частичные результаты доступны в подробностях проверки.` });
     } catch (e) {
       // Как в testAll: любой реджект внутри цикла обязан снять testing-латч.
       set({ error: String(e) });
     } finally {
+      await refreshDpiAfterOperation();
       set({ testing: false, testingLabel: "", testCancel: false, selectedConfigs: selected });
     }
     persist();
@@ -358,6 +385,21 @@ export const useDpiStore = create<DpiState>((set, get) => ({
 
   clearError: () => set({ error: "" }),
 }));
+
+async function refreshDpiAfterOperation() {
+  try {
+    const snapshot = await withDeadline(runtime.bootstrap(), TRANSITION_RECONCILE_TIMEOUT_MS,
+      "Не удалось сверить состояние DPI со службой.");
+    const current = useDpiStore.getState();
+    // A snapshot may legitimately share the last event's revision. Only a
+    // strictly older observation is discarded; do not lose late live events.
+    if (snapshot.dpi.revision >= current.revision) {
+      useDpiStore.setState({ ...statusPatch(snapshot.dpi.value), revision: snapshot.dpi.revision });
+    }
+  } catch {
+    // Preserve the last known status and the original operation error.
+  }
+}
 
 function currentEngine(engines: EngineOption[]): keyof CategorySelections {
   return engines.some((engine) => engine.kind === "zapret2" && engine.selected)

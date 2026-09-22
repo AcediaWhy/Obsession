@@ -3,6 +3,8 @@
 //! Only typed, bounded protocol values cross this boundary. In particular,
 //! the UI cannot provide an executable path, a config path or raw arguments.
 
+pub(crate) mod legacy_test;
+
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
@@ -632,11 +634,21 @@ pub fn dpi_status() -> DpiStatusPayload {
     {
         runtime_snapshot_blocking(DISCOVERY_TIMEOUT)
             .map(project_snapshot)
-            .unwrap_or_else(|_| inactive_status())
+            // A busy/unreachable pipe is NOT a confirmed stop. Keep the last
+            // authenticated generation so the user can still press Stop.
+            .unwrap_or_else(|_| projection_status(&lock_projection()))
     }
     #[cfg(not(windows))]
     {
         inactive_status()
+    }
+}
+
+fn projection_status(projection: &DpiProjection) -> DpiStatusPayload {
+    DpiStatusPayload {
+        active: projection.generation.is_some(),
+        processes: Vec::new(),
+        started_at: projection.started_at_unix,
     }
 }
 
@@ -1631,6 +1643,20 @@ pub async fn dpi_stop(app: &AppHandle) -> Result<(), String> {
 mod tests {
     #[cfg(windows)]
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn unavailable_pipe_preserves_the_last_confirmed_generation() {
+        let active = DpiProjection {
+            generation: Some(7),
+            started_at_unix: Some(123),
+            ..Default::default()
+        };
+        let status = projection_status(&active);
+        assert!(status.active);
+        assert_eq!(status.started_at, Some(123));
+        assert!(!projection_status(&DpiProjection::default()).active);
+    }
 
     #[cfg(windows)]
     #[test]

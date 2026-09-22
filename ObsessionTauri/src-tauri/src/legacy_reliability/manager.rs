@@ -649,12 +649,11 @@ impl ObserveOnlyManager {
     ) -> Option<super::environment_gate::GateRequest> {
         let registry = self.registry.as_ref()?;
         let generation = *self.lane_generations.get(category)?;
-        let category_targets = registry
-            .active_targets_for_category(category)
-            .into_iter()
-            .take(super::environment_gate::MAX_CATEGORY_TARGETS)
-            .map(str::to_owned)
-            .collect::<Vec<_>>();
+        let category_targets = crate::service_health::probe_hosts(
+            category,
+            &registry.active_targets_for_category(category),
+            super::environment_gate::MAX_CATEGORY_TARGETS,
+        );
         if category_targets.is_empty() {
             return None;
         }

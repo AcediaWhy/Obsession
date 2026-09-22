@@ -30,14 +30,14 @@
     "zapret2": {
       "status": "active",
       "role": "beta",
-      "source": "zapret2-v1.0.4-h1 (upstream 2c21faa + Obsession security patch stack, reproducible windows-x86_64 build)",
+      "source": "zapret2-v1.0.5.2-h2 (upstream 6b6c63e + Obsession security patch stack, reproducible windows-x86_64 build)",
       "note": "Изолированный userspace runtime: winws2.exe загружает закреплённый cygwin1.dll и WinDivert.dll из bin/zapret2. Патчи и toolchain lock находятся в third-party/zapret2; kernel-драйвер байт-идентичен Legacy.",
       "files": [
         {
           "path": "bin/zapret2/winws2.exe",
           "role": "engine",
-          "size": 657408,
-          "sha256": "cbec721716d4a9d7cb2400985dee5f6c4195a603c1fc7a0954336839a1972c5f"
+          "size": 658432,
+          "sha256": "d2a3dc3f6bb11f343e6ff74fa083a03e973ddb36d1901632d5ccfc07ccc2912e"
         },
         {
           "path": "bin/zapret2/cygwin1.dll",

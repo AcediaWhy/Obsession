@@ -400,8 +400,8 @@ fn classify_gate_for_category(
 
     if category_targets.is_empty()
         || category_targets.iter().any(|outcome| {
-            outcome.has_http_response()
-                && matches!(outcome.http_status, Some(status) if status >= 500)
+            matches!(outcome.http_status, Some(status) if status >= 500
+                || (status >= 400 && outcome.result != EndpointProbeResult::Succeeded))
         })
     {
         return GateClassification::TargetUnavailable;
@@ -637,7 +637,7 @@ impl ReqwestProbeBackend {
     async fn probe_endpoint(&self, endpoint: String, timeout: Duration) -> EndpointProbeOutcome {
         let started = Instant::now();
         let url = match normalized_https_url(&endpoint) {
-            Ok(url) => url,
+            Ok(url) => crate::service_health::service_url(url),
             Err(()) => {
                 return EndpointProbeOutcome::failed(
                     endpoint,
@@ -695,11 +695,22 @@ impl ReqwestProbeBackend {
         };
 
         match self.client.get(url).timeout(request_budget).send().await {
-            Ok(response) => EndpointProbeOutcome::http(
-                endpoint,
-                elapsed_ms(started),
-                response.status().as_u16(),
-            ),
+            Ok(response) => {
+                let status = response.status().as_u16();
+                let remaining = timeout.saturating_sub(started.elapsed());
+                match crate::service_health::read_response(response, remaining).await {
+                    Ok(_) => EndpointProbeOutcome::http(endpoint, elapsed_ms(started), status),
+                    Err(_) => {
+                        let mut outcome = EndpointProbeOutcome::failed(
+                            endpoint,
+                            EndpointProbeStage::HttpResponse,
+                            elapsed_ms(started),
+                        );
+                        outcome.http_status = Some(status);
+                        outcome
+                    }
+                }
+            }
             Err(error) if error.is_timeout() => EndpointProbeOutcome::timed_out(
                 endpoint,
                 EndpointProbeStage::Transport,
@@ -1958,5 +1969,35 @@ mod tests {
         assert!(normalized_https_url("https://example.com/path").is_ok());
         assert!(normalized_https_url("http://example.com").is_err());
         assert!(normalized_https_url("not a host").is_err());
+    }
+    #[test]
+    fn service_error_status_is_not_dpi_even_when_its_body_is_rejected() {
+        for status in [400, 429, 500, 503] {
+            let mut target = EndpointProbeOutcome::failed(
+                "updates.discord.com",
+                EndpointProbeStage::HttpResponse,
+                10,
+            );
+            target.http_status = Some(status);
+            assert_eq!(
+                classify_gate_for_category(
+                    "discord",
+                    &local_network(),
+                    SensorSnapshot {
+                        state: EyeHealthState::Ready,
+                        has_intersecting_gap: false
+                    },
+                    PassiveEvidenceSummary {
+                        reset_after_client_hello_flows: 3,
+                        reset_targets: 2,
+                        ..Default::default()
+                    },
+                    &healthy_controls(),
+                    &[target],
+                    Some(100)
+                ),
+                GateClassification::TargetUnavailable
+            );
+        }
     }
 }

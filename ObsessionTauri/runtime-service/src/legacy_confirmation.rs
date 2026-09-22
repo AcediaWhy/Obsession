@@ -247,12 +247,9 @@ impl LegacyConfirmationWindow {
                 self.failure = Some(ConfirmationFailure::Environment);
             }
             LegacyHttpsProbeResult::TargetFailure => {
-                // A protected reqwest probe and Discord's Chromium network
-                // stack do not have the same TLS fingerprint. Some valid
-                // desync strategies therefore reset the synthetic probe while
-                // fresh, post-arm Discord connections work. Keep the failure
-                // as bounded negative evidence, but do not let it pre-empt
-                // exact Eyes observations from the real client.
+                // Allow a later successful application probe within the
+                // bounded window. TLS ServerHello evidence alone must never
+                // override a failed update/API request.
                 if self.envelope.category == "discord" {
                     self.failed_target_probes.insert(probe.probe_id);
                 } else {
@@ -399,8 +396,7 @@ impl LegacyConfirmationWindow {
             self.single_target_quorum_at()
         } else {
             self.multi_target_quorum_at()
-        }
-        .or_else(|| self.discord_client_recovery_quorum_at());
+        };
         if let Some(reached_at) = reached_at {
             self.quorum_reached_at_ms = Some(
                 self.quorum_reached_at_ms
@@ -443,25 +439,6 @@ impl LegacyConfirmationWindow {
             .collect::<Vec<_>>();
         completions.sort_unstable();
         completions.get(1).copied()
-    }
-
-    /// Two independent synthetic failures followed by two fresh working
-    /// Discord flows prove a TLS-fingerprint mismatch rather than a broken
-    /// candidate. This exception is deliberately Discord-only: it relies on
-    /// the protected observer's post-arm SNI and generation fencing, never on
-    /// the mere presence of a process or cached UI state.
-    fn discord_client_recovery_quorum_at(&self) -> Option<u64> {
-        if self.envelope.category != "discord" || self.failed_target_probes.len() < 2 {
-            return None;
-        }
-        let mut working = self
-            .working_flows
-            .iter()
-            .map(|flow| (flow.observed_at_ms, flow.flow_id))
-            .collect::<Vec<_>>();
-        working.sort_unstable();
-        working.dedup_by_key(|(_, flow_id)| *flow_id);
-        working.get(1).map(|(observed_at_ms, _)| *observed_at_ms)
     }
 
     fn correspondence_completion_times(&self, target: &str) -> Vec<u64> {
@@ -887,7 +864,16 @@ mod tests {
         );
         assert_eq!(
             window.observe_snapshot(&snapshot, ARM_PROCESS_MS + 90 + CLEAN_WINDOW_MS),
-            LegacyConfirmationDecision::Succeeded
+            LegacyConfirmationDecision::Pending
+        );
+        assert_eq!(
+            window.observe_snapshot(
+                &snapshot,
+                ARM_PROCESS_MS
+                    + LEGACY_CONFIRMATION_DEADLINE_MS
+                    + LEGACY_CONFIRMATION_DELIVERY_GRACE_MS
+            ),
+            LegacyConfirmationDecision::Failed(ConfirmationFailure::Target)
         );
     }
 

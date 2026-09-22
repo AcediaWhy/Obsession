@@ -18,8 +18,8 @@ pub const PACK_SCHEMA_VERSION: u32 = 1;
 /// Возможности хоста (движка), с которыми сверяется пак.
 #[derive(Clone, Copy, Debug)]
 pub struct EngineCapabilities {
-    /// Версия winws2 (major, minor, patch).
-    pub winws2_version: (u32, u32, u32),
+    /// Версия winws2 (major, minor, patch, revision).
+    pub winws2_version: (u32, u32, u32, u32),
     /// Максимальная версия Lua API, которую поддерживает движок.
     pub lua_api: u32,
 }
@@ -27,7 +27,7 @@ pub struct EngineCapabilities {
 /// Требования пака к совместимости.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct EngineCompat {
-    /// Минимальная версия winws2 вида `">=X.Y.Z"`.
+    /// Минимальная версия winws2 вида `">=X.Y.Z"` или `">=X.Y.Z.R"`.
     pub winws2_min: String,
     /// Требуемая версия Lua API (движок должен поддерживать >= этой).
     pub lua_api: u32,
@@ -127,16 +127,25 @@ fn sha256_hex(bytes: &[u8]) -> String {
     h.finalize().iter().map(|b| format!("{b:02x}")).collect()
 }
 
-fn parse_semver(s: &str) -> Option<(u32, u32, u32)> {
+fn parse_semver(s: &str) -> Option<(u32, u32, u32, u32)> {
     let mut it = s.trim().split('.');
-    let major = it.next()?.parse().ok()?;
-    let minor = it.next()?.parse().ok()?;
-    let patch = it.next().unwrap_or("0").parse().ok()?;
-    Some((major, minor, patch))
+    let number = |part: &str| -> Option<u32> {
+        if part.is_empty() || !part.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        part.parse().ok()
+    };
+    let major = number(it.next()?)?;
+    let minor = number(it.next()?)?;
+    let patch = number(it.next().unwrap_or("0"))?;
+    let revision = number(it.next().unwrap_or("0"))?;
+    it.next()
+        .is_none()
+        .then_some((major, minor, patch, revision))
 }
 
-/// `have >= req` для строки вида `">=X.Y.Z"`. Пустое/битое → несовместимо.
-fn winws2_min_satisfied(have: (u32, u32, u32), req: &str) -> bool {
+/// `have >= req` с необязательной четвёртой частью. Пустое/битое → несовместимо.
+fn winws2_min_satisfied(have: (u32, u32, u32, u32), req: &str) -> bool {
     let req = req.trim();
     let Some(rest) = req.strip_prefix(">=") else {
         return false;
@@ -466,9 +475,30 @@ pub fn parse_manifest(bytes: &[u8]) -> Result<StrategyPackManifest, String> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn compares_all_four_engine_version_components() {
+        let have = (1, 0, 5, 2);
+        for requirement in [">=1.0", ">=1.0.4", ">=1.0.5", ">=1.0.5.1", ">=1.0.5.2"] {
+            assert!(winws2_min_satisfied(have, requirement), "{requirement}");
+        }
+        for requirement in [
+            ">=1.0.5.3",
+            ">=1.0.6",
+            ">=2.0",
+            ">=1.0.bad",
+            ">=1.0.5.",
+            ">=1.0.5.2.0",
+            ">=1.0.5.+2",
+            ">=1.0.5.4294967296",
+        ] {
+            assert!(!winws2_min_satisfied(have, requirement), "{requirement}");
+        }
+        assert!(!winws2_min_satisfied((1, 0, 5, 0), ">=1.0.5.2"));
+    }
+
     fn caps() -> EngineCapabilities {
         EngineCapabilities {
-            winws2_version: (1, 0, 2),
+            winws2_version: (1, 0, 2, 0),
             lua_api: 2,
         }
     }

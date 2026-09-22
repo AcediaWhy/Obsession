@@ -6,8 +6,8 @@
 
 use super::manifest::StrategyDef;
 
-pub const WINWS2_VERSION: (u32, u32, u32) = (1, 0, 4);
-/// Patched `winws2` v1.0.4-h1 keeps upstream `lua_compat_ver 6`.
+pub const WINWS2_VERSION: (u32, u32, u32, u32) = (1, 0, 5, 2);
+/// Patched `winws2` v1.0.5.2-h2 keeps upstream `lua_compat_ver 6`.
 pub const LUA_API: u32 = 6;
 pub const LUA_LIB: &str = "lua/zapret-lib.lua";
 
@@ -201,6 +201,14 @@ pub fn validate_profile_scope(profile: &Zapret2Profile) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Protocol-scoped discovery packets have no SNI/Host; do not bind a default hostlist.
+pub fn is_voice_profile(strategy: &StrategyDef) -> bool {
+    let has = |transport: &str| strategy.transports.iter().any(|value| value == transport);
+    let tcp = strategy.transports.is_empty() || has("tcp") || has("tls") || has("http");
+    !tcp && (has("udp") || has("quic"))
+        && recognized_udp_scope(&strategy.filter_l7, &strategy.payload)
 }
 
 pub fn capture_ports(profiles: &[Zapret2Profile], tcp: bool) -> Option<String> {

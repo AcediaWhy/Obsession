@@ -300,8 +300,22 @@ impl From<WindowsError> for ProcessError {
     }
 }
 
-#[derive(Default)]
-pub struct WindowsJobLauncher;
+pub struct WindowsJobLauncher {
+    timestamps: crate::tcp_timestamps::TimestampController,
+}
+
+impl WindowsJobLauncher {
+    pub fn new(layout: ProtectedDataLayout) -> std::io::Result<Self> {
+        Ok(Self { timestamps: crate::tcp_timestamps::TimestampController::new(layout)? })
+    }
+}
+
+fn timestamp_process_error(error: std::io::Error) -> ProcessError {
+    ProcessError::Windows(WindowsError::new(
+        windows::Win32::Foundation::E_FAIL,
+        format!("TCP timestamps: {error}"),
+    ))
+}
 
 impl RuntimeProcessLauncher for WindowsJobLauncher {
     type Group = WindowsJobGroup;
@@ -314,6 +328,9 @@ impl RuntimeProcessLauncher for WindowsJobLauncher {
         if launches.is_empty() {
             return Err(ProcessError::NoLaunches);
         }
+        // Declared before the job: on launch failure the kill-on-close job is
+        // destroyed before the lease restores the global setting.
+        let timestamps = self.timestamps.acquire(launches).map_err(timestamp_process_error)?;
         let job = create_kill_on_close_job(launches.len() as u32)?;
         let mut processes = Vec::with_capacity(launches.len());
         for launch in launches {
@@ -329,6 +346,7 @@ impl RuntimeProcessLauncher for WindowsJobLauncher {
             processes,
             identities,
             terminated: false,
+            timestamps,
         })
     }
 }
@@ -338,6 +356,7 @@ pub struct WindowsJobGroup {
     processes: Vec<OwnedProcess>,
     identities: Vec<ProcessIdentity>,
     terminated: bool,
+    timestamps: crate::tcp_timestamps::TimestampLease,
 }
 
 impl RuntimeProcessGroup for WindowsJobGroup {
@@ -350,7 +369,8 @@ impl RuntimeProcessGroup for WindowsJobGroup {
             unsafe { TerminateJobObject(self.job.raw(), RUNTIME_TERMINATION_EXIT_CODE)? };
             self.terminated = true;
         }
-        wait_for_all_stopped(&self.processes, timeout)
+        wait_for_all_stopped(&self.processes, timeout)?;
+        self.timestamps.release().map_err(timestamp_process_error)
     }
 }
 
@@ -360,6 +380,8 @@ impl Drop for WindowsJobGroup {
             let _ = unsafe { TerminateJobObject(self.job.raw(), RUNTIME_TERMINATION_EXIT_CODE) };
             self.terminated = true;
         }
+        let _ = wait_for_all_stopped(&self.processes, STOP_TIMEOUT);
+        // Fields drop in declaration order, closing the job before the lease.
     }
 }
 

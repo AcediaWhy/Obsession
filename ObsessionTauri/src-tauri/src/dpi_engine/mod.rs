@@ -58,10 +58,10 @@ impl EngineKind {
                 beta: false,
             },
             EngineKind::Zapret2 => {
-                let (a, b, c) = zapret2::WINWS2_VERSION;
+                let (a, b, c, d) = zapret2::WINWS2_VERSION;
                 EngineDescribe {
                     kind: "zapret2",
-                    version: format!("{a}.{b}.{c}"),
+                    version: format!("{a}.{b}.{c}.{d}"),
                     beta: true,
                 }
             }
@@ -194,6 +194,11 @@ mod tests {
     use super::*;
 
     #[test]
+    fn engine_description_preserves_upstream_revision() {
+        assert_eq!(EngineKind::Zapret2.describe().version, "1.0.5.2");
+    }
+
+    #[test]
     fn parse_defaults_to_legacy() {
         assert_eq!(EngineKind::parse("legacy"), EngineKind::Legacy);
         assert_eq!(EngineKind::parse("zapret2"), EngineKind::Zapret2);
@@ -251,14 +256,22 @@ mod tests {
         match load_pack(&pack_dir) {
             Ok(pack) => {
                 assert_eq!(pack.manifest.pack_id, "builtin.base");
-                assert_eq!(pack.manifest.pack_version, "0.6.0");
+                assert_eq!(pack.manifest.pack_version, "0.7.0");
                 // Уровень 4 поднимает TCP и QUIC вместе — как youtube на уровне 1.
                 let disc_alt = pack.profiles_for("discord", 4);
-                assert_eq!(disc_alt.len(), 2);
+                assert_eq!(disc_alt.len(), 3);
                 assert!(disc_alt
                     .iter()
                     .any(|s| s.id == "discord_tls_multidisorder_alt"));
                 assert!(disc_alt.iter().any(|s| s.id == "discord_quic_alt"));
+                for level in 1..=4 {
+                    let profiles = pack.profiles_for("discord", level);
+                    assert_eq!(profiles.len(), 3);
+                    assert!(profiles.iter().any(zapret2::is_voice_profile));
+                    assert!(profiles
+                        .iter()
+                        .any(|p| p.transports.iter().any(|t| t == "quic")));
+                }
                 // Discord-стратегии отсортированы по агрессивности.
                 let disc = pack.strategies_for("discord");
                 assert!(!disc.is_empty(), "должны быть discord-стратегии");

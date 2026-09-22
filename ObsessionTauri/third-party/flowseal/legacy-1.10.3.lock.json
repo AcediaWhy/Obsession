@@ -1,0 +1,109 @@
+{
+  "upstream": "https://github.com/Flowseal/zapret-discord-youtube",
+  "tag": "1.10.3",
+  "date": "2026-09-21",
+  "sources": [
+    {
+      "path": "general.bat",
+      "sha256": "22dff943d6ab2493d6463f6e8d9390b8ccbeceb7e5e87742ecc97704bc2bc185"
+    },
+    {
+      "path": "general (ALT6).bat",
+      "sha256": "cb2323d4d8b112f4ac0ab2dc4260193aceaa25e85820e78357134144c8a17b85"
+    },
+    {
+      "path": "general (ALT2).bat",
+      "sha256": "8d1843b688638f927eaff9217723781a8dcc4e2180459e59d06308e2a8052ac1"
+    },
+    {
+      "path": "general (FAKE TLS AUTO ALT).bat",
+      "sha256": "31a398ff95c826c6687fbe104b0dcc8a9214906d829fa6a65c5436559cee3bf9"
+    },
+    {
+      "path": "general (FAKE TLS AUTO ALT2).bat",
+      "sha256": "5ec16d4b5b9868dbd821ebc008762d8bc3177127a02c6313748c04501d3486cc"
+    },
+    {
+      "path": "general (FAKE TLS AUTO ALT3).bat",
+      "sha256": "f770a63da43b018d08652c6279d7141abc93a2ea41e931a503c21cea3e39db7e"
+    },
+    {
+      "path": "general (ALT3).bat",
+      "sha256": "5d62b14acb5474b07875c5652adae790a7ab4738a9b2783f99d9a65889f0e20a"
+    },
+    {
+      "path": "general (ALT4).bat",
+      "sha256": "ba0a822e818cf470cc94f88d0a339b21553a9a076f4aa1986db2dfd999f32e3a"
+    },
+    {
+      "path": "general (ALT8).bat",
+      "sha256": "2d452caed86b3a0b2dce8f494dde0e2f6feb428a2ce28cdab40874739f9b3045"
+    },
+    {
+      "path": "general (SIMPLE FAKE).bat",
+      "sha256": "0772e6ef10feb7a77e40e47b5705c46a5a50b415d5eb76dbc188e98084c2fdf9"
+    },
+    {
+      "path": "lists/list-google.txt",
+      "sha256": "a21df8b813593e5cb4f5fd95ca2a34a05fc44ab7dde19735e859e96ad5780301"
+    }
+  ],
+  "mapping": [
+    {
+      "source": "general.bat",
+      "discord": "discord_1.conf",
+      "youtube": "youtube_twitch_1.conf"
+    },
+    {
+      "source": "general (ALT6).bat",
+      "discord": "discord_2.conf",
+      "youtube": "youtube_twitch_2.conf"
+    },
+    {
+      "source": "general (ALT2).bat",
+      "discord": "discord_3.conf",
+      "youtube": "youtube_twitch_3.conf"
+    },
+    {
+      "source": "general (FAKE TLS AUTO ALT).bat",
+      "discord": "discord_4.conf",
+      "youtube": "youtube_twitch_4.conf"
+    },
+    {
+      "source": "general (FAKE TLS AUTO ALT2).bat",
+      "discord": "discord_5.conf",
+      "youtube": "youtube_twitch_5.conf"
+    },
+    {
+      "source": "general (FAKE TLS AUTO ALT3).bat",
+      "discord": "discord_6.conf",
+      "youtube": "youtube_twitch_6.conf"
+    },
+    {
+      "source": "general (ALT3).bat",
+      "discord": "discord_7.conf",
+      "youtube": "youtube_twitch_7.conf"
+    },
+    {
+      "source": "general (ALT4).bat",
+      "discord": "discord_8.conf",
+      "youtube": "youtube_twitch_8.conf"
+    },
+    {
+      "source": "general (ALT8).bat",
+      "discord": "discord_9.conf",
+      "youtube": "youtube_twitch_9.conf"
+    },
+    {
+      "source": "general (SIMPLE FAKE).bat",
+      "discord": "discord_10.conf",
+      "youtube": "youtube_twitch_10.conf"
+    }
+  ],
+  "notes": [
+    "No upstream BAT is executed. Runtime binaries are unchanged.",
+    "Only scoped TCP/QUIC/Discord voice profiles are imported; global ipsets/GameFilter omitted.",
+    "Google-specific TLS profile precedes the general profile; Discord updater has its own Google-derived profile.",
+    "Timestamp-fooling candidates need OS TCP timestamp support; no OS settings are changed."
+  ]
+}

@@ -1,13 +1,13 @@
 {
   "schema_version": 1,
   "upstream_repository": "https://github.com/bol-van/zapret2.git",
-  "upstream_tag": "v1.0.4",
-  "upstream_commit": "2c21faa80e1acb71ddceb8b49176f266b7d33f05",
-  "patchset_version": "h1",
+  "upstream_tag": "v1.0.5.2",
+  "upstream_commit": "6b6c63e3385fa73f8af3be4a69171e947f5a319d",
+  "patchset_version": "h2",
   "outputs": {
     "winws2": {
-      "size": 657408,
-      "sha256": "cbec721716d4a9d7cb2400985dee5f6c4195a603c1fc7a0954336839a1972c5f"
+      "size": 658432,
+      "sha256": "d2a3dc3f6bb11f343e6ff74fa083a03e973ddb36d1901632d5ccfc07ccc2912e"
     },
     "cygwin1": {
       "size": 3234357,

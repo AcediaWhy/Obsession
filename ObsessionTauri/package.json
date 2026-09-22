@@ -10,6 +10,9 @@
     "tauri": "tauri",
     "test": "vitest run",
     "test:watch": "vitest",
+    "audit:dpi": "node scripts/audit-dpi-configs.mjs",
+    "test:dpi-configs": "node --test scripts/audit-dpi-configs.test.mjs",
+    "verify:dpi-parsers": "node scripts/prepare-runtime.mjs --dry-run-engines",
     "build:setup": "node scripts/build-setup.mjs",
     "generate:yani-ear": "node scripts/generate-yani-ear-model.mjs"
   },

@@ -1128,14 +1128,15 @@ fn exact_owner(
     config: &RecoveryConfig,
     lane_generation: obsession_runtime_reliability::legacy_reliability::contracts::LaneGeneration,
 ) -> Option<ProcessOwner> {
-    if runtime.selections.len() != processes.len() {
+    if runtime.engine != obsession_runtime_protocol::DpiEngine::Legacy || processes.len() != 1 {
         return None;
     }
     let category = recovery_category(category)?;
-    let index = runtime.selections.iter().position(|selection| {
+    runtime.selections.iter().find(|selection| {
         selection.category == category && selection.strategy_id == config.config_id()
     })?;
-    let process = processes.get(index)?;
+    // All category profiles are owned by the same generation-fenced Job process.
+    let process = processes.first()?;
     if process.pid == 0 || process.creation_time_100ns == 0 {
         return None;
     }
@@ -1155,5 +1156,68 @@ fn recovery_category(category: &str) -> Option<DpiCategory> {
         "atrisk" | "at_risk" => Some(DpiCategory::AtRisk),
         "universal" => Some(DpiCategory::Universal),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod combined_owner_tests {
+    use super::*;
+    #[test]
+    fn every_selected_category_uses_the_single_exact_process() {
+        let runtime = DpiRuntimeSnapshot {
+            generation: 3,
+            engine: obsession_runtime_protocol::DpiEngine::Legacy,
+            selections: vec![
+                DpiSelection {
+                    category: DpiCategory::Discord,
+                    strategy_id: "discord_14.conf".into(),
+                },
+                DpiSelection {
+                    category: DpiCategory::YoutubeTwitch,
+                    strategy_id: "youtube_twitch_11.conf".into(),
+                },
+            ],
+        };
+        let processes = [ProcessIdentity {
+            pid: 42,
+            creation_time_100ns: 99,
+            executable_sha256: "a".repeat(64),
+        }];
+        for (category, config_id) in [
+            ("discord", "discord_14.conf"),
+            ("youtube_twitch", "youtube_twitch_11.conf"),
+        ] {
+            let config = RecoveryConfig::new(config_id, format!("fingerprint-{category}"));
+            let owner = exact_owner(
+                &runtime,
+                &processes,
+                category,
+                &config,
+                LaneGeneration::new(7),
+            )
+            .unwrap();
+            assert_eq!(owner.pid, 42);
+            assert_eq!(owner.process_start_identity, ProcessStartIdentity::new(99));
+            assert_eq!(&owner.config_fingerprint, config.fingerprint());
+            assert!(
+                exact_owner(&runtime, &[], category, &config, LaneGeneration::new(7)).is_none()
+            );
+            assert!(exact_owner(
+                &runtime,
+                &[processes[0].clone(), processes[0].clone()],
+                category,
+                &config,
+                LaneGeneration::new(7)
+            )
+            .is_none());
+        }
+        assert!(exact_owner(
+            &runtime,
+            &processes,
+            "discord",
+            &RecoveryConfig::new("wrong.conf", "bad"),
+            LaneGeneration::new(7)
+        )
+        .is_none());
     }
 }

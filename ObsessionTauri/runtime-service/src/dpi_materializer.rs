@@ -140,56 +140,54 @@ impl ProtectedDataLayout {
         if plan.engine() == DpiEngine::Zapret2 {
             return self.materialize_zapret2_into(plan, generation, generation_dir);
         }
-        let mut launches = Vec::with_capacity(plan.strategies().len());
-        let mut fingerprint = Sha256::new();
-        fingerprint.update(b"obsession/materialized-dpi-generation/v1\0");
-        fingerprint.update(plan.fingerprint().as_bytes());
-        fingerprint.update(generation.to_le_bytes());
-
-        for (index, strategy) in plan.strategies().iter().enumerate() {
-            let category = category_name(strategy.category());
-            let lane_dir = generation_dir.join(format!("{index}-{category}"));
-            fs::create_dir(&lane_dir).map_err(|source| MaterializationError::Io {
-                operation: "create materialized lane directory",
-                path: lane_dir.clone(),
-                source,
-            })?;
-            reject_reparse_point(&lane_dir)?;
-            self.verify_service_owned_acl(&lane_dir)?;
-
-            let rendered = self.render_legacy_config(strategy, autohosts_root)?;
-            let response_file = lane_dir.join("effective.conf");
-            write_new_synced(&response_file, rendered.as_bytes())?;
-            self.verify_service_owned_acl(&response_file)?;
-
-            let config_sha = sha256_bytes(rendered.as_bytes());
-            fingerprint.update([category_tag(strategy.category())]);
-            fingerprint.update(strategy.strategy_id().as_bytes());
-            fingerprint.update([0]);
-            fingerprint.update(config_sha.as_bytes());
-            launches.push(MaterializedLaunch {
-                executable: plan.executable().to_path_buf(),
-                executable_sha256: plan.executable_resource().sha256().to_owned(),
-                working_directory: plan.root().to_path_buf(),
-                arguments: vec![format!("@{}", response_file.display())],
-                response_file: Some(response_file),
-                engine: plan.engine(),
-                category: strategy.category(),
-                strategy_id: strategy.strategy_id().to_owned(),
-                config_sha256: config_sha,
-            });
-        }
-
-        if launches.is_empty() {
-            return Err(MaterializationError::InvalidConfig(
+        // winws opens WinDivert at priority 0: overlapping category processes
+        // compete for packets. Hostlists do not make kernel filters exclusive.
+        let mut strategies: Vec<_> = plan.strategies().iter().collect();
+        strategies.sort_by_key(|strategy| category_tag(strategy.category()));
+        let first = *strategies
+            .first()
+            .ok_or(MaterializationError::InvalidConfig(
                 "verified plan contains no launch lanes",
+            ))?;
+        let configs = strategies
+            .iter()
+            .map(|strategy| self.render_legacy_config(strategy, autohosts_root))
+            .collect::<Result<Vec<_>, _>>()?;
+        let rendered = if configs.len() == 1 {
+            configs.into_iter().next().expect("checked nonempty plan")
+        } else {
+            crate::legacy_pack::compile(&configs).map_err(MaterializationError::InvalidConfig)?
+        };
+        if rendered.len() as u64 > MAX_CONFIG_BYTES {
+            return Err(MaterializationError::InvalidConfig(
+                "combined Legacy config is oversized",
             ));
         }
+        let response_file = generation_dir.join("effective.conf");
+        write_new_synced(&response_file, rendered.as_bytes())?;
+        self.verify_service_owned_acl(&response_file)?;
+        let config_sha = sha256_bytes(rendered.as_bytes());
+        let mut fingerprint = Sha256::new();
+        fingerprint.update(b"obsession/materialized-legacy-single-process/v2\0");
+        fingerprint.update(plan.fingerprint().as_bytes());
+        fingerprint.update(generation.to_le_bytes());
+        fingerprint.update(config_sha.as_bytes());
         Ok(MaterializedGeneration {
             generation,
             directory: generation_dir.to_path_buf(),
             fingerprint: hex_digest(fingerprint.finalize()),
-            launches,
+            launches: vec![MaterializedLaunch {
+                executable: plan.executable().to_path_buf(),
+                executable_sha256: plan.executable_resource().sha256().to_owned(),
+                working_directory: plan.root().to_path_buf(),
+                arguments: vec![format!("@{}", engine_file_path(&response_file))],
+                response_file: Some(response_file),
+                engine: plan.engine(),
+                // Executor snapshots/observers retain ALL plan selections.
+                category: first.category(),
+                strategy_id: first.strategy_id().to_owned(),
+                config_sha256: config_sha,
+            }],
         })
     }
 
@@ -380,6 +378,28 @@ impl ProtectedDataLayout {
                 Err(error)
             }
         }
+    }
+
+    /// Fixed, service-owned journal location; never accepts a client path.
+    pub(crate) fn tcp_timestamp_journal(&self) -> Result<PathBuf, MaterializationError> {
+        let directory = self.ensure_directory(Path::new("tcp-settings"))?;
+        let path = directory.join("timestamps.restore");
+        match fs::symlink_metadata(&path) {
+            Ok(_) => {
+                reject_reparse_point(&path)?;
+                self.verify_service_owned_acl(&path)?;
+                if !fs::metadata(&path).map_err(|source| MaterializationError::Io {
+                    operation: "inspect TCP timestamps journal", path: path.clone(), source,
+                })?.is_file() {
+                    return Err(MaterializationError::InvalidStatePath);
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(source) => return Err(MaterializationError::Io {
+                operation: "inspect TCP timestamps journal", path: path.clone(), source,
+            }),
+        }
+        Ok(path)
     }
 
     fn ensure_directory(&self, relative: &Path) -> Result<PathBuf, MaterializationError> {
@@ -745,7 +765,10 @@ fn option_requires_resource(option: &str) -> bool {
             | "--ipset"
             | "--ipset-exclude"
             | "--dpi-desync-fake-tls"
+            | "--dpi-desync-fake-http"
             | "--dpi-desync-fake-quic"
+            | "--dpi-desync-fake-discord"
+            | "--dpi-desync-fake-stun"
             | "--dpi-desync-fake-unknown-tcp"
             | "--dpi-desync-fake-unknown-udp"
             | "--dpi-desync-split-seqovl-pattern"
@@ -793,7 +816,7 @@ fn looks_like_path(value: &str) -> bool {
 }
 
 fn path_to_config_value(path: &Path) -> Result<String, MaterializationError> {
-    let value = path.to_string_lossy().into_owned();
+    let value = engine_file_path(path);
     validate_scalar(&value)?;
     if !path.is_absolute() {
         return Err(MaterializationError::InvalidConfig(
@@ -801,6 +824,21 @@ fn path_to_config_value(path: &Path) -> Result<String, MaterializationError> {
         ));
     }
     Ok(value)
+}
+
+/// Rust's canonical Windows paths use a verbatim prefix that the engines' C
+/// file APIs cannot read. Convert only at the CLI boundary, after verification.
+pub(crate) fn engine_file_path(path: &Path) -> String {
+    let value = path.to_string_lossy();
+    if let Some(unc) = value.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{unc}");
+    }
+    if let Some(disk) = value.strip_prefix(r"\\?\") {
+        if matches!(disk.as_bytes(), [drive, b':', b'\\', ..] if drive.is_ascii_alphabetic()) {
+            return disk.to_owned();
+        }
+    }
+    value.into_owned()
 }
 
 fn validate_auto_hostlist(bytes: &[u8]) -> Result<(), MaterializationError> {
@@ -1323,6 +1361,26 @@ fn hex_digest(bytes: impl AsRef<[u8]>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn engine_paths_remove_only_windows_verbatim_filesystem_prefixes() {
+        assert_eq!(
+            engine_file_path(Path::new(r"\\?\C:\Program Files\Obsession\blob.bin")),
+            r"C:\Program Files\Obsession\blob.bin"
+        );
+        assert_eq!(
+            engine_file_path(Path::new(r"\\?\UNC\server\share\blob.bin")),
+            r"\\server\share\blob.bin"
+        );
+        for unchanged in [
+            r"C:\data\blob.bin",
+            r"\\server\share\blob.bin",
+            "/opt/obsession/blob.bin",
+            r"\\?\Volume{example}\blob.bin",
+        ] {
+            assert_eq!(engine_file_path(Path::new(unchanged)), unchanged);
+        }
+    }
     use crate::protected_layout::{ProtectedLayout, RESOURCE_MANIFEST};
     use obsession_runtime_protocol::{DpiRuntimeOptions, DpiSelection, DpiStartRequest};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1549,27 +1607,15 @@ mod tests {
 
         let launch = &materialized.launches()[0];
         let config = fs::read_to_string(launch.response_file().unwrap()).unwrap();
-        assert!(config.contains(
-            &plan
-                .root()
-                .join("runtime/lists/discord.txt")
-                .display()
-                .to_string()
-        ));
-        assert!(config.contains(
-            &plan
-                .root()
-                .join("runtime/bin/fake.bin")
-                .display()
-                .to_string()
-        ));
-        assert!(config.contains(
-            &state
-                .root()
-                .join("dpi/autohosts/discord")
-                .display()
-                .to_string()
-        ));
+        assert!(config.contains(&engine_file_path(
+            &plan.root().join("runtime/lists/discord.txt")
+        )));
+        assert!(config.contains(&engine_file_path(&plan.root().join("runtime/bin/fake.bin"))));
+        assert!(config.contains(&engine_file_path(
+            &state.root().join("dpi/autohosts/discord")
+        )));
+        assert!(!config.contains(r"\\?\"));
+        assert!(!launch.arguments()[0].contains(r"\\?\"));
         assert!(!config.contains("=\"runtime\\"));
         materialized.reverify().unwrap();
 

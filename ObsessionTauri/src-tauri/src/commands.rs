@@ -276,9 +276,9 @@ pub async fn dpi_engine_set(app: AppHandle, engine: String) -> Result<(), String
 }
 
 #[tauri::command]
-pub async fn dpi_test(app: AppHandle, category: String, config_file: String) -> bool {
+pub async fn dpi_test(app: AppHandle, category: String, config_file: String) -> Result<crate::protected_runtime::legacy_test::TestReport, String> {
     if runtime_is_shutting_down(&app) {
-        return false;
+        return Err("Приложение завершает работу.".into());
     }
     let adaptive_busy = app
         .state::<AppState>()
@@ -303,14 +303,14 @@ pub async fn dpi_test(app: AppHandle, category: String, config_file: String) -> 
             "adaptive",
             "Обычный DPI-тест отложен до завершения adaptive search.",
         );
-        return false;
+        return Err("Дождитесь завершения адаптивного поиска.".into());
     }
     let state = app.state::<AppState>();
     let _gate = state.dpi_gate.lock().await;
     if runtime_is_shutting_down(&app) {
-        return false;
+        return Err("Приложение завершает работу.".into());
     }
-    crate::dpi::test(&app, &category, &config_file).await
+    crate::protected_runtime::legacy_test::run(&app, &category, &config_file).await
 }
 
 /// Отмена текущего теста. Намеренно НЕ берёт `dpi_gate` (его держит бегущий

@@ -2,16 +2,16 @@
   "schema_version": 1,
   "upstream": {
     "repository": "https://github.com/bol-van/zapret2.git",
-    "tag": "v1.0.4",
-    "commit": "2c21faa80e1acb71ddceb8b49176f266b7d33f05",
-    "source_date_epoch": 1785483090
+    "tag": "v1.0.5.2",
+    "commit": "6b6c63e3385fa73f8af3be4a69171e947f5a319d",
+    "source_date_epoch": 1789474878
   },
   "patchset": {
-    "version": "h1",
+    "version": "h2",
     "patches": [
       {
         "file": "0001-security-harden-nested-IP-length-dissection.patch",
-        "sha256": "6f7618f755e331c230e64aea29704b84dece963eafc5d2cd9fe3d27763408d2c"
+        "sha256": "85c5ad70ebad6a0e022b63a9ec66dfe2387ea25756ebbc1a1fb8a1c85518651e"
       },
       {
         "file": "0002-security-use-CSPRNG-for-wire-visible-randomness.patch",
@@ -19,7 +19,7 @@
       },
       {
         "file": "0003-security-bound-conntrack-memory-growth.patch",
-        "sha256": "6a35a8c70b3b68f9f06903a3a3062d1aef5bc142275801360e51982e6f2e3d31"
+        "sha256": "a0d46fb27defd48e0e4bec2354f0e709d430265bb95c481024b231ce42c6c1d5"
       },
       {
         "file": "0004-security-rate-limit-QUIC-initial-decryption.patch",
@@ -37,10 +37,10 @@
     "sha256": "5a49743ad6ce4b7f19aac71b55a08052c1feb62750f051982082c12bf62f39c0"
   },
   "windows_release": {
-    "url": "https://github.com/bol-van/zapret2/releases/download/v1.0.4/zapret2-v1.0.4.zip",
-    "sha256": "5760b6d41c09459fff00b4a6fec5437a471a00aac15f734723ede149cd26c709",
+    "url": "https://github.com/bol-van/zapret2/releases/download/v1.0.5.2/zapret2-v1.0.5.2.zip",
+    "sha256": "f585590bea6da82ac2c74926f6ac17e6204ee8b53e455c2ba2edae0c58c5d4ac",
     "windivert_dll": {
-      "path": "zapret2-v1.0.4/binaries/windows-x86_64/WinDivert.dll",
+      "path": "zapret2-v1.0.5.2/binaries/windows-x86_64/WinDivert.dll",
       "size": 47616,
       "sha256": "16abd6a029e65557c6a309bea7b13bf81fff4e193567582e1cddbf6719f323e0"
     }

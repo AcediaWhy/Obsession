@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "pack_id": "builtin.base",
-  "pack_version": "0.6.0",
+  "pack_version": "0.7.0",
   "engine": {
-    "winws2_min": ">=1.0.4",
+    "winws2_min": ">=1.0.5.2",
     "lua_api": 6
   },
   "categories": [
@@ -21,11 +21,11 @@
   "files": [
     {
       "path": "lua/zapret-lib.lua",
-      "sha256": "2740b1bc0e728c4283846df94783844082eabd503ce1f86e3429159e1b4e8de3"
+      "sha256": "b67a470f23b00a8d6e732c4e5135a39b224511e0b71809d5f4616adf62674980"
     },
     {
       "path": "lua/zapret-antidpi.lua",
-      "sha256": "9ef64f894d920e2ceea05707899f67b206d5009ba762eb5265f409264b34214c"
+      "sha256": "31c9dd75b0bd55e98e5306293f2be81e9d2ecadcbbf9157394ff37dcff7dc85a"
     },
     {
       "path": "blobs/tls_clienthello_www_google_com.bin",
@@ -66,6 +66,49 @@
       "desync": [
         "fake:blob=tls_google:tcp_ts=-30000:tcp_ts_up:repeats=4",
         "multisplit:pos=1"
+      ],
+      "filter_tcp": "443,2053,2083,2087,2096,8443"
+    },
+    {
+      "id": "discord_quic_level_1",
+      "category": "discord",
+      "aggressiveness": 1,
+      "lua": "lua/zapret-antidpi.lua",
+      "transports": [
+        "udp",
+        "quic"
+      ],
+      "filter_l7": [
+        "quic"
+      ],
+      "payload": [
+        "quic_initial"
+      ],
+      "desync": [
+        "fake:blob=quic_google:repeats=6"
+      ],
+      "out_range": "-d10"
+    },
+    {
+      "id": "discord_voice_level_1",
+      "category": "discord",
+      "aggressiveness": 1,
+      "lua": "lua/zapret-antidpi.lua",
+      "transports": [
+        "udp"
+      ],
+      "filter_udp": "3478-3480,19294-19344,50000-50100",
+      "filter_l7": [
+        "discord",
+        "stun"
+      ],
+      "payload": [
+        "discord_ip_discovery",
+        "stun"
+      ],
+      "out_range": "-d5",
+      "desync": [
+        "fake:blob=0x00000000000000000000000000000000:repeats=6"
       ]
     },
     {
@@ -86,6 +129,49 @@
       "out_range": "-d10",
       "desync": [
         "fakedsplit:pos=midsld:seqovl=2:tcp_md5:repeats=2"
+      ],
+      "filter_tcp": "443,2053,2083,2087,2096,8443"
+    },
+    {
+      "id": "discord_quic_level_2",
+      "category": "discord",
+      "aggressiveness": 2,
+      "lua": "lua/zapret-antidpi.lua",
+      "transports": [
+        "udp",
+        "quic"
+      ],
+      "filter_l7": [
+        "quic"
+      ],
+      "payload": [
+        "quic_initial"
+      ],
+      "desync": [
+        "fake:blob=quic_google:repeats=6"
+      ],
+      "out_range": "-d10"
+    },
+    {
+      "id": "discord_voice_level_2",
+      "category": "discord",
+      "aggressiveness": 2,
+      "lua": "lua/zapret-antidpi.lua",
+      "transports": [
+        "udp"
+      ],
+      "filter_udp": "3478-3480,19294-19344,50000-50100",
+      "filter_l7": [
+        "discord",
+        "stun"
+      ],
+      "payload": [
+        "discord_ip_discovery",
+        "stun"
+      ],
+      "out_range": "-d5",
+      "desync": [
+        "fake:blob=0x00000000000000000000000000000000:repeats=6"
       ]
     },
     {
@@ -107,6 +193,49 @@
       "desync": [
         "fake:blob=fake_default_tls:tcp_md5:tcp_seq=-10000:tls_mod=rnd,rndsni,dupsid,padencap:repeats=2",
         "fakeddisorder:pos=midsld:seqovl=4:tcp_md5:repeats=2"
+      ],
+      "filter_tcp": "443,2053,2083,2087,2096,8443"
+    },
+    {
+      "id": "discord_quic_level_3",
+      "category": "discord",
+      "aggressiveness": 3,
+      "lua": "lua/zapret-antidpi.lua",
+      "transports": [
+        "udp",
+        "quic"
+      ],
+      "filter_l7": [
+        "quic"
+      ],
+      "payload": [
+        "quic_initial"
+      ],
+      "desync": [
+        "fake:blob=quic_google:repeats=6"
+      ],
+      "out_range": "-d10"
+    },
+    {
+      "id": "discord_voice_level_3",
+      "category": "discord",
+      "aggressiveness": 3,
+      "lua": "lua/zapret-antidpi.lua",
+      "transports": [
+        "udp"
+      ],
+      "filter_udp": "3478-3480,19294-19344,50000-50100",
+      "filter_l7": [
+        "discord",
+        "stun"
+      ],
+      "payload": [
+        "discord_ip_discovery",
+        "stun"
+      ],
+      "out_range": "-d5",
+      "desync": [
+        "fake:blob=0x00000000000000000000000000000000:repeats=6"
       ]
     },
     {
@@ -128,6 +257,28 @@
       "out_range": "-d10",
       "desync": [
         "multidisorder:pos=1,2,midsld,sniext"
+      ]
+    },
+    {
+      "id": "discord_voice_level_4",
+      "category": "discord",
+      "aggressiveness": 4,
+      "lua": "lua/zapret-antidpi.lua",
+      "transports": [
+        "udp"
+      ],
+      "filter_udp": "3478-3480,19294-19344,50000-50100",
+      "filter_l7": [
+        "discord",
+        "stun"
+      ],
+      "payload": [
+        "discord_ip_discovery",
+        "stun"
+      ],
+      "out_range": "-d5",
+      "desync": [
+        "fake:blob=0x00000000000000000000000000000000:repeats=6"
       ]
     },
     {
@@ -299,15 +450,15 @@
   "probes": [
     "discord.com",
     "www.youtube.com",
-    "rr1---sn.googlevideo.com",
     "github.com",
     "api.github.com",
     "www.roblox.com",
-    "www.epicgames.com"
+    "www.epicgames.com",
+    "www.twitch.tv"
   ],
   "fallback": "discord_tls_text",
   "notes": {
-    "scope": "Discord, YouTube/Twitch, and Gaming + GitHub control/data profiles. Discord ladder: lvl1 compatibility fake+multisplit, lvl2 real-ClientHello fakedsplit with server-rejected overlap, lvl3 randomized encapsulating fake plus real-ClientHello fakeddisorder. Discord voice/media/STUN and adaptive game UDP verification remain out of scope.",
+    "scope": "Discord TLS, QUIC and recognized voice discovery/STUN at every level; YouTube/Twitch and Gaming + GitHub control/data profiles. Voice and game-session usability require separate live verification. Adaptive TLS/QUIC overrides preserve voice profiles.",
     "profile_grammar": "Profiles are serialized completely and separated by bare --new only between profiles."
   }
 }

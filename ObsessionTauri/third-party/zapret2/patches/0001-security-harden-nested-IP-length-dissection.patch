@@ -1,17 +1,17 @@
-From 56db728c8f68b1d7945293c61614860733b44eaa Mon Sep 17 00:00:00 2001
+From 759d186c984d839c60450abe314c3a8cd813f519 Mon Sep 17 00:00:00 2001
 From: Obsession Patch Builder <patches@obsession.local>
 Date: Sat, 22 Aug 2026 01:09:25 +0400
-Subject: [PATCH 1/5] security: harden nested IP length dissection
+Subject: [PATCH] security: harden nested IP length dissection
 
 ---
- nfq2/darkmagic.c | 20 ++++++++++++++++++--
- 1 file changed, 18 insertions(+), 2 deletions(-)
+ nfq2/darkmagic.c | 15 +++++++++++++++
+ 1 file changed, 15 insertions(+)
 
 diff --git a/nfq2/darkmagic.c b/nfq2/darkmagic.c
-index 21edb90..b8bcf38 100644
+index ff32a60..6f3d563 100644
 --- a/nfq2/darkmagic.c
 +++ b/nfq2/darkmagic.c
-@@ -387,7 +387,17 @@ bool proto_check_ipv4_payload(const uint8_t *data, size_t len)
+@@ -388,7 +388,17 @@ bool proto_check_ipv4_payload(const uint8_t *data, size_t len)
  // move to transport protocol
  void proto_skip_ipv4(const uint8_t **data, size_t *len, bool *frag, uint16_t *frag_off)
  {
@@ -29,7 +29,7 @@ index 21edb90..b8bcf38 100644
  	if (frag_off) *frag_off = (ntohs(((struct ip*)*data)->ip_off) & IP_OFFMASK) << 3;
  	if (frag) *frag = ntohs(((struct ip*)*data)->ip_off) & (IP_OFFMASK|IP_MF);
  	*data += off;
-@@ -450,6 +460,11 @@ void proto_skip_ipv6(const uint8_t **data, size_t *len, uint8_t *proto_type, boo
+@@ -451,6 +461,11 @@ void proto_skip_ipv6(const uint8_t **data, size_t *len, uint8_t *proto_type, boo
  	if (proto_type) *proto_type = 0; // put error in advance
  	if (frag) *frag = false;
  	if (frag_off) *frag_off = 0;
@@ -41,21 +41,3 @@ index 21edb90..b8bcf38 100644
  
  	HeaderType = ip6->ip6_nxt;
  	if (proto_type) *proto_type = HeaderType;
-@@ -559,14 +574,15 @@ void proto_dissect_l3l4(const uint8_t *data, size_t len, struct dissect *dis, bo
- 	dis->data_pkt = data;
- 	dis->len_pkt = len;
- 
--	uint16_t iplen;
-+	size_t iplen;
- 
- 	if (proto_check_ipv4(data, len) && (no_payload_check || proto_check_ipv4_payload(data, len)))
- 	{
-+		iplen = ntohs(((struct ip*)data)->ip_len);
-+		if (iplen < (size_t)(((struct ip*)data)->ip_hl << 2)) return;
- 		dis->ip = (const struct ip *) data;
- 		dis->proto = dis->ip->ip_p;
- 		p = data;
--		iplen = ntohs(((struct ip*)data)->ip_len);
- 		if (iplen<len) dis->len_pkt = len = iplen;
- 		proto_skip_ipv4(&data, &len, &dis->frag, &dis->frag_off);
- 		dis->len_l3 = data-p;

@@ -329,7 +329,23 @@ impl ProbeSeries {
                 .max()
                 .unwrap_or(0),
         };
+        // A ServerHello cannot override repeated failures while reading HTTP data.
+        let confirmed_http_failure = core_hosts.iter().any(|host| {
+            self.rounds
+                .iter()
+                .flat_map(|batch| &batch.targets)
+                .filter(|target| {
+                    target.core
+                        && target.host == *host
+                        && target.tls_ok
+                        && target.failure_stage == FailureStage::Https
+                })
+                .count()
+                >= required as usize
+        });
         let eyes_working_ok = self.transport == StrategyTransport::Tls
+            && self.category != AdaptiveCategory::Discord
+            && !confirmed_http_failure
             && !core_hosts.is_empty()
             && match requirement {
                 CoreRequirement::All => eyes_working_hosts as usize == core_hosts.len(),
@@ -344,11 +360,13 @@ impl ProbeSeries {
             StrategyTransport::Quic => stage_passes(|target| target.quic_ok),
         };
         let https_ok = stage_passes(|target| target.https_ok);
-        let successful_rounds = round_passes(TargetProbeResult::final_ok).max(
+        let successful_rounds = round_passes(TargetProbeResult::final_ok).max(if eyes_working_ok {
             eyes_working_count
                 .min(self.rounds.len() as u32)
-                .min(u8::MAX as u32) as u8,
-        );
+                .min(u8::MAX as u32) as u8
+        } else {
+            0
+        });
         let application_ok = https_ok || eyes_working_ok;
 
         let failure_stage = if eyes.blackhole_count >= 2 {
@@ -415,7 +433,7 @@ pub fn targets_for(category: AdaptiveCategory, transport: StrategyTransport) -> 
             ProbeTarget {
                 host: "discord.com",
                 port: 443,
-                path: "/",
+                path: crate::service_health::DISCORD_API_PATH,
                 core: true,
             },
             ProbeTarget {
@@ -427,7 +445,7 @@ pub fn targets_for(category: AdaptiveCategory, transport: StrategyTransport) -> 
             ProbeTarget {
                 host: "updates.discord.com",
                 port: 443,
-                path: "/distributions/app/manifests/latest",
+                path: crate::service_health::DISCORD_UPDATE_PATH,
                 core: true,
             },
         ],
@@ -898,16 +916,26 @@ async fn probe_target_cached(
             result.detail = "quic: target timeout exhausted during DNS".into();
             return finish(result, started);
         };
-        match probe_quic(&addresses, target.host, remaining).await {
-            Ok(()) => {
+        match probe_quic(&addresses, target.host, target.path, remaining).await {
+            Ok(evidence) => {
                 result.quic_ok = true;
-                result.https_ok = true;
-                result.failure_stage = FailureStage::None;
-                result.detail = "QUIC Initial acknowledged".into();
+                result.http_status = Some(evidence.status);
+                result.https_ok = (200..=499).contains(&evidence.status);
+                result.failure_stage = if result.https_ok {
+                    FailureStage::None
+                } else {
+                    FailureStage::Https
+                };
+                result.detail = evidence.detail("HTTP/3");
             }
             Err(error) => {
-                result.failure_stage = FailureStage::Quic;
-                result.detail = format!("quic: {error}");
+                result.quic_ok = error.established;
+                result.failure_stage = if error.established {
+                    FailureStage::Https
+                } else {
+                    FailureStage::Quic
+                };
+                result.detail = format!("{}: {}", result.failure_stage.as_str(), error.detail);
             }
         }
         return finish(result, started);
@@ -952,21 +980,41 @@ async fn probe_target_cached(
             }
             let status = response.status().as_u16();
             result.http_status = Some(status);
-            result.https_ok = (200..=499).contains(&status);
-            result.failure_stage = if result.https_ok {
-                FailureStage::None
-            } else {
-                FailureStage::Https
-            };
-            result.detail = format!(
-                "{} {}",
-                if transport == StrategyTransport::Quic {
-                    "HTTP/3"
-                } else {
-                    "HTTPS"
-                },
-                status
-            );
+            if crate::service_health::discord_path(target.host).is_some() {
+                match crate::service_health::read_response(
+                    response,
+                    budget.remaining().unwrap_or_default(),
+                )
+                .await
+                {
+                    Ok(bytes) => {
+                        result.https_ok = true;
+                        result.failure_stage = FailureStage::None;
+                        result.detail =
+                            format!("HTTPS {status}; validated service document ({bytes} bytes)");
+                    }
+                    Err(error) => {
+                        result.failure_stage = FailureStage::Https;
+                        result.detail = format!("HTTPS {status}; {error}");
+                    }
+                }
+                return finish(result, started);
+            }
+            match super::http_probe::read_http_body(response, budget.deadline).await {
+                Ok(evidence) => {
+                    result.https_ok = (200..=499).contains(&status);
+                    result.failure_stage = if result.https_ok {
+                        FailureStage::None
+                    } else {
+                        FailureStage::Https
+                    };
+                    result.detail = evidence.detail("HTTPS");
+                }
+                Err(error) => {
+                    result.failure_stage = FailureStage::Https;
+                    result.detail = format!("HTTPS {status}; {error}");
+                }
+            }
         }
         Ok(Err(error)) => {
             result.failure_stage = classify_reqwest_error(&error);
@@ -1002,29 +1050,43 @@ async fn resolve_addresses(
     target: &ProbeTarget,
     budget: ProbeBudget,
 ) -> Result<Vec<SocketAddr>, String> {
+    resolve_dns_with_retry(budget, || async {
+        tokio::net::lookup_host((target.host, target.port))
+            .await
+            .map(|addresses| bounded_addresses(addresses))
+            .map_err(|error| format!("dns: system resolver: {error}"))
+    })
+    .await
+}
+
+async fn resolve_dns_with_retry<F, Fut>(
+    budget: ProbeBudget,
+    mut lookup: F,
+) -> Result<Vec<SocketAddr>, String>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<Vec<SocketAddr>, String>>,
+{
     let mut last_error = "dns: no addresses".to_string();
     for attempt in 0..2 {
-        match budget
-            .timeout(tokio::net::lookup_host((target.host, target.port)))
-            .await
-        {
+        let remaining = budget
+            .remaining()
+            .ok_or_else(|| "dns: target timeout".to_string())?;
+        // The first resolver call must leave room for the documented retry.
+        let attempt_budget = if attempt == 0 {
+            remaining / 2
+        } else {
+            remaining
+        };
+        match tokio::time::timeout(attempt_budget, lookup()).await {
             Ok(Ok(addresses)) => {
-                let addresses = bounded_addresses(addresses);
                 if !addresses.is_empty() {
                     return Ok(addresses);
                 }
                 last_error = "dns: no addresses".into();
             }
             Ok(Err(error)) => last_error = format!("dns: {error}"),
-            Err(_) => last_error = "dns: timeout".into(),
-        }
-        if attempt == 0
-            && budget
-                .timeout(tokio::time::sleep(Duration::from_millis(150)))
-                .await
-                .is_err()
-        {
-            return Err("dns: target timeout".into());
+            Err(_) => last_error = "dns: system resolver timeout after retry".into(),
         }
     }
     Err(last_error)
@@ -1112,77 +1174,10 @@ fn reqwest_error_chain(error: &reqwest::Error) -> String {
 async fn probe_quic(
     addresses: &[std::net::SocketAddr],
     server_name: &str,
+    path: &str,
     timeout: Duration,
-) -> Result<(), String> {
-    use std::sync::Arc;
-
-    let mut roots = rustls::RootCertStore::empty();
-    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-    let mut crypto = rustls::ClientConfig::builder()
-        .with_root_certificates(roots)
-        .with_no_client_auth();
-    crypto.alpn_protocols = vec![b"h3".to_vec()];
-    let quic_crypto = quinn::crypto::rustls::QuicClientConfig::try_from(crypto)
-        .map_err(|error| format!("TLS config: {error}"))?;
-    let client_config = quinn::ClientConfig::new(Arc::new(quic_crypto));
-
-    let selected = addresses
-        .iter()
-        .find(|address| address.is_ipv6())
-        .into_iter()
-        .chain(addresses.iter().find(|address| address.is_ipv4()))
-        .copied()
-        .collect::<Vec<_>>();
-    if selected.is_empty() {
-        return Err("no addresses".into());
-    }
-
-    let server_name = server_name.to_string();
-    let attempt = async move {
-        let mut set = tokio::task::JoinSet::new();
-        for (index, address) in selected.into_iter().enumerate() {
-            let client_config = client_config.clone();
-            let server_name = server_name.clone();
-            set.spawn(async move {
-                if index > 0 {
-                    tokio::time::sleep(Duration::from_millis(150)).await;
-                }
-                let bind = if address.is_ipv4() {
-                    "0.0.0.0:0"
-                } else {
-                    "[::]:0"
-                }
-                .parse()
-                .map_err(|error| format!("bind address: {error}"))?;
-                let mut endpoint =
-                    quinn::Endpoint::client(bind).map_err(|error| format!("endpoint: {error}"))?;
-                endpoint.set_default_client_config(client_config);
-                let connecting = endpoint
-                    .connect(address, &server_name)
-                    .map_err(|error| format!("connect setup: {error}"))?;
-                let connection = connecting.await.map_err(|error| error.to_string())?;
-                connection.close(0u32.into(), b"adaptive probe complete");
-                Ok::<(), String>(())
-            });
-        }
-
-        let mut last_error = "all address attempts failed".to_string();
-        while let Some(result) = set.join_next().await {
-            match result {
-                Ok(Ok(())) => {
-                    set.abort_all();
-                    return Ok(());
-                }
-                Ok(Err(error)) => last_error = error,
-                Err(error) => last_error = error.to_string(),
-            }
-        }
-        Err(last_error)
-    };
-
-    tokio::time::timeout(timeout, attempt)
-        .await
-        .map_err(|_| "timeout".to_string())?
+) -> Result<super::http_probe::HttpEvidence, super::http_probe::QuicFailure> {
+    super::http_probe::probe_http3(addresses, server_name, path, Instant::now() + timeout).await
 }
 fn finish(mut result: TargetProbeResult, started: Instant) -> TargetProbeResult {
     result.latency_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
@@ -1192,6 +1187,39 @@ fn finish(mut result: TargetProbeResult, started: Instant) -> TargetProbeResult 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn passive_server_hello_cannot_override_repeated_http_body_failures() {
+        let mut rounds = vec![
+            batch(1, true, true),
+            batch(2, true, true),
+            batch(3, true, true),
+        ];
+        for round in &mut rounds {
+            for target in round.targets.iter_mut().filter(|target| target.core) {
+                target.https_ok = false;
+                target.failure_stage = FailureStage::Https;
+                target.detail = "body timeout after 16384 bytes".into();
+            }
+        }
+        let series = ProbeSeries {
+            category: AdaptiveCategory::YoutubeTwitch,
+            transport: StrategyTransport::Tls,
+            required_successes: 2,
+            rounds,
+        };
+        let eyes = EyesProbeEvidence {
+            working_by_host: BTreeMap::from([
+                ("youtube.com".into(), 3),
+                ("www.youtube.com".into(), 3),
+            ]),
+            ..Default::default()
+        };
+        let result = series.evaluate(&eyes);
+        assert!(!result.is_success());
+        assert!(!result.eyes_working_ok);
+        assert_eq!(result.failure_stage, FailureStage::Https);
+    }
 
     #[test]
     fn rustls_record_errors_are_classified_as_tls_connect_failures() {
@@ -1435,12 +1463,12 @@ mod tests {
 
         let result = series.evaluate(&eyes);
 
-        assert!(result.is_success());
-        assert!(result.tls_or_quic_ok);
-        assert!(result.eyes_working_ok);
+        assert!(!result.is_success());
+        assert!(!result.tls_or_quic_ok);
+        assert!(!result.eyes_working_ok);
         assert!(!result.https_ok);
-        assert_eq!(result.successful_rounds, 2);
-        assert_eq!(result.failure_stage, FailureStage::None);
+        assert_eq!(result.successful_rounds, 0);
+        assert_eq!(result.failure_stage, FailureStage::Tls);
     }
 
     #[test]
@@ -1676,6 +1704,28 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Live diagnostic: makes bounded unauthenticated HTTPS requests"]
+    async fn live_discord_probe_diagnostic() {
+        let targets = targets_for(AdaptiveCategory::Discord, StrategyTransport::Tls);
+        let series = run_probe_series_for_targets_with_cache(
+            AdaptiveCategory::Discord,
+            StrategyTransport::Tls,
+            &targets,
+            Duration::from_secs(5),
+            2,
+            2,
+            Duration::from_millis(100),
+            &SessionDnsCache::new(),
+        )
+        .await;
+        for round in series.rounds {
+            for result in round.targets {
+                eprintln!("{}", serde_json::to_string(&result).unwrap());
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn session_dns_cache_is_reused_across_probe_phases() {
         let cache = SessionDnsCache::new();
         let target = ProbeTarget {
@@ -1702,6 +1752,38 @@ mod tests {
         assert_eq!(first, second);
         assert_eq!(cache.address_count(target.host).await, first.len());
         assert!(first.len() <= 2);
+    }
+
+    #[tokio::test]
+    async fn stalled_first_dns_attempt_leaves_time_for_retry() {
+        let mut attempts = 0;
+        let addresses =
+            resolve_dns_with_retry(ProbeBudget::new(Duration::from_millis(200)), || {
+                attempts += 1;
+                let attempt = attempts;
+                async move {
+                    if attempt == 1 {
+                        std::future::pending::<()>().await;
+                    }
+                    Ok(vec!["127.0.0.1:443".parse().unwrap()])
+                }
+            })
+            .await
+            .unwrap();
+        assert_eq!(attempts, 2);
+        assert_eq!(addresses.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn dns_outage_remains_bounded_and_is_not_a_candidate_failure() {
+        let start = Instant::now();
+        let error = resolve_dns_with_retry(ProbeBudget::new(Duration::from_millis(100)), || {
+            std::future::pending::<Result<Vec<SocketAddr>, String>>()
+        })
+        .await
+        .unwrap_err();
+        assert!(error.starts_with("dns:"));
+        assert!(start.elapsed() < Duration::from_secs(1));
     }
 
     fn verdict_batch(transport: StrategyTransport, round: u8, core_results: &[bool]) -> ProbeBatch {

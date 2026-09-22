@@ -20,7 +20,7 @@ use sha2::{Digest, Sha256};
 use crate::protected_layout::{VerifiedDpiPlan, VerifiedResource};
 
 const PACK_SCHEMA_VERSION: u32 = 1;
-const WINWS2_VERSION: (u32, u32, u32) = (1, 0, 4);
+const WINWS2_VERSION: (u32, u32, u32, u32) = (1, 0, 5, 2);
 const LUA_API: u32 = 6;
 const LUA_LIB: &str = "lua/zapret-lib.lua";
 const MAX_PACK_BYTES: u64 = 1024 * 1024;
@@ -309,7 +309,7 @@ fn strategy_supports_transport(
         Zapret2AdaptiveTransport::Tls => {
             strategy.transports.is_empty() || strategy.transports.iter().any(|value| value == "tcp")
         }
-        Zapret2AdaptiveTransport::Quic => strategy.transports.iter().any(|value| value == "udp"),
+        Zapret2AdaptiveTransport::Quic => strategy.transports.iter().any(|value| value == "quic"),
     }
 }
 
@@ -605,10 +605,9 @@ fn profile_from_strategy(
         .hostlist
         .clone()
         .or_else(|| {
-            strategy
-                .ipset
-                .is_none()
-                .then(|| format!("{}.txt", category_name(category)))
+            // Voice discovery has no SNI; a default hostlist would exclude it.
+            let voice = !tcp && udp && recognized_udp_scope(&strategy.filter_l7, &strategy.payload);
+            (strategy.ipset.is_none() && !voice).then(|| format!("{}.txt", category_name(category)))
         })
         .map(|name| list_resource(&name, resources).map(|resource| argv_path(resource.path())))
         .transpose()?;
@@ -746,21 +745,29 @@ fn capture_ports(profiles: &[Profile], tcp: bool) -> Option<String> {
 }
 
 fn minimum_version_satisfied(value: &str) -> bool {
-    let Some(version) = value.strip_prefix(">=") else {
+    let Some(version) = value.trim().strip_prefix(">=") else {
         return false;
     };
-    let mut parts = version.split('.');
-    let Some(major) = parts.next().and_then(|part| part.parse::<u32>().ok()) else {
+    let mut parts = version.trim().split('.');
+    let number = |part: &str| -> Option<u32> {
+        if part.is_empty() || !part.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        part.parse().ok()
+    };
+    let Some(major) = parts.next().and_then(number) else {
         return false;
     };
-    let Some(minor) = parts.next().and_then(|part| part.parse::<u32>().ok()) else {
+    let Some(minor) = parts.next().and_then(number) else {
         return false;
     };
-    let patch = parts
-        .next()
-        .and_then(|part| part.parse::<u32>().ok())
-        .unwrap_or(0);
-    parts.next().is_none() && WINWS2_VERSION >= (major, minor, patch)
+    let Some(patch) = number(parts.next().unwrap_or("0")) else {
+        return false;
+    };
+    let Some(revision) = number(parts.next().unwrap_or("0")) else {
+        return false;
+    };
+    parts.next().is_none() && WINWS2_VERSION >= (major, minor, patch, revision)
 }
 
 fn parse_ports(value: &str) -> Option<Vec<(u16, u16)>> {
@@ -911,7 +918,7 @@ fn is_sha256(value: &str) -> bool {
 }
 
 fn argv_path(path: &Path) -> String {
-    path.to_string_lossy().replace('\\', "/")
+    crate::dpi_materializer::engine_file_path(path).replace('\\', "/")
 }
 
 fn category_name(category: DpiCategory) -> &'static str {
@@ -938,7 +945,63 @@ fn protocol_category(value: &str) -> Option<DpiCategory> {
 #[cfg(test)]
 mod adaptive_profile_tests {
     use super::*;
+
+    #[test]
+    fn compares_all_four_engine_version_components() {
+        for requirement in [">=1.0", ">=1.0.4", ">=1.0.5", ">=1.0.5.1", ">=1.0.5.2"] {
+            assert!(minimum_version_satisfied(requirement), "{requirement}");
+        }
+        for requirement in [
+            ">=1.0.5.3",
+            ">=1.0.6",
+            ">=2.0",
+            ">=1.0.bad",
+            ">=1.0.5.",
+            ">=1.0.5.2.0",
+            ">=1.0.5.+2",
+            ">=1.0.5.4294967296",
+        ] {
+            assert!(!minimum_version_satisfied(requirement), "{requirement}");
+        }
+    }
     use obsession_runtime_protocol::{Zapret2AdaptiveStep, ZAPRET2_ADAPTIVE_SCHEMA_VERSION};
+
+    #[test]
+    fn builtin_voice_profiles_are_hostname_free_and_survive_quic_overrides() {
+        let manifest: StrategyPackManifest = serde_json::from_str(include_str!(
+            "../../src-tauri/resources/strategy-packs/builtin/manifest.json"
+        ))
+        .unwrap();
+        for level in 1..=4 {
+            let profiles = manifest
+                .strategies
+                .iter()
+                .filter(|s| s.category == "discord" && s.aggressiveness == level)
+                .collect::<Vec<_>>();
+            let voice = profiles
+                .iter()
+                .find(|s| s.filter_l7.iter().any(|l7| l7 == "discord"))
+                .unwrap();
+            // No resources: this would fail if the default discord.txt were bound.
+            let built =
+                profile_from_strategy(voice, DpiCategory::Discord, &BTreeMap::new()).unwrap();
+            assert!(built.hostlist.is_none());
+            assert!(!strategy_supports_transport(
+                voice,
+                Zapret2AdaptiveTransport::Quic
+            ));
+            assert!(!strategy_supports_transport(
+                voice,
+                Zapret2AdaptiveTransport::Tls
+            ));
+            assert!(profiles
+                .iter()
+                .any(|s| strategy_supports_transport(s, Zapret2AdaptiveTransport::Quic)));
+            assert!(profiles
+                .iter()
+                .any(|s| strategy_supports_transport(s, Zapret2AdaptiveTransport::Tls)));
+        }
+    }
 
     fn control(filter_tcp: Option<&str>, filter_udp: Option<&str>) -> Profile {
         Profile {

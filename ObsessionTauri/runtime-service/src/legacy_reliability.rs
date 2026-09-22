@@ -36,7 +36,7 @@ use obsession_runtime_reliability::legacy_reliability::contracts::{
     NetworkFingerprint, ProcessOwner, SensorGeneration, SessionId,
 };
 use obsession_runtime_reliability::legacy_reliability::environment_gate::{
-    EnvironmentGate, GateClassification, GateReport, GateRequest, GateRequestError,
+    EnvironmentGate, GateClassification, GateFence, GateReport, GateRequest, GateRequestError,
     LocalNetworkSnapshot, ReqwestProbeBackend,
 };
 use obsession_runtime_reliability::legacy_reliability::ingress::{channel, LegacyIngress};
@@ -69,9 +69,9 @@ const MANAGER_STOP_TIMEOUT: Duration = Duration::from_secs(1);
 const EYES_STOP_TIMEOUT: Duration = Duration::from_secs(1);
 const MAX_CONFIRMATION_TARGETS: usize = 2;
 const ACTIVE_DIAGNOSTIC_INITIAL_DELAY: Duration = Duration::from_secs(15);
-const ACTIVE_DIAGNOSTIC_REFRESH_INTERVAL: Duration = Duration::from_secs(5 * 60);
+const ACTIVE_DIAGNOSTIC_REFRESH_INTERVAL: Duration = Duration::from_secs(15);
 const ACTIVE_DIAGNOSTIC_RETRY_INTERVAL: Duration = Duration::from_secs(60);
-const ACTIVE_DIAGNOSTIC_TTL_MS: u64 = 5 * 60 * 1_000;
+const ACTIVE_DIAGNOSTIC_TTL_MS: u64 = 120 * 1_000;
 
 #[derive(Debug)]
 pub enum LegacyObserverError {
@@ -607,14 +607,15 @@ pub(crate) fn confirmation_candidate_targets(
     {
         return None;
     }
-    let targets = active
+    let allowed = active
         .registry
         .config_target_suffixes(category, candidate.config_id())
-        .ok()?
-        .into_iter()
-        .take(MAX_CONFIRMATION_TARGETS)
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
+        .ok()?;
+    let targets = obsession_runtime_reliability::service_health::probe_hosts(
+        category,
+        &allowed,
+        MAX_CONFIRMATION_TARGETS,
+    );
     (!targets.is_empty()).then_some(targets)
 }
 
@@ -1268,20 +1269,15 @@ fn run_manager(
                                 }
                             },
                             ActiveGatePurpose::Diagnostic { category } => {
-                                let classification = match completion {
+                                match completion {
                                     Ok(Ok(report)) if report.category == category => {
-                                        active_diagnostic_classification(&report)
+                                        record_service_diagnostic(&mut active_diagnostics, &manager.snapshot(), report, now_ms);
                                     }
                                     Ok(Ok(_)) | Ok(Err(_)) | Err(_) => {
-                                        Some(AssessmentClassification::UpstreamDegraded)
+                                        update_active_diagnostic(&mut active_diagnostics, category,
+                                            Some(AssessmentClassification::UpstreamDegraded), now_ms);
                                     }
                                 };
-                                update_active_diagnostic(
-                                    &mut active_diagnostics,
-                                    category,
-                                    classification,
-                                    now_ms,
-                                );
                                 next_diagnostic_at =
                                     Instant::now() + ACTIVE_DIAGNOSTIC_REFRESH_INTERVAL;
                             }
@@ -1458,11 +1454,131 @@ fn next_active_diagnostic(
     None
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct ActiveDiagnostic {
     classification: AssessmentClassification,
     assessed_at_ms: u64,
     expires_at_ms: u64,
+    fence: Option<GateFence>,
+    failed_hosts: BTreeSet<String>,
+    failure_rounds: u8,
+}
+
+fn diagnostic_fence(snapshot: &ObserveOnlySnapshot, category: &str) -> Option<GateFence> {
+    if snapshot.session.closed {
+        return None;
+    }
+    Some(GateFence {
+        session_id: snapshot.session.session_id,
+        lane_generation: *snapshot.session.lane_generations.get(category)?,
+        sensor_generation: snapshot.session.sensor_generation,
+        target_registry_version: snapshot.session.target_registry_version,
+        network_fingerprint: snapshot.session.network_fingerprint_at_start.clone(),
+    })
+}
+
+/// Two independent, fenced service failures with healthy neutral controls
+/// may start bounded recovery even when Eyes only observed a ServerHello.
+/// DNS failures, 4xx/5xx replies and loss of sensor/network identity cannot.
+fn record_service_diagnostic(
+    diagnostics: &mut BTreeMap<String, ActiveDiagnostic>,
+    snapshot: &ObserveOnlySnapshot,
+    report: GateReport,
+    now_ms: u64,
+) {
+    use obsession_runtime_reliability::legacy_reliability::environment_gate::EndpointProbeStage;
+    let Some(fence) = diagnostic_fence(snapshot, &report.category) else {
+        return;
+    };
+    if !report.is_fresh(now_ms, &fence) {
+        return;
+    }
+    let healthy = !report.category_targets.is_empty()
+        && report
+            .category_targets
+            .iter()
+            .all(|r| r.category_target_reachable());
+    let is_discord_health = report.category == "discord"
+        && obsession_runtime_reliability::service_health::DISCORD_HEALTH_HOSTS
+            .iter()
+            .all(|host| {
+                report.category_targets.iter().any(|r| {
+                    r.endpoint == *host
+                        || reqwest::Url::parse(&r.endpoint)
+                            .ok()
+                            .is_some_and(|u| u.host_str() == Some(*host))
+                })
+            });
+    if healthy && !is_discord_health && active_diagnostic_classification(&report).is_none() {
+        diagnostics.remove(&report.category);
+        return;
+    }
+    let failed_hosts = report
+        .category_targets
+        .iter()
+        .filter(|r| {
+            r.dns_succeeded()
+                && !r.category_target_reachable()
+                && (r.stage == EndpointProbeStage::Transport
+                    || (r.stage == EndpointProbeStage::HttpResponse && r.http_status == Some(200)))
+        })
+        .map(|r| r.endpoint.clone())
+        .collect::<BTreeSet<_>>();
+    let eligible = is_discord_health
+        && !failed_hosts.is_empty()
+        && snapshot.health.state == EyeHealthState::Ready
+        && fence.network_fingerprint.stable_key().is_some()
+        && matches!(
+            report.classification,
+            GateClassification::TargetUnavailable
+                | GateClassification::DpiSuspected
+                | GateClassification::DpiBlocked
+        )
+        && report
+            .controls
+            .iter()
+            .filter(|r| r.category_target_reachable())
+            .count()
+            >= 2;
+    let previous = diagnostics.get(&report.category);
+    let failure_rounds = if eligible {
+        previous
+            .filter(|d| {
+                d.fence.as_ref() == Some(&fence)
+                    && now_ms <= d.expires_at_ms
+                    && report.generated_at_monotonic_ms > d.assessed_at_ms
+                    && !d.failed_hosts.is_disjoint(&failed_hosts)
+            })
+            .map_or(1, |d| d.failure_rounds.saturating_add(1))
+    } else {
+        0
+    };
+    let classification = if failure_rounds >= 2 {
+        AssessmentClassification::DpiSuspected
+    } else if healthy
+        && is_discord_health
+        && snapshot.health.state == EyeHealthState::Ready
+        && !matches!(
+            report.classification,
+            GateClassification::SensorUnreliable | GateClassification::Offline
+        )
+    {
+        AssessmentClassification::Working
+    } else {
+        active_diagnostic_classification(&report)
+            .unwrap_or(AssessmentClassification::AwaitingEvidence)
+    };
+    diagnostics.insert(
+        report.category,
+        ActiveDiagnostic {
+            classification,
+            assessed_at_ms: report.generated_at_monotonic_ms,
+            expires_at_ms: now_ms.saturating_add(ACTIVE_DIAGNOSTIC_TTL_MS),
+            fence: Some(fence),
+            failed_hosts,
+            failure_rounds,
+        },
+    );
 }
 
 fn diagnostic_classification(
@@ -1485,15 +1601,14 @@ fn diagnostic_classification(
     })
 }
 
-/// Active diagnostics are presentation-only. If the exact category target
-/// returned a valid HTTP response, failures of the neutral connectivity
-/// controls must not make that working service look unavailable. Assessment
-/// and recovery continue to consume the original fail-closed gate report.
+/// A partial response is insufficient: every selected service endpoint must
+/// be reachable before neutral-control failures can be hidden in the UI.
 fn active_diagnostic_classification(report: &GateReport) -> Option<AssessmentClassification> {
-    let category_is_reachable = report
-        .category_targets
-        .iter()
-        .any(|outcome| outcome.category_target_reachable());
+    let category_is_reachable = !report.category_targets.is_empty()
+        && report
+            .category_targets
+            .iter()
+            .all(|outcome| outcome.category_target_reachable());
     if category_is_reachable
         && matches!(
             report.classification,
@@ -1519,6 +1634,9 @@ fn update_active_diagnostic(
                 classification,
                 assessed_at_ms: now_ms,
                 expires_at_ms: now_ms.saturating_add(ACTIVE_DIAGNOSTIC_TTL_MS),
+                fence: None,
+                failed_hosts: BTreeSet::new(),
+                failure_rounds: 0,
             },
         );
     } else {
@@ -1543,27 +1661,43 @@ fn project_active_diagnostics(
     diagnostics: &mut BTreeMap<String, ActiveDiagnostic>,
     now_ms: u64,
 ) -> ObserveOnlySnapshot {
-    diagnostics.retain(|_, diagnostic| now_ms <= diagnostic.expires_at_ms);
+    diagnostics.retain(|category, diagnostic| {
+        now_ms <= diagnostic.expires_at_ms
+            && diagnostic
+                .fence
+                .as_ref()
+                .is_none_or(|f| diagnostic_fence(&snapshot, category).as_ref() == Some(f))
+    });
     for lane in &mut snapshot.lanes {
+        // Passive TLS handshakes do not establish application health.
+        if lane.category == "discord"
+            && (lane.classification == AssessmentClassification::Working
+                || (lane.classification == AssessmentClassification::AwaitingEvidence
+                    && lane.working_confirmed_recently))
+        {
+            lane.working_confirmed_recently = false;
+            lane.classification = AssessmentClassification::AwaitingEvidence;
+            lane.confidence = AssessmentConfidence::Low;
+            lane.phase = LanePhase::Observing;
+        }
         let Some(diagnostic) = diagnostics.get(&lane.category) else {
             continue;
         };
-        if lane.working_confirmed_recently
-            || matches!(
-                lane.classification,
-                AssessmentClassification::Working
-                    | AssessmentClassification::DpiSuspected
-                    | AssessmentClassification::DpiBlocked
-                    | AssessmentClassification::SensorUnreliable
-            )
-            || lane.phase == LanePhase::GatePending
+        if matches!(
+            lane.classification,
+            AssessmentClassification::DpiSuspected
+                | AssessmentClassification::DpiBlocked
+                | AssessmentClassification::SensorUnreliable
+        ) || lane.phase == LanePhase::GatePending
         {
             continue;
         }
-        lane.phase = if diagnostic.classification == AssessmentClassification::SensorUnreliable {
-            LanePhase::SensorUnreliable
-        } else {
-            LanePhase::Observing
+        lane.working_confirmed_recently = false;
+        lane.phase = match diagnostic.classification {
+            AssessmentClassification::SensorUnreliable => LanePhase::SensorUnreliable,
+            AssessmentClassification::Working => LanePhase::Healthy,
+            AssessmentClassification::DpiSuspected => LanePhase::Suspect,
+            _ => LanePhase::Observing,
         };
         lane.classification = diagnostic.classification;
         lane.confidence = if diagnostic.classification == AssessmentClassification::SensorUnreliable
@@ -1951,6 +2085,153 @@ fn bounded_evidence(value: u16, maximum: u8) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn service_report(snapshot: &ObserveOnlySnapshot, now: u64, failing: bool) -> GateReport {
+        GateReport {
+            fence: diagnostic_fence(snapshot, "discord").unwrap(),
+            category: "discord".into(),
+            classification: if failing {
+                GateClassification::TargetUnavailable
+            } else {
+                GateClassification::Stable
+            },
+            controls: vec![
+                EndpointProbeOutcome::http("https://control-one.example/", 10, 204),
+                EndpointProbeOutcome::http("https://control-two.example/", 10, 204),
+            ],
+            category_targets: vec![
+                EndpointProbeOutcome::http("discord.com", 10, 200),
+                if failing {
+                    EndpointProbeOutcome::timed_out(
+                        "updates.discord.com",
+                        EndpointProbeStage::Transport,
+                        5000,
+                    )
+                } else {
+                    EndpointProbeOutcome::http("updates.discord.com", 10, 200)
+                },
+            ],
+            baseline_latency_ms: Some(10),
+            slow_threshold_ms: None,
+            generated_at_monotonic_ms: now,
+            valid_until_monotonic_ms: now + 10000,
+        }
+    }
+
+    #[test]
+    fn repeated_updater_failure_starts_recovery_even_after_tls_success() {
+        let (mut snapshot, registry) = recovery_snapshot_and_registry();
+        snapshot.health.state = EyeHealthState::Ready;
+        snapshot.lanes[0].classification = AssessmentClassification::Working;
+        snapshot.lanes[0].working_confirmed_recently = true;
+        let mut diagnostics = BTreeMap::new();
+        record_service_diagnostic(
+            &mut diagnostics,
+            &snapshot,
+            service_report(&snapshot, 100, true),
+            100,
+        );
+        let first = project_active_diagnostics(snapshot.clone(), &mut diagnostics, 100);
+        assert_eq!(
+            first.lanes[0].classification,
+            AssessmentClassification::TargetUnavailable
+        );
+        assert!(prepare_recovery_input(&first, &registry).is_none());
+        record_service_diagnostic(
+            &mut diagnostics,
+            &snapshot,
+            service_report(&snapshot, 15100, true),
+            15100,
+        );
+        let second = project_active_diagnostics(snapshot, &mut diagnostics, 15100);
+        assert_eq!(
+            second.lanes[0].classification,
+            AssessmentClassification::DpiSuspected
+        );
+        assert!(prepare_recovery_input(&second, &registry).is_some());
+    }
+
+    #[test]
+    fn healthy_service_clears_failures_and_expires_without_passive_false_green() {
+        let (mut snapshot, _) = recovery_snapshot_and_registry();
+        snapshot.health.state = EyeHealthState::Ready;
+        snapshot.lanes[0].classification = AssessmentClassification::Working;
+        let mut diagnostics = BTreeMap::new();
+        record_service_diagnostic(
+            &mut diagnostics,
+            &snapshot,
+            service_report(&snapshot, 100, true),
+            100,
+        );
+        record_service_diagnostic(
+            &mut diagnostics,
+            &snapshot,
+            service_report(&snapshot, 15100, false),
+            15100,
+        );
+        let healthy = project_active_diagnostics(snapshot.clone(), &mut diagnostics, 15100);
+        assert_eq!(
+            healthy.lanes[0].classification,
+            AssessmentClassification::Working
+        );
+        let expired = project_active_diagnostics(
+            snapshot.clone(),
+            &mut diagnostics,
+            15101 + ACTIVE_DIAGNOSTIC_TTL_MS,
+        );
+        assert_eq!(
+            expired.lanes[0].classification,
+            AssessmentClassification::AwaitingEvidence
+        );
+        record_service_diagnostic(
+            &mut diagnostics,
+            &snapshot,
+            service_report(&snapshot, 160000, true),
+            160000,
+        );
+        assert_eq!(diagnostics["discord"].failure_rounds, 1);
+    }
+
+    #[test]
+    fn stale_generation_dns_and_upstream_outages_cannot_authorize_recovery() {
+        let (mut snapshot, _) = recovery_snapshot_and_registry();
+        snapshot.health.state = EyeHealthState::Ready;
+        snapshot.lanes[0].classification = AssessmentClassification::AwaitingEvidence;
+        for stage in [EndpointProbeStage::Dns, EndpointProbeStage::HttpResponse] {
+            let mut diagnostics = BTreeMap::new();
+            for now in [100, 15100] {
+                let mut report = service_report(&snapshot, now, true);
+                report.category_targets[1] = if stage == EndpointProbeStage::Dns {
+                    EndpointProbeOutcome::timed_out("updates.discord.com", stage, 5000)
+                } else {
+                    EndpointProbeOutcome::http("updates.discord.com", 10, 503)
+                };
+                record_service_diagnostic(&mut diagnostics, &snapshot, report, now);
+            }
+            assert_ne!(
+                diagnostics["discord"].classification,
+                AssessmentClassification::DpiSuspected
+            );
+        }
+        let mut diagnostics = BTreeMap::new();
+        record_service_diagnostic(
+            &mut diagnostics,
+            &snapshot,
+            service_report(&snapshot, 100, true),
+            100,
+        );
+        let mut stale = service_report(&snapshot, 15100, true);
+        stale.fence.lane_generation = LaneGeneration::new(99);
+        record_service_diagnostic(&mut diagnostics, &snapshot, stale, 15100);
+        assert_eq!(diagnostics["discord"].failure_rounds, 1);
+        snapshot.session.sensor_generation = SensorGeneration::new(99);
+        let projected = project_active_diagnostics(snapshot, &mut diagnostics, 15100);
+        assert!(diagnostics.is_empty());
+        assert_eq!(
+            projected.lanes[0].classification,
+            AssessmentClassification::AwaitingEvidence
+        );
+    }
     use obsession_runtime_reliability::legacy_reliability::contracts::{
         AttemptId, IntentEnvelope, RegistryVersion,
     };
@@ -2023,7 +2304,7 @@ mod tests {
         let projected = project_active_diagnostics(working, &mut diagnostics, 102);
         assert_eq!(
             projected.lanes[0].classification,
-            AssessmentClassification::Working
+            AssessmentClassification::TargetUnavailable
         );
 
         let mut passive_dpi = observer_snapshot();

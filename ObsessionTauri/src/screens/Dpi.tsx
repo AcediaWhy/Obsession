@@ -23,6 +23,8 @@ import {
 import { Uptime } from "../design/components/Uptime";
 import { Icon } from "../design/components/icons";
 import { spring } from "../design/tokens";
+import { dpiTestBlockedReason } from "../lib/dpiTestAvailability";
+import { DpiTestDetails, testSummary } from "../design/components/DpiTestDetails";
 
 const LEGACY_CATEGORY_LABELS: Record<string, string> = {
   discord: "Discord",
@@ -45,7 +47,7 @@ export function DpiScreen() {
     (state) => state.protectedDpiAvailable,
   );
   const legacyToolsAvailable = useSettingsStore(
-    (state) => state.protectedRuntimeAvailable,
+    (state) => state.protectedDpiAvailable,
   );
   const legacyReliabilityAvailable = useSettingsStore(
     (state) => state.protectedLegacyReliabilityAvailable,
@@ -64,6 +66,7 @@ export function DpiScreen() {
     testingLabel: state.testingLabel,
     testCancel: state.testCancel,
     testResults: state.testResults,
+    testReports: state.testReports,
     netStats: state.netStats,
     error: state.error,
     reconcileTransition: state.reconcileTransition,
@@ -85,6 +88,10 @@ export function DpiScreen() {
     "cancelled",
   ].includes(adaptivePhase);
   const busy = s.transitioning || s.testing || adaptiveBusy;
+  const testBlockedReason = dpiTestBlockedReason({
+    available: legacyToolsAvailable, transitioning: s.transitioning, adaptiveBusy,
+    active: s.active, testing: s.testing, categories: s.selectedCategories.length,
+  });
   const zapret2Selected = s.engines.some(
     (engine) => engine.kind === "zapret2" && engine.selected,
   );
@@ -216,6 +223,7 @@ export function DpiScreen() {
                       const files = s.config?.configs[cat] ?? [];
                       const current = s.selectedConfigs[cat] ?? "";
                       const result = s.testResults[current];
+                      const report = s.testReports[current];
                       return (
                         <motion.div
                           key={cat}
@@ -233,10 +241,10 @@ export function DpiScreen() {
                             {result !== undefined ? (
                               <span
                                 className={`text-2xs font-semibold ${
-                                  result ? "text-ok" : "text-danger"
+                                  result ? "text-ok" : report?.status === "partial" ? "text-ink-soft" : "text-danger"
                                 }`}
                               >
-                                {result ? "работает" : "не прошёл"}
+                                {report ? testSummary(report) : result ? "проверки пройдены" : "доступ не подтверждён"}
                               </span>
                             ) : null}
                           </div>
@@ -251,6 +259,7 @@ export function DpiScreen() {
                               работал {s.netStats[cat].success_count} раз
                             </span>
                           ) : null}
+                          {report && <DpiTestDetails report={report} />}
                         </motion.div>
                       );
                     })}
@@ -282,7 +291,7 @@ export function DpiScreen() {
                 <>
                   <Button
                     variant="ghost"
-                    disabled={busy || s.active || !legacyToolsAvailable}
+                    disabled={busy || !!testBlockedReason}
                     onClick={() => s.autoConfigure()}
                     className="flex-1"
                   >
@@ -290,7 +299,7 @@ export function DpiScreen() {
                   </Button>
                   <Button
                     variant="ghost"
-                    disabled={busy || s.active || !legacyToolsAvailable}
+                    disabled={busy || !!testBlockedReason}
                     onClick={() => s.testAll()}
                   >
                     <span className="flex items-center gap-1.5">
@@ -300,6 +309,9 @@ export function DpiScreen() {
                 </>
               )}
             </StaggerItem>
+            <p className="text-xs text-ink-muted" role="status">
+              {testBlockedReason || "Проверка веб-доступа. Голос Discord и скорость видео требуют отдельной проверки."}
+            </p>
               </>
             ) : null}
 

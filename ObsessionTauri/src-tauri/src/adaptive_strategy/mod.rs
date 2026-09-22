@@ -10,6 +10,7 @@ pub mod compiler;
 pub mod dsl;
 pub mod evidence;
 pub mod generator;
+mod http_probe;
 pub mod model;
 pub mod probe;
 pub mod recommendation;

@@ -20,13 +20,13 @@ yt3.ggpht.com
 yt4.ggpht.com
 yt3.googleusercontent.com
 
-# twitch				#Если не работает twitch, то уберите решётку на каждой строке, кроме этой
-#twitch.tv
-#ttvnw.net
-#jtvnw.net
-#live-video.net
-#twitchcdn.net
-#twitchsvc.net
+# Twitch
+twitch.tv
+ttvnw.net
+jtvnw.net
+live-video.net
+twitchcdn.net
+twitchsvc.net
 
 # Расширения
 7tv.app

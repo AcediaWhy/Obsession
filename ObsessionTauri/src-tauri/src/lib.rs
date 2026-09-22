@@ -1,6 +1,7 @@
 //! Obsession — DPI bypass launcher (Tauri backend).
 
 mod adaptive_strategy;
+mod service_health;
 mod admin;
 mod ai_probe;
 mod autostart;
@@ -100,12 +101,7 @@ pub fn run() {
         // открытое окно первого инстанса. UI всегда остаётся обычным процессом:
         // UAC-релонч удалён, пока нет защищённого helper/service.
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            if let Some(win) = app.get_webview_window("main") {
-                let _ = win.show();
-                let _ = win.unminimize();
-                let _ = win.set_focus();
-                let _ = app.emit("window-visibility", true);
-            }
+            show_main_window(app);
         }))
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_opener::init())
@@ -240,11 +236,10 @@ pub fn run() {
             // Интервал 300мс: пауза срабатывает почти мгновенно, нагрузка околонулевая.
             {
                 let h = handle.clone();
+                app.listen("ui-tray-idle", move |_| webmem::set_low_memory(&h, true));
+                let h = handle.clone();
                 std::thread::spawn(move || {
                     let mut last_shown: Option<bool> = None;
-                    // Обратный отсчёт до трима рабочего набора после скрытия в трей
-                    // (в тиках по 300мс). 0 = трим не запланирован.
-                    let mut trim_after: u32 = 0;
                     loop {
                         std::thread::sleep(std::time::Duration::from_millis(300));
                         // При выходе прекращаем поллинг: иначе поток вечно дёргает
@@ -280,19 +275,8 @@ pub fn run() {
                             && !win.is_minimized().unwrap_or(false);
                         if last_shown != Some(shown) {
                             last_shown = Some(shown);
+                            if shown { webmem::set_low_memory(&h, false); }
                             let _ = h.emit("window-visibility", shown);
-                            // Экономия RAM в трее: LOW при скрытии, NORMAL на показе.
-                            // Фронт уже выставил IsVisible=false (getCurrentWebview
-                            // .hide()) — повторно его НЕ трогаем (тек. GDI, см. webmem).
-                            webmem::set_low_memory(&h, !shown);
-                            // Трим рабочего набора отложенно: даём Chromium осесть
-                            // после LOW, и только если окно всё ещё скрыто.
-                            trim_after = if shown { 0 } else { 5 };
-                        } else if trim_after > 0 && !shown {
-                            trim_after -= 1;
-                            if trim_after == 0 {
-                                webmem::trim_working_set();
-                            }
                         }
                     }
                 });
@@ -430,6 +414,7 @@ pub fn run() {
 /// защита — если окно все равно вне экрана, возвращаем его руками.
 fn show_main_window(app: &tauri::AppHandle) {
     if let Some(win) = app.get_webview_window("main") {
+        webmem::set_low_memory(app, false);
         let _ = win.unminimize();
         let _ = win.show();
         if let Ok(pos) = win.outer_position() {

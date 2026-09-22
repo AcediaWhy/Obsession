@@ -366,7 +366,14 @@ impl ProtectedDpiBackend<WindowsJobLauncher> {
     pub fn discover() -> Result<Self, BackendInitializationError> {
         let install_layout = ProtectedLayout::discover()?;
         let state_layout = ProtectedDataLayout::discover()?;
-        Self::from_preflight(&install_layout, state_layout, WindowsJobLauncher)
+        let launcher = WindowsJobLauncher::new(state_layout.clone()).map_err(|source| {
+            MaterializationError::Io {
+                operation: "recover TCP timestamps",
+                path: state_layout.root().to_path_buf(),
+                source,
+            }
+        })?;
+        Self::from_preflight(&install_layout, state_layout, launcher)
     }
 }
 
@@ -752,15 +759,15 @@ fn exact_recovery_owner(
     let runtime = runtime?;
     if runtime.engine != DpiEngine::Legacy
         || runtime.generation != scan.generation
-        || runtime.selections.len() != processes.len()
+        || processes.len() != 1
     {
         return None;
     }
     let category = recovery_category(&input.fence.category)?;
-    let index = runtime.selections.iter().position(|selection| {
+    runtime.selections.iter().find(|selection| {
         selection.category == category && selection.strategy_id == input.previous.config_id()
     })?;
-    let process = processes.get(index)?;
+    let process = processes.first()?;
     if process.pid == 0 || process.creation_time_100ns == 0 {
         return None;
     }
@@ -1448,6 +1455,28 @@ mod tests {
         assert_eq!(owner.process_start_identity, ProcessStartIdentity::new(29));
         assert_eq!(owner.config_fingerprint, fingerprint);
         assert_eq!(owner.lane_generation, LaneGeneration::new(13));
+
+        let mut combined = runtime.clone();
+        combined.selections.insert(
+            0,
+            DpiSelection {
+                category: DpiCategory::YoutubeTwitch,
+                strategy_id: "youtube_twitch_11.conf".into(),
+            },
+        );
+        assert_eq!(
+            exact_recovery_owner(Some(&combined), &processes, &scan),
+            Some(owner)
+        );
+        assert!(exact_recovery_owner(Some(&combined), &[], &scan).is_none());
+        assert!(exact_recovery_owner(
+            Some(&combined),
+            &[processes[0].clone(), processes[0].clone()],
+            &scan
+        )
+        .is_none());
+        combined.selections[1].strategy_id = "discord_other.conf".into();
+        assert!(exact_recovery_owner(Some(&combined), &processes, &scan).is_none());
 
         let mut stale = runtime;
         stale.generation = 8;

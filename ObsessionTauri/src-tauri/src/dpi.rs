@@ -107,10 +107,11 @@ fn resolve_strategy_hostlist(
     category: &str,
     strategy: &crate::dpi_engine::manifest::StrategyDef,
 ) -> Result<Option<String>, String> {
-    let file_name = strategy
-        .hostlist
-        .clone()
-        .or_else(|| strategy.ipset.is_none().then(|| format!("{category}.txt")));
+    let file_name = strategy.hostlist.clone().or_else(|| {
+        // Discord discovery/STUN carry no hostname to match against a list.
+        (strategy.ipset.is_none() && !crate::dpi_engine::zapret2::is_voice_profile(strategy))
+            .then(|| format!("{category}.txt"))
+    });
     match file_name {
         Some(file_name) => resolve_list_binding(
             lists_dir,
@@ -3532,7 +3533,7 @@ pub(crate) fn describe_zapret2_profiles(
                                 || strategy.transports.iter().any(|value| value == "tcp")
                         }
                         StrategyTransport::Quic => {
-                            strategy.transports.iter().any(|value| value == "udp")
+                            strategy.transports.iter().any(|value| value == "quic")
                         }
                     }
             });
@@ -3583,7 +3584,7 @@ pub(crate) fn describe_zapret2_profiles(
                             || strategy.transports.iter().any(|value| value == "tcp")
                     }
                     StrategyTransport::Quic => {
-                        strategy.transports.iter().any(|value| value == "udp")
+                        strategy.transports.iter().any(|value| value == "quic")
                     }
                 });
             if replaced {
@@ -3606,11 +3607,11 @@ pub(crate) fn describe_zapret2_profiles(
                 .filter_tcp
                 .or(profile.filter_udp)
                 .unwrap_or_else(|| "443".into());
-            let data_plane = strategy.ipset.is_some();
-            let hostlist = strategy
-                .hostlist
-                .clone()
-                .or_else(|| strategy.ipset.is_none().then(|| format!("{category}.txt")));
+            let voice = crate::dpi_engine::zapret2::is_voice_profile(&strategy);
+            let data_plane = strategy.ipset.is_some() || voice;
+            let hostlist = strategy.hostlist.clone().or_else(|| {
+                (strategy.ipset.is_none() && !voice).then(|| format!("{category}.txt"))
+            });
             descriptors.push(Zapret2ProfileDescriptor {
                 category: category.clone(),
                 profile_id: strategy.id,
@@ -3754,7 +3755,7 @@ pub(crate) async fn start_zapret2_with_overrides(
                                     || strategy.transports.iter().any(|value| value == "tcp")
                             }
                             StrategyTransport::Quic => {
-                                strategy.transports.iter().any(|value| value == "udp")
+                                strategy.transports.iter().any(|value| value == "quic")
                             }
                         }
                 })
@@ -3790,7 +3791,7 @@ pub(crate) async fn start_zapret2_with_overrides(
                             || strategy.transports.iter().any(|value| value == "tcp")
                     }
                     StrategyTransport::Quic => {
-                        strategy.transports.iter().any(|value| value == "udp")
+                        strategy.transports.iter().any(|value| value == "quic")
                     }
                 });
             if replaced_transport {
@@ -4846,6 +4847,28 @@ fn spawn_reader<R>(
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn voice_profiles_never_require_a_hostname_list() {
+        let pack = crate::dpi_engine::load_pack(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("resources/strategy-packs/builtin"),
+        )
+        .unwrap();
+        for level in 1..=4 {
+            let voice = pack
+                .profiles_for("discord", level)
+                .into_iter()
+                .find(crate::dpi_engine::zapret2::is_voice_profile)
+                .unwrap();
+            assert!(super::resolve_strategy_hostlist(
+                std::path::Path::new("nonexistent-test-lists"),
+                "discord",
+                &voice
+            )
+            .unwrap()
+            .is_none());
+        }
+    }
     use super::*;
 
     #[test]

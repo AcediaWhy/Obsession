@@ -43,6 +43,9 @@ pub mod eyes;
 
 pub mod legacy_reliability;
 
+#[path = "../../src-tauri/src/service_health.rs"]
+pub mod service_health;
+
 pub fn acknowledge_manager_publication(
     manager: &legacy_reliability::manager::ObserveOnlyManager,
     scope: &legacy_reliability::ingress::PendingIngressScope,

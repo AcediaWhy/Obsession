@@ -1,17 +1,17 @@
-From c82a62de924c5105efffdb746a1fed8f5026124f Mon Sep 17 00:00:00 2001
+From d095e8b4f3f6736c4112959451c52447e9fa6876 Mon Sep 17 00:00:00 2001
 From: Obsession Patch Builder <patches@obsession.local>
 Date: Sat, 22 Aug 2026 01:19:09 +0400
-Subject: [PATCH 3/5] security: bound conntrack memory growth
+Subject: [PATCH] security: bound conntrack memory growth
 
 ---
- nfq2/conntrack.c    | 70 +++++++++++++++++++++++++++++++++------------
- nfq2/conntrack.h    | 14 +++++++++
- nfq2/packet_queue.c | 18 ++++++++++--
+ nfq2/conntrack.c    | 62 ++++++++++++++++++++++++++++++++-------------
+ nfq2/conntrack.h    | 14 ++++++++++
+ nfq2/packet_queue.c | 18 +++++++++++--
  nfq2/packet_queue.h |  5 +++-
- 4 files changed, 86 insertions(+), 21 deletions(-)
+ 4 files changed, 78 insertions(+), 21 deletions(-)
 
 diff --git a/nfq2/conntrack.c b/nfq2/conntrack.c
-index e085df9..fa04705 100644
+index 1eaad17..64152a4 100644
 --- a/nfq2/conntrack.c
 +++ b/nfq2/conntrack.c
 @@ -68,6 +68,8 @@ void ConntrackPoolInit(t_conntrack *p, time_t purge_interval, uint32_t timeout_s
@@ -181,23 +181,6 @@ index e085df9..fa04705 100644
  	reasm->size = size_requested;
  	reasm->size_present = 0;
  	reasm->seq = seq_start;
-@@ -397,8 +423,16 @@ bool ReasmInit(t_reassemble *reasm, size_t size_requested, uint32_t seq_start)
- }
- bool ReasmResize(t_reassemble *reasm, size_t new_size)
- {
-+	if (reasm->total_bytes && reasm->max_total_bytes && new_size > reasm->size &&
-+		new_size - reasm->size > reasm->max_total_bytes - *reasm->total_bytes)
-+		return false;
- 	uint8_t *p = realloc(reasm->packet, new_size);
- 	if (!p) return false;
-+	if (reasm->total_bytes)
-+	{
-+		if (new_size >= reasm->size) *reasm->total_bytes += new_size - reasm->size;
-+		else *reasm->total_bytes -= reasm->size - new_size;
-+	}
- 	reasm->packet = p;
- 	reasm->size = new_size;
- 	if (reasm->size_present > new_size) reasm->size_present = new_size;
 diff --git a/nfq2/conntrack.h b/nfq2/conntrack.h
 index 42caf8b..e4723ea 100644
 --- a/nfq2/conntrack.h

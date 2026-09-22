@@ -5,6 +5,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { auditBundle } from "./audit-dpi-configs.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const serviceDir = path.join(root, "runtime-service");
@@ -45,7 +46,10 @@ const PATH_OPTIONS = new Set([
   "--ipset",
   "--ipset-exclude",
   "--dpi-desync-fake-tls",
+  "--dpi-desync-fake-http",
   "--dpi-desync-fake-quic",
+  "--dpi-desync-fake-discord",
+  "--dpi-desync-fake-stun",
   "--dpi-desync-fake-unknown-tcp",
   "--dpi-desync-fake-unknown-udp",
   "--dpi-desync-split-seqovl-pattern",
@@ -419,6 +423,7 @@ function verifyWithRuntimeService() {
         "verify_runtime_bundle",
         "--",
         obsessionRoot,
+        ...(process.argv.includes("--dry-run-engines") ? ["--dry-run-engines"] : []),
       ],
       root,
     );
@@ -426,6 +431,11 @@ function verifyWithRuntimeService() {
     recreateDirectory(verificationRoot, expected);
     fs.rmSync(verificationRoot, { recursive: true, force: true });
   }
+}
+
+const configAudit = auditBundle();
+if (configAudit.errors.length) {
+  throw new Error(`DPI config audit failed:\n${configAudit.errors.join("\n")}`);
 }
 
 if (!process.argv.includes("--skip-build")) {

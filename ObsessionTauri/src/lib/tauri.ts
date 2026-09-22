@@ -12,6 +12,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { invokeBrowserPreview } from "./browserPreview";
+import { trackBackendRequest } from "./backendActivity";
 
 // ─── Типы (зеркалят Rust-payload'ы) ──────────────────────────────────────
 
@@ -19,6 +20,20 @@ export interface AppConfig {
   categories: string[];
   configs: Record<string, string[]>;
   lists: string[];
+}
+
+export interface DpiTestReport {
+  passed: boolean;
+  status: "passed" | "partial" | "failed" | "cancelled";
+  checks: Array<{
+    url: string;
+    passed: boolean;
+    elapsed_ms: number;
+    bytes: number;
+    attempts: number;
+    http_status: number | null;
+    error: string | null;
+  }>;
 }
 
 export interface DpiProc {
@@ -533,9 +548,9 @@ function invoke<T>(
   command: string,
   args?: Record<string, unknown>,
 ): Promise<T> {
-  return isTauri()
+  return trackBackendRequest(() => isTauri()
     ? tauriInvoke<T>(command, args)
-    : invokeBrowserPreview<T>(command, args);
+    : invokeBrowserPreview<T>(command, args));
 }
 
 export const api = {
@@ -552,7 +567,7 @@ export const api = {
     invoke<number[]>("dpi_start", { configs }),
   dpiStop: () => invoke<void>("dpi_stop"),
   dpiTest: (category: string, configFile: string) =>
-    invoke<boolean>("dpi_test", { category, configFile }),
+    invoke<DpiTestReport>("dpi_test", { category, configFile }),
   dpiTestCancel: () => invoke<void>("dpi_test_cancel"),
   dpiEngineList: () => invoke<EngineOption[]>("dpi_engine_list"),
   dpiZapret2Profiles: (categories: string[]) =>
