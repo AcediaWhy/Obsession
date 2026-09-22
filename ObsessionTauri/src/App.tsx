@@ -29,6 +29,7 @@ import { on } from "./lib/tauri";
 import { setWindowShown, useMotionOff, useRenderHidden } from "./design/render";
 import { screenVariants } from "./design/screenTransition";
 import { initTrayStageRelease } from "./design/gl/trayStageRelease";
+import { initTraySleep } from "./design/traySleep";
 import { dur, ease, spring } from "./design/tokens";
 import { toast } from "./store/toastStore";
 import { useObsessionVisualPhase } from "./design/useObsessionVisualPhase";
@@ -175,9 +176,10 @@ export default function App() {
   useEffect(() => {
     const unlisten = initLogStream();
     const releaseBootstrap = launcherBootstrap.acquire();
-    // Трей-выгрузка WebGL-стейджей: 3+ минуты скрытого окна — стейджи уходят
+    // Трей-выгрузка WebGL-стейджей: секунда скрытого окна — стейджи уходят
     // из памяти, возврат пересобирает сцену один раз.
     const releaseTrayStages = initTrayStageRelease();
+    const releaseTraySleep = initTraySleep();
     let disposed = false;
     let bootstrapRefreshQueue = Promise.resolve();
     const scheduleBootstrapRefresh = (refreshSnapshot: boolean) => {
@@ -193,34 +195,17 @@ export default function App() {
     // явно на экране ИИ.
     scheduleBootstrapRefresh(false);
 
-    // Прогрев тяжёлой ленивой сцены (Rain/WebGL) — ТОЛЬКО когда окно впервые
-    // становится видимым (вызывается из резюм-ветки ниже). При старте в трее
-    // (start_minimized) чанк не грузится, пока пользователь не откроет окно — не
-    // держим лишний код/декодер в трее.
-    let warmed = false;
-    const ric = (window as unknown as {
-      requestIdleCallback?: (cb: () => void) => number;
-    }).requestIdleCallback;
-    const scheduleWarm = () => {
-      if (warmed) return;
-      warmed = true;
-      const warm = () => void import("./design/components/RainHybridScene");
-      if (ric) ric(warm);
-      else window.setTimeout(warm, 1500);
-    };
-
     // Пауза анимаций + suspend-разгрузка при скрытии окна в трей (сигнал из Rust
     // дополняет Visibility API, который в WebView2 не всегда срабатывает на
     // hide()). Сам WebView здесь намеренно не прячем: асинхронные hide()/show()
     // способны завершиться в обратном порядке, оставив уже видимое нативное окно
-    // с чёрным фоном. Память скрытого окна по-прежнему ужимает Rust/webmem.
+    // с чёрным фоном. После очистки графики Rust/webmem усыпляет WebView.
     // При ВОЗВРАТЕ догоняем backend-снимок (трей/хоткей могли переключить
-    // DPI/прокси, пока висели в трее) и прогреваем сцену.
+    // DPI/прокси, пока висели в трее). Сцены грузятся только по выбору темы.
     const unlistenVis = on.windowVisibility((visible) => {
       setWindowShown(visible);
       if (visible) {
         scheduleBootstrapRefresh(true);
-        scheduleWarm();
       }
     });
 
@@ -234,6 +219,7 @@ export default function App() {
       disposed = true;
       releaseBootstrap();
       releaseTrayStages();
+      releaseTraySleep();
       unlisten.then((fn) => fn()).catch(() => {});
       unlistenVis.then((fn) => fn()).catch(() => {});
       unlistenErr.then((fn) => fn()).catch(() => {});

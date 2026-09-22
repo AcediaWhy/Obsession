@@ -4,14 +4,15 @@ import { AnimatePresence, motion } from "framer-motion";
 import { useDpiStore } from "../store/dpiStore";
 import { useProxyStore } from "../store/proxyStore";
 import { useHostsStore } from "../store/hostsStore";
-import { useSettingsStore } from "../store/settingsStore";
+import catIcon from "../../src-tauri/icons/128x128.png";
+import "../styles/overview.css";
 import { api, type NetworkInfo } from "../lib/tauri";
 import { GlassPanel } from "../design/components/GlassPanel";
 import { Stagger, StaggerItem } from "../design/components/Stagger";
 import { Button } from "../design/components/atoms";
 import { Uptime } from "../design/components/Uptime";
 import { Icon } from "../design/components/icons";
-import { cascade, dur, ease, spring } from "../design/tokens";
+import { cascade, dur, ease } from "../design/tokens";
 import { useMotionOff, useRenderActive } from "../design/render";
 
 const CATEGORY_LABELS: Record<string, string> = {
@@ -44,7 +45,7 @@ export function OverviewScreen() {
   const hostsStatus = useHostsStore((s) => s.status);
   const hostsLocalVersion = useHostsStore((s) => s.localVersion);
   const hostsProvider = useHostsStore((s) => s.provider);
-  const reduceMotion = useSettingsStore((s) => s.settings?.reduce_motion);
+  const motionOff = useMotionOff();
   const [net, setNet] = useState<NetworkInfo | null>(null);
 
   useEffect(() => {
@@ -60,54 +61,31 @@ export function OverviewScreen() {
   }, []);
 
   const protectedNow = dpiActive;
-  // Гасим «дыхание» глаза, когда окно скрыто: это тоже бесконечная
-  // framer-motion-анимация (WAAPI), иначе жгла бы CPU в свёрнутом виде.
   const renderOn = useRenderActive();
-  const breathing = protectedNow && !reduceMotion && renderOn;
+  const still = motionOff || !renderOn;
   const activeCats = dpiSelectedCategories.map((c) => CATEGORY_LABELS[c] ?? c);
   const canToggle = !dpiTransitioning && dpiSelectedCategories.length > 0;
 
   return (
-    <div className="flex h-full flex-col gap-4 overflow-y-auto pr-1">
+    <div className="overview-board flex h-full flex-col gap-4 overflow-y-auto pr-1" data-note-motion={still ? "still" : "on"}>
       <StaggerItem standalone>
         <h1 className="font-display text-3xl font-semibold tracking-tight text-gradient">Обзор</h1>
         <p className="text-sm text-ink-muted">Состояние защиты одним взглядом</p>
       </StaggerItem>
 
-      {/* Командный центр: живой глаз-герой + главное действие. */}
-      <GlassPanel glow={protectedNow}>
-        <div className="flex items-center gap-5">
-          {/* Глаз — идентичность Obsession. Открыт и «дышит», пока под защитой. */}
-          <motion.div
-            initial={{ scale: 0.9, opacity: 0 }}
-            animate={
-              breathing
-                ? { scale: [1, 1.045, 1], opacity: 1 }
-                : { scale: 1, opacity: 1 }
-            }
-            transition={
-              breathing
-                ? { scale: { duration: 3.4, repeat: Infinity, ease: "easeInOut" } }
-                : spring.soft
-            }
-            className={[
-              // Доводка цвета/свечения за base-такт — состояние «протекает» в новое,
-              // в одном темпе с glow панели и бейджами.
-              "relative flex h-16 w-16 shrink-0 items-center justify-center rounded-full border transition-[color,background-color,border-color,box-shadow] duration-[var(--motion-base)]",
-              protectedNow
-                ? "border-ok/40 bg-ok/15 text-ok shadow-glow"
-                : "border-glass-border bg-white/5 text-ink-muted",
-            ].join(" ")}
-          >
-            {breathing && (
-              <motion.span
-                aria-hidden
-                className="absolute inset-0 rounded-full border border-ok/40"
-                animate={{ scale: [1, 1.4], opacity: [0.5, 0] }}
-                transition={{ duration: 2.6, repeat: Infinity, ease: "easeOut" }}
-              />
-            )}
-            <Icon.Eye size={30} className={protectedNow ? "" : "opacity-60"} />
+      {/* Командный центр: котик с короткой реакцией на включение защиты. */}
+      <GlassPanel spotlight={false} className="overview-note overview-command" data-active={protectedNow}>
+        <div className="overview-command-content flex items-center gap-5">
+          <motion.div className="overview-mascot" aria-hidden="true" initial={false}
+            animate={dpiActive && !still ? { rotate: [0, -7, 3, 0], y: [0, -3, 0, 0] } : { rotate: 0, y: 0 }}
+            transition={{ duration: still ? 0 : 0.42, ease: ease.enter }}>
+            <img src={catIcon} alt="" width={64} height={64} draggable={false} />
+            <svg className="overview-season-hat" viewBox="0 0 52 42" fill="none">
+              <path d="M12 31 26 4l4 13 9 13Z" fill="#352938" stroke="#e9c789" strokeWidth="1.5" strokeLinejoin="round" />
+              <path d="m16 25 20-1 3 6-27 1Z" fill="#bb8650" />
+              <path d="M5 33q20-7 41-3-17 10-41 3Z" fill="#352938" stroke="#e9c789" strokeWidth="1.5" strokeLinejoin="round" />
+              <path d="m26 24 5-1 1 5-5 1Z" stroke="#f5dfac" strokeWidth="1.5" />
+            </svg>
           </motion.div>
 
           <div className="min-w-0 flex-1">
@@ -143,7 +121,7 @@ export function OverviewScreen() {
                   className="col-start-1 row-start-1 truncate text-sm text-ink-muted"
                 >
                   {protectedNow
-                    ? `Глаз открыт · обход активен${activeCats.length ? ` · ${activeCats.join(", ")}` : ""}`
+                    ? `Обход активен${activeCats.length ? ` · ${activeCats.join(", ")}` : ""}`
                     : "Один клик — и обход включится с текущими настройками"}
                 </motion.div>
               </AnimatePresence>
@@ -167,7 +145,7 @@ export function OverviewScreen() {
       </GlassPanel>
 
       {/* Карточки сервисов. */}
-      <Stagger className="grid grid-cols-2 gap-4">
+      <Stagger className="overview-notes grid grid-cols-2 gap-4">
         <StaggerItem glass>
           <StatusCard
             entryOrder={0}
@@ -297,6 +275,9 @@ function StatusCard({
       className="h-full"
     >
       <GlassPanel
+        spotlight={false}
+        data-active={on}
+        data-tone={warn ? "warn" : neutral ? "neutral" : "ok"}
         transition={
           motionOff
             ? { duration: dur.fast, ease: ease.enter }
@@ -306,7 +287,7 @@ function StatusCard({
                 delay: entryOrder * cascade.step,
               }
         }
-        className="relative flex h-full flex-col gap-3 overflow-hidden"
+        className="overview-note overview-service relative flex h-full flex-col gap-3 overflow-hidden"
       >
         {/* Одноразовый wash при настоящей смене состояния. initial={false}
             оставляет холодный mount спокойным; постоянного pulse у карточки нет. */}
@@ -330,12 +311,12 @@ function StatusCard({
           />
         </AnimatePresence>
 
-        <div className="relative flex items-center gap-2.5">
-          <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-white/5 text-ink-soft">
+        <div className="overview-note-heading relative flex items-center gap-2.5">
+          <span className="overview-note-icon flex h-9 w-9 items-center justify-center text-ink-soft">
             {icon}
           </span>
-          <span className="text-sm font-semibold text-ink">{title}</span>
-          <span className="ml-auto flex items-center gap-1.5" aria-live="polite">
+          <span className="overview-note-title text-sm font-semibold text-ink">{title}</span>
+          <span className="overview-note-status ml-auto flex items-center gap-1.5" aria-live="polite">
             <span className="relative h-2 w-2 shrink-0">
               <AnimatePresence initial={false} mode="sync">
                 <motion.span
@@ -372,7 +353,7 @@ function StatusCard({
           </span>
         </div>
 
-        <div className="relative grid min-w-0">
+        <div className="overview-note-detail relative grid min-w-0">
           <AnimatePresence initial={false} mode="sync">
             <motion.p
               key={detail}

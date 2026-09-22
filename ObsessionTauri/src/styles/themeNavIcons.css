@@ -1,0 +1,53 @@
+.theme-nav-icon { flex: none; overflow: visible; }
+.theme-nav-icon-obsession { --nav-icon-paper: #e9ded5; --nav-icon-color: #b45269; --nav-icon-shade: #30252f; --nav-icon-ink: #b8a1a4; }
+.theme-nav-icon-aurora { --nav-icon-paper: #dbfff1; --nav-icon-color: #79d7c5; --nav-icon-shade: #556794; --nav-icon-ink: #8baacb; }
+.theme-nav-icon-midnight { --nav-icon-paper: #e8eef0; --nav-icon-color: #9baebf; --nav-icon-shade: #49596c; --nav-icon-ink: #acbdca; }
+.theme-nav-icon-catnap { --nav-icon-paper: #ffe9bf; --nav-icon-color: #e9aa75; --nav-icon-shade: #956e61; --nav-icon-ink: #7d5e50; }
+.theme-nav-icon-fallendown { --nav-icon-paper: #eeebed; --nav-icon-color: #e66570; --nav-icon-shade: #26232b; --nav-icon-ink: #a6a0aa; }
+.theme-nav-icon-yanineko { --nav-icon-paper: #f2efd3; --nav-icon-color: #d39b60; --nav-icon-shade: #87a98e; --nav-icon-ink: #47664f; }
+.theme-nav-icon * { transform-box: view-box; transform-origin: 16px 16px; }
+.theme-nav-icon .theme-icon-page { transform-origin: 5px 16px; }
+.theme-nav-icon .theme-icon-stir { transform-origin: 17px 19px; }
+.theme-nav-icon .theme-icon-clock { transform-origin: 16px 18px; }
+/* One rotation around the planet center; transitions can reverse mid-flight. */
+.theme-nav-icon .theme-icon-orbit { transform: rotate(-25deg); }
+[data-theme-icon-motion="true"] .theme-icon-orbit { transition: transform 420ms ease-in-out; }
+/* Hover and keyboard focus share a single, finite reaction. No idle loops. */
+[data-theme-icon-motion="true"] .nav-item:is(:hover, :focus-visible) .theme-icon-rock { animation: theme-icon-rock 520ms ease-in-out; }
+[data-theme-icon-motion="true"] .nav-item:is(:hover, :focus-visible) .theme-icon-turn { animation: theme-icon-turn 650ms ease-in-out; }
+[data-theme-icon-motion="true"] .nav-item:is(:hover, :focus-visible) .theme-icon-rise { animation: theme-icon-rise 600ms ease-out; }
+[data-theme-icon-motion="true"] .nav-item:is(:hover, :focus-visible) .theme-icon-glint { animation: theme-icon-glint 550ms ease-in-out; }
+[data-theme-icon-motion="true"] .nav-item:is(:hover, :focus-visible) .theme-icon-float { animation: theme-icon-float 550ms ease-in-out; }
+[data-theme-icon-motion="true"] .nav-item:is(:hover, :focus-visible) .theme-icon-page { animation: theme-icon-page 500ms ease-in-out; }
+[data-theme-icon-motion="true"] .nav-item:is(:hover, :focus-visible) .theme-icon-stir { animation: theme-icon-stir 550ms ease-in-out; }
+[data-theme-icon-motion="true"] .nav-item:is(:hover, :focus-visible) .theme-icon-drizzle { animation: theme-icon-drizzle 650ms ease-in-out; }
+[data-theme-icon-motion="true"] .nav-item:is(:hover, :focus-visible) .theme-icon-sail { animation: theme-icon-sail 600ms ease-in-out; }
+[data-theme-icon-motion="true"] .nav-item:is(:hover, :focus-visible) .theme-icon-slide { animation: theme-icon-slide 550ms ease-in-out; }
+[data-theme-icon-motion="true"] .nav-item:is(:hover, :focus-visible) .theme-icon-blink { animation: theme-icon-blink 500ms ease-in-out; }
+[data-theme-icon-motion="true"] .nav-item:is(:hover, :focus-visible) .theme-icon-flicker { animation: theme-icon-flicker 600ms ease-in-out; }
+[data-theme-icon-motion="true"] .nav-item:is(:hover, :focus-visible) .theme-icon-orbit { transform: rotate(-8deg); }
+[data-theme-icon-motion="true"] .nav-item:is(:hover, :focus-visible) .theme-icon-clock { animation: theme-icon-clock 600ms ease-in-out; }
+[data-theme-icon-motion="true"] .nav-item:is(:hover, :focus-visible) .theme-icon-steam { animation: theme-icon-rise 650ms ease-out; }
+[data-theme-icon-motion="true"] .nav-item:is(:hover, :focus-visible) .theme-icon-beat { animation: theme-icon-beat 600ms ease-in-out; }
+[data-theme-icon-motion="true"] .nav-item:active .theme-nav-icon { transform: scale(.92); }
+@keyframes theme-icon-rock { 0%,100% { transform: rotate(0); } 30% { transform: rotate(-9deg); } 65% { transform: rotate(5deg); } }
+@keyframes theme-icon-turn { 0% { transform: rotate(0); } 100% { transform: rotate(90deg); } }
+@keyframes theme-icon-rise { 0%,100% { transform: translateY(0); opacity: 1; } 65% { transform: translateY(-5px); opacity: 0; } 66% { transform: translateY(2px); opacity: 0; } }
+@keyframes theme-icon-glint { 0%,100% { opacity: 1; } 35% { opacity: .15; } 70% { opacity: 1; } }
+@keyframes theme-icon-float { 0%,100% { transform: translateY(0); } 45% { transform: translateY(-3px); } }
+@keyframes theme-icon-page { 0%,100% { transform: scaleX(1); } 45% { transform: scaleX(.75); } }
+@keyframes theme-icon-stir { 0%,100% { transform: rotate(0); } 30% { transform: rotate(-16deg); } 65% { transform: rotate(8deg); } }
+@keyframes theme-icon-drizzle { 0%,100% { transform: translateY(0); opacity: 1; } 65% { transform: translateY(3px); opacity: 0; } 66% { transform: translateY(-2px); opacity: 0; } }
+@keyframes theme-icon-sail { 0%,100% { transform: translateX(0) rotate(0); } 35% { transform: translateX(2px) rotate(5deg); } 70% { transform: translateX(-1px) rotate(-3deg); } }
+@keyframes theme-icon-slide { 0%,100% { transform: translateY(0); } 45% { transform: translateY(5px); } }
+@keyframes theme-icon-blink { 0%,100% { transform: scaleY(1); } 40% { transform: scaleY(.12); } 65% { transform: scaleY(1); } }
+@keyframes theme-icon-flicker { 0%,100% { transform: scale(1); opacity: 1; } 30% { transform: skewX(-8deg) scaleY(.85); opacity: .6; } 65% { transform: skewX(5deg); opacity: 1; } }
+@keyframes theme-icon-clock { 0%,100% { transform: rotate(0); } 50% { transform: rotate(45deg); } }
+@keyframes theme-icon-beat { 0%,100% { transform: scale(1); } 30% { transform: scale(1.12); } 50% { transform: scale(1); } 70% { transform: scale(1.08); } }
+html[data-hidden="true"] .theme-nav-icon *, [data-reduce-motion="true"] .theme-nav-icon * { animation: none !important; }
+@media (prefers-reduced-motion: reduce) { .theme-nav-icon, .theme-nav-icon * { animation: none !important; transform: none !important; } }
+html[data-hidden="true"] .theme-nav-icon .theme-icon-orbit,
+[data-reduce-motion="true"] .theme-nav-icon .theme-icon-orbit { transition: none !important; transform: rotate(-25deg) !important; }
+@media (prefers-reduced-motion: reduce) {
+  .theme-nav-icon .theme-icon-orbit { transition: none !important; transform: rotate(-25deg) !important; }
+}

@@ -17,7 +17,12 @@ export const screenVariants: Variants = {
   // pointerEvents задаём явно и здесь: прерванный выход (быстрый возврат на тот
   // же раздел) оживляет ТОТ ЖЕ элемент, и без сброса на нём навсегда осталось бы
   // "none" из exit-варианта — экран стал бы некликабельным.
-  center: { y: 0, pointerEvents: "auto" },
+  center: {
+    y: 0,
+    pointerEvents: "auto",
+    // Bounded, monotonic settle: no spring overshoot on an entire page.
+    transition: { type: "tween", duration: dur.base, ease: [0.22, 1, 0.36, 1] },
+  },
   exit: (dir: number) => ({
     y: -6 * dir,
     // Уходящий экран — absolute inset-0 поверх всей контентной области, и

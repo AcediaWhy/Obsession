@@ -1,0 +1,27 @@
+.halloween-icon { flex: none; overflow: visible; }
+.halloween-icon > g, .halloween-icon path, .halloween-icon circle { transform-box: view-box; transform-origin: 16px 20px; }
+.halloween-icon .halloween-wing-left { transform-origin: 13px 17px; }
+.halloween-icon .halloween-wing-right { transform-origin: 19px 17px; }
+.halloween-icon .halloween-book-cover { transform-origin: 5px 16px; }
+.halloween-icon .halloween-spark { transform-origin: 18px 13px; }
+/* One finite reaction per hover / keyboard focus. No idle animation or timers. */
+[data-halloween-motion="true"] .nav-item:is(:hover, :focus-visible) .halloween-candy { animation: halloween-wiggle 480ms ease-out; }
+[data-halloween-motion="true"] .nav-item:is(:hover, :focus-visible) .halloween-ghost { animation: halloween-float 550ms ease-in-out; }
+[data-halloween-motion="true"] .nav-item:is(:hover, :focus-visible) .halloween-spark { animation: halloween-sparkle 520ms ease-out; }
+[data-halloween-motion="true"] .nav-item:is(:hover, :focus-visible) .halloween-wing-left { animation: halloween-flap-left 500ms ease-in-out; }
+[data-halloween-motion="true"] .nav-item:is(:hover, :focus-visible) .halloween-wing-right { animation: halloween-flap-right 500ms ease-in-out; }
+[data-halloween-motion="true"] .nav-item:is(:hover, :focus-visible) .halloween-book-cover { animation: halloween-book 500ms ease-in-out; }
+[data-halloween-motion="true"] .nav-item:is(:hover, :focus-visible) .halloween-mask { animation: halloween-tilt 450ms ease-out; }
+[data-halloween-motion="true"] .nav-item:is(:hover, :focus-visible) .halloween-bubble-one { animation: halloween-bubble 550ms ease-out; }
+[data-halloween-motion="true"] .nav-item:is(:hover, :focus-visible) .halloween-bubble-two { animation: halloween-bubble 550ms 100ms ease-out; }
+[data-halloween-motion="true"] .nav-item:active .halloween-icon { transform: scale(.9); }
+@keyframes halloween-wiggle { 0%,100% { transform: rotate(0); } 25% { transform: rotate(-12deg); } 55% { transform: rotate(8deg); } 78% { transform: rotate(-3deg); } }
+@keyframes halloween-float { 0%,100% { transform: translateY(0); } 45% { transform: translateY(-4px) rotate(-5deg); } }
+@keyframes halloween-sparkle { 0%,100% { opacity: 1; transform: scale(1); } 25% { opacity: .25; transform: scale(.6); } 60% { opacity: 1; transform: scale(1.2) rotate(16deg); } }
+@keyframes halloween-flap-left { 0%,100% { transform: rotate(0); } 35% { transform: rotate(10deg); } 65% { transform: rotate(-5deg); } }
+@keyframes halloween-flap-right { 0%,100% { transform: rotate(0); } 35% { transform: rotate(-10deg); } 65% { transform: rotate(5deg); } }
+@keyframes halloween-book { 0%,100% { transform: scaleX(1); } 45% { transform: scaleX(.72); } }
+@keyframes halloween-tilt { 0%,100% { transform: rotate(0); } 40% { transform: rotate(-12deg); } 75% { transform: rotate(4deg); } }
+@keyframes halloween-bubble { 0%,100% { opacity: 1; transform: translateY(0); } 65% { opacity: 0; transform: translateY(-5px); } 66% { opacity: 0; transform: translateY(2px); } }
+html[data-hidden="true"] .halloween-icon *, [data-reduce-motion="true"] .halloween-icon * { animation: none !important; }
+@media (prefers-reduced-motion: reduce) { .halloween-icon, .halloween-icon * { animation: none !important; transform: none !important; } }

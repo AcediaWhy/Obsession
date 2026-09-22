@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { type EyeFrame } from '../../labs/alchemistLayers';
-import { drawExactAlchemist, exactPoseAt, exactFiles, neutralExactPose, type ExactImages, type ExactMotionMode } from '../../labs/alchemistExact';
+import { drawExactAlchemist, exactPoseAt, neutralExactPose, type ExactMotionMode } from '../../labs/alchemistExact';
+import { alchemistBitmapSize, loadAlchemistBitmaps, closeAlchemistBitmaps, type AlchemistBitmaps } from '../../labs/alchemistBitmaps';
 import { drawPotionFrame, potionFrameAt } from '../../labs/alchemistPotion';
 import '../../styles/alchemistSprite.css';
 
@@ -20,7 +21,9 @@ export function AlchemistSprite({ size, mood, label, paused, eyeMode, replayKey,
     const element = host.current;
     if (!element) return;
     let disposed = false;
-    let images: ExactImages | undefined;
+    let images: AlchemistBitmaps | undefined;
+    let loading: AbortController | undefined;
+    let requestedPixels = 0;
     let elapsed = 0;
     let previous: number | null = null;
     let raf = 0;
@@ -64,32 +67,46 @@ export function AlchemistSprite({ size, mood, label, paused, eyeMode, replayKey,
     };
     refresh.current = resume;
     replay.current = () => { elapsed = 0; resume(); };
-    const resized = () => { measuredWidth = element.getBoundingClientRect().width; lastPose = ''; redraw(); };
+    const loadImages = () => {
+      const pixels = alchemistBitmapSize(measuredWidth, devicePixelRatio);
+      if (requestedPixels === pixels) return;
+      requestedPixels = pixels;
+      loading?.abort();
+      const request = new AbortController();
+      loading = request;
+      loadAlchemistBitmaps(`${import.meta.env.BASE_URL}lab-assets/alchemist-cat/exact-v4/`, pixels, request.signal).then(next => {
+        if (disposed || request.signal.aborted) { closeAlchemistBitmaps(next); return; }
+        if (images) closeAlchemistBitmaps(images);
+        images = next;
+        lastPose = '';
+        resume();
+        setFailed(false);
+        setLoaded(true);
+      }).catch(() => { if (!disposed && !request.signal.aborted) { requestedPixels = 0; setFailed(true); } });
+    };
+    const resized = () => { measuredWidth = element.getBoundingClientRect().width; lastPose = ''; redraw(); loadImages(); };
     const observer = new ResizeObserver(resized);
     observer.observe(element);
     const events = new AbortController();
     window.addEventListener('resize', resized, { signal: events.signal });
     document.addEventListener('visibilitychange', resume, { signal: events.signal });
     reduced.addEventListener('change', resume, { signal: events.signal });
-    Promise.all(Object.entries(exactFiles).map(async ([key, filename]) => {
-      const image = new Image();
-      image.src = `${import.meta.env.BASE_URL}lab-assets/alchemist-cat/exact-v4/${filename}.webp`;
-      await image.decode();
-      return [key, image] as const;
-    })).then(entries => {
-      if (disposed) return;
-      images = Object.fromEntries(entries) as ExactImages;
-      resume();
-      setLoaded(true);
-    }).catch(() => { if (!disposed) setFailed(true); });
-    return () => { disposed = true; cancelAnimationFrame(raf); observer.disconnect(); events.abort(); refresh.current = () => {}; replay.current = () => {}; };
+    loadImages();
+    return () => {
+      disposed = true; loading?.abort();
+      cancelAnimationFrame(raf); observer.disconnect(); events.abort();
+      if (images) closeAlchemistBitmaps(images);
+      images = undefined;
+      canvas.width = canvas.height = potionCanvas.width = potionCanvas.height = 0;
+      refresh.current = () => {}; replay.current = () => {};
+    };
   }, []);
   useEffect(() => refresh.current(), [mood, paused, eyeMode, motionMode, reference, previewTime]);
   useEffect(() => { if (replayKey > 0) replay.current(); }, [replayKey]);
   return <div className="alchemist-sprite" data-mood={mood} data-reference={reference} style={{ '--sprite-size': `${size}px` } as CSSProperties}>
     <div className="alchemist-aura" aria-hidden="true" />
     <div ref={host} className="alchemist-character" data-loaded={loaded} role="img" aria-label={failed ? `${label} — слои не загрузились, показан исходник` : label}>
-      <img className="alchemist-fallback" src={catSource} width="1254" height="1254" alt="" aria-hidden="true" draggable={false} />
+      {!loaded && <img className="alchemist-fallback" src={catSource} width="1254" height="1254" alt="" aria-hidden="true" draggable={false} />}
       <canvas className="alchemist-frame" aria-hidden="true" />
       <div className="alchemist-flask-effects" aria-hidden="true">
         <canvas className="alchemist-potion-frame" />

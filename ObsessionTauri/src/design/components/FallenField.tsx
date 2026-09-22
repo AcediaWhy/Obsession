@@ -1,17 +1,17 @@
 import { useEffect, useRef } from "react";
 import { useDpiStore } from "../../store/dpiStore";
 import { useProxyStore } from "../../store/proxyStore";
-import { createRenderLoop, frameQualityScale, type QualityTier, type RenderLoop } from "../render";
+import { createRenderLoop, frameQualityScale, useRenderActive, type QualityTier, type RenderLoop } from "../render";
+import { FallenRuins } from "./FallenRuins";
+import "../../styles/fallenRuins.css";
 
-// Фон темы «Fallen Down» (вайб Undertale, абстрактно): чёрная пустота, в которой
-// редко и медленно мерцают серебристо-белые пиксельные звёзды-сверкания — как
-// точки сохранения и «фальшивые звёзды желаний» из Waterfall. Много пустоты,
-// тихая надежда, монохром (единственный цвет — красная душа в ядре). При активном
-// обходе звёзды разгораются ярче и чуть теплеют — «под защитой».
+// Тихие подземные руины, золотые цветы и редкие огоньки. Иллюстрация статична;
+// существующий общий цикл рисует только частицы и освобождается в трее.
 export function FallenField({ paused = false }: { paused?: boolean }) {
   const dpiActive = useDpiStore((s) => s.active);
   const proxyRunning = useProxyStore((s) => s.running);
   const hot = dpiActive || proxyRunning;
+  const motionActive = useRenderActive() && !paused;
   const hotRef = useRef(hot);
   hotRef.current = hot;
 
@@ -160,19 +160,9 @@ export function FallenField({ paused = false }: { paused?: boolean }) {
   }, [paused]);
 
   return (
-    <div className="pointer-events-none absolute inset-0 overflow-hidden">
-      {/* Чёрная пустота — почти без света, чуть глубже к краям. */}
-      <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_50%_45%,#0b0a0f_0%,#070609_55%,#040305_100%)]" />
-      {/* Едва заметные холодные пятна глубины. */}
-      <div
-        className="absolute left-[16%] top-[24%] h-[420px] w-[420px] rounded-full opacity-15"
-        style={{ background: "radial-gradient(circle, rgba(70,78,110,0.5), transparent 68%)", filter: "blur(120px)" }}
-      />
-      <div
-        className="absolute right-[14%] bottom-[18%] h-[380px] w-[380px] rounded-full opacity-12"
-        style={{ background: "radial-gradient(circle, rgba(90,80,120,0.4), transparent 68%)", filter: "blur(120px)" }}
-      />
-      <canvas ref={ref} className="absolute inset-0 h-full w-full" style={{ imageRendering: "pixelated" }} />
+    <div className="fallen-field pointer-events-none absolute inset-0 overflow-hidden" data-hot={hot} data-fallen-motion={motionActive}>
+      <FallenRuins />
+      <canvas ref={ref} className="fallen-field-stars absolute inset-0 h-full w-full" style={{ imageRendering: "pixelated" }} />
       {/* Тёплое дыхание при активности — очень сдержанно. */}
       <div
         className="absolute inset-0 transition-opacity duration-[1600ms]"
@@ -181,8 +171,7 @@ export function FallenField({ paused = false }: { paused?: boolean }) {
           opacity: hot ? 1 : 0,
         }}
       />
-      {/* Мягкая виньетка. */}
-      <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,transparent_45%,rgba(0,0,0,0.6))]" />
+      <div className="fallen-field-vignette" />
     </div>
   );
 }

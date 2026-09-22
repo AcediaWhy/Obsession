@@ -1,0 +1,136 @@
+.fallen-field { background: #171321; }
+.fallen-ruins { position: absolute; inset: 0; overflow: hidden; }
+.fallen-room-frame { position: absolute; inset: 0; container-type: size; }
+/* Match object-fit: cover in source coordinates, shared by the image and dust.
+   This keeps the beam anchored even in tall previews and compact app windows. */
+.fallen-room-plane {
+  position: absolute;
+  --room-width: max(100cqw, 150cqh);
+  --room-height: max(100cqh, 66.666667cqw);
+  width: var(--room-width);
+  height: var(--room-height);
+  /* Position the shared plane without a fractional transform on the bitmap. */
+  left: calc((100cqw - var(--room-width)) * .64);
+  top: calc((100cqh - var(--room-height)) * .56);
+}
+.fallen-room-art {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  /* The 1536px illustration is continuously scaled to cover the window.
+     Use one filtered sampling pass instead of pixelated fractional resampling. */
+  image-rendering: auto;
+}
+.fallen-atmosphere { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+.fallen-light-breath { opacity: .72; }
+.fallen-dust { opacity: .45; }
+.fallen-floor-mist { opacity: .6; }
+.fallen-ember { opacity: 0; }
+.fallen-ray { opacity: .45; }
+.fallen-ray-secondary { opacity: .3; }
+.fallen-floor-glow { opacity: .4; transform-origin: 1080px 780px; }
+.fallen-foreground-mist { opacity: .55; }
+.fallen-firefly { opacity: 0; }
+[data-fallen-motion="true"] .fallen-ray { animation: fallen-ray-shimmer 19s -6s ease-in-out infinite; }
+[data-fallen-motion="true"] .fallen-ray-secondary { animation-duration: 27s; animation-delay: -17s; }
+[data-fallen-motion="true"] .fallen-floor-glow { animation: fallen-floor-glow 18s -7s ease-in-out infinite; }
+[data-fallen-motion="true"] .fallen-foreground-mist { animation: fallen-foreground-drift 37s -14s ease-in-out infinite alternate; }
+[data-fallen-motion="true"] .fallen-firefly { animation: fallen-firefly-drift var(--fly-time) var(--fly-delay) ease-in-out infinite; }
+[data-fallen-motion="true"] .fallen-firefly-light { animation: fallen-firefly-pulse var(--fly-pulse) var(--fly-delay) ease-in-out infinite; }
+[data-fallen-motion="true"] .fallen-light-breath { animation: fallen-light-breath 12s ease-in-out infinite; }
+[data-fallen-motion="true"] .fallen-floor-mist { animation: fallen-mist-drift 24s -8s ease-in-out infinite alternate; }
+[data-fallen-motion="true"] .fallen-floor-mist-distant { animation-duration: 31s; animation-delay: -19s; animation-direction: alternate-reverse; }
+[data-fallen-motion="true"] .fallen-ember { animation: fallen-ember-rise var(--ember-time) var(--ember-delay) linear infinite; }
+[data-fallen-motion="true"] .fallen-dust { animation: fallen-dust-fall var(--dust-time) var(--dust-delay) linear infinite; }
+[data-fallen-motion="true"] .fallen-save-shimmer { animation: fallen-save-shimmer 3.6s ease-in-out infinite; }
+.fallen-save-shimmer, .fallen-save-flash { transform-box: view-box; transform-origin: 16px 16px; }
+.fallen-save-flash { opacity: 0; }
+[data-fallen-motion="true"][data-hot="true"] .fallen-save-flash { animation: fallen-save-flash 950ms ease-out both; }
+@keyframes fallen-light-breath { 0%, 100% { opacity: .48; } 50% { opacity: 1; } }
+@keyframes fallen-ray-shimmer {
+  0%, 100% { opacity: .25; }
+  48% { opacity: .85; }
+  72% { opacity: .5; }
+}
+@keyframes fallen-floor-glow {
+  0%, 100% { opacity: .25; transform: scale(.94, .97); }
+  50% { opacity: .8; transform: scale(1.06, 1.04); }
+}
+@keyframes fallen-foreground-drift {
+  from { transform: translate(48px, 9px); opacity: .45; }
+  to { transform: translate(-52px, -8px); opacity: .9; }
+}
+@keyframes fallen-firefly-drift {
+  0%, 100% { transform: translate(0, 8px); opacity: 0; }
+  15% { opacity: .9; }
+  45% { transform: translate(var(--fly-drift), var(--fly-lift)); opacity: 1; }
+  75% { transform: translate(calc(var(--fly-drift) * -.35), calc(var(--fly-lift) * .65)); opacity: .8; }
+  90% { opacity: 0; }
+}
+@keyframes fallen-firefly-pulse {
+  0%, 100% { opacity: .12; }
+  42% { opacity: 1; }
+  68% { opacity: .3; }
+}
+@keyframes fallen-mist-drift {
+  from { transform: translate(-35px, 3px); opacity: .35; }
+  to { transform: translate(35px, -4px); opacity: .8; }
+}
+@keyframes fallen-ember-rise {
+  0% { transform: translate(0, 12px); opacity: 0; }
+  18% { opacity: .85; }
+  58% { opacity: .55; }
+  100% { transform: translate(var(--ember-drift), var(--ember-rise)); opacity: 0; }
+}
+@keyframes fallen-dust-fall {
+  0% { transform: translate(0, -24px); opacity: 0; }
+  18% { opacity: .9; }
+  75% { opacity: .6; }
+  100% { transform: translate(var(--dust-drift), 64px); opacity: 0; }
+}
+@keyframes fallen-save-shimmer {
+  0%, 100% { opacity: .65; transform: scale(.94); }
+  45% { opacity: 1; transform: scale(1.06); }
+  65% { opacity: .85; transform: scale(1); }
+}
+@keyframes fallen-save-flash {
+  0% { opacity: 0; transform: scale(.6); }
+  22% { opacity: 1; transform: scale(1.3); }
+  100% { opacity: 0; transform: scale(2.4); }
+}
+html[data-hidden="true"] .fallen-atmosphere *, html[data-hidden="true"] .fallen-save-light * { animation: none !important; }
+@media (prefers-reduced-motion: reduce) {
+  .fallen-atmosphere *, .fallen-save-light * { animation: none !important; }
+}
+.fallen-field-stars { opacity: .1; }
+.fallen-save-light {
+  position: absolute;
+  left: 76%;
+  bottom: 18%;
+  width: 22px;
+  height: 22px;
+  overflow: visible;
+  opacity: .7;
+}
+.fallen-field[data-hot="true"] .fallen-save-light { opacity: 1; }
+.fallen-field-vignette {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, #0b081ba6, transparent 30%), linear-gradient(180deg, #100b1c40, transparent 52%, #130c1933);
+}
+[data-theme="fallendown"] {
+  --glass-bg: linear-gradient(160deg, rgba(34, 23, 46, .87), rgba(19, 14, 30, .84));
+  --glass-border: rgba(189, 157, 193, .25);
+  --glass-specular: rgba(246, 227, 195, .12);
+}
+/* Keep the pixel scene sharp; blurred bright flowers form rectangular halos
+   beneath the panels on compact windows. The tinted fill supplies contrast. */
+[data-theme="fallendown"] .glass {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+@media (max-height: 740px) {
+  .fallen-room-frame { height: 122%; }
+  .fallen-room-plane { left: calc((100cqw - var(--room-width)) * .68); top: 0; }
+}

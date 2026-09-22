@@ -2,7 +2,7 @@ export const exactFiles = {
   original: 'original', base: 'motion-base', tail: 'tail-tip',
   leftEar: 'leftEar', rightEar: 'rightEar', roots: 'roots', backing: 'backing', skin: 'skin',
 } as const;
-export type ExactImages = Record<keyof typeof exactFiles, HTMLImageElement>;
+export type ExactImages = Record<keyof typeof exactFiles, CanvasImageSource>;
 export type ExactMotionMode = 'auto' | 'still' | 'ears' | 'tail';
 export interface ExactPose { blink: number; tail: number; leftEar: number; rightEar: number; action: 'idle' | 'bubble' }
 export const neutralExactPose: ExactPose = { blink: 0, tail: 0, leftEar: 0, rightEar: 0, action: 'idle' };
@@ -50,19 +50,21 @@ export function exactPoseAt(time: number, mood: 'rest' | 'brew' | 'ready', mode:
 }
 
 export function drawExactAlchemist(canvas: HTMLCanvasElement, images: ExactImages, pose: ExactPose, pixels: number) {
-  canvas.width = pixels; canvas.height = pixels;
+  const resized = canvas.width !== pixels || canvas.height !== pixels;
+  if (resized) { canvas.width = pixels; canvas.height = pixels; }
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
+  if (!resized) ctx.clearRect(0, 0, pixels, pixels);
   ctx.imageSmoothingEnabled = false;
   const scale = pixels / 1254;
-  const layer = (image: HTMLImageElement) => ctx.drawImage(image, 0, 0, pixels, pixels);
+  const layer = (image: CanvasImageSource) => ctx.drawImage(image, 0, 0, pixels, pixels);
   if (!pose.tail && !pose.leftEar && !pose.rightEar) {
     // Exact neutral rendering: no cropping, masks, independently scaled parts,
     // replacement eyes or reconstructed body. Identical to the source sprite.
     layer(images.original);
   } else {
     layer(images.backing);
-    const rotate = (image: HTMLImageElement, degrees: number, x: number, y: number) => {
+    const rotate = (image: CanvasImageSource, degrees: number, x: number, y: number) => {
       ctx.save();
       const px = Math.round(x * scale), py = Math.round(y * scale);
       ctx.translate(px, py); ctx.rotate(degrees * Math.PI / 180);

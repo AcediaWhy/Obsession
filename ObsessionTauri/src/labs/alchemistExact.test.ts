@@ -2,6 +2,17 @@ import { describe, it, expect, vi } from 'vitest';
 import { drawExactAlchemist, exactPoseAt, neutralExactPose, exactFiles, type ExactImages } from './alchemistExact';
 
 describe('source-faithful alchemist', () => {
+  it('clears the previous pose without reallocating a same-size canvas', () => {
+    const context = { drawImage: vi.fn(), clearRect: vi.fn(), imageSmoothingEnabled: true };
+    const resize = vi.fn();
+    const canvas = { get width() { return 240; }, set width(_value: number) { resize(); },
+      get height() { return 240; }, set height(_value: number) { resize(); }, getContext: () => context };
+    const images = Object.fromEntries(Object.keys(exactFiles).map(name => [name, { name }])) as unknown as ExactImages;
+    drawExactAlchemist(canvas as unknown as HTMLCanvasElement, images, neutralExactPose, 240);
+    expect(resize).not.toHaveBeenCalled();
+    expect(context.clearRect).toHaveBeenCalledWith(0, 0, 240, 240);
+    expect(context.drawImage).toHaveBeenCalledOnce();
+  });
   it('has an exactly neutral rest pose and honours no-motion mode', () => {
     expect(exactPoseAt(0, 'brew')).toEqual(neutralExactPose);
     for (const t of [750, 1250, 2250, 4050, 11500, 18850]) expect(exactPoseAt(t, 'brew', 'still')).toEqual(neutralExactPose);

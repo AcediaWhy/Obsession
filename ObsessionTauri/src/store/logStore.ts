@@ -53,6 +53,8 @@ export const useLogStore = create<LogState>((set) => ({
   lines: [],
   push: (event) => {
     pending.push({ ...event, id: nextLogId++ });
+    // The frame scheduler is stopped in the tray; bound the queue BEFORE flush.
+    if (pending.length > MAX) pending.splice(0, pending.length - MAX);
     scheduleFlush();
   },
   clear: () => {

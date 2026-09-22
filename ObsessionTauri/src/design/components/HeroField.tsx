@@ -31,7 +31,7 @@ function webglSupported(): boolean {
     return false;
   }
 }
-const WEBGL = webglSupported();
+let webglAvailable: boolean | undefined;
 
 function webgl2Supported(): boolean {
   try {
@@ -44,7 +44,7 @@ function webgl2Supported(): boolean {
     return false;
   }
 }
-const WEBGL2 = webgl2Supported();
+let webgl2Available: boolean | undefined;
 
 class ObsessionBoundary extends Component<
   { children: ReactNode; fallback: ReactNode },
@@ -107,7 +107,7 @@ export function HeroField({
     scene = <GoldenMeadowField paused={frozen} />;
   } else if (theme === "obsession") {
     const fallback = <ObsessionChoirFallback paused={frozen} phase={phase} screen={screen} />;
-    scene = WEBGL2 ? (
+    scene = (webgl2Available ??= webgl2Supported()) ? (
       <ObsessionBoundary fallback={fallback}>
         <ObsessionChoirField paused={frozen} phase={phase} screen={screen} />
       </ObsessionBoundary>
@@ -131,7 +131,7 @@ export function HeroField({
         }}
       />
     );
-    scene = WEBGL2 ? (
+    scene = (webgl2Available ??= webgl2Supported()) ? (
       <Fallback3D fallback={fallback}>
         <Suspense fallback={loading}>
           <YaniCharacterField
@@ -145,7 +145,7 @@ export function HeroField({
       </Fallback3D>
     ) : fallback;
   } else if (theme === "japan") {
-    if (!WEBGL) {
+    if (!(webglAvailable ??= webglSupported())) {
       scene = <RainFallback paused={frozen} />;
     } else {
       scene = (

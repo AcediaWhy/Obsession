@@ -3,7 +3,9 @@ import { motion } from "framer-motion";
 import { Icon } from "./icons";
 import { EyeLogo } from "./EyeLogo";
 import { GoldenMeadowCore } from "./GoldenMeadowCore";
-import { useMotionOff } from "../render";
+import { HalloweenIcon } from "./HalloweenIcon";
+import { ThemeNavIcon } from "./ThemeNavIcon";
+import { useMotionOff, useRenderActive } from "../render";
 import { dur, ease, spring } from "../tokens";
 import { useThemeStore } from "../../store/themeStore";
 import { useDpiStore } from "../../store/dpiStore";
@@ -37,6 +39,7 @@ export function NavRail({
   const activeIndex = TAB_ORDER.indexOf(active);
   const farJump = Math.abs(activeIndex - previousIndex) > 1;
   const motionOff = useMotionOff();
+  const renderOn = useRenderActive();
   // Сигаретная рестилизация меню живёт только в теме Yani Neko: здесь лишь
   // класс-хук nav-item, флаг «горит» (включён обход/прокси) и декоративный
   // огонёк в активном пункте. Весь вид — в globals.css под [data-theme].
@@ -60,6 +63,8 @@ export function NavRail({
         theme === "yanineko" ? "yani-cabbage-rail" : ""
       }`}
       data-burning={burning || undefined}
+      data-halloween-motion={theme === "goldenmeadow" && renderOn && !motionOff}
+      data-theme-icon-motion={renderOn && !motionOff}
     >
       {/* Лого следует выбранной теме, а имя продукта остаётся неизменным. */}
       <div className="app-nav-brand mb-8 flex items-center gap-3 px-2">
@@ -104,9 +109,11 @@ export function NavRail({
           const isActive = active === it.id;
           return (
             <button
+              type="button"
               key={it.id}
               onClick={() => onSelect(it.id)}
               data-active={isActive || undefined}
+              aria-current={isActive ? "page" : undefined}
               // group — для hover-сдвига связки иконка+текст ниже.
               className="nav-item no-drag theme-morph group relative flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
             >
@@ -152,7 +159,8 @@ export function NavRail({
                   isActive ? "text-accent-cyan" : "text-ink-muted group-hover:text-ink-soft",
                 ].join(" ")}
               >
-                <it.icon size={18} />
+                {theme === "goldenmeadow" ? <HalloweenIcon item={it.id} />
+                  : <ThemeNavIcon theme={theme} item={it.id} />}
                 <span
                   className={[
                     "whitespace-nowrap font-medium transition-colors",
