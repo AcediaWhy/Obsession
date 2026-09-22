@@ -1,0 +1,298 @@
+{
+  "scope": "Isolated static-production theme WebView, not installed Obsession",
+  "lifecycle": [
+    {
+      "phase": "visible",
+      "ticks": "55",
+      "hidden": false,
+      "canvases": 5
+    },
+    {
+      "phase": "tray",
+      "ticks": "67",
+      "hidden": true,
+      "canvases": 0
+    },
+    {
+      "phase": "restored",
+      "ticks": "88",
+      "hidden": false,
+      "canvases": 2
+    },
+    {
+      "phase": "visible",
+      "ticks": "112",
+      "hidden": false,
+      "canvases": 5
+    },
+    {
+      "phase": "tray",
+      "ticks": "124",
+      "hidden": true,
+      "canvases": 0
+    },
+    {
+      "phase": "restored",
+      "ticks": "145",
+      "hidden": false,
+      "canvases": 2
+    },
+    {
+      "phase": "sprites",
+      "hidden": false,
+      "canvases": 2
+    }
+  ],
+  "sprite": {
+    "passed": true,
+    "dpr": 1,
+    "comparisons": [
+      {
+        "size": 104,
+        "differentPixels": 0,
+        "totalPixels": 10816
+      },
+      {
+        "size": 240,
+        "differentPixels": 0,
+        "totalPixels": 57600
+      },
+      {
+        "size": 480,
+        "differentPixels": 0,
+        "totalPixels": 230400
+      }
+    ],
+    "observations": [
+      {
+        "label": "mounted-0",
+        "live": 8,
+        "bytes": 1843200,
+        "peakBytes": 13662864,
+        "created": 64,
+        "closed": 56
+      },
+      {
+        "label": "unmounted-0",
+        "live": 0,
+        "bytes": 0,
+        "peakBytes": 13662864,
+        "created": 64,
+        "closed": 64
+      },
+      {
+        "label": "mounted-1",
+        "live": 8,
+        "bytes": 1843200,
+        "peakBytes": 13662864,
+        "created": 80,
+        "closed": 72
+      },
+      {
+        "label": "unmounted-1",
+        "live": 0,
+        "bytes": 0,
+        "peakBytes": 13662864,
+        "created": 80,
+        "closed": 80
+      },
+      {
+        "label": "mounted-2",
+        "live": 8,
+        "bytes": 1843200,
+        "peakBytes": 13662864,
+        "created": 96,
+        "closed": 88
+      },
+      {
+        "label": "unmounted-2",
+        "live": 0,
+        "bytes": 0,
+        "peakBytes": 13662864,
+        "created": 96,
+        "closed": 96
+      },
+      {
+        "label": "mounted-3",
+        "live": 8,
+        "bytes": 1843200,
+        "peakBytes": 13662864,
+        "created": 112,
+        "closed": 104
+      },
+      {
+        "label": "unmounted-3",
+        "live": 0,
+        "bytes": 0,
+        "peakBytes": 13662864,
+        "created": 112,
+        "closed": 112
+      },
+      {
+        "label": "mounted-4",
+        "live": 8,
+        "bytes": 1843200,
+        "peakBytes": 13662864,
+        "created": 128,
+        "closed": 120
+      },
+      {
+        "label": "unmounted-4",
+        "live": 0,
+        "bytes": 0,
+        "peakBytes": 13662864,
+        "created": 128,
+        "closed": 128
+      }
+    ]
+  },
+  "memorySamples": [
+    {
+      "at": "2026-09-18T08:11:14.8891666Z",
+      "pid": 5696,
+      "count": 7,
+      "privateResidentMiB": 342.2,
+      "committedMiB": 976.46
+    },
+    {
+      "at": "2026-09-18T08:11:18.0535350Z",
+      "pid": 5696,
+      "count": 7,
+      "privateResidentMiB": 246.25,
+      "committedMiB": 567.62
+    },
+    {
+      "at": "2026-09-18T08:11:21.1702140Z",
+      "pid": 5696,
+      "count": 7,
+      "privateResidentMiB": 222.84,
+      "committedMiB": 310.36
+    },
+    {
+      "at": "2026-09-18T08:11:24.2885543Z",
+      "pid": 5696,
+      "count": 7,
+      "privateResidentMiB": 216.61,
+      "committedMiB": 304.11
+    },
+    {
+      "at": "2026-09-18T08:11:27.4101899Z",
+      "pid": 5696,
+      "count": 7,
+      "privateResidentMiB": 213.12,
+      "committedMiB": 300.61
+    },
+    {
+      "at": "2026-09-18T08:11:30.5232821Z",
+      "pid": 5696,
+      "count": 7,
+      "privateResidentMiB": 210.12,
+      "committedMiB": 297.92
+    },
+    {
+      "at": "2026-09-18T08:11:33.6412917Z",
+      "pid": 5696,
+      "count": 7,
+      "privateResidentMiB": 132.29,
+      "committedMiB": 217.98
+    },
+    {
+      "at": "2026-09-18T08:11:36.7710010Z",
+      "pid": 5696,
+      "count": 7,
+      "privateResidentMiB": 155.34,
+      "committedMiB": 266.5
+    },
+    {
+      "at": "2026-09-18T08:11:39.9076036Z",
+      "pid": 5696,
+      "count": 7,
+      "privateResidentMiB": 247.09,
+      "committedMiB": 639.54
+    },
+    {
+      "at": "2026-09-18T08:11:43.0265595Z",
+      "pid": 5696,
+      "count": 7,
+      "privateResidentMiB": 296.7,
+      "committedMiB": 993.21
+    },
+    {
+      "at": "2026-09-18T08:11:46.1473668Z",
+      "pid": 5696,
+      "count": 7,
+      "privateResidentMiB": 234.04,
+      "committedMiB": 849.01
+    },
+    {
+      "at": "2026-09-18T08:11:49.2619920Z",
+      "pid": 5696,
+      "count": 7,
+      "privateResidentMiB": 191.71,
+      "committedMiB": 521.47
+    },
+    {
+      "at": "2026-09-18T08:11:52.3676171Z",
+      "pid": 5696,
+      "count": 7,
+      "privateResidentMiB": 7.64,
+      "committedMiB": 276.75
+    },
+    {
+      "at": "2026-09-18T08:11:55.4839858Z",
+      "pid": 5696,
+      "count": 7,
+      "privateResidentMiB": 7.68,
+      "committedMiB": 255.55
+    },
+    {
+      "at": "2026-09-18T08:11:58.5924144Z",
+      "pid": 5696,
+      "count": 7,
+      "privateResidentMiB": 10.92,
+      "committedMiB": 255.55
+    },
+    {
+      "at": "2026-09-18T08:12:01.7052476Z",
+      "pid": 5696,
+      "count": 7,
+      "privateResidentMiB": 10.92,
+      "committedMiB": 255.55
+    },
+    {
+      "at": "2026-09-18T08:12:04.8252820Z",
+      "pid": 5696,
+      "count": 7,
+      "privateResidentMiB": 83.25,
+      "committedMiB": 268.77
+    },
+    {
+      "at": "2026-09-18T08:12:07.9402794Z",
+      "pid": 5696,
+      "count": 7,
+      "privateResidentMiB": 84.63,
+      "committedMiB": 260.78
+    },
+    {
+      "at": "2026-09-18T08:12:11.0574217Z",
+      "pid": 5696,
+      "count": 7,
+      "privateResidentMiB": 117.54,
+      "committedMiB": 323.04
+    },
+    {
+      "at": "2026-09-18T08:12:14.1671108Z",
+      "pid": 5696,
+      "count": 7,
+      "privateResidentMiB": 119.93,
+      "committedMiB": 313.87
+    },
+    {
+      "at": "2026-09-18T08:12:17.2772729Z",
+      "pid": 5696,
+      "count": 7,
+      "privateResidentMiB": 120.26,
+      "committedMiB": 310.86
+    }
+  ]
+}

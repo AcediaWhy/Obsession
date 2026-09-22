@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="ru"><meta charset="utf-8"><title>Fallen Down — проверка исходника</title>
+<style>
+body{margin:16px;background:#19151e;color:#eee;font:14px system-ui}h2{font-size:15px;margin:16px 0 8px}.crop{position:relative;width:786px;height:275px;overflow:hidden}.crop img{position:absolute;max-width:none;left:-750px;top:-550px;width:1536px;height:1024px}.scaled img{left:-701.66px;top:-514.55px;width:1437px;height:958px}.scaled{width:735px;height:257px}.nearest img{image-rendering:pixelated}
+</style>
+<link rel="stylesheet" href="/src/styles/fallenRuins.css">
+<style>.live2{position:relative;overflow:hidden;width:308px;height:300px;display:inline-block;vertical-align:top;margin-left:28px}.live2 iframe{position:absolute;width:871px;height:958px;max-width:none;border:0;left:-2392px;top:-2280px;transform:scale(4);transform-origin:0 0}</style>
+<h2>Фрагмент 2 · твой скриншот / текущий макет (×4)</h2><img src="/artifacts/fallen-report-2.png" style="width:308px;height:300px;image-rendering:pixelated"><div class="live2"><iframe title="Текущий макет" src="/overview-dev.html"></iframe></div>
+<style>.pair{display:flex;gap:32px;height:330px}.pair img{image-rendering:pixelated}.sample{position:relative;overflow:hidden;transform:scale(4);transform-origin:0 0}.sample img{position:absolute;width:1437px;height:958px;max-width:none}.sample-wrap{width:308px}</style>
+<h2>Фрагмент 1 · слева твой скриншот, справа исходник в том же масштабе</h2>
+<div class="pair"><img src="/artifacts/fallen-report-1.png" width="272" height="256"><div class="sample-wrap"><div class="sample" style="width:68px;height:64px"><img src="/src/assets/fallendown/ruins-garden-v3.png" style="left:-1123px;top:-585px"></div></div></div>
+<h2>Фрагмент 2 · слева твой скриншот, справа исходник в том же масштабе</h2>
+<div class="pair"><img src="/artifacts/fallen-report-2.png" width="308" height="300"><div class="sample-wrap"><div class="sample" style="width:77px;height:75px"><img src="/src/assets/fallendown/ruins-garden-v3.png" style="left:-960px;top:-570px"></div></div></div>
+<style>
+.world{position:absolute;left:-1920px;top:-1130px;width:1536px;height:1024px;transform:scale(2);transform-origin:0 0}.live{position:relative;width:900px;height:440px;overflow:hidden}body:has(#light:not(:checked)) .fallen-light-breath,body:has(#mist:not(:checked)) .fallen-floor-mist,body:has(#sparks:not(:checked)) .fallen-ember,body:has(#sparks:not(:checked)) .fallen-dust{display:none}label{margin-right:16px}.world .fallen-room-frame{height:100%}.world .fallen-room-plane{left:64%;top:56%;transform:translate(-64%,-56%)}
+</style>
+<h2>Тот же участок с настоящими слоями FallenRuins</h2>
+<label><input id="light" type="checkbox" checked>Свет</label><label><input id="mist" type="checkbox" checked>Дымка</label><label><input id="sparks" type="checkbox" checked>Частицы</label>
+<div class="live"><div id="live" class="world" data-fallen-motion="true"></div></div>
+<script type="module">
+import React from 'react';
+import { createRoot } from 'react-dom/client';
+import { FallenRuins } from '/src/design/components/FallenRuins.tsx';
+createRoot(document.getElementById('live')).render(React.createElement(FallenRuins));
+</script>
+<h2>Исходный PNG · увеличенный участок центра клумбы</h2><div class="crop" style="width:900px;height:440px"><img style="width:3072px;height:2048px;left:-1920px;top:-1130px;image-rendering:pixelated" src="/src/assets/fallendown/ruins-garden-v3.png"></div>
+<h2>Исходный PNG · 1:1 · без света и CSS-масштабирования</h2><div class="crop"><img src="/src/assets/fallendown/ruins-garden-v3.png"></div>
+<h2>Масштаб макета · image-rendering: pixelated</h2><div class="crop scaled nearest"><img src="/src/assets/fallendown/ruins-garden-v3.png"></div>
+<h2>Тот же масштаб · обычное сглаживание</h2><div class="crop scaled"><img src="/src/assets/fallendown/ruins-garden-v3.png"></div>
+</html>
