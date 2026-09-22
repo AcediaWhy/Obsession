@@ -21,6 +21,10 @@ fn main() -> ExitCode {
         && arguments.get(1).and_then(|value| value.to_str())
             == Some(obsession_setup_lib::UNINSTALL_SWITCH)
     {
+        if obsession_setup_lib::webview2_present() {
+            obsession_setup_lib::run();
+            return ExitCode::SUCCESS;
+        }
         return if obsession_setup_lib::run_uninstall() {
             ExitCode::SUCCESS
         } else {

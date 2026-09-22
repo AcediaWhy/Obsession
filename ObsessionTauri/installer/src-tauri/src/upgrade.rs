@@ -1246,6 +1246,34 @@ pub(crate) fn finalize_machine_user_state(
     Ok(())
 }
 
+/// Stop only the installed application before asking its service to restore hosts.
+pub(crate) fn prepare_graphical_uninstall(target: &Path) -> Result<(), String> {
+    if path_key(target) != path_key(&super::machine_worker::machine_install_root()?) {
+        return Err("Unexpected uninstall root".into());
+    }
+    reject_reparse_points(target)?;
+    let mut log = InstallerLog::open()?;
+    let mut artifacts = TempArtifacts::new();
+    let helper = artifacts.write("obsession-installer-safety", "ps1", SAFETY_HELPER)?;
+    run_safety_helper(&helper, "StopOwnedApplication", target, None, None, &mut log)?;
+    let client = RuntimeClient::new(Duration::from_secs(15)).map_err(|e| e.to_string())?;
+    let snapshot = client.call("uninstall-snapshot", RuntimeRequest::GetRuntimeSnapshot)
+        .map_err(|e| format!("Не удалось проверить службу перед удалением: {e}"))?;
+    match snapshot.response {
+        RuntimeResponse::RuntimeSnapshot(snapshot) => {
+            let hosts = snapshot.hosts.ok_or("Служба не сообщила состояние hosts")?;
+            if !hosts.installed && !hosts.externally_modified { return Ok(()); }
+        }
+        other => return Err(format!("Не удалось проверить hosts: {other:?}")),
+    }
+    let response = client.call("uninstall-hosts", RuntimeRequest::HostsUninstall)
+        .map_err(|e| format!("Не удалось вернуть hosts перед удалением: {e}. Попробуйте восстановить установку.") )?;
+    match response.response {
+        RuntimeResponse::Accepted(_) => Ok(()),
+        other => Err(format!("Служба не подтвердила восстановление hosts: {other:?}")),
+    }
+}
+
 pub(crate) fn cleanup_machine_user_state(target: &Path) -> Result<(), String> {
     let expected = super::machine_worker::machine_install_root()?;
     if path_key(target) != path_key(&expected) {

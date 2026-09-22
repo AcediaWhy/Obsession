@@ -22,6 +22,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 semver = "1"
 sha2 = "0.10"
+flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
 obsession-runtime-service = { path = "../../runtime-service" }
 obsession-runtime-client = { path = "../../runtime-client" }
 obsession-runtime-protocol = { path = "../../runtime-protocol" }

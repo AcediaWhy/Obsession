@@ -11,6 +11,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { compressMachinePayload } from "./payload-compression.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const installerDir = path.join(root, "installer");
@@ -154,10 +155,11 @@ function prepareMachinePayload(conf, version) {
   header.writeUInt32LE(manifest.length, 8);
   header.writeUInt32LE(records.length, 12);
   const output = path.join(installerDir, "src-tauri", "payload", "machine-payload.bin");
-  fs.writeFileSync(output, Buffer.concat([header, manifest, ...payloadBuffers]));
+  const raw = Buffer.concat([header, manifest, ...payloadBuffers]);
+  fs.writeFileSync(output, compressMachinePayload(raw));
   console.log(
     `machine payload: ${path.relative(root, output)} ` +
-      `(${records.length} файлов, ${mb(fs.statSync(output).size)})`,
+      `(${records.length} файлов, ${mb(raw.length)} → ${mb(fs.statSync(output).size)})`,
   );
 }
 

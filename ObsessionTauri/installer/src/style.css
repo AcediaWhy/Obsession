@@ -148,26 +148,9 @@ button:focus-visible, input:focus-visible {
 @keyframes sheen { 0%, 52% { transform: translateX(-110%); } 78%, 100% { transform: translateX(110%); } }
 .visual-halo { position: absolute; width: 190px; height: 190px; top: 28px; border-radius: 50%; background: radial-gradient(circle, rgb(var(--accent) / 0.22), rgb(var(--cyan) / 0.07) 45%, transparent 70%); filter: blur(9px); animation: halo 8.8s cubic-bezier(0.45, 0, 0.55, 1) infinite; }
 @keyframes halo { 0%, 100% { opacity: 0.54; transform: scale(0.965); } 48% { opacity: 0.92; transform: scale(1.045); } 72% { opacity: 0.72; transform: scale(1.015); } }
-.eye-orbit { --eye-size: 96px; position: relative; z-index: 1; flex: none; width: var(--eye-size); height: var(--eye-size); display: grid; place-items: center; isolation: isolate; animation: eye-float 12.6s cubic-bezier(0.45, 0, 0.55, 1) infinite; will-change: transform; }
-.eye-aura { position: absolute; z-index: -1; inset: -28%; border-radius: 38%; background: radial-gradient(circle at 46% 48%, rgb(var(--cyan) / 0.13), rgb(var(--accent) / 0.17) 34%, transparent 69%); filter: blur(calc(var(--eye-size) * 0.095)); opacity: 0.7; animation: eye-aura-flow 9.4s cubic-bezier(0.45, 0, 0.55, 1) infinite; }
-.eye-tile { position: relative; width: 100%; height: 100%; overflow: hidden; border: 1px solid rgba(255, 255, 255, 0.13); border-radius: calc(var(--eye-size) * 0.2); background: #050609; box-shadow: 0 0 46px rgb(var(--accent) / 0.19), 0 16px 30px rgba(0, 0, 0, 0.3); animation: eye-breathe 8.2s cubic-bezier(0.45, 0, 0.55, 1) infinite; will-change: transform, box-shadow; }
-.eye-tile video, .eye-tile img { width: 100%; height: 100%; object-fit: cover; display: block; transform: scale(1.025); animation: eye-media-drift 11.8s cubic-bezier(0.45, 0, 0.55, 1) infinite; will-change: transform, filter; }
-.eye-depth, .eye-glint, .eye-ring { position: absolute; pointer-events: none; }
-.eye-depth { inset: 0; background: radial-gradient(circle at 58% 46%, transparent 18%, rgb(var(--accent) / 0.055) 48%, rgba(0, 0, 0, 0.33) 100%), linear-gradient(145deg, rgb(var(--cyan) / 0.045), transparent 42%); mix-blend-mode: screen; animation: eye-depth-shift 10.7s cubic-bezier(0.45, 0, 0.55, 1) infinite; }
-.eye-glint { inset: -35%; background: linear-gradient(112deg, transparent 39%, rgba(235, 253, 255, 0.16) 47%, rgba(151, 238, 255, 0.035) 52%, transparent 59%); transform: translateX(-62%) rotate(2deg); mix-blend-mode: screen; animation: eye-glint 10.8s cubic-bezier(0.45, 0, 0.55, 1) infinite; }
-.eye-ring { inset: -1px; border-radius: inherit; box-shadow: inset 0 0 18px rgba(255, 255, 255, 0.04), inset 0 -18px 30px rgba(0, 0, 0, 0.16); }
-.eye-quiet { animation-duration: 16.5s; }
-.eye-quiet .eye-aura { opacity: 0.48; animation-duration: 13.5s; }
-.eye-quiet .eye-tile { box-shadow: 0 0 34px rgb(var(--accent) / 0.13), 0 12px 24px rgba(0, 0, 0, 0.24); animation-duration: 11.8s; }
-.eye-quiet .eye-glint { opacity: 0.68; animation-duration: 14.5s; }
-body[data-step="done"] .eye-orbit { animation-duration: 19s; }
-body[data-step="done"] .eye-aura { background: radial-gradient(circle, rgb(var(--success) / 0.13), rgb(var(--cyan) / 0.08) 38%, transparent 69%); }
-@keyframes eye-float { 0%, 100% { transform: translate3d(-0.5px, 1px, 0) rotate(-0.35deg); } 31% { transform: translate3d(1.5px, -1.5px, 0) rotate(0.32deg); } 68% { transform: translate3d(-1px, -0.3px, 0) rotate(-0.12deg); } }
-@keyframes eye-aura-flow { 0%, 100% { opacity: 0.54; transform: scale(0.94) rotate(-2deg); } 46% { opacity: 0.88; transform: scale(1.08) rotate(1.5deg); } 72% { opacity: 0.66; transform: scale(1.01) rotate(0); } }
-@keyframes eye-breathe { 0%, 100% { transform: scale(0.992); box-shadow: 0 0 38px rgb(var(--accent) / 0.16), 0 16px 30px rgba(0, 0, 0, 0.3); } 48% { transform: scale(1.009); box-shadow: 0 0 54px rgb(var(--accent) / 0.24), 0 18px 34px rgba(0, 0, 0, 0.34); } 72% { transform: scale(1.002); } }
-@keyframes eye-media-drift { 0%, 100% { transform: translate3d(-0.5%, 0.2%, 0) scale(1.025); filter: contrast(1.02) brightness(0.96); } 36% { transform: translate3d(0.7%, -0.6%, 0) scale(1.042); filter: contrast(1.06) brightness(1.03); } 71% { transform: translate3d(0.1%, 0.5%, 0) scale(1.032); filter: contrast(1.04) brightness(0.99); } }
-@keyframes eye-depth-shift { 0%, 100% { opacity: 0.62; transform: translate3d(-1%, 0, 0); } 52% { opacity: 0.92; transform: translate3d(1.5%, -0.8%, 0); } }
-@keyframes eye-glint { 0%, 48% { opacity: 0; transform: translateX(-62%) rotate(2deg); } 62% { opacity: 0.85; } 79%, 100% { opacity: 0; transform: translateX(62%) rotate(2deg); } }
+.moth-mark { flex: none; width: var(--moth-size); height: var(--moth-size); display: grid; place-items: center; }
+.moth-mark img { width: 100%; height: 100%; object-fit: contain; display: block; border-radius: calc(var(--moth-size) * 0.16); }
+.moth-quiet { opacity: 0.92; }
 .wordmark { font-size: 15px; font-weight: 600; letter-spacing: 0.36em; margin-left: 0.36em; background: linear-gradient(110deg, #f1f4ff, #8fdcf1 50%, #5eead4); -webkit-background-clip: text; background-clip: text; color: transparent; }
 .visual-caption { color: rgba(255, 255, 255, 0.24); font-family: var(--font-mono); font-size: 7.5px; letter-spacing: 0.2em; }
 
@@ -244,8 +227,6 @@ body[data-step="bootstrapping"] .stepper { visibility: hidden; }
 
 .done-screen { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 9px; }
 .done-visual { position: relative; margin-bottom: 3px; }
-.success-badge { position: absolute; right: -8px; bottom: -5px; width: 28px; height: 28px; display: grid; place-items: center; border: 3px solid var(--bg); border-radius: 50%; color: #06150f; background: rgb(var(--success)); box-shadow: 0 0 20px rgb(var(--success) / 0.28); }
-.success-badge svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
 .done-title { font-size: 27px; }
 .done-description { text-align: center; }
 .result-path { max-width: 490px; display: flex; align-items: center; gap: 8px; margin-top: 4px; padding: 9px 12px; border: 1px solid var(--border); border-radius: 11px; background: rgba(255, 255, 255, 0.035); }
@@ -302,7 +283,7 @@ body[data-step="bootstrapping"] .stepper { visibility: hidden; }
   .stage { padding-inline: 34px; }
   .welcome-screen { grid-template-columns: 1fr 190px; gap: 24px; }
   .brand-visual { min-height: 245px; }
-  .brand-visual .eye-orbit { --eye-size: 124px !important; }
+  .brand-visual .moth-mark { --moth-size: 160px !important; }
   .hero-title { font-size: 28px; }
   .footer { grid-template-columns: 145px 1fr 145px; padding-inline: 14px; }
   .stepper-label { display: none; }
@@ -314,7 +295,7 @@ body[data-step="bootstrapping"] .stepper { visibility: hidden; }
   .stage { padding-top: 2px; padding-bottom: 2px; }
   .welcome-screen { min-height: 280px; }
   .brand-visual { min-height: 245px; }
-  .brand-visual .eye-orbit { --eye-size: 124px !important; }
+  .brand-visual .moth-mark { --moth-size: 160px !important; }
   .trust-note { padding-top: 9px; }
   .options-screen, .progress-screen { gap: 10px; }
   .path-panel { padding-block: 10px; }
@@ -331,3 +312,17 @@ body[data-step="bootstrapping"] .stepper { visibility: hidden; }
   .btn-primary { color: ButtonText; background: ButtonFace; }
   .eye-aura, .eye-depth, .eye-glint { display: none; }
 }
+
+/* Static peek-cat identity: restrained palette, no ornamental glow. */
+:root { --accent: 184 177 199; --cyan: 225 218 204; --success: 199 207 188; }
+.ambient, .visual-halo, .brand-visual::before { display: none; }
+.brand-visual { border: 0; background: none; box-shadow: none; overflow: visible; }
+.brand-mark { background: #e9e3d7; box-shadow: none; border-radius: 1px; transform: rotate(45deg); }
+.wordmark { background: none; color: #e9e3d7; font-size: 12px; letter-spacing: 0.3em; }
+.visual-caption { letter-spacing: 0.1em; }
+.btn-primary { color: #17151b; background: #e9e3d7; border-color: #e9e3d7; box-shadow: none; }
+.btn-primary:hover { background: #f4f0e8; box-shadow: none; }
+.btn-primary .btn-arrow { color: inherit; }
+.choice-card input:checked + .choice-control { background: #777081; box-shadow: none; }
+.progress-fill { background: #c4bdcf; box-shadow: none; }
+.mode-badge > span, .stepper-item.is-current .stepper-dot { box-shadow: none; }

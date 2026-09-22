@@ -4,6 +4,7 @@
 //! paths, service names or command text: every machine-wide target is derived
 //! from Windows Known Folders and fixed product constants in this module.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File, OpenOptions};
@@ -1168,7 +1169,7 @@ struct ParsedMachinePayload<'a> {
 
 struct ParsedMachineFile<'a> {
     relative: PathBuf,
-    bytes: &'a [u8],
+    bytes: Cow<'a, [u8]>,
     sha256: String,
 }
 
@@ -1237,6 +1238,17 @@ fn expected_machine_payload_version() -> &'static str {
 }
 
 fn parse_machine_payload(bytes: &[u8]) -> Result<ParsedMachinePayload<'_>, String> {
+    if bytes.starts_with(crate::payload_compression::MAGIC) {
+        let raw = crate::payload_compression::decode(bytes, MAX_MACHINE_PAYLOAD_BYTES)?;
+        let parsed = parse_machine_payload(&raw)?;
+        return Ok(ParsedMachinePayload {
+            files: parsed.files.into_iter().map(|file| ParsedMachineFile {
+                relative: file.relative,
+                bytes: Cow::Owned(file.bytes.into_owned()),
+                sha256: file.sha256,
+            }).collect(),
+        });
+    }
     if bytes.len() < MACHINE_PAYLOAD_HEADER_BYTES || bytes.len() > MAX_MACHINE_PAYLOAD_BYTES {
         return Err("machine payload is missing or outside its size bound".into());
     }
@@ -1296,7 +1308,7 @@ fn parse_machine_payload(bytes: &[u8]) -> Result<ParsedMachinePayload<'_>, Strin
         }
         parsed.push(ParsedMachineFile {
             relative,
-            bytes: file_bytes,
+            bytes: Cow::Borrowed(file_bytes),
             sha256: record.sha256.to_ascii_lowercase(),
         });
         cursor = end;
@@ -1924,7 +1936,7 @@ fn materialize_machine_payload(
             .open(&destination)
             .map_err(|error| format!("could not create {}: {error}", destination.display()))?;
         output
-            .write_all(file.bytes)
+            .write_all(file.bytes.as_ref())
             .and_then(|()| output.sync_all())
             .map_err(|error| format!("could not write {}: {error}", destination.display()))?;
     }
@@ -3509,7 +3521,71 @@ mod tests {
             payload.files[0].relative,
             PathBuf::from(MACHINE_MAIN_BINARY)
         );
-        assert_eq!(payload.files[0].bytes, b"app fixture");
+        assert_eq!(payload.files[0].bytes.as_ref(), b"app fixture");
+    }
+
+    #[test]
+    fn compressed_machine_payload_preserves_files_and_inner_checks() {
+        let raw = test_payload(&required_test_files());
+        let packed = crate::payload_compression::pack_fixture(&raw);
+        let parsed = parse_machine_payload(&packed).unwrap();
+        let original = parse_machine_payload(&raw).unwrap();
+        for (file, expected) in parsed.files.iter().zip(original.files.iter()) {
+            assert_eq!(file.relative, expected.relative);
+            assert_eq!(file.bytes, expected.bytes);
+            assert_eq!(file.sha256, expected.sha256);
+        }
+        let mut corrupt = raw.clone();
+        *corrupt.last_mut().unwrap() ^= 1;
+        let packed = crate::payload_compression::pack_fixture(&corrupt);
+        assert!(parse_machine_payload(&packed).err().unwrap().contains("hash mismatch"));
+        let unsafe_raw = test_payload(&[("../outside.exe", b"bad")]);
+        let packed = crate::payload_compression::pack_fixture(&unsafe_raw);
+        assert!(parse_machine_payload(&packed).err().unwrap().contains("unsafe machine payload path"));
+    }
+
+    #[test]
+    fn compressed_machine_payload_materializes_identically() {
+        let test = TestDirectory::new();
+        let raw = test_payload(&required_test_files());
+        let packed = crate::payload_compression::pack_fixture(&raw);
+        let parsed = parse_machine_payload(&packed).unwrap();
+        materialize_machine_payload(&parsed, &test.0).unwrap();
+        for (relative, expected) in required_test_files() {
+            assert_eq!(fs::read(test.0.join(relative)).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    #[ignore = "run after build-setup has generated the real compressed package"]
+    fn built_compressed_machine_payload_is_authenticated() {
+        let bytes = fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("payload/machine-payload.bin")).unwrap();
+        assert!(bytes.starts_with(crate::payload_compression::MAGIC));
+        let parsed = parse_machine_payload(&bytes).unwrap();
+        assert!(parsed.files.len() >= 3);
+        eprintln!("Authenticated {} files from the Node-generated gzip package", parsed.files.len());
+    }
+
+    #[test]
+    fn compressed_machine_payload_update_and_rollback() {
+        for fail_after_swap in [false, true] {
+            let (_test, paths, _, new) = update_test_fixture();
+            let packed = crate::payload_compression::pack_fixture(&new);
+            let payload = parse_machine_payload(&packed).unwrap();
+            let mut service = TestMachineUpdateService;
+            let result = transactional_update_machine_payload(
+                &paths, &payload, &"c".repeat(32), true, None, &mut service,
+                |checkpoint| {
+                    if fail_after_swap && checkpoint == MachineUpdateCheckpoint::TargetSwapped {
+                        Err("compressed package rollback fixture".into())
+                    } else { Ok(()) }
+                },
+            );
+            assert_eq!(result.is_err(), fail_after_swap);
+            assert_eq!(fs::read(paths.install_root.join(MACHINE_MAIN_BINARY)).unwrap(),
+                if fail_after_swap { b"old app" } else { b"new app" });
+            assert!(load_machine_update_journal(&paths).unwrap().is_none());
+        }
     }
 
     #[test]

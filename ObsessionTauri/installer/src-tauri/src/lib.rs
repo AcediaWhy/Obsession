@@ -4,8 +4,11 @@
 // native update/uninstall transaction.
 
 mod machine_handoff;
+mod payload_compression;
 pub mod machine_worker;
 mod upgrade;
+mod uninstall;
+mod user_cleanup;
 
 use std::ffi::OsString;
 use std::fs;
@@ -705,6 +708,15 @@ pub fn run_fallback() {
 }
 
 pub fn run_uninstall() -> bool {
+    let Some(options) = uninstall::fallback_choices() else { return true; };
+    let _operation = match NamedMutexGuard::acquire(INSTALL_OPERATION_MUTEX) {
+        Ok(guard) => guard,
+        Err(error) => { show_fallback_error(error); return false; }
+    };
+    let cleanup = match user_cleanup::plan(options) {
+        Ok(plan) => plan,
+        Err(error) => { show_fallback_error(error); return false; }
+    };
     let _self_image_lock = match machine_handoff::lock_current_setup_image() {
         Ok(lock) => lock,
         Err(error) => {
@@ -725,6 +737,10 @@ pub fn run_uninstall() -> bool {
             return false;
         }
     };
+    if let Err(error) = upgrade::prepare_graphical_uninstall(&install_root) {
+        show_fallback_error(error);
+        return false;
+    }
     if let Err(error) = machine_handoff::uninstall_machine_runtime(|_, _| {}) {
         show_fallback_error(error);
         return false;
@@ -735,9 +751,12 @@ pub fn run_uninstall() -> bool {
         ));
         return false;
     }
-    show_fallback_info(
-        "Obsession удалена. Заблокированные файлы будут окончательно удалены Windows после следующей перезагрузки.",
-    );
+    let leftovers = user_cleanup::execute(cleanup);
+    if !leftovers.is_empty() {
+        show_fallback_error(format!("Программа удалена, но часть данных осталась:\n{}", leftovers.join("\n")));
+        return false;
+    }
+    show_fallback_info("Obsession удалена. Заблокированные файлы будут окончательно удалены Windows после следующей перезагрузки.");
     true
 }
 
@@ -766,6 +785,9 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            uninstall::uninstall_mode,
+            uninstall::uninstall_preview,
+            uninstall::uninstall_execute,
             installer_snapshot,
             install,
             launch_app,

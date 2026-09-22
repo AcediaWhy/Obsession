@@ -9,6 +9,7 @@ export default defineConfig({
   server: {
     port: 1430,
     strictPort: true,
+    watch: { ignored: ["**/src-tauri/**"] },
     fs: { allow: [fileURLToPath(new URL("..", import.meta.url))] },
   },
   build: {
