@@ -13,9 +13,8 @@ fn main() -> ExitCode {
         };
     }
 
-    // Наше окно — WebView2. Если рантайма в системе нет, красивый UI не
-    // отрисуется вовсе: достаём payload и запускаем ВИДИМЫЙ стоковый NSIS —
-    // он сам скачает и поставит WebView2 (webviewInstallMode по умолчанию).
+    // Uninstall remains available without WebView2. A fresh install first
+    // provisions Microsoft's runtime, then opens the ordinary setup UI.
     let arguments: Vec<_> = std::env::args_os().collect();
     if arguments.len() == 2
         && arguments.get(1).and_then(|value| value.to_str())
@@ -32,9 +31,8 @@ fn main() -> ExitCode {
         };
     }
 
-    if !obsession_setup_lib::webview2_present() {
-        obsession_setup_lib::run_fallback();
-        return ExitCode::SUCCESS;
+    if !obsession_setup_lib::webview2_present() && !obsession_setup_lib::run_fallback() {
+        return ExitCode::FAILURE;
     }
     obsession_setup_lib::run();
     ExitCode::SUCCESS

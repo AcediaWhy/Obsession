@@ -9,6 +9,7 @@ pub mod machine_worker;
 mod upgrade;
 mod uninstall;
 mod user_cleanup;
+mod webview_bootstrap;
 
 use std::ffi::OsString;
 use std::fs;
@@ -658,53 +659,28 @@ pub fn webview2_present() -> bool {
     false
 }
 
-/// Нет WebView2: используем тот же native per-machine worker без WebView/NSIS.
-/// Временный current-user payload никогда не запускается как fallback.
-pub fn run_fallback() {
+/// Provision WebView2 before any Obsession installation. On success main opens
+/// the normal setup UI; on failure/cancellation no app payload was installed.
+pub fn run_fallback() -> bool {
     let _self_image_lock = match machine_handoff::lock_current_setup_image() {
         Ok(lock) => lock,
         Err(error) => {
             show_fallback_error(error);
-            return;
+            return false;
         }
     };
     let _instance_guard = match NamedMutexGuard::acquire(SETUP_INSTANCE_MUTEX) {
         Ok(guard) => guard,
         Err(error) => {
             show_fallback_error(error);
-            return;
+            return false;
         }
     };
-    if cfg!(debug_assertions) {
-        show_fallback_error("Защищённый fallback доступен только в release setup.".into());
-        return;
-    }
-    if let Err(error) = upgrade::recover_pending_transaction(None) {
-        show_fallback_error(format!(
-            "Не удалось восстановить предыдущую установку перед fallback: {error}"
-        ));
-        return;
-    }
-    let install_root = match machine_worker::machine_install_root() {
-        Ok(path) => path,
-        Err(error) => {
-            show_fallback_error(error);
-            return;
-        }
-    };
-    if let Err(error) = machine_handoff::provision_machine_runtime(true, true, |_, _| {}) {
+    if let Err(error) = webview_bootstrap::install() {
         show_fallback_error(error);
-        return;
+        return false;
     }
-    if let Err(error) =
-        upgrade::finalize_machine_user_state(&install_root, env!("CARGO_PKG_VERSION"))
-    {
-        show_fallback_error(error);
-        return;
-    }
-    show_fallback_info(
-        "Obsession установлена в Program Files. Для запуска интерфейса установите Microsoft Edge WebView2 Runtime и затем откройте Obsession из меню «Пуск».",
-    );
+    true
 }
 
 pub fn run_uninstall() -> bool {

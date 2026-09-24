@@ -26,10 +26,10 @@ flate2 = { version = "1.1", default-features = false, features = ["rust_backend"
 obsession-runtime-service = { path = "../../runtime-service" }
 obsession-runtime-client = { path = "../../runtime-client" }
 obsession-runtime-protocol = { path = "../../runtime-protocol" }
-# Детект WebView2 по реестру для фолбэка на видимый стоковый NSIS.
+# Detect WebView2 before creating the setup window.
 winreg = "0.55"
 # Именованные Windows mutex: одно окно setup и одна install-операция за раз.
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading", "Win32_System_SystemInformation", "Win32_UI_WindowsAndMessaging"] }
 windows = { version = "0.61.3", features = [
     "Win32_Foundation",
     "Win32_Security",
