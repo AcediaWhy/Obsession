@@ -155,12 +155,8 @@ impl Paths {
         self.icons_dir().join("tray.ico")
     }
 
-    /// Иконка трея для активного состояния (обход/прокси включены). Раньше это
-    /// была отдельная картинка `tray-active.png` — на релизе там осталась старая
-    /// космо-аватарка («чёрная дыра»), и `refresh_tray` при включении обхода
-    /// менял глаз на неё. Активное состояние теперь показывает ТОТ ЖЕ глаз, что и
-    /// покой (различие несут тултип и галочки меню), поэтому возвращаем ту же
-    /// `tray.ico`, а не отдельный файл.
+    /// Иконка активного состояния совпадает с обычной `tray.ico`.
+    /// Состояние защиты отображается в подсказке и меню трея.
     pub fn tray_active_icon_path(&self) -> PathBuf {
         self.icons_dir().join("tray.ico")
     }
@@ -295,14 +291,9 @@ impl Paths {
         let dev_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources");
         for sub in ["bin", "configs", "lists", "icons", "strategy-packs"] {
             let dst = self.base_dir.join(sub);
-            // Копируем из ОБОИХ источников: сначала bundled `resource_dir` (истина
-            // в проде), затем `dev_dir` поверх недостающих файлов. В dev-режиме
-            // Tauri staging (`target/debug/<sub>`) бывает СТАРЫМ/частичным (новые
-            // файлы доезжают только на полный rebuild) — раньше он «перекрывал»
-            // полный `resources/<sub>`, и winws2/lua не копировались. Двойной
-            // проход заполняет недостающие файлы. Для Strategy Pack в debug он
-            // перезаписывает существующие файлы: иначе изменение manifest.json
-            // при той же версии приложения не доедет в AppData для live-теста.
+            // Ресурсы релиза берём из resource_dir. В dev-режиме дополняем их
+            // исходным каталогом: Tauri staging может быть неполным. Strategy Pack
+            // в debug перезаписываем, чтобы изменения дошли до AppData без rebuild.
             let primary = resource_dir.join(sub);
             if primary.exists() {
                 let _ = copy_dir(&primary, &dst, force);
@@ -330,10 +321,8 @@ impl Paths {
         {
             let primary = resource_dir.join("manifest.json");
             let dev_manifest = dev_dir.join("manifest.json");
-            // В `tauri dev` staged resource_dir может отставать на один rebuild:
-            // бинарник уже скопирован, а manifest.json ещё старый. Поэтому debug
-            // всегда берёт и обновляет манифест прямо из исходных resources.
-            // В release источником истины остаётся bundled resource_dir.
+            // В debug берём манифест из исходных resources: staged-копия может
+            // отставать от бинарника. В release используем bundled resource_dir.
             let src = if cfg!(debug_assertions) && dev_manifest.exists() {
                 dev_manifest
             } else if primary.exists() {

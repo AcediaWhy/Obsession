@@ -379,8 +379,7 @@ fn spawn_lan_expiry_timer(app: &AppHandle, generation: u64, pid: u32, secs: u16)
         )
         .await;
     });
-    // AbortHandle сохраняем, чтобы stop/shutdown не копили спящие таймеры
-    // (по одному на старт с lan_secs>0; раньше жили до естественного пробуждения).
+    // AbortHandle позволяет отменить таймер при stop/shutdown.
     app.state::<AppState>()
         .proxy
         .lock_recover()
@@ -712,10 +711,9 @@ pub(crate) async fn start_locked(
     let link = match received_link {
         Some(l) => l,
         None => {
-            // Не fabricate-ссылка на непроверенный процесс: если прокси не выдал
-            // ссылку за 5с, проверяем, жив ли он (через monitor-канал — child
-            // уже в monitor-задаче, try_wait недоступен). Жив → честная ошибка
-            // «ссылка не получена», мёртв → «завершился при запуске».
+            // Если ссылка не получена за 5 с, проверяем состояние процесса через
+            // monitor-канал: child уже передан задаче мониторинга. Различаем
+            // таймаут живого процесса и завершение при запуске.
             let alive = matches!(
                 dead_rx.as_mut().unwrap().try_recv(),
                 Err(tokio::sync::oneshot::error::TryRecvError::Empty)

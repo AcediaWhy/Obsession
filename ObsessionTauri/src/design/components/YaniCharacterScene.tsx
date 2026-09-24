@@ -17,9 +17,8 @@ type Props = {
   quality: EarQuality;
   paused?: boolean;
   /**
-   * Экран приложения. Задан — сцена кадрируется как поле темы (модель справа,
-   * зум как у бывшего CSS-трансформа). Не задан (лаборатории) — камера смотрит
-   * ровно на канвас, без выреза фрустума.
+   * Кадрирование модели для экрана приложения. Без screen лаборатории
+   * показывают полный кадр.
    */
   screen?: string;
   className?: string;
@@ -28,14 +27,10 @@ type Props = {
   art?: YaniArtPass;
 };
 
-// Длительность бывшего CSS-перехода `transition: transform 700ms ease` у
-// .yani-character-field__model: композиция экрана переехала в камеру, значит и
-// переход между композициями теперь считается здесь.
+// Длительность перехода между вариантами кадрирования.
 const FRAMING_TRANSITION_S = 0.7;
 
-// Схемы света по художественному проходу. base/swing — это то, чем каждый кадр
-// перетираются intensity ключевого и тёплого источников в цикле, поэтому
-// значения живут здесь, а не в конструкторах.
+// Базовая интенсивность и амплитуда источников обновляются по этой схеме каждый кадр.
 type LightScheme = {
   exposure: number;
   envMapIntensity: number;
@@ -50,9 +45,7 @@ type LightScheme = {
     swing: number;
   };
   rim: { color: number; intensity: number; position: [number, number, number] };
-  // Окружение запекается в PMREM один раз за жизнь сцены и даёт все отражения
-  // плюс половину ambient — то есть красить форму дешевле здесь, чем добавлять
-  // источники. Полоски смотрят в центр модели.
+  // PMREM окружения создаётся один раз для сцены и даёт отражения и заполняющий свет.
   environment: {
     background: number;
     strips: readonly {
@@ -98,18 +91,12 @@ function disposeMaterial(material: THREE.Material) {
   material.dispose();
 }
 
-// Байты GLB кэшируются в куче, а разбор идёт заново на каждый монтаж. Сцена
-// размонтируется при уходе в трей и при смене темы, то есть загрузка повторяется
-// регулярно: без кэша каждый показ окна — это снова 3 МБ с диска. Кэшировать
-// разобранную сцену нельзя, её геометрии и текстуры освобождаются на выходе;
-// а 2×2048² текстуры, оставленные в GPU «на будущее», как раз и держали бы
-// память в трее, которую размонтирование освобождает.
+// Кэшируем исходный GLB для повторной сборки сцены. GPU-ресурсы освобождаются
+// отдельно при выпуске WebGL-сессии.
 THREE.Cache.enabled = true;
 const sharedLoader = new GLTFLoader();
 
-// Геометрия + материалы + текстуры поддерева. Вызывается при выпуске сцены
-// (потеря контекста) — на обычном размонтировании поля сцена больше не
-// разбирается, она живёт в персистентном кэше модуля.
+// Освобождает геометрию, материалы и текстуры при уничтожении WebGL-сцены.
 function disposeSubtree(root: THREE.Object3D) {
   const materials = new Set<THREE.Material>();
   root.traverse((object) => {
@@ -122,10 +109,8 @@ function disposeSubtree(root: THREE.Object3D) {
   materials.forEach(disposeMaterial);
 }
 
-// Сцена Yani сохраняет canvas, WebGLRenderer и модель между монтированиями.
-// В CDP-замере от 2026-08-29 повторное создание WebGL-контекста добавляло
-// процессу рендеринга 13–46 МБ приватной памяти за переключение темы.
-// При потере контекста сцена помечается broken и создаётся заново.
+// Canvas, renderer и модель сохраняются между монтированиями поля.
+// Потерянный контекст помечает сцену broken и требует пересборки.
 type YaniStage = {
   canvas: HTMLCanvasElement;
   renderer: THREE.WebGLRenderer;
@@ -137,7 +122,7 @@ type YaniStage = {
   scheme: LightScheme;
   keyLight: THREE.DirectionalLight;
   warmLight: THREE.PointLight;
-  // Достаточно для дыхания (position.y каждый кадр): -centerY*fitScale + 0.08.
+  // Базовая координата модели по Y для анимации дыхания.
   breathBase: number;
   environmentTarget: THREE.WebGLRenderTarget;
   broken: boolean;
@@ -148,9 +133,7 @@ const stageCache = new Map<string, Promise<YaniStage>>();
 function releaseStage(stage: YaniStage) {
   stage.broken = true;
   try {
-    // Поля могут быть null: сцена умеет падать ДО миксера/модели (нет WebGL,
-    // CSP срезал fetch GLB, упал PMREM) — выпуск не должен маскировать ту
-    // ошибку своей собственной.
+    // Частично созданная сцена может не содержать миксер, модель или renderer.
     if (stage.mixer) {
       stage.mixer.stopAllAction();
       stage.mixer.uncacheRoot(stage.character);
@@ -159,8 +142,7 @@ function releaseStage(stage: YaniStage) {
     stage.environmentTarget?.dispose();
     stage.renderer?.dispose();
   } finally {
-    // Сцена выпускается только вместе с контекстом (потеря/пересборка), поэтому
-    // добить контекст здесь — то, ради чего releaseRenderer существовал раньше.
+    // При уничтожении сцены освобождаем drawing buffer и WebGL-контекст.
     stage.canvas.width = 0;
     stage.canvas.height = 0;
     stage.renderer?.forceContextLoss();
@@ -378,8 +360,7 @@ export function YaniCharacterScene({
       const stage = await acquireStage(modelUrl, art, debugCapture);
       if (cancelled) return;
       const canvas = stage.canvas;
-      // Каким проходом собрана живая сцена: канвас переиспользуется между
-      // проходами, и по селекту в лабе этого не видно.
+      // Сохраняем вариант сцены на переиспользуемом canvas для лаборатории.
       canvas.dataset.pass = art;
       canvas.className = className;
       container.appendChild(canvas);
@@ -400,9 +381,7 @@ export function YaniCharacterScene({
       let elapsed = 0;
       let capturedMood: EarMood | null = null;
 
-      // Композиция кадра: канвас лежит ровно по полю, а бывшая CSS-рамка
-      // (120%×108% + translateX/scale) воспроизводится вырезом фрустума. Раньше
-      // 38% отрисованных пикселей обрезал overflow:hidden поля.
+      // Canvas совпадает с полем; композиция задаётся смещением камеры.
       let framingScreen = stateRef.current.screen;
       let framing: YaniFraming = yaniFramingForScreen(framingScreen ?? "overview");
       let framingFrom = framing;
@@ -433,8 +412,7 @@ export function YaniCharacterScene({
 
       const resize = () => {
         const rect = canvas.getBoundingClientRect();
-        // Больше 1.5 device-пикселя на CSS-пиксель здесь не читается, а 4× MSAA
-        // от такого буфера стоит десятки мегабайт.
+        // Ограничиваем pixelRatio, чтобы не раздувать MSAA-буфер.
         const pixelRatio = Math.min(window.devicePixelRatio || 1, profile.pixelRatio, 1.5);
         renderer.setPixelRatio(pixelRatio);
         fieldWidth = Math.max(1, rect.width);
@@ -462,10 +440,7 @@ export function YaniCharacterScene({
           currentAction = nextAction;
           capturedMood = null;
         }
-        // Смена экрана: под reduce-motion CSS сбрасывал transition в 0.01ms, то
-        // есть прыгал в цель — повторяем это, иначе замерший кадр остался бы на
-        // полпути между композициями. Лаборатории (screen === undefined) вообще
-        // не кадрируются, поэтому и переход им не нужен.
+        // При reduce-motion кадрирование меняется сразу; лаборатории показывают полный кадр.
         if (state.screen !== framingScreen) {
           framingFrom = framing;
           framingScreen = state.screen;
@@ -477,8 +452,6 @@ export function YaniCharacterScene({
         }
         if (framingProgress < 1 && framingScreen !== undefined) {
           framingProgress = Math.min(1, framingProgress + Math.max(0, dt) / FRAMING_TRANSITION_S);
-          // smoothstep вместо cubic-bezier(.25,.1,.25,1): на 3% сдвига разница
-          // между кривыми не читается, а считается это одной строкой.
           const eased = framingProgress * framingProgress * (3 - 2 * framingProgress);
           framing = lerpYaniFraming(framingFrom, yaniFramingForScreen(framingScreen), eased);
           applyFrame();
@@ -488,8 +461,6 @@ export function YaniCharacterScene({
         mixer.update(effectiveDt);
         const breath = Math.sin(elapsed * 0.7) * 0.008;
         character.position.y = stage.breathBase + breath;
-        // Эти две строки перетирают конструкторские intensity каждый кадр,
-        // поэтому базы и амплитуды берутся из схемы прохода.
         warmLight.intensity = scheme.warm.base + Math.sin(elapsed * 0.61) * scheme.warm.swing;
         keyLight.intensity = scheme.key.base + Math.sin(elapsed * 0.37 + 1.2) * scheme.key.swing;
         renderer.render(scene, camera);
@@ -503,16 +474,11 @@ export function YaniCharacterScene({
       }, {
         role: "field",
         paused: stateRef.current.paused,
-        // Каденция — по герцовке монитора, без собственного капа: замер показал,
-        // что 60→180 кадров сцены стоит всего +0.5 п.п. CPU (модель дешёвая:
-        // 2 меша, 31k треугольников, канвас 0.88 Мп). Тир качества всё равно
-        // снизит частоту сам, если машина начнёт не успевать.
       });
       loopRef.current = loop;
       loop.start();
 
-      // Канвас мог быть обнулён при прошлом размонтировании — после bind и
-      // resize() буфер снова живой, но первый кадр просим нарисовать сразу.
+      // После восстановления буфера нужен первый кадр.
       loop.invalidate();
     };
 
@@ -529,8 +495,7 @@ export function YaniCharacterScene({
       }
       loop?.dispose();
       loopRef.current = null;
-      // Сцена остаётся жить в кэше модуля (gl-сессия темы); drawing buffer
-      // отпускаем, чтобы скрытое поле не держало полноэкранный буфер в трее.
+      // Сцена остаётся в кэше; освобождаем только буфер скрытого canvas.
       if (boundCanvas) {
         boundCanvas.width = 0;
         boundCanvas.height = 0;
@@ -538,9 +503,7 @@ export function YaniCharacterScene({
     };
   }, [art, className, debugCapture, modelUrl]);
 
-  // invalidate() как в YaniNekoField: под reduce-motion цикл рисует один кадр и
-  // замирает, поэтому смену настроения, качества или экрана нужно попросить
-  // перерисовать вручную — иначе стоп-кадр остаётся от прошлого состояния.
+  // При reduce-motion изменения состояния требуют явной перерисовки стоп-кадра.
   useEffect(() => {
     loopRef.current?.setPaused(paused);
     loopRef.current?.invalidate();
@@ -549,9 +512,7 @@ export function YaniCharacterScene({
   if (failed) return <div className={`yani-ear-error ${className}`}>Animated Yani GLB unavailable</div>;
   return (
     <>
-      {/* Контейнер не участвует в раскладке: канвас персистентен и позиционируется
-          собственным классом (например .yani-character-field__model) относительно
-          общего предка, как и раньше. */}
+      {/* Постоянный canvas позиционируется своим классом относительно общего предка. */}
       <div
         ref={containerRef}
         aria-hidden="true"

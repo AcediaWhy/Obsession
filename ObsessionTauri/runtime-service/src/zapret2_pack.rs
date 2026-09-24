@@ -28,11 +28,7 @@ const MAX_PACK_FILES: usize = 256;
 const MAX_PACK_BLOBS: usize = 64;
 const MAX_PACK_STRATEGIES: usize = 512;
 const MAX_PROFILE_VALUES: usize = 64;
-/// Глубина лестницы агрессивности. Раньше здесь стояло жёсткое `3`, хотя
-/// `profiles_for` в приложении вычисляет максимум динамически и уровень 0 берёт
-/// самую агрессивную ступень. Из-за этого пак с четвёртой ступенью отвергался
-/// службой, а не приложением. Предел оставлен, но перестал диктовать длину
-/// лестницы: сколько ступеней в паке — решает пак.
+/// Верхняя граница допустимого поля `aggressiveness` в стратегии пака.
 const MAX_AGGRESSIVENESS: u8 = 8;
 const MAX_VALUE_BYTES: usize = 512;
 const MAX_ARGUMENTS: usize = 2048;

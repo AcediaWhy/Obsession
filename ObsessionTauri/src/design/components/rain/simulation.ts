@@ -1,8 +1,6 @@
-// Симуляция воды на стекле: порт codrops/RainEffect (raindrops.ts, спрайты из
-// drop-color/drop-alpha) + наша симуляция конденсата (mistSim). Наружу отдаёт
-// два canvas-источника текстур: waterMap (капли+микрокапли, RG=фото-рефракция,
-// B=толщина, A=маска) и mistMap (уровень запотевания). Обёртка сохраняет
-// прежний публичный API (step/resize/setQuality/stats/destroy).
+// Объединяет капли из RainEffect и конденсат из mistSim.
+// waterMap содержит рефракцию (RG), толщину (B) и маску (A);
+// mistMap содержит уровень запотевания.
 import { RainMistSim } from "./mistSim";
 import type { RainQualityProfile } from "./quality";
 import { Raindrops } from "./raindrops";
@@ -67,8 +65,7 @@ export class RainSimulation {
     this.mistCtx = mistCtx;
     this.mistImage = mistCtx.createImageData(mistCols, mistRows);
 
-    // Прогрев: стекло при маунте уже в микрокаплях и первых дорожках, а не
-    // девственно чистое (важно и для reduce-motion — там будет один кадр).
+    // Прогреваем симуляцию, чтобы первый кадр, включая reduced-motion, содержал капли.
     for (let i = 0; i < 90; i += 1) {
       this.raindrops.step(1 / 60);
       this.mist.step(1 / 60, 0.4, this.raindrops.wipes);

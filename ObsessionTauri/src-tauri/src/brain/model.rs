@@ -802,8 +802,7 @@ mod tests {
 
     #[test]
     fn silent_category_does_not_block_active_l1_write() {
-        // Регресс на баг живого прогона: молчащая категория не должна мешать
-        // записи L1-кэша рабочей категории (раньше требовались ВСЕ разом).
+        // Категория без ответа не блокирует запись результата другой категории в L1-кэш.
         let mut b = Brain::new(BrainCfg::default());
         start_two_cats(&mut b, 0);
         b.step(obs("youtube.com", Verdict::Working, 100));

@@ -66,11 +66,9 @@ export function HeroCore(props: Props) {
           className="absolute inset-0 flex items-center justify-center"
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
-          // pointerEvents гасим сразу: уходящее ядро — кнопка, она не должна
-          // перехватывать клики поверх входящего.
+          // Уходящее ядро не должно перехватывать клики по новому.
           exit={{ opacity: 0, pointerEvents: "none" }}
-          // dur.slow — как у кроссфейда фона (App): ядро и поле меняют тему
-          // ОДНИМ движением, а не вразнобой (раньше 0.3 против 0.42 у фона).
+          // Синхронизируем переход ядра с переходом фоновой сцены.
           transition={{ duration: motionOff ? 0 : dur.slow, ease: ease.xfade }}
         >
           <ThemedCore theme={theme} {...props} />

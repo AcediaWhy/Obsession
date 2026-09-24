@@ -616,8 +616,7 @@ pub struct ProxyState {
     pub lan_published: bool,
     /// Unix-время (сек) авто-закрытия LAN-публикации; None = без авто-закрытия.
     pub lan_expiry_unix: Option<u64>,
-    /// AbortHandle таймера авто-закрытия: отменяется при stop/shutdown, чтобы
-    /// не копились спящие задачи (раньше жили до пробуждения даже после stop).
+    /// AbortHandle таймера авто-закрытия; отменяется при stop/shutdown.
     pub lan_expiry_abort: Option<tokio::task::AbortHandle>,
 }
 

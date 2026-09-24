@@ -2,10 +2,8 @@ export type EarMood = "idle" | "busy" | "scanning" | "active" | "alarm";
 export type EarSide = -1 | 1;
 export type EarQuality = "high" | "balanced" | "low";
 
-// Художественный проход темы. Сейчас есть только "current" — то, что стоит в
-// приложении. Новый эксперимент добавляется значением сюда и схемой в
-// LIGHT_SCHEMES (YaniCharacterScene): тема при этом не меняется, потому что
-// HeroField проп не передаёт и всегда получает "current".
+// Вариант освещения персонажа. Приложение использует только "current";
+// схема для него задана в LIGHT_SCHEMES (YaniCharacterScene).
 export type YaniArtPass = "current";
 
 export type EarTargetInput = {

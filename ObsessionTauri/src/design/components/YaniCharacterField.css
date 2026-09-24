@@ -94,19 +94,14 @@
   animation: yani-character-mint-drift 19s steps(95, end) infinite alternate;
 }
 
-/* Световой мазок. Раньше он лежал на слое `inset: -10% -34%` (в 1.68 раза шире
-   поля) и смешивался в soft-light: 30 МБ видеопамяти и 0.75 п.п. CPU за одну
-   полоску света. Blend-режим убран (soft-light над почти ровным мятным фоном
-   отличается от обычной прозрачности едва заметно), слой сужен до того, что
-   реально проезжает по кадру. */
+/* Слой световой полосы ограничен областью движения, чтобы уменьшить композитный буфер. */
 .yani-character-field__sweep {
   z-index: 0;
   inset: -10% -18%;
   opacity: 0.34;
   pointer-events: none;
   background: linear-gradient(112deg, transparent 27%, rgba(255, 255, 255, 0.72) 43%, rgba(255, 255, 255, 0.14) 51%, transparent 66%);
-  /* База совпадает с первым кадром: под prefers-reduced-motion анимация
-     выключается целиком, и мазок должен остаться там, где начинался. */
+  /* При prefers-reduced-motion полоса остаётся в положении первого кадра. */
   transform: translate3d(-190px, 0, 0);
   animation: yani-character-mint-sweep 16s steps(240, end) infinite;
 }
@@ -678,23 +673,14 @@
   filter: drop-shadow(0 5px 5px rgba(37, 77, 51, 0.08));
 }
 
-/* Канвас лежит ровно по полю. Раньше он был 120%×108% и ещё раз растягивался
-   transform'ом translateX(18%) scale(1.08), а overflow:hidden поля обрезал 38%
-   отрисованных пикселей. Та же композиция теперь живёт в камере
-   (yaniCharacterFrame.ts + camera.setViewOffset), поэтому transform здесь не
-   нужен — и апскейла на 1.08 больше нет, модель рисуется 1:1. */
+/* Canvas совпадает с полем; кадрирование выполняется камерой без CSS-масштабирования. */
 .yani-character-field__model {
   position: absolute;
   z-index: 3;
   inset: 0;
   width: 100%;
   height: 100%;
-  /* Одна тень вместо цепочки `saturate contrast drop-shadow(18px)
-     drop-shadow(44px)`. Цепочка перезапускалась на каждый кадр и стоила 0.8 п.п.
-     CPU и 17 МБ; одна тень умеренного радиуса по замеру не даёт видимой разницы
-     в CPU и берёт 10 МБ — за них модель перестаёт выглядеть наклейкой на стекле.
-     saturate/contrast сняты как незаметные: ACES-тонмаппинг рендера уже даёт
-     контраст, а +8% насыщенности на мятной палитре не читались. */
+  /* Одна тень добавляет глубину без цепочки фильтров поверх анимированного canvas. */
   filter: drop-shadow(0 20px 26px rgba(25, 63, 39, 0.18));
   transition: filter 700ms ease;
 }
@@ -722,8 +708,7 @@
     inset 58px -34px 92px rgba(20, 57, 34, 0.14),
     inset -42px -26px 78px rgba(20, 57, 34, 0.11);
 }
-/* Глубокий проход добавляет тени немного веса — но по-прежнему одной, а не
-   цепочкой из двух размытий с цветокоррекцией поверх живого канваса. */
+/* Для глубокой сцены усиливаем тень модели. */
 .yani-character-field[data-depth="deep"] .yani-character-field__model {
   filter: drop-shadow(0 20px 26px rgba(25, 63, 39, 0.22));
 }
@@ -731,9 +716,7 @@
   box-shadow: inset 0 1px rgba(255, 255, 255, 0.42), 0 24px 52px rgba(31, 73, 48, 0.13);
 }
 
-/* Композиция по экрану (бывшие translateX(21%) scale(1.06) для settings/profiles)
-   переехала в камеру — см. yaniFramingForScreen(). Здесь остались только
-   правила, которые меняют цвет и тень. */
+/* Позицию модели для экрана задаёт камера; CSS меняет только цвет и тень. */
 
 .yani-character-field .yani-ear-error { opacity: 0; }
 

@@ -89,8 +89,7 @@ export function RainFallback({ paused = false }: { paused?: boolean }) {
     let quality: QualityTier = "high";
     let spawnAccumulator = 0;
 
-    // maxDrops теперь в шкале codrops (900/600/350) — делитель держит прежнюю
-    // плотность 2D-фолбэка (~20/13/8 капель по тирам).
+    // Переводим общий лимит maxDrops в плотность 2D-сцены по уровням качества.
     const dropCap = () => Math.min(20, Math.round(rainQualityProfile(quality).maxDrops / 45));
     const spawnDrop = (): FallbackDrop => ({
       x: Math.random() * width,

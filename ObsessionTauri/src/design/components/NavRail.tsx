@@ -40,15 +40,9 @@ export function NavRail({
   const farJump = Math.abs(activeIndex - previousIndex) > 1;
   const motionOff = useMotionOff();
   const renderOn = useRenderActive();
-  // Сигаретная рестилизация меню живёт только в теме Yani Neko: здесь лишь
-  // класс-хук nav-item, флаг «горит» (включён обход/прокси) и декоративный
-  // огонёк в активном пункте. Весь вид — в globals.css под [data-theme].
+  // Оформление меню зависит от [data-theme] в globals.css.
   const theme = useThemeStore((s) => s.theme);
-  // Два отдельных вызова, а не `useDpiStore(...) || useProxyStore(...)`: `||`
-  // короткозамкнут, и при активном обходе второй хук не вызывался вовсе. Порядок
-  // хуков менялся между рендерами, React отдавал состояние не того хука и падал
-  // на `useLayoutEffect` ниже (`Cannot read properties of undefined`), а вместе с
-  // ним размонтировалось всё дерево — окно уходило в чёрный фон body.
+  // Оба хука вызываются без короткого замыкания, чтобы сохранять их порядок.
   const dpiActive = useDpiStore((s) => s.active);
   const proxyRunning = useProxyStore((s) => s.running);
   const burning = dpiActive || proxyRunning;
@@ -114,7 +108,6 @@ export function NavRail({
               onClick={() => onSelect(it.id)}
               data-active={isActive || undefined}
               aria-current={isActive ? "page" : undefined}
-              // group — для hover-сдвига связки иконка+текст ниже.
               className="nav-item no-drag theme-morph group relative flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
             >
               {isActive && (
@@ -122,10 +115,7 @@ export function NavRail({
                   layoutId="nav-active"
                   aria-hidden
                   className="absolute inset-0 rounded-xl"
-                  // В вертикальном меню дальний spring-перелёт на мгновение
-                  // подсвечивал промежуточные пункты. Соседние пункты сохраняют
-                  // физичный slide; дальний выбор телепортирует геометрию и
-                  // проявляет новую plate коротким fade.
+                  // При дальнем переходе отключаем перемещение подложки и используем fade.
                   transition={farJump || motionOff ? { duration: 0 } : spring.snappy}
                 >
                   <motion.span
@@ -141,16 +131,12 @@ export function NavRail({
                   />
                 </motion.div>
               )}
-              {/* Yani Neko: у активного пункта — тлеющий кончик сигареты со
-                  струйкой дыма. Декоративный элемент, весь вид — в globals.css. */}
               {isActive && theme === "yanineko" && (
                 <span aria-hidden className="nav-cig-fire" />
               )}
               <span className="yani-cabbage-number" aria-hidden="true">
                 {String(index + 1).padStart(2, "0")}
               </span>
-              {/* Активный пункт использует цвет темы; при наведении сдвигаются
-                  только иконка и текст, без фонового индикатора. */}
               <span
                 className={[
                   "relative z-10 flex items-center gap-3 transition-[color,transform] duration-[var(--motion-fast)] group-hover:translate-x-0.5",

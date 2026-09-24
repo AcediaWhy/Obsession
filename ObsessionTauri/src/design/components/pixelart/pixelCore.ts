@@ -39,7 +39,7 @@ export function clamp(value: number, low: number, high: number) {
   return value < low ? low : value > high ? high : value;
 }
 
-/** Детерминированный шум: одна и та же крыша при каждом ресайзе. */
+/** Детерминированный хеш для процедурных пиксельных текстур. */
 export function hash(a: number, b: number, c: number) {
   let value = Math.imul(a ^ 0x9e3779b9, 0x85ebca6b);
   value ^= Math.imul(b + 0x165667b1, 0xc2b2ae35);
@@ -195,8 +195,7 @@ export function ditherOver(
   }
 }
 
-// Скан-дизеринг: чередование целых строк. В небе он честнее Bayer — небо в рефах
-// расслоено именно строками, а не шашкой.
+// Построчный дизеринг воспроизводит полосы неба без шахматного узора Bayer.
 const SCAN8 = [0, 4, 2, 6, 1, 5, 3, 7];
 
 export function scanFill(

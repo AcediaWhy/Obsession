@@ -362,10 +362,7 @@ pub(crate) fn stop_processes_bounded<C: ProcessControl>(
                 workers.push((index, worker));
             }
             Err(_) => {
-                // ОС отказала в spawn потока (исчерпание handles/памяти). Раньше
-                // процесс помечался ReaperFailed и считался неубитым навсегда.
-                // Fallback: синхронный kill в вызывающем потоке — медленнее
-                // (без параллелизма), но не оставляет процесс живым.
+                // Если рабочий поток не запустился, завершаем процесс синхронно.
                 let state = stop_process(process, worker_deadline, control.as_ref());
                 states[index] = Some(state);
             }

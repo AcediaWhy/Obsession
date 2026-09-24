@@ -30,17 +30,14 @@ export function Button({
   return (
     <motion.button
       type="button"
-      // Подъём на hover + прижатие на tap — пружиной flick (чётко, без желе).
-      // y вместо scale: кнопки бывают широкими, масштаб на них заметно «дышит»
-      // по краям, а вертикальный сдвиг читается как честный физический подъём.
+      // На hover смещаем кнопку по Y, чтобы не масштабировать её ширину.
       whileHover={disabled ? undefined : { y: -1 }}
       whileTap={disabled ? undefined : { y: 0, scale: 0.97 }}
       transition={spring.flick}
       onClick={onClick}
       disabled={disabled}
       className={[
-        // btn-anim: цвета быстрые, glow расцветает 0.35s; transform не трогаем —
-        // его ведёт framer (whileHover/Tap), CSS-транзишен поверх дал бы «резину».
+        // Transform управляется framer-motion; CSS-анимация отвечает за цвет и свечение.
         "no-drag theme-morph btn-anim rounded-xl px-4 py-2.5 text-sm font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:cursor-not-allowed disabled:opacity-50",
         styles[variant],
         className,

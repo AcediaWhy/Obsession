@@ -648,8 +648,7 @@ async fn start_prepared(
     };
     let process_identity = crate::dpi_supervisor::capture_process_identity(pid);
 
-    // Регистрируем СРАЗУ после spawn. Раньше PID появлялся в AppState только
-    // после 500мс ожидания, и shutdown в этом окне оставлял orphan winws.
+    // Регистрируем PID сразу после spawn, чтобы shutdown мог завершить процесс.
     let monitor_fence = {
         let state = app.state::<AppState>();
         let mut d = state.dpi.lock_recover();
@@ -4831,8 +4830,7 @@ fn spawn_reader<R>(
                 }
                 Ok(None) => break, // EOF — процесс закрыл поток
                 Err(e) => {
-                    // Напр. невалидный UTF-8 в выводе winws: раньше остаток stdout
-                    // молча проглатывался. Логируем и прекращаем чтение этого потока.
+                    // Ошибку чтения stdout, включая невалидный UTF-8, фиксируем в логе.
                     util::emit_log(
                         &app,
                         "warn",
