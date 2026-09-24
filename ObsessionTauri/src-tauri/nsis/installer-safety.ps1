@@ -89,8 +89,34 @@ function Assert-SafeInstallDirectory {
     }
 }
 
-function Stop-OwnedApplication {
+function Assert-SafeApplicationStopDirectory {
+    if ([string]::IsNullOrWhiteSpace($installDir)) {
+        throw 'Install directory is empty.'
+    }
+
+    $programFiles = [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles)
+    if (-not [string]::IsNullOrWhiteSpace($programFiles)) {
+        $machineRoot = Get-NormalizedPath (Join-Path $programFiles 'Obsession')
+        $target = Get-NormalizedPath $installDir
+        if ($target.Equals($machineRoot, [StringComparison]::OrdinalIgnoreCase)) {
+            $cursor = $target
+            while ($null -ne $cursor) {
+                $item = Get-Item -Force -LiteralPath $cursor
+                if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                    throw "Install directory crosses a reparse point: '$cursor'."
+                }
+                $parent = [IO.Directory]::GetParent($cursor)
+                $cursor = if ($null -eq $parent) { $null } else { $parent.FullName }
+            }
+            return
+        }
+    }
+
     Assert-SafeInstallDirectory
+}
+
+function Stop-OwnedApplication {
+    Assert-SafeApplicationStopDirectory
     $expected = Get-NormalizedPath (Join-Path $installDir 'Obsession.exe')
     $processes = @(Get-CimInstance Win32_Process -Filter "Name='Obsession.exe'")
 
