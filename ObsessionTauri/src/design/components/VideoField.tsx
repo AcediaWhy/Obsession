@@ -2,16 +2,9 @@ import { useEffect, useRef, type ReactNode } from "react";
 import { onRenderActiveChange, renderActive } from "../render";
 import { pooledVideo } from "../videoPool";
 
-// Полноэкранный видео-фон для видео-тем (Catnap, Midnight): <video> лупом на
-// весь фон + слот оверлеев (тонировка/виньетка темы) поверх. Пауза — по общему
-// гейту видимости из render.ts: он уже объединяет Visibility API, сигнал трея
-// из Rust и reduce-motion (системный и из настроек), так что контракт тот же,
-// что у canvas-тем — в трее декодер стоит, CPU не жжётся.
-//
-// Сам элемент живёт в videoPool и НЕ создаётся заново на каждый показ темы:
-// медиа-конвейер WebView2 переживает откреплённый <video>, и монтирование
-// нового элемента на каждое переключение накапливало по ~0.03 ядра и ~15 МБ,
-// которые не отдавались даже в трее. Здесь элемент только переезжает в хост.
+// Видео-фон тем Catnap и Midnight с оверлеями поверх изображения.
+// Элемент берётся из videoPool и переносится между экранами без пересоздания.
+// Воспроизведение следует общему состоянию отрисовки из render.ts.
 export function VideoField({
   src,
   poster,
@@ -35,8 +28,8 @@ export function VideoField({
     videoRef.current = video;
     host.appendChild(video);
     const sync = (active: boolean) => {
-      // play() возвращает промис и может быть отклонён (гонка с pause,
-      // автоплей-политика) — глотаем, следующий sync всё поправит.
+      // play() может завершиться ошибкой из-за автоплея или гонки с pause().
+      // При следующем изменении состояния вызов повторится.
       if (active && !pausedRef.current) video.play().catch(() => {});
       else video.pause();
     };
