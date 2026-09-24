@@ -1209,6 +1209,34 @@ fn verification_outcome(targets: &[VerificationTarget]) -> VerificationOutcome {
 }
 
 #[tauri::command]
+pub async fn onboarding_get_recovery(
+    app: AppHandle,
+) -> Result<Option<OnboardingSnapshot>, OnboardingFailure> {
+    let _gate = command_gate().lock().await;
+    // При первом запуске журнал мастера не создаётся и настройки не меняются.
+    if !state_path().try_exists().map_err(|error| {
+        failure(
+            OnboardingErrorCode::PreflightFailed,
+            true,
+            "onboarding.error.state_read",
+            format!("check onboarding state: {error}"),
+        )
+    })? {
+        return Ok(None);
+    }
+    let state = load_state(&app)?;
+    if !needs_recovery_notice(&state) {
+        return Ok(None);
+    }
+    persist_state(&state)?;
+    Ok(Some(public_snapshot(&app, &state)))
+}
+
+fn needs_recovery_notice(state: &PersistedOnboarding) -> bool {
+    state.terminal_status == TerminalStatus::Active && state.transaction.is_some()
+}
+
+#[tauri::command]
 pub async fn onboarding_get_snapshot(
     app: AppHandle,
 ) -> Result<OnboardingSnapshot, OnboardingFailure> {
@@ -1912,6 +1940,58 @@ pub async fn launch_repair_setup(app: AppHandle) -> Result<(), OnboardingFailure
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recovery_notice_preserves_interrupted_work_and_ignores_welcome() {
+        let mut state = PersistedOnboarding {
+            flow_version: FLOW_VERSION,
+            revision: 1,
+            phase: OnboardingPhase::Welcome,
+            entry_point: EntryPoint::FirstRun,
+            draft: draft(),
+            plan: None,
+            transaction: None,
+            verification: None,
+            terminal_status: TerminalStatus::Active,
+            offer_status: OfferStatus::Pending,
+            destination: None,
+        };
+        assert!(!needs_recovery_notice(&state));
+        state.phase = OnboardingPhase::Review;
+        assert!(!needs_recovery_notice(&state));
+        state.transaction = Some(OnboardingTransaction {
+            transaction_id: "old-transaction".into(),
+            plan_id: "old-plan".into(),
+            status: TransactionStatus::Applying,
+            checkpoint: "hosts_changed".into(),
+            snapshot: TransactionSnapshot {
+                previous_settings: Settings::default(),
+                dpi_was_active: false,
+                proxy_was_running: false,
+                hosts_previous_provider: "malw".into(),
+                hosts_previous_installed: false,
+                settings_applied: true,
+                hosts_changed: true,
+                proxy_started: false,
+                dpi_started: false,
+            },
+            verification: None,
+        });
+        state.phase = OnboardingPhase::Applying;
+        let mut restored = recover_interrupted_state(state);
+        assert!(needs_recovery_notice(&restored));
+        assert_eq!(restored.phase, OnboardingPhase::RecoveryRequired);
+        let transaction = restored.transaction.as_ref().unwrap();
+        assert_eq!(transaction.transaction_id, "old-transaction");
+        assert_eq!(transaction.checkpoint, "hosts_changed");
+        assert!(transaction.snapshot.hosts_changed);
+        for status in [TransactionStatus::Applied, TransactionStatus::RolledBack] {
+            restored.transaction.as_mut().unwrap().status = status;
+            assert!(needs_recovery_notice(&restored));
+        }
+        restored.terminal_status = TerminalStatus::Completed;
+        assert!(!needs_recovery_notice(&restored));
+    }
 
     fn draft() -> OnboardingDraft {
         OnboardingDraft {

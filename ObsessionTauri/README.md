@@ -8,7 +8,7 @@
 
 | Каталог | Назначение |
 |---|---|
-| `src/` | React-интерфейс, Zustand stores, onboarding и визуальные сцены тем. |
+| `src/` | React-интерфейс, Zustand stores и визуальные сцены тем. |
 | `src-tauri/` | Tauri host: окно, трей, команды frontend-моста и непривилегированная orchestration-логика. |
 | `runtime-protocol/` | Версионированные request/response/event типы для IPC. |
 | `runtime-client/` | Клиент named pipe с проверкой совместимости и ожиданием занятой службы. |
@@ -164,7 +164,7 @@ flowchart TB
 - `src-tauri/src/legacy_reliability/` — наблюдение, environment gate и подтверждение Legacy-стратегий.
 - `src-tauri/src/adaptive_strategy/` — генерация, проверка и кэш Zapret2-кандидатов.
 - `src-tauri/src/hosts.rs` — frontend-facing façade для protected hosts runtime.
-- `src-tauri/src/onboarding.rs` — durable plan/apply/verify/rollback flow.
+- `src-tauri/src/onboarding.rs` — совместимость с журналами прежнего мастера: проверка и откат незавершённых настроек. Приложение сразу открывает «Обзор»; приветственный мастер больше не показывается.
 - `src-tauri/src/proxy.rs` — Obsession Telegram Proxy и LAN lease client.
 - `src/design/components/obsessionChoir/` — Black Choir geometry, motion и WebGL pipeline.
 - `src/store/` — состояние экранов и синхронизация snapshot с UI.

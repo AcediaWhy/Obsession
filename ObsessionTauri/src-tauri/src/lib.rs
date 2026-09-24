@@ -376,6 +376,7 @@ pub fn run() {
             commands::adaptive_reset_saved,
             onboarding::onboarding_start,
             onboarding::onboarding_get_snapshot,
+            onboarding::onboarding_get_recovery,
             onboarding::onboarding_check_readiness,
             onboarding::onboarding_save_draft,
             onboarding::onboarding_build_plan,

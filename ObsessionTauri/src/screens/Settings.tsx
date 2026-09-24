@@ -2,7 +2,6 @@ import { useState } from "react";
 import { motion } from "framer-motion";
 
 import { useSettingsStore } from "../store/settingsStore";
-import { useOnboardingStore } from "../store/onboardingStore";
 import { useThemeStore, THEMES, type Theme } from "../store/themeStore";
 import { useSecretStore } from "../store/secretStore";
 import { GlassPanel } from "../design/components/GlassPanel";
@@ -47,7 +46,6 @@ export function SettingsScreen() {
   const autostart = useSettingsStore((s) => s.autostart);
   const setAutostart = useSettingsStore((s) => s.setAutostart);
   const patch = useSettingsStore((s) => s.patch);
-  const startOnboarding = useOnboardingStore((s) => s.start);
 
   return (
     <div className="flex h-full flex-col gap-4">
@@ -195,11 +193,6 @@ export function SettingsScreen() {
                           ? "Работает"
                           : "Работает частично"}
                     </span>
-                  </Row>
-                  <Row label="Мастер настройки" hint="Повторный запуск сохраняет текущую конфигурацию до Review">
-                    <Button variant="ghost" onClick={() => void startOnboarding("settings")}>
-                      Открыть мастер
-                    </Button>
                   </Row>
                   <HotkeyRow />
                 </div>

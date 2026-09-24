@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 
 export type OnboardingPhase =
   | "welcome"
@@ -132,18 +132,10 @@ export function normalizeOnboardingFailure(value: unknown): OnboardingFailure {
 }
 
 export const onboardingApi = {
-  start: (entryPoint: "first_run" | "soft_offer" | "settings") =>
-    invoke<OnboardingSnapshot>("onboarding_start", { entryPoint }),
-  getSnapshot: () => invoke<OnboardingSnapshot>("onboarding_get_snapshot"),
-  checkReadiness: () => invoke<OnboardingReadiness>("onboarding_check_readiness"),
-  saveDraft: (draft: OnboardingDraft, expectedRevision: number) =>
-    invoke<OnboardingSnapshot>("onboarding_save_draft", { draft, expectedRevision }),
-  buildPlan: (draft: OnboardingDraft, expectedRevision: number) =>
-    invoke<OnboardingSnapshot>("onboarding_build_plan", { draft, expectedRevision }),
-  apply: (planId: string) =>
-    invoke<OnboardingSnapshot>("onboarding_apply", { planId }),
-  getTransaction: (transactionId: string) =>
-    invoke<OnboardingTransaction>("onboarding_get_transaction", { transactionId }),
+  // Старый формат сохраняется для завершения операций предыдущих версий.
+  getSnapshot: (): Promise<OnboardingSnapshot | null> => isTauri()
+    ? invoke<OnboardingSnapshot | null>("onboarding_get_recovery")
+    : Promise.resolve(null),
   verify: (transactionId: string) =>
     invoke<OnboardingSnapshot>("onboarding_verify", { transactionId }),
   acceptVerification: (transactionId: string) =>
@@ -152,9 +144,5 @@ export const onboardingApi = {
     invoke<OnboardingSnapshot>("onboarding_rollback", { transactionId }),
   complete: (transactionId: string, destination: OnboardingDestination) =>
     invoke<OnboardingSnapshot>("onboarding_complete", { transactionId, destination }),
-  skip: (expectedRevision: number) =>
-    invoke<OnboardingSnapshot>("onboarding_skip", { expectedRevision }),
-  cancel: (expectedRevision: number) =>
-    invoke<OnboardingSnapshot>("onboarding_cancel", { expectedRevision }),
   launchRepair: () => invoke<void>("launch_repair_setup"),
 };

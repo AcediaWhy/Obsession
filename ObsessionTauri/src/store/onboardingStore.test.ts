@@ -2,144 +2,129 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const { apiMock } = vi.hoisted(() => ({
   apiMock: {
-    start: vi.fn(),
-    getSnapshot: vi.fn(),
-    checkReadiness: vi.fn(),
-    saveDraft: vi.fn(),
-    buildPlan: vi.fn(),
-    apply: vi.fn(),
-    getTransaction: vi.fn(),
-    verify: vi.fn(),
-    acceptVerification: vi.fn(),
-    rollback: vi.fn(),
-    complete: vi.fn(),
-    skip: vi.fn(),
-    cancel: vi.fn(),
-    launchRepair: vi.fn(),
+    getSnapshot: vi.fn(), verify: vi.fn(), acceptVerification: vi.fn(),
+    rollback: vi.fn(), complete: vi.fn(), launchRepair: vi.fn(),
   },
 }));
-
-vi.mock("../lib/onboarding", () => ({
+vi.mock("../lib/onboarding", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../lib/onboarding")>(),
   onboardingApi: apiMock,
-  normalizeOnboardingFailure: (value: unknown) =>
-    value && typeof value === "object"
-      ? value
-      : {
-          code: "PREFLIGHT_FAILED",
-          retryable: true,
-          messageCode: "onboarding.error.preflight_failed",
-          logPath: null,
-        },
 }));
 
 import type { OnboardingSnapshot } from "../lib/onboarding";
 import { useOnboardingStore } from "./onboardingStore";
 
-const snapshot: OnboardingSnapshot = {
-  flowVersion: 2,
-  revision: 7,
-  phase: "welcome",
-  presentation: "offer",
-  draft: {
-    goals: { dpi: true, ai: false, telegram: false },
-    dpiEngine: "legacy",
-    aiProvider: "malw",
-  },
-  plan: null,
-  transaction: null,
-  verification: null,
-  terminalStatus: "completed",
-  destination: null,
-};
+function pending(): OnboardingSnapshot {
+  return {
+    flowVersion: 2, revision: 7, phase: "recovery_required", presentation: "required",
+    draft: { goals: { dpi: true, ai: false, telegram: false }, dpiEngine: "legacy", aiProvider: "malw" },
+    plan: null, verification: null, terminalStatus: "active", destination: null,
+    transaction: { transactionId: "tx-test", planId: "plan-test", status: "recovery_required", checkpoint: "proxy_started", verification: null },
+  };
+}
 
-describe("onboarding store", () => {
+describe("legacy setup recovery store", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
-    useOnboardingStore.setState({
-      loaded: false,
-      busy: false,
-      snapshot: null,
-      readiness: null,
-      failure: null,
-    });
+    vi.resetAllMocks();
+    useOnboardingStore.setState({ loaded: false, busy: false, snapshot: null, failure: null });
   });
 
-  it("hydrates an existing user as a non-blocking offer", async () => {
+  it("opens a fresh installation without starting or applying a setup", async () => {
+    apiMock.getSnapshot.mockResolvedValue(null);
+    await useOnboardingStore.getState().initialize();
+    expect(useOnboardingStore.getState()).toMatchObject({ loaded: true, snapshot: null, failure: null });
+    expect(apiMock.verify).not.toHaveBeenCalled();
+    expect(apiMock.rollback).not.toHaveBeenCalled();
+    expect(apiMock.complete).not.toHaveBeenCalled();
+  });
+
+  it("loads an interrupted transaction without automatically rolling it back", async () => {
+    apiMock.getSnapshot.mockResolvedValue(pending());
+    await useOnboardingStore.getState().initialize();
+    expect(useOnboardingStore.getState().snapshot?.transaction?.transactionId).toBe("tx-test");
+    expect(apiMock.rollback).not.toHaveBeenCalled();
+  });
+
+  it("does not issue duplicate startup reads while loading", async () => {
+    let resolve!: (value: null) => void;
+    apiMock.getSnapshot.mockReturnValue(new Promise<null>((done) => { resolve = done; }));
+    const first = useOnboardingStore.getState().initialize();
+    await useOnboardingStore.getState().initialize();
+    expect(apiMock.getSnapshot).toHaveBeenCalledTimes(1);
+    resolve(null);
+    await first;
+  });
+
+  it("keeps a read failure visible and allows retry", async () => {
+    apiMock.getSnapshot.mockRejectedValueOnce("raw filesystem error");
+    await useOnboardingStore.getState().initialize();
+    expect(useOnboardingStore.getState().failure?.code).toBe("PREFLIGHT_FAILED");
+    apiMock.getSnapshot.mockResolvedValue(pending());
+    expect(await useOnboardingStore.getState().refresh()).toBe(true);
+    expect(useOnboardingStore.getState().failure).toBeNull();
+  });
+
+  it("retains the journal after a failed rollback and resyncs the checkpoint", async () => {
+    useOnboardingStore.setState({ loaded: true, snapshot: pending() });
+    const failed = pending();
+    failed.transaction!.checkpoint = "hosts_rolled_back";
+    apiMock.rollback.mockRejectedValue({ code: "ROLLBACK_FAILED", retryable: true, messageCode: "onboarding.error.rollback_deferred", logPath: null });
+    apiMock.getSnapshot.mockResolvedValue(failed);
+    expect(await useOnboardingStore.getState().rollback()).toBe(false);
+    expect(apiMock.rollback).toHaveBeenCalledWith("tx-test");
+    expect(useOnboardingStore.getState().snapshot?.transaction?.checkpoint).toBe("hosts_rolled_back");
+    expect(useOnboardingStore.getState().failure?.code).toBe("ROLLBACK_FAILED");
+  });
+
+  it("does not complete an interrupted or unverified transaction", async () => {
+    for (const status of ["recovery_required", "applied"] as const) {
+      const snapshot = pending();
+      snapshot.transaction!.status = status;
+      useOnboardingStore.setState({ loaded: true, snapshot });
+      expect(await useOnboardingStore.getState().complete("overview")).toBe(false);
+    }
+    expect(apiMock.complete).not.toHaveBeenCalled();
+  });
+
+  it("accepts partial results only on explicit completion", async () => {
+    const snapshot = pending();
+    snapshot.transaction!.status = "applied";
+    snapshot.transaction!.verification = { outcome: "partial", targets: [], accepted: false };
     apiMock.getSnapshot.mockResolvedValue(snapshot);
     await useOnboardingStore.getState().initialize();
-    expect(useOnboardingStore.getState().snapshot?.presentation).toBe("offer");
-    expect(useOnboardingStore.getState().loaded).toBe(true);
+    expect(apiMock.acceptVerification).not.toHaveBeenCalled();
+    apiMock.acceptVerification.mockResolvedValue(snapshot);
+    apiMock.complete.mockResolvedValue({ ...snapshot, terminalStatus: "completed" });
+    expect(await useOnboardingStore.getState().complete("overview")).toBe(true);
+    expect(apiMock.acceptVerification).toHaveBeenCalledWith("tx-test");
+    expect(apiMock.complete).toHaveBeenCalledWith("tx-test", "overview");
+    expect(useOnboardingStore.getState().snapshot?.terminalStatus).toBe("completed");
   });
 
-  it("passes the authoritative revision with a multi-goal draft", async () => {
-    useOnboardingStore.setState({ loaded: true, snapshot });
-    const draft = {
-      ...snapshot.draft,
-      goals: { dpi: true, ai: true, telegram: true },
-    };
-    apiMock.saveDraft.mockResolvedValue({
-      ...snapshot,
-      revision: 8,
-      phase: "recommendation",
-      presentation: "modal",
-      draft,
-    });
-    expect(await useOnboardingStore.getState().saveDraft(draft)).toBe(true);
-    expect(apiMock.saveDraft).toHaveBeenCalledWith(draft, 7);
-    expect(useOnboardingStore.getState().snapshot?.phase).toBe("recommendation");
+  it("does not complete when accepting a partial result fails", async () => {
+    const snapshot = pending();
+    snapshot.transaction!.status = "applied";
+    snapshot.transaction!.verification = { outcome: "partial", targets: [], accepted: false };
+    useOnboardingStore.setState({ snapshot });
+    apiMock.acceptVerification.mockRejectedValue("disk full");
+    apiMock.getSnapshot.mockResolvedValue(snapshot);
+    expect(await useOnboardingStore.getState().complete("overview")).toBe(false);
+    expect(apiMock.complete).not.toHaveBeenCalled();
   });
 
-  it("turns an unstructured rejection into a safe typed failure", async () => {
-    apiMock.getSnapshot.mockRejectedValue("raw Windows error <script>");
-    await useOnboardingStore.getState().initialize();
-    expect(useOnboardingStore.getState().failure).toEqual({
-      code: "PREFLIGHT_FAILED",
-      retryable: true,
-      messageCode: "onboarding.error.preflight_failed",
-      logPath: null,
-    });
+  it("closes a completed rollback without requiring a network check", async () => {
+    const snapshot = pending();
+    snapshot.transaction!.status = "rolled_back";
+    useOnboardingStore.setState({ snapshot });
+    apiMock.complete.mockResolvedValue({ ...snapshot, terminalStatus: "completed" });
+    expect(await useOnboardingStore.getState().complete("overview")).toBe(true);
+    expect(apiMock.acceptVerification).not.toHaveBeenCalled();
+    expect(apiMock.verify).not.toHaveBeenCalled();
   });
 
-  it("resyncs the authoritative snapshot after a failed mutation rolls back", async () => {
-    const review: OnboardingSnapshot = {
-      ...snapshot,
-      phase: "review",
-      presentation: "modal",
-      terminalStatus: "active",
-      plan: {
-        planId: "plan-test",
-        draft: snapshot.draft,
-        actions: [],
-        dpiConfig: "discord-test.cmd",
-        proxyPort: 1443,
-        fakeTlsDomain: "",
-      },
-    };
-    const rolledBack: OnboardingSnapshot = {
-      ...review,
-      revision: 8,
-      phase: "result",
-      transaction: {
-        transactionId: "tx-test",
-        planId: "plan-test",
-        status: "rolled_back",
-        checkpoint: "rollback_complete",
-        verification: null,
-      },
-    };
-    useOnboardingStore.setState({ loaded: true, snapshot: review });
-    apiMock.apply.mockRejectedValue({
-      code: "APPLY_FAILED",
-      retryable: true,
-      messageCode: "onboarding.error.apply_failed",
-      logPath: "C:\\Users\\User\\AppData\\Roaming\\Obsession\\onboarding.log",
-    });
-    apiMock.getSnapshot.mockResolvedValue(rolledBack);
-
-    expect(await useOnboardingStore.getState().apply()).toBe(false);
-    expect(apiMock.apply).toHaveBeenCalledWith("plan-test");
-    expect(useOnboardingStore.getState().snapshot?.phase).toBe("result");
-    expect(useOnboardingStore.getState().snapshot?.transaction?.status).toBe("rolled_back");
-    expect(useOnboardingStore.getState().failure?.code).toBe("APPLY_FAILED");
+  it("releases the busy state after launching repair", async () => {
+    apiMock.launchRepair.mockResolvedValue(undefined);
+    expect(await useOnboardingStore.getState().launchRepair()).toBe(true);
+    expect(useOnboardingStore.getState().busy).toBe(false);
   });
 });

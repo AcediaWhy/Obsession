@@ -97,17 +97,7 @@ export default function App() {
   // поддерева целиком (см. кэш перед return ниже).
   const hidden = useRenderHidden();
   const hiddenCache = useRef<ReactElement | null>(null);
-  const onboardingSnapshot = useOnboardingStore((s) => s.snapshot);
-  const onboardingLoaded = useOnboardingStore((s) => s.loaded);
   const initializeOnboarding = useOnboardingStore((s) => s.initialize);
-  const startOnboarding = useOnboardingStore((s) => s.start);
-  const skipOnboarding = useOnboardingStore((s) => s.skip);
-  const showOnboarding =
-    onboardingLoaded &&
-    (onboardingSnapshot?.presentation === "required" ||
-      onboardingSnapshot?.presentation === "modal");
-  const showOnboardingOffer =
-    onboardingLoaded && onboardingSnapshot?.presentation === "offer";
 
   useEffect(() => {
     if (settingsLoaded) void initializeOnboarding();
@@ -117,7 +107,6 @@ export default function App() {
   // React-render на каждое переключение. CSS ограничивает переходы семантическими
   // поверхностями/контролами вместо universal selector по всему дереву.
   const shellRef = useRef<HTMLDivElement>(null);
-  const interactionShellRef = useRef<HTMLDivElement>(null);
   const prevTheme = useRef(theme);
   const [focusCapture, setFocusCapture] = useState(false);
   useLayoutEffect(() => {
@@ -156,21 +145,6 @@ export default function App() {
     "--obsession-focus-x": `${obsessionFocus.x * 100}%`,
     "--obsession-focus-y": `${obsessionFocus.y * 100}%`,
   } as CSSProperties;
-
-  // Modal onboarding — единственная интерактивная ветка. Inert убирает основной
-  // shell из tab/accessibility tree; атрибут ставим напрямую для совместимости
-  // с текущими React typings WebView2.
-  useLayoutEffect(() => {
-    const shell = interactionShellRef.current;
-    if (!shell) return;
-    if (showOnboarding) {
-      shell.setAttribute("inert", "");
-      shell.setAttribute("aria-hidden", "true");
-    } else {
-      shell.removeAttribute("inert");
-      shell.removeAttribute("aria-hidden");
-    }
-  }, [showOnboarding]);
 
   // Инициализация сторов и подписок — один раз при старте.
   useEffect(() => {
@@ -244,12 +218,10 @@ export default function App() {
         className="relative h-screen w-screen overflow-hidden"
         style={obsessionStyle}
       >
-        <ParallaxProvider paused={showOnboarding}>
+        <ParallaxProvider>
           <div
-            ref={interactionShellRef}
             data-app-shell
-            aria-hidden={showOnboarding || undefined}
-            className={`absolute inset-0 ${showOnboarding ? "pointer-events-none" : ""}`}
+            className="absolute inset-0"
           >
             {/* Дальний план: фон движется против курсора. Оверскан по краям, чтобы
                 сдвиг никогда не оголял углы. Смена темы — кроссфейд: обе сцены
@@ -266,7 +238,7 @@ export default function App() {
                   key={theme}
                   theme={theme}
                   motionOff={motionOff}
-                  paused={showOnboarding}
+                  paused={false}
                   phase={obsessionPhase}
                   screen={tab}
                 />
@@ -287,8 +259,9 @@ export default function App() {
             {/* Контент. */}
             <div className="absolute inset-0 top-10 flex">
               <NavRail active={tab} onSelect={selectTab} />
-              <main className="flex-1 overflow-hidden px-6 pb-6 pt-2">
-                <div className="relative h-full">
+              <main className="flex min-w-0 flex-1 flex-col gap-3 overflow-hidden px-6 pb-6 pt-2">
+                <Onboarding onDestination={() => void launcherBootstrap.refresh()} />
+                <div className="relative min-h-0 flex-1">
                   <AnimatePresence mode="sync" custom={tabDir.current}>
                     {/* Обёртка экрана — transform-only: opacity у предка стекла
                         образует backdrop root (Chromium), и панели теряли матовость
@@ -319,32 +292,8 @@ export default function App() {
               </main>
             </div>
 
-            {/* Тосты основного приложения принадлежат inert shell. Ошибки
-                завершения onboarding показываются внутри самого dialog. */}
             <Toaster />
-
-            {showOnboardingOffer && (
-              <aside className="no-drag absolute bottom-5 right-5 z-40 w-[min(390px,calc(100vw-40px))] rounded-2xl border border-white/[0.1] bg-base-900/95 p-4 shadow-2xl backdrop-blur-xl" aria-label="Предложение настройки">
-                <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-accent-cyan">Onboarding V2</p>
-                <h2 className="mt-1.5 text-sm font-semibold text-ink">Настроить функции через защищённую службу?</h2>
-                <p className="mt-1 text-xs leading-5 text-ink-soft">Для существующей установки это необязательное предложение. Текущая конфигурация сохранится до явного Review.</p>
-                <div className="mt-3 flex justify-end gap-2">
-                  <button type="button" onClick={() => void skipOnboarding()} className="rounded-xl border border-white/[0.08] bg-white/5 px-3.5 py-2 text-xs font-medium text-ink-soft hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">Не сейчас</button>
-                  <button type="button" onClick={() => void startOnboarding("soft_offer")} className="rounded-xl bg-accent/90 px-3.5 py-2 text-xs font-semibold text-white hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-cyan">Настроить сейчас</button>
-                </div>
-              </aside>
-            )}
           </div>
-
-          {/* Онбординг первого запуска — единственная активная modal-ветка. */}
-          {showOnboarding && (
-            <Onboarding
-              onDestination={(destination) => {
-                selectTab(destination);
-                void launcherBootstrap.refresh();
-              }}
-            />
-          )}
         </ParallaxProvider>
       </div>
     </MotionConfig>
