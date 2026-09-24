@@ -65,3 +65,8 @@
 *.woff2  binary
 *.ttf    binary
 *.otf    binary
+
+# Большие HTML-исследования содержат встроенные SVG и не отражают код приложения.
+# Исключаем их из статистики языков, сохраняя видимыми в diff.
+ObsessionTauri/devtools/labs/cattts-motion-lab.html -linguist-detectable
+ObsessionTauri/artifacts/cattts-motion.before-parts.html -linguist-detectable
