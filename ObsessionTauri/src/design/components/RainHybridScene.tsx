@@ -65,8 +65,7 @@ export default function RainHybridScene({ paused = false }: { paused?: boolean }
     let disposed = false;
     let simulation: RainSimulation | null = null;
     let pipeline: RainPipeline | null = null;
-    // Канвас персистентен (rain/fieldSession): между маунтами он живёт в
-    // сессии темы, unmount поля НЕ убивает контекст.
+    // Canvas сохраняется между монтированиями; unmount не уничтожает GL-контекст.
     let canvas: HTMLCanvasElement | null = null;
     let boundCanvas: HTMLCanvasElement | null = null;
     let resizeTimer: ReturnType<typeof setTimeout> | null = null;

@@ -1,21 +1,8 @@
-/* Локальные шрифты (сабсет latin + cyrillic, woff2). Вшиты в бандл вместо загрузки
-   с Google CDN: работают офлайн, без запроса к Google на старте, и — ключевое —
-   содержат кириллицу (иначе весь русский UI откатывался бы на системный Segoe UI).
+/* Локальные WOFF2-сабсеты IBM Plex Sans и Mono содержат латиницу и кириллицу.
+   Sans использует вариативные веса 100–700, Mono — файлы для 400/500/600.
+   Обновление файлов: node scripts/fetch-fonts.mjs. */
 
-   Единая супер-семья IBM Plex:
-     • IBM Plex Sans  — ВАРИАТИВНЫЙ (один файл на сабсет, ось wght 100–700):
-                        заголовки/логотип (font-display) + тело (font-sans);
-     • IBM Plex Mono  — СТАТИЧЕСКИЙ (400/500/600): метрики/логи/код (font-mono),
-                        со slashed-zero (0↔O, включён в tailwind.config).
-   Кириллица у Plex Sans/Mono проверена (Google Fonts: cyrillic + cyrillic-ext).
-   ГОТЧА: IBM Plex Sans Condensed кириллицы НЕ имеет — его не подключаем.
-
-   Файлы в src/assets/fonts → Vite фингерпринтит их в dist/assets.
-   Пере-генерация: node scripts/fetch-fonts.mjs (css2 с Chrome-UA → latin/cyrillic). */
-
-/* ─── IBM Plex Sans — вариативный (диапазон font-weight ОБЯЗАТЕЛЕН) ────────────
-   Браузер сам ставит ось wght под вес элемента (400 тело, 500 база, 600 заголовки,
-   700 герой). Пиновать одиночным весом нельзя — файл вариативный, один на сабсет. */
+/* Для вариативного Sans указываем диапазон весов, а не одно значение. */
 @font-face {
   font-family: "IBM Plex Sans";
   font-style: normal;

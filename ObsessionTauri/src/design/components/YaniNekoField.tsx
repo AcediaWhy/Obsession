@@ -42,9 +42,8 @@ export function YaniNekoField({
     if (forceFallback) return;
     const container = containerRef.current;
     if (!container) return;
-    // Канвас+контекст персистентны (gl/persistentGlSession): unmount поля
-    // ОБЯЗАН оставлять их жить, иначе каждое переключение темы снова гонит
-    // цикл создания/потери WebGL-контекста.
+    // Canvas и контекст сохраняются при размонтировании, чтобы переключение
+    // темы не создавало WebGL-контекст заново.
     let canvas: HTMLCanvasElement;
     let pipeline: YaniNekoPipeline;
     try {

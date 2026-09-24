@@ -1,20 +1,7 @@
-// Скачивает сабсеты (latin + cyrillic, woff2) шрифтов проекта из Google Fonts и
-// кладёт их в src/assets/fonts.
-//
-// Зачем: css2-эндпоинт Google отдаёт по-настоящему разбитые по unicode-range woff2
-// (с комментами /* latin */, /* cyrillic */) ТОЛЬКО для «настоящего» браузера —
-// поэтому шлём полный Chrome User-Agent. Иначе прилетает единый .ttf без сабсетов.
-// Кириллица у IBM Plex Sans/Mono есть (кроме Plex Sans Condensed — его не берём).
-//
-// ВАЖНО про начертания:
-//   • IBM Plex Sans — ВАРИАТИВНЫЙ (один файл на сабсет покрывает wght 100–700).
-//     Запрашиваем ось wght@100..700, кладём как ibm-plex-sans-<subset>.woff2,
-//     а в fonts.css объявляем @font-face с диапазоном `font-weight: 100 700`.
-//     (Если запросить дискретные веса — Google вернёт ОДИН и тот же файл на каждый,
-//      их нельзя пинить одиночным font-weight — вес не интерполируется.)
-//   • IBM Plex Mono — СТАТИЧЕСКИЙ (отдельный файл на каждый вес). Берём 400/500/600.
-//
-// Запуск:  node scripts/fetch-fonts.mjs   (повторно безопасно, перезаписывает файлы)
+// Скачивает латинские и кириллические WOFF2-сабсеты в src/assets/fonts.
+// Chrome User-Agent нужен, чтобы Google Fonts вернул файлы по unicode-range.
+// IBM Plex Sans запрашивается как вариативный шрифт с весами 100–700,
+// IBM Plex Mono — как отдельные файлы для весов 400, 500 и 600.
 
 import { writeFile, mkdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";

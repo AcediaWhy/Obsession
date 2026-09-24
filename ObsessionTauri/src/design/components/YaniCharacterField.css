@@ -734,7 +734,7 @@
 .yani-character-field[data-mood="scanning"] .yani-character-field__panel { border-color: rgba(52, 131, 88, 0.27); }
 .yani-character-field[data-mood="alarm"] .yani-character-field__ambient {
   filter: hue-rotate(-25deg) saturate(.92);
-  /* Приглушение тревоги живёт в кейфреймах: opacity здесь уже занята дыханием. */
+  /* Прозрачность тревоги задаётся в keyframes вместе с дыханием. */
   animation-name: yani-character-mint-breathe-alarm;
 }
 .yani-character-field[data-mood="alarm"] .yani-character-field__orbit::after {
@@ -744,16 +744,8 @@
 .yani-character-field[data-motion="still"] *::before,
 .yani-character-field[data-motion="still"] *::after { animation-play-state: paused !important; }
 
-/* Все бесконечные анимации темы двигают ТОЛЬКО transform и opacity — свойства,
-   которые композитор анимирует без перерисовки слоя. background-position и
-   filter в кейфреймах стоили ~60% нагрузки темы.
-
-   Второй рычаг — steps(): фоновые слои ползут со скоростью 0.5–3 px/с, и
-   пересчитывать их 180 раз в секунду (герцовка монитора) незачем. Шаги дают
-   5–15 обновлений в секунду, то есть смещение <2 px за шаг — на глаз это та же
-   плавность, а композитор простаивает между шагами вместо непрерывной работы.
-   Порядок величины: гладкие версии этих же анимаций стоили вдвое дороже всей
-   остальной темы вместе. */
+/* Бесконечные анимации меняют transform и opacity. Для медленных фоновых
+   смещений используем steps(), чтобы не обновлять слой на каждом кадре. */
 @keyframes yani-character-mint-breathe { 0%,100% { opacity: .94; } 50% { opacity: 1; } }
 @keyframes yani-character-mint-breathe-alarm { 0%,100% { opacity: .85; } 50% { opacity: .9; } }
 @keyframes yani-character-mint-drift { from { transform: translate3d(-2.5%,-1%,0) scale(1.075); } to { transform: translate3d(3%,1%,0) scale(1.075); } }

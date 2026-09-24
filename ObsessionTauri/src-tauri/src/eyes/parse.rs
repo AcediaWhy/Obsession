@@ -87,14 +87,8 @@ fn handshake_type(payload: &[u8]) -> Option<u8> {
     payload.get(5).copied()
 }
 
-/// Извлекает SNI (server_name) из ClientHello.
-/// Возвращает None, если это не ClientHello, данных не хватает, или расширения SNI нет.
-///
-/// Раскладка ClientHello после 5-байтного record-заголовка:
-///   handshake_type(1)=0x01 | length(3) | version(2) | random(32)
-///   | session_id: len(1)+data | cipher_suites: len(2)+data
-///   | compression: len(1)+data | extensions: len(2)+data
-/// Внутри extensions ищем тип 0x0000 (server_name) → SNI list → host_name(0x00).
+/// Извлекает SNI из расширения `server_name` в TLS ClientHello.
+/// Возвращает `None` при неполных данных, другом типе записи или отсутствии SNI.
 pub fn extract_sni(payload: &[u8]) -> Option<String> {
     // Должен быть handshake-record с ClientHello.
     if classify_record(payload) != TlsRecord::Handshake(TlsHandshake::ClientHello) {

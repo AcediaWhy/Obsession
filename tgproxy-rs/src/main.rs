@@ -1,9 +1,6 @@
-//! obsession-tg-proxy — headless MTProto<->WebSocket мост для Telegram.
-//!
-//! Rust-переписывание CLI-части tg-ws-proxy (Flowseal, MIT). Контракт
-//! запуска совместим с Obsession (`ObsessionTauri/src-tauri/src/proxy.rs`):
-//! флаги `--port/--secret/--fake-tls-domain/--cfproxy-cache` и строка-сигнал
-//! готовности `tg://proxy?...` одной строкой без пробелов в stderr.
+//! Консольный MTProto/WebSocket-мост для Telegram.
+//! Obsession передаёт параметры через CLI и считывает готовую ссылку
+//! `tg://proxy?...` из stderr.
 
 mod bridge;
 mod cfrelay;

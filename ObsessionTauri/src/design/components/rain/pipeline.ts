@@ -184,9 +184,8 @@ export class RainPipeline {
     this.updateLods();
   }
 
-  /** Уровни мипов для композита: политика живёт в rain/focus.ts, чтобы
-   *  инвариант «внутри капли резче, чем стекло» проверялся юнит-тестом.
-   *  Пересчёт при ресайзе FBO. */
+  /** Пересчитывает уровни детализации при изменении размера FBO.
+   *  Правила резкости капель и стекла заданы в rain/focus.ts. */
   private updateLods(): void {
     const lods = rainFocusLods(this.worldFbo.width, this.mipDepth);
     this.dropLod = lods.dropLod;

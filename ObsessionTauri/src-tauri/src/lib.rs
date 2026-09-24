@@ -143,13 +143,8 @@ pub fn run() {
             let adaptive = adaptive_strategy::runtime::start(handle.clone());
             *handle.state::<AppState>().adaptive.lock_recover() = Some(adaptive);
 
-            // Подчищаем зависшие winws ОТ ПРЕДЫДУЩЕГО жёсткого выхода больше не
-            // нужно автоматически: процессы DPI принадлежат защищённой службе и
-            // умирают вместе с ней (Job Object KILL_ON_JOB_CLOSE), а локальные
-            // спавны (тест/brain/crash-retry) закрываются kill_on_drop + bounded
-            // reaper. Слепой taskkill по имени образа здесь опасен: он убил бы
-            // легитимный winws службы после аварийного закрытия UI или чужой
-            // winws.exe параллельного инструмента. Оставляем только диагностику.
+            // Не завершаем winws по имени процесса: это может затронуть службу
+            // или другое приложение. Здесь только сообщаем о найденных процессах.
             #[cfg(windows)]
             {
                 if security::protected_runtime_available() {
@@ -233,14 +228,9 @@ pub fn run() {
                 });
             }
 
-            // Надёжный детектор видимости окна для паузы анимаций. Событийный путь
-            // в связке tao+WebView2 капризен: сворачивание/разворот не всегда шлют
-            // Resized, а window.hide() не даёт visibilitychange. Причём tao-обёртки
-            // is_minimized()/is_visible() под WebView2 ВРУТ (лагают/не видят внешний
-            // минимайз) — из-за этого сворачивание не паузило анимации и окно жгло
-            // CPU в трее. Берём состояние напрямую из Win32 (IsIconic/IsWindowVisible)
-            // — авторитетный источник — и шлём window-visibility при изменении.
-            // Интервал 300мс: пауза срабатывает почти мгновенно, нагрузка околонулевая.
+            // tao/WebView2 не всегда сообщает о скрытии и сворачивании окна.
+            // Проверяем IsIconic/IsWindowVisible каждые 300 мс и отправляем
+            // window-visibility только при изменении состояния.
             {
                 let h = handle.clone();
                 app.listen("ui-tray-idle", move |_| webmem::set_low_memory(&h, true));
@@ -461,18 +451,16 @@ fn begin_exit(app: &tauri::AppHandle) {
             }
         });
         shutdown(&app).await;
-        // Хвост лога сбрасываем последним: LogSink живёт в static, деструкторы
-        // статиков при завершении процесса не выполняются, и без этого вызова
-        // последние строки teardown терялись вместе с буфером.
+        // Сбрасываем LogSink явно: деструкторы статических объектов при выходе
+        // процесса не вызываются.
         util::flush_log_file();
         SHUTDOWN_DONE.store(true, Ordering::SeqCst);
         app.exit(0);
     });
 }
 
-/// Gate-aware teardown. Флаг shutdown выставлен до входа сюда, поэтому новые
-/// start/test уже отклоняются. Сначала ждём незавершённые операции, затем гасим
-/// Brain/Eyes и дочерние процессы. На главном потоке эта функция не выполняется.
+/// Завершает активные операции и дочерние процессы после установки флага shutdown.
+/// Вызывается вне главного потока.
 async fn shutdown(app: &tauri::AppHandle) {
     let state = app.state::<AppState>();
 
@@ -489,13 +477,8 @@ async fn shutdown(app: &tauri::AppHandle) {
 
     let _dpi_gate = state.dpi_gate.lock().await;
     let _proxy_gate = state.proxy_gate.lock().await;
-    // hosts_gate ждём последним, сохраняя единственное существующее направление
-    // вложенности (dpi → proxy → hosts): обратного порядка нет ни в одном месте
-    // дерева, поэтому цикла блокировок это не создаёт.
-    //
-    // Ждать обязательно: install() между подменой системного hosts и записью
-    // состояния делает flush_dns и до 6 сетевых проб. Выход в этом окне
-    // обрывал транзакцию на полпути, а точка возврата ещё не была на диске.
+    // Порядок блокировок: dpi → proxy → hosts. Ждём завершения install(),
+    // чтобы выход не прервал запись состояния после изменения hosts.
     let _hosts_gate = state.hosts_gate.lock().await;
 
     let brain = state.brain.lock().ok().and_then(|mut b| b.take());

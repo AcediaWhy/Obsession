@@ -1,10 +1,6 @@
-//! Унифицированный upstream для моста.
-//!
-//! Telegram `/apiws` — message-oriented транспорт: init и каждый MTProto
-//! transport packet должны уходить отдельными WebSocket messages. Raw TCP,
-//! SOCKS и будущий PersonalRelay — обычные byte streams, где границы записей
-//! не имеют значения. Это различие хранится явно, чтобы splitter нельзя было
-//! случайно применить к потоковому маршруту или пропустить для `/apiws`.
+//! Транспортные маршруты MTProto-моста.
+//! `/apiws` сохраняет границы сообщений: init и каждый пакет идут отдельно.
+//! TCP и SOCKS передают поток байтов без разделения на пакеты.
 
 use std::io;
 use std::sync::Arc;

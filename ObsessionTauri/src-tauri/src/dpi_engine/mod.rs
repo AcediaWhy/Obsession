@@ -74,14 +74,9 @@ impl EngineKind {
     }
 }
 
-/// Решение lifecycle: какой движок реально запускать с учётом выбора, наличия
-/// бинарника и последнего рабочего Legacy-набора. Чистая функция (3.4).
-///
-/// Инварианты спецификации:
-/// - Legacy выбран → всегда Legacy;
-/// - Zapret2 выбран, бинарник есть → Zapret2 (Beta), сохранив Legacy как fallback;
-/// - Zapret2 выбран, бинарника нет → тихий откат к Legacy;
-/// - crash Zapret2 → возврат сохранённого Legacy-набора; если его нет — Stopped.
+/// Выбор движка с учётом доступности Zapret2 и сохранённого Legacy-набора.
+/// При отсутствии Zapret2 используется Legacy; после сбоя без сохранённого
+/// Legacy-набора запуск прекращается.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EngineDecision {
     /// Запустить Legacy (winws). `fell_back` = пришли сюда как fallback с Zapret2.

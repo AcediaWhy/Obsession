@@ -141,18 +141,10 @@ impl ProbeSeries {
         self.evaluate_with_requirement(eyes, CoreRequirement::Any)
     }
 
-    /// A failed TLS baseline may still be a trustworthy recovery starting
-    /// point.  In particular, DPI blocking often leaves DNS healthy and lets
-    /// at least one core target establish TCP before the peer resets the TLS
-    /// handshake.  Treating that shape as an "unreliable environment" makes
-    /// Adaptive refuse to search precisely when it is needed.
-    ///
-    /// Keep this deliberately stricter than the normal candidate evaluator.
-    /// Either every core host must repeatedly fail after DNS while one proves
-    /// an established TCP path, or one core host must remain stably healthy
-    /// while another stably fails. A DNS outage, a single transient failure,
-    /// or pure connect timeouts without independent control-path evidence
-    /// therefore remain fail-closed.
+    /// Разрешает поиск стратегии после устойчивых TLS-сбоев при работающем DNS.
+    /// Требуется подтверждённый TCP-путь хотя бы к одной цели либо стабильное
+    /// различие между доступной и недоступной целями. Разовый сбой и потеря DNS
+    /// не считаются основанием для восстановления.
     pub fn supports_tls_recovery(&self) -> bool {
         self.supports_tls_recovery_with_control(false)
     }

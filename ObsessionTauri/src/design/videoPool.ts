@@ -1,10 +1,8 @@
 import { restoreMediaSource, releaseMediaSource, type MediaSourceTarget } from "./mediaSource";
 
 /**
- * Пул сохраняет один элемент `<video>` для каждого источника между сменами тем.
- * В замере WebView2 создание нового элемента при каждом показе Catnap/Midnight
- * добавляло около 15 МБ памяти и 0,03 ядра CPU за переключение. Повторное
- * использование элемента ограничивает число активных медиаконвейеров.
+ * Пул повторно использует один элемент `<video>` для каждого источника.
+ * Это ограничивает число активных медиаконвейеров при смене тем.
  */
 export interface PooledVideo extends MediaSourceTarget {
   poster: string;
@@ -43,8 +41,7 @@ export function pooledVideo(
   video.preload = "auto";
   video.className = "absolute inset-0 h-full w-full object-cover";
   if (poster) video.poster = poster;
-  // Через restoreMediaSource, а не video.src: там же живёт правило «не звать
-  // load() повторно на том же источнике», и второй путь установки src не нужен.
+  // restoreMediaSource не вызывает load() повторно для того же источника.
   restoreMediaSource(video, src);
   pool.set(src, video);
   return video;

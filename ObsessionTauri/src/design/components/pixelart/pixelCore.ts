@@ -238,8 +238,7 @@ export function bandGradient(
     context.fillStyle = stops[index].color;
     context.fillRect(x, top, width, bottom - top);
   }
-  // Швы: полоса перехода живёт по обе стороны границы, поэтому стык не читается
-  // линией. Ratio ползёт от 0 до 1 — это и есть «полоса дизеринга ≥3px».
+  // Дизеринг перекрывает обе стороны границы, скрывая линию между полосами.
   for (let index = 1; index < stops.length; index += 1) {
     const edge = edges[index];
     const span = Math.min(seam, Math.max(3, Math.round(height / (stops.length * 2))));

@@ -1,15 +1,9 @@
-//! «Мозг» (L3) — верх контура надёжности обхода. Машина состояний со строгой
-//! лестницей L1→L2→L3 + ортогональный предохранитель. Повторяет паттерн Глаз:
-//! чистый редуктор на логическом времени (`model`) + тонкий интерпретатор
-//! сайд-эффектов (`runtime`, только под windows).
-//!
-//! - `model` — `Brain::step(event) -> Vec<Action>`, без tokio/WinDivert/AppHandle.
-//! - `window` — скользящее окно per-flow вердиктов Глаз (агрегаты для model).
-//! - `runtime` — tokio-задача: исполняет `Action`, тикает время, эмитит статус.
+//! Контур надёжности обхода: состояние, окно наблюдений и выполнение действий.
+//! `model` принимает решения на логическом времени, `window` собирает вердикты,
+//! а `runtime` выполняет действия и передаёт статус интерфейсу.
 
-// Phase 1 deliberately quarantines the old global executor. Its pure model and
-// compatibility runtime remain available for later migration, but no Legacy
-// SessionStart reaches them while scoped Manager work is observe-only.
+// Старый глобальный исполнитель отключён; модель и runtime пока сохранены
+// для совместимости. Legacy SessionStart к ним не поступает.
 #![allow(dead_code)]
 
 pub mod model;
