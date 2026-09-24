@@ -29,14 +29,15 @@
 ## Требования
 
 - Windows 10/11 x64.
-- Node.js 18+ и pnpm 11+.
+- Node.js и npm, совместимые с Vite 6; зависимости закреплены в `package-lock.json`.
 - Rust stable с MSVC toolchain.
 - Системные зависимости из [Tauri prerequisites](https://tauri.app/start/prerequisites/).
 
-Установите workspace-зависимости из корня репозитория:
+Установите зависимости приложения и установщика из корня репозитория:
 
 ```powershell
-pnpm install --frozen-lockfile
+npm --prefix ObsessionTauri ci
+npm --prefix ObsessionTauri/installer ci
 ```
 
 ## Запуск
@@ -44,25 +45,38 @@ pnpm install --frozen-lockfile
 Полный Tauri dev build:
 
 ```powershell
-pnpm --dir ObsessionTauri tauri dev
+npm --prefix ObsessionTauri run tauri dev
 ```
 
 Только Vite поднимает frontend, но основной `App` ожидает Tauri API. Для изолированной работы над сценами используйте специальные harness-страницы, например:
 
 ```text
 http://127.0.0.1:1420/obsession-choir-dev.html
+http://127.0.0.1:1420/overview-dev.html
 ```
 
 > [!IMPORTANT]
 > Dev-приложение не повышает себя до администратора. DPI, `hosts` и firewall-команды доступны только через совместимую установленную службу ObsessionRuntime. Отсутствующая capability должна оставаться fail-closed.
+
+Перед запуском dev-сборки выйдите из установленного приложения через трей: защита от второго экземпляра может показать уже открытое окно вместо нового. Браузерное превью обзора использует демонстрационные статусы и не подтверждает работу обхода.
+
+Для бумажного установщика есть отдельное безопасное превью:
+
+```powershell
+npm --prefix ObsessionTauri/installer run dev
+```
+
+Откройте `http://127.0.0.1:1430/?preview=welcome` или `http://127.0.0.1:1430/?preview=uninstall`. Эти режимы показывают интерфейс без установки и удаления файлов. Papyrus берётся из локальных шрифтов; без него используется резервный шрифт. Файл Papyrus не распространяется в репозитории.
 
 ## Проверки
 
 Frontend:
 
 ```powershell
-pnpm --dir ObsessionTauri test
-pnpm --dir ObsessionTauri build
+npm --prefix ObsessionTauri test
+npm --prefix ObsessionTauri run build
+npm --prefix ObsessionTauri/installer test
+npm --prefix ObsessionTauri/installer run build
 ```
 
 Rust formatting и основные crates:
@@ -75,21 +89,33 @@ cargo test --manifest-path ObsessionTauri/runtime-client/Cargo.toml
 cargo test --manifest-path ObsessionTauri/runtime-service/Cargo.toml
 cargo test --manifest-path ObsessionTauri/runtime-reliability/Cargo.toml
 cargo test --manifest-path ObsessionTauri/installer/src-tauri/Cargo.toml
+cargo test --manifest-path tgproxy-rs/Cargo.toml
 ```
+
+Конфиги и упаковка:
+
+```powershell
+npm --prefix ObsessionTauri run audit:dpi
+npm --prefix ObsessionTauri run test:dpi-configs
+node --test ObsessionTauri/scripts/discord-speed-variants.test.mjs ObsessionTauri/scripts/payload-compression.test.mjs
+npm --prefix ObsessionTauri run verify:dpi-parsers
+```
+
+Проверка парсеров запускает поставляемые движки в режиме dry-run. Это проверка синтаксиса, а не доступности сайтов. Сетевые тесты с `--ignored` запускаются отдельно и не нужны для обычного прогона.
 
 ## Сборка
 
 Production frontend и Tauri binary:
 
 ```powershell
-pnpm --dir ObsessionTauri build
-pnpm --dir ObsessionTauri tauri build
+npm --prefix ObsessionTauri run build
+npm --prefix ObsessionTauri run tauri build
 ```
 
 Фирменный setup:
 
 ```powershell
-pnpm --dir ObsessionTauri build:setup
+npm --prefix ObsessionTauri run build:setup
 ```
 
 Результат появляется в `ObsessionTauri/dist-release/`:
@@ -99,7 +125,9 @@ Obsession-Setup_<version>_x64.exe
 Obsession-Setup_<version>_x64.exe.sha256
 ```
 
-Setup собирает приложение, службу и проверенные runtime-ресурсы в единый payload. Большая часть размера установщика приходится именно на этот payload, а не на React-интерфейс.
+Setup собирает приложение, службу и проверенные runtime-ресурсы в единый сжатый payload. Размер зависит от ресурсов конкретной сборки. Установленный `uninstall.exe --uninstall` открывает отдельный интерфейс удаления с выбором сохраняемых данных.
+
+Подробнее: [сжатие payload](installer/PAYLOAD_COMPRESSION.md), [бумажный интерфейс](installer/PAPER_PREVIEW.md), [границы удаления и проверка в VM](installer/UNINSTALL.md).
 
 ## Архитектурные границы
 
@@ -148,5 +176,9 @@ winws, WinDivert, Obsession Telegram Proxy, конфигурации и спис
 - [Protected runtime architecture](docs/SECURE_RUNTIME_ARCHITECTURE.md)
 - [Onboarding V2 specification](docs/ONBOARDING_OVERHAUL_SPEC.md)
 - [Obsession theme specification](docs/OBSESSION_THEME_SPEC.md)
+- [Legacy: один процесс для выбранных категорий](docs/LEGACY_SINGLE_PROCESS_2026-09-22.md)
+- [Восстановление TCP timestamps](docs/LEGACY_TCP_TIMESTAMPS_2026-09-22.md)
+- [Диагностика и частичные результаты](docs/LEGACY_TEST_REPORTS_2026-09-22.md)
+- [Экспериментальные Discord-конфиги](docs/DISCORD_SPEED_CANDIDATES_2026-09-22.md)
 
 Автор интерфейса и проекта: **AcediaWhy**.
