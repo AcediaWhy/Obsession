@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:labs": "vite --open /devtools/labs/",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",

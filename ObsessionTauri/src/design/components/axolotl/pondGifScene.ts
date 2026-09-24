@@ -10,7 +10,7 @@ export function loadSourceArt(): Promise<PondScene> {
       const image = new Image();
       image.onload = () => resolve(image);
       image.onerror = () => reject(new Error(`Не удалось загрузить кадр пруда ${index}`));
-      image.src = `${import.meta.env.BASE_URL}lab-assets/pond/frame-${String(index).padStart(2,"0")}.png`;
+      image.src = `${import.meta.env.BASE_URL}devtools/labs/assets/pond/frame-${String(index).padStart(2,"0")}.png`;
     }))).then(frames => ({frames})).catch(error => { pending=undefined; throw error; });
   }
   return pending;

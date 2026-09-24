@@ -30,7 +30,7 @@ function OphanimObserverLab() {
 
   useEffect(() => {
     const cat = new Image();
-    cat.src = `${import.meta.env.BASE_URL}lab-assets/ophanim-observer/cat.png`;
+    cat.src = `${import.meta.env.BASE_URL}devtools/labs/assets/ophanim-observer/cat.png`;
     const rigs: ReturnType<typeof createOphanimObserver>[] = [];
     let disposed = false;
     let raf = 0;

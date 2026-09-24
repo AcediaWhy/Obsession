@@ -32,8 +32,6 @@ export default defineConfig({
     rollupOptions: {
       input: {
         app: fileURLToPath(new URL("./index.html", import.meta.url)),
-        yaniDev: fileURLToPath(new URL("./yani-dev.html", import.meta.url)),
-        earLab: fileURLToPath(new URL("./ear-lab.html", import.meta.url)),
       },
     },
   },

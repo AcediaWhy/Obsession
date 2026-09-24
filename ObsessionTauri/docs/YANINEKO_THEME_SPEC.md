@@ -122,7 +122,7 @@ The secret phrases remain normalized in `secretStore.ts`: `yanineko`,
 
 ## Development harness and verification
 
-`yani-dev.html` is a second Vite HTML entry. It renders the actual field, core
+`devtools/labs/yani-dev.html` is a development-only Vite page, excluded from the production build. It renders the actual field, core
 and nav without Tauri and exposes:
 
 - all five states, three quality tiers and 240/220/104 px cores;

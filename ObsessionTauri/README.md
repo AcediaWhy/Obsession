@@ -51,9 +51,13 @@ npm --prefix ObsessionTauri run tauri dev
 Только Vite поднимает frontend, но основной `App` ожидает Tauri API. Для изолированной работы над сценами используйте специальные harness-страницы, например:
 
 ```text
-http://127.0.0.1:1420/obsession-choir-dev.html
-http://127.0.0.1:1420/overview-dev.html
+http://127.0.0.1:1420/devtools/labs/obsession-choir-dev.html
+http://127.0.0.1:1420/devtools/labs/overview-dev.html
 ```
+
+Все лабораторные страницы собраны в [devtools/labs](devtools/labs/README.md).
+Команда `npm run dev:labs` открывает их каталог. В релизную сборку входит только
+`index.html`; общие компоненты тем остаются в исходниках приложения.
 
 > [!IMPORTANT]
 > Dev-приложение не повышает себя до администратора. DPI, `hosts` и firewall-команды доступны только через совместимую установленную службу ObsessionRuntime. Отсутствующая capability должна оставаться fail-closed.
