@@ -27,7 +27,7 @@ function phaseForSignals({
   return "idle";
 }
 
-// Живое пиксельное ядро «Catnap»: пушистый сонный рыжик в закатном золоте вагона.
+// Пиксельное превью темы Catnap.
 export function CatnapCore({
   active,
   busy = false,

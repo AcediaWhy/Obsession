@@ -27,7 +27,7 @@ function phaseForSignals({
   return "idle";
 }
 
-// Живое пиксельное ядро Fallen Down: каноничная Темми и алая SOUL.
+// Пиксельное превью темы Fallen Down.
 export function FallenCore({
   active,
   busy = false,

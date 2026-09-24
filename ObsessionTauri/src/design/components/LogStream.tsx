@@ -8,14 +8,13 @@ import { dur, ease, levelColor } from "../tokens";
 const MAX_DOM_LINES = 120;
 const BOTTOM_THRESHOLD_PX = 24;
 
-// Моно-лог реального времени с frame-batched ingestion и бережным автоскроллом.
+// Журнал с пакетным обновлением строк и автопрокруткой у нижней границы.
 export function LogStream({ height }: { height?: number }) {
   const linesRaw = useLogStore((state) => state.lines);
   const clear = useLogStore((state) => state.clear);
   const motionOff = useMotionOff();
-  // В трее строки заморожены: живая сессия обхода продолжает писать лог,
-  // но невидимый стрим не перерисовывается и не переанимируется; на показе
-  // догоняет актуальные строки одним рендером.
+  // В скрытом окне сохраняем последнюю видимую версию журнала.
+  // После показа берём актуальные строки из хранилища.
   const hidden = useRenderHidden();
   const frozenLines = useRef(linesRaw);
   if (!hidden) frozenLines.current = linesRaw;

@@ -4,14 +4,8 @@ import { useEffect, useState } from "react";
 import type { ObsessionVisualPhase } from "../../obsessionVisualState";
 import { dur, ease, spring, type LogLevel } from "../../tokens";
 
-// Лента журнала по паттерну Magic UI «Animated List»: строки приходят по одной,
-// въезжают снизу, стек переукладывается layout-анимацией, самая старая уходит.
-// Раньше журнал лабы был шестью статичными строками и выглядел мёртвым.
-// Оформление — прежнее стеклянное (sunken-lab-log), поменялось только поведение.
-//
-// Про цвет: LogLevel мы переиспользуем из design/tokens (общий словарь уровней),
-// а `levelColor` оттуда — нет: цвет строки задаётся классами темы, чтобы журнал
-// оставался в палитре лабы.
+// Строки журнала появляются по одной; при превышении лимита удаляется старая.
+// Для уровней используем LogLevel, а цвет задаём классами текущей темы.
 
 type LogRow = {
   id: number;
@@ -21,8 +15,7 @@ type LogRow = {
   level: LogLevel;
 };
 
-// Затравка отдаётся и на сервере: тест лабы рендерит разметку в node-окружении,
-// и пустой журнал в SSR означал бы «в макете нет журнала».
+// Начальные строки нужны при серверном рендере страницы лаборатории.
 const SEED: readonly Omit<LogRow, "id">[] = [
   { time: "09:17:04", source: "runtime", message: "защищённая служба готова", level: "success" },
   { time: "09:17:05", source: "route", message: "профиль general-alt2 выбран", level: "info" },
@@ -118,4 +111,3 @@ export function PixelLogFeed({
     </div>
   );
 }
-

@@ -4,14 +4,10 @@ import { AnimatePresence, motion } from "framer-motion";
 import { onRenderActiveChange, renderActive } from "../render";
 import { dur, ease, spring } from "../tokens";
 
-// Живой таймер аптайма — тикает, пока обход/прокси активны. В трее/свёрнутом окне
-// интервал паузится (как и все анимации): elapsed считается от абсолютного времени
-// старта, поэтому при возврате значение мгновенно пересчитывается без потери точности.
-//
-// `startedAt` (мс, epoch) — авторитетное время старта из backend. Если передан,
-// таймер переживает смену вкладок и resume из трея (каждый экран монтирует свой
-// <Uptime>, но все считают от одного backend-времени). Если не передан (напр.
-// прокси, у которого нет backend-timestamp) — fallback на момент mount при active.
+// Показывает время работы активного обхода или прокси. В скрытом окне интервал
+// останавливается; при возвращении значение пересчитывается по времени старта.
+// startedAt приходит из backend в миллисекундах Unix. Если его нет, используем
+// время монтирования компонента при active=true.
 export function Uptime({
   active,
   startedAt,
@@ -61,10 +57,8 @@ export function Uptime({
   const mm = String(Math.floor(elapsed / 60)).padStart(2, "0");
   const ss = String(elapsed % 60).padStart(2, "0");
 
-  // Появление/уход — пружиной, не телепортом. layout — чтобы соседи (StatusBadge
-  // в шапках Dpi/Telegram, у них тоже layout) раздвигались тем же движением.
-  // initial={false} — при открытии экрана с уже активной защитой пилюля не
-  // «выпрыгивает», а просто есть.
+  // layout синхронизирует сдвиг соседних элементов. initial={false} отключает
+  // входную анимацию при открытии экрана с уже активной защитой.
   return (
     <AnimatePresence initial={false}>
       {active && (

@@ -148,9 +148,8 @@ export function drawDeck(context: CanvasRenderingContext2D, geometry: RoofGeomet
 }
 
 /**
- * Парапет диагональю. Его верх — не кант в три пикселя, а настоящая ПОЛКА: широкая
- * горизонтальная грань, залитая лунным светом. На ней кот и сидит; раньше сидеть было
- * негде, и он читался приклеенным к линии.
+ * Парапет с широкой верхней гранью. Её положение задаёт опору для кота,
+ * а затенение отделяет верхнюю грань от внутренней стороны парапета.
  */
 export function drawParapet(context: CanvasRenderingContext2D, geometry: RoofGeometry, seed: number) {
   const { width, unit, shedLeft } = geometry;
@@ -186,7 +185,7 @@ export function drawParapet(context: CanvasRenderingContext2D, geometry: RoofGeo
     context.fillRect(x, y + ledge + 2, 1, face - 2);
     x += 20 + Math.round(hash(seed, x, 7) * 18);
   }
-  // Выкрошенные места на кромке: парапет не идеальная линейка.
+  // Небольшие неровности на кромке парапета.
   for (let chip = 0; chip < Math.max(4, Math.round(width / 80)); chip += 1) {
     const cx = Math.round(hash(seed, chip, 11) * shedLeft);
     const cy = capAt(geometry, cx);

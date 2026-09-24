@@ -27,7 +27,7 @@ function phaseForSignals({
   return "idle";
 }
 
-// Живое пиксельное ядро «Midnight»: уличный фонарь и сонный черный котик в ночной мороси.
+// Пиксельное превью темы Midnight.
 export function MidnightCore({
   active,
   busy = false,

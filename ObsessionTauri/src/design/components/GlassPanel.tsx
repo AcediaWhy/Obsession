@@ -10,21 +10,14 @@ type Props = Omit<HTMLMotionProps<"div">, "children"> & {
   spotlight?: boolean;
   scroll?: boolean; // прокрутка контента ВНУТРИ панели (см. ниже)
   contentClassName?: string; // классы для внутренней скролл-обёртки при scroll
-  depth?: number; // сила параллакса (средний план по умолчанию)
+  depth?: number; // сила параллакса; 0 по умолчанию отключает смещение
   children?: ReactNode;
 };
 
-// Базовая стеклянная панель: specular-кромка + прожектор за курсором +
-// spotlight-кант. Параллакс по умолчанию ВЫКЛЮЧЕН (depth 0): при сдвиге панели
-// её скруглённые верх/бок уезжали под рамку окна и «отгрызались» краем. Глубину
-// теперь даёт только фон (HeroField с оверсканом); панели прибиты к макету.
-//
-// scroll=true: прокрутка уходит во ВНУТРЕННЮЮ обёртку, а сама оболочка остаётся
-// нескроллящейся. Это критично для spotlight: псевдоэлементы `.spotlight::after`
-// и `.spotlight-ring` спозиционированы `absolute; inset:0` относительно оболочки.
-// Если бы скроллилась сама оболочка (overflow на .glass), они бы уезжали вместе с
-// контентом, а `--mx/--my` (координаты видимой рамки) — нет: кольцо «отрывалось»
-// и застывало рамкой у края, переставая следовать за курсором.
+// Стеклянная панель с подсветкой под курсором. Параллакс по умолчанию отключён:
+// смещение может обрезать скруглённые края панели у границ окна.
+// При scroll=true прокручивается внутренняя обёртка. Подсветка остаётся
+// на неподвижной оболочке, в той же системе координат, что и --mx/--my.
 export function GlassPanel({
   padded = true,
   glow = false,
@@ -106,25 +99,20 @@ export function GlassPanel({
     <motion.div
       ref={panelRef}
       data-choir-lens
-      // Вход/выход — ЧИСТЫЙ fade, без scale: масштаб элемента с backdrop-filter
-      // заставляет композитор пересэмплировать блюр каждый кадр (регион выборки
-      // меняет геометрию) и даёт «плывущее» дрожание заблюренного фона. Движение
-      // входа панель получает бесплатно от обёртки экрана (слайд в App) и
-      // StaggerItem (y-подъём) — оба transform-only снаружи стекла.
+      // Анимируем прозрачность без scale, чтобы избежать дрожания размытого
+      // фона при масштабировании. Движение при входе задаёт обёртка экрана.
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
-      // Панель гаснет САМА (own-opacity не ломает свой backdrop-filter), когда
-      // экран уходит: AnimatePresence в App прокидывает exit вглубь дерева.
-      // Обёртки экрана/StaggerItem при этом остаются transform-only.
+      // Прозрачность меняется на самой панели: opacity на предке ограничивает
+      // область backdrop-filter. Состояние exit приходит от AnimatePresence в App.
       exit={{ opacity: 0, transition: { duration: dur.fast, ease: ease.exit } }}
       transition={spring.soft}
       onPointerEnter={handlePointerEnter}
       onPointerLeave={handlePointerLeave}
       style={{ x, y, ...style }}
       className={[
-        // transition-shadow: тумблер glow (командный центр Обзора при включении
-        // защиты) расцветает за base-такт, а не щёлкает. Framer box-shadow здесь не
-        // анимирует — конфликта нет.
+        // CSS задаёт плавное изменение тени при переключении glow.
+        // Framer Motion не анимирует box-shadow этого элемента.
         "theme-morph glass rounded-xl2 shadow-glass transition-shadow duration-[var(--motion-base)]",
         spotlight ? "spotlight" : "",
         glow ? "shadow-glow" : "",

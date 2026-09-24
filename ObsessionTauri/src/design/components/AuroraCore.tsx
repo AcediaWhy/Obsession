@@ -27,8 +27,7 @@ function phaseForSignals({
   return "idle";
 }
 
-// Живое пиксельное ядро «Aurora»: полярный белоснежный кот под широким
-// небесным сводом северного сияния.
+// Пиксельное превью темы Aurora с котом и северным сиянием.
 export function AuroraCore({
   active,
   busy = false,

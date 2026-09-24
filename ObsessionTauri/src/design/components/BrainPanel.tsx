@@ -6,9 +6,7 @@ import { useSettingsStore } from "../../store/settingsStore";
 import { SectionLabel, Switch } from "./atoms";
 import { Collapse } from "./Collapse";
 
-// Debug-читалка контура надёжности: тумблер авто-восстановления (Мозг L3) +
-// живой агрегированный статус машины состояний (`brain://status`). Намеренно
-// компактна — глубокий UI появится после обкатки протокола охлаждения.
+// Панель авто-восстановления и текущего состояния brain://status.
 
 const PHASE_LABEL: Record<BrainStatus["phase"], string> = {
   idle: "Ожидание",

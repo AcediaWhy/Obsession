@@ -3,17 +3,10 @@ import type { ReactNode } from "react";
 
 import { cascade, dur, ease, spring } from "../tokens";
 
-// Каскадное появление: контейнер оркестрирует детей с задержкой (stagger),
-// каждый ребёнок всплывает снизу. Даёт «оживший» вход экрана вместо разом.
-//
-// ВАЖНО (Chromium/WebView2): предок с активным filter или opacity<1 образует
-// backdrop root — backdrop-filter потомков перестаёт видеть фон страницы, и
-// стекло теряет матовость до конца анимации (а остаточный inline `filter:
-// blur(0px)` ломал её насовсем). Поэтому:
-//   • blur-вход убран вовсе (раньше был filter: blur(4px)→0);
-//   • для детей со стеклом есть variant glass: анимируется только transform,
-//     фейд панель делает сама — opacity на самом элементе с backdrop-filter
-//     матовость не ломает (группа собирается после сэмплинга фона).
+// Контейнер запускает появление дочерних элементов с заданным интервалом.
+// В Chromium/WebView2 filter или opacity < 1 на предке ограничивают область
+// backdrop-filter. Поэтому обёртка стеклянной панели не меняет прозрачность
+// и не применяет filter, включая blur(0px).
 const container: Variants = {
   hidden: {},
   show: {
@@ -26,16 +19,14 @@ const item: Variants = {
   show: { opacity: 1, y: 0, transition: spring.rise },
 };
 
-// Стеклянная поверхность сама делает fade, а направленное движение уже даёт
-// экранная обёртка. Второй y-сдвиг здесь складывался с ней в ~30px и создавал
-// ощущение, что панели «догоняют» выбранный раздел.
+// Прозрачность меняет сама GlassPanel, движение задаёт обёртка экрана.
+// Пустые варианты исключают дополнительный сдвиг панели.
 const itemGlass: Variants = {
   hidden: {},
   show: {},
 };
 
-// Заголовок экрана тоже получает движение от screenVariants. Оставляем только
-// fade, чтобы иерархия проявлялась мягко без повторного вертикального пробега.
+// Движение заголовка задаёт screenVariants; здесь меняется только прозрачность.
 const itemStandalone: Variants = {
   hidden: { opacity: 0 },
   show: { opacity: 1, transition: { duration: dur.base, ease: ease.enter } },
@@ -63,7 +54,7 @@ export function StaggerItem({
 }: {
   children: ReactNode;
   className?: string;
-  /** Внутри стекло (GlassPanel): не анимируем opacity предка — только сдвиг. */
+  /** Для GlassPanel: обёртка не меняет opacity и не добавляет сдвиг при входе. */
   glass?: boolean;
   /** Вне контейнера Stagger: элемент запускает свой вход сам (шапки экранов). */
   standalone?: boolean;
@@ -72,8 +63,7 @@ export function StaggerItem({
     <motion.div
       variants={standalone ? itemStandalone : glass ? itemGlass : item}
       {...(standalone ? { initial: "hidden", animate: "show" } : {})}
-      // На выходе экрана (AnimatePresence прокидывает exit вглубь) обычные
-      // элементы гаснут сами; стеклянные — нет: их фейдит GlassPanel.exit.
+      // Прозрачностью стеклянной панели при выходе управляет GlassPanel.exit.
       exit={glass ? undefined : { opacity: 0, transition: { duration: dur.fast, ease: ease.exit } }}
       className={className}
     >

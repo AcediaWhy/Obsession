@@ -149,10 +149,8 @@ export function NavRail({
               <span className="yani-cabbage-number" aria-hidden="true">
                 {String(index + 1).padStart(2, "0")}
               </span>
-              {/* Иконка: у активного пункта — акцент темы (цвет приезжает вместе
-                  с пилюлей), у прочих — гаснет до soft и оживает на hover.
-                  Связка иконка+текст на hover сдвигается на 2px вправо — жест
-                  «пункт подаётся навстречу»; transform дёшев и не трогает пилюлю. */}
+              {/* Активный пункт использует цвет темы; при наведении сдвигаются
+                  только иконка и текст, без фонового индикатора. */}
               <span
                 className={[
                   "relative z-10 flex items-center gap-3 transition-[color,transform] duration-[var(--motion-fast)] group-hover:translate-x-0.5",
