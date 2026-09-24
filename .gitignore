@@ -40,8 +40,6 @@ skills-lock.json
 # Локальная обвязка AI-агентов (навыки, планы, кэш) — на любом уровне дерева.
 .claude/
 .superpowers/
-# Случайный локальный вложение, не относится к приложению.
-/.vibe-contact.jpg
 # Сторонние/черновые PowerShell-скрипты, брошенные в корень. Слэш в начале
 # обязателен: правило должно ловить ТОЛЬКО корень и не задеть рабочие скрипты
 # приложения (src-tauri/nsis/installer-safety.ps1 — часть инсталлятора).
@@ -73,7 +71,6 @@ zapret2-v1.0.4/
 
 # Separate Git worktree and local measurement scratch files.
 /ObsessionTauri-batch1-clean2/
-/.zcode/tmp/
 __pycache__/
 *.pyc
 *.blend1
@@ -88,4 +85,3 @@ tg-ws-proxy-1.10.0/
 
 # Артефакты локального сканера Mimosa.
 .mimosa/
-ObsessionTauri/.mimosa/
