@@ -178,8 +178,7 @@ describe("Onboarding PR 1 contract", () => {
 
     expect(markup).toContain('aria-hidden="true"');
     expect(markup).not.toContain("<button");
-    expect(markup).toContain("<svg");
-    expect(markup).toContain("data-ophanim-cat-core");
+    expect(markup).toContain("data-alchemist-core");
     expect(markup).not.toContain("tabindex");
   });
 

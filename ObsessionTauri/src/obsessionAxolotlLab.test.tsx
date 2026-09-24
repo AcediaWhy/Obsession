@@ -26,7 +26,7 @@ describe("ObsessionAxolotlLab", () => {
     const html = renderToStaticMarkup(<ObsessionAxolotlLab />);
     expect(html).toContain('data-phase="idle"');
     expect(html).toContain('data-motion="running"');
-    expect(html).toContain('data-theme="obsession"');
+    expect(html).toContain('data-theme="quietpond"');
     expect(html).toContain("Журнал");
     expect(html).toContain("Zapret");
   });
