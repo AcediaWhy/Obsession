@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import {
   api,
+  type GeminiRoutePreference,
   type HostsHealthSnapshot,
   type HostsStatus,
   type VersionedSection,
@@ -26,6 +27,7 @@ interface HostsState {
   refresh: () => Promise<void>;
   checkRoutes: (maxAgeSeconds?: number) => Promise<void>;
   install: () => Promise<void>;
+  refreshGemini: (preference?: GeminiRoutePreference) => Promise<void>;
   uninstall: () => Promise<void>;
   restore: () => Promise<void>;
   clearError: () => void;
@@ -140,6 +142,18 @@ export const useHostsStore = create<HostsState>((set, get) => ({
       await get().refresh();
     } catch (e) {
       set({ busy: false, error: String(e), health: null });
+    }
+  },
+
+  refreshGemini: async (preference = "auto") => {
+    if (get().busy) return;
+    set({ busy: true, error: "" });
+    try {
+      const health = await api.hostsRefreshGemini(preference);
+      set({ health });
+      await get().refresh();
+    } catch (e) {
+      set({ busy: false, error: String(e) });
     }
   },
 

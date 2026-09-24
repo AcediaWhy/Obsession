@@ -160,6 +160,9 @@ pub trait RuntimeBackend {
         Err(BackendError::ServiceUnavailable)
     }
     fn hosts_uninstall(&mut self) -> Result<OperationAccepted, BackendError>;
+    fn hosts_refresh_gemini(&mut self, _preference: obsession_runtime_protocol::GeminiRoutePreference) -> Result<OperationAccepted, BackendError> {
+        Err(BackendError::ServiceUnavailable)
+    }
     fn hosts_restore(
         &mut self,
         request: HostsMutationRequest,
@@ -327,6 +330,7 @@ impl<B: RuntimeBackend> ServiceCore<B> {
                 self.backend.hosts_check(request).map(Response::HostsHealth)
             }
             Request::HostsUninstall => self.backend.hosts_uninstall().map(Response::Accepted),
+            Request::HostsRefreshGemini(preference) => self.backend.hosts_refresh_gemini(preference).map(Response::Accepted),
             Request::HostsRestoreLastKnownGood(request) => {
                 self.backend.hosts_restore(request).map(Response::Accepted)
             }

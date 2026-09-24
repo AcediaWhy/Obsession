@@ -141,6 +141,16 @@ const fixture = {
   },
 } satisfies BootstrapSnapshot;
 
+describe("Gemini route command contract", () => {
+  it("forwards the explicit preference and defaults to automatic routing", async () => {
+    vi.mocked(invoke).mockReset();
+    await api.hostsRefreshGemini("astracat");
+    expect(invoke).toHaveBeenLastCalledWith("hosts_refresh_gemini", { preference: "astracat" });
+    await api.hostsRefreshGemini();
+    expect(invoke).toHaveBeenLastCalledWith("hosts_refresh_gemini", { preference: "auto" });
+  });
+});
+
 describe("BootstrapSnapshot contract", () => {
   beforeEach(() => {
     vi.mocked(invoke).mockReset();

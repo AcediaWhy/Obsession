@@ -79,7 +79,8 @@ export type AiRouteHealth =
   | "inconclusive"
   | "unchecked";
 export type AiRouteKind = "preferred" | "fallback" | "direct";
-export type HostsRouteProvider = "malw" | "geohide" | "comss";
+export type HostsRouteProvider = "malw" | "geohide" | "astracat" | "comss" | "xbox";
+export type GeminiRoutePreference = "auto" | "geohide" | "astracat";
 export type AiRouteFailureReason =
   | "timeout"
   | "tls"
@@ -592,6 +593,8 @@ export const api = {
     invoke<HostsStatus>("hosts_status", { provider }),
   hostsInstall: (provider: string) =>
     invoke<HostsHealthSnapshot>("hosts_install", { provider }),
+  hostsRefreshGemini: (preference: GeminiRoutePreference = "auto") =>
+    invoke<HostsHealthSnapshot>("hosts_refresh_gemini", { preference }),
   hostsCheck: (maxAgeSeconds: number) =>
     invoke<HostsHealthSnapshot>("hosts_check", { maxAgeSeconds }),
   hostsUninstall: () => invoke<void>("hosts_uninstall"),

@@ -1464,6 +1464,7 @@ pub async fn onboarding_apply(
             checkpoint(&mut state, TransactionStatus::Applying, "dpi_start_started")
                 .map_err(|error| format!("persist DPI intent: {:?}", error.code))?;
             let pairs = onboarding_dpi_start_pairs(&app, &operational_settings)?;
+            crate::util::emit_log(&app, "info", "dpi", "Запрошен запуск DPI: источник=применение начальной настройки");
             crate::commands::dpi_start_locked(&app, pairs).await?;
             checkpoint(&mut state, TransactionStatus::Applying, "dpi_started")
                 .map_err(|error| format!("persist dpi checkpoint: {:?}", error.code))?;

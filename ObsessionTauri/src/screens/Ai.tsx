@@ -44,7 +44,9 @@ const ROUTE_LABEL: Record<AiRouteKind, string> = {
 const PROVIDER_LABEL: Record<HostsRouteProvider, string> = {
   malw: "Malw",
   geohide: "GeoHide",
+  astracat: "Astracat",
   comss: "Comss",
+  xbox: "Xbox DNS",
 };
 
 const REASON_LABEL: Record<AiRouteFailureReason, string> = {
@@ -89,10 +91,12 @@ export function AiScreen() {
     setProvider: state.setProvider,
     checkRoutes: state.checkRoutes,
     install: state.install,
+    refreshGemini: state.refreshGemini,
     uninstall: state.uninstall,
     restore: state.restore,
   })));
   const installed = s.status !== "not_installed";
+  const geminiRoute = s.health?.services.find((entry) => entry.service === "gemini");
 
   return (
     <div className="flex h-full flex-col gap-4">
@@ -127,23 +131,23 @@ export function AiScreen() {
             <div className="mt-3 flex items-center justify-between gap-3 rounded-xl border border-accent/30 bg-accent/10 px-3 py-2.5">
               <div className="min-w-0">
                 <div className="font-mono text-3xs uppercase tracking-[0.14em] text-accent-cyan">
-                  Gemini · автоматический маршрут
+                  Gemini · текущий маршрут
                 </div>
                 <div className="mt-1 flex flex-wrap items-center gap-x-1.5 text-xs text-ink-soft">
-                  <strong className="text-ink">Comss</strong>
-                  <span>основной</span>
-                  <span className="text-ink-muted">→</span>
-                  <strong className="text-ink">GeoHide</strong>
-                  <span>резервный</span>
+                  <strong className="text-ink">
+                    {geminiRoute?.provider ? PROVIDER_LABEL[geminiRoute.provider] : "Не выбран"}
+                  </strong>
+                  <span>{geminiRoute ? ROUTE_LABEL[geminiRoute.route] : "пока не проверен"}</span>
                 </div>
               </div>
               <span className="shrink-0 rounded-full border border-ok/30 bg-ok/10 px-2 py-1 font-mono text-3xs font-semibold uppercase tracking-wide text-ok">
-                авто
+                {geminiRoute?.health === "working" ? "отвечает" : "проверить"}
               </span>
             </div>
             <p className="mt-2 text-xs leading-5 text-ink-muted">
               Выбор выше применяется к ChatGPT и Claude. Если источник не
-              отвечает, runtime проверяет второй автоматически.
+              отвечает, runtime проверяет второй автоматически. Gemini можно
+              переключить отдельно ниже.
             </p>
           </div>
 
@@ -232,6 +236,20 @@ export function AiScreen() {
           )}
 
           <div className="flex flex-col gap-2">
+            <span className="text-xs text-ink-soft">Маршрут Gemini</span>
+            <div className="grid grid-cols-3 gap-2">
+              {([['auto', 'Авто'], ['geohide', 'GeoHide'], ['astracat', 'Astracat']] as const).map(([preference, label]) => (
+                <Button key={preference} variant="ghost"
+                  disabled={s.busy || !installed || !protectedHostsAvailable}
+                  onClick={() => void s.refreshGemini(preference)}>
+                  {label}
+                </Button>
+              ))}
+            </div>
+            <p className="text-3xs text-ink-muted">
+              Авто: GeoHide → Astracat → Xbox DNS → Comss. Ручной выбор сохраняется
+              при обновлении конфигурации. Если источник не ответит, текущий маршрут останется.
+            </p>
             <Button
               disabled={s.busy || !protectedHostsAvailable}
               onClick={() => s.install()}

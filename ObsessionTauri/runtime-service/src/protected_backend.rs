@@ -616,6 +616,10 @@ impl<L: RuntimeProcessLauncher> RuntimeBackend for ProtectedDpiBackend<L> {
             .uninstall()
     }
 
+    fn hosts_refresh_gemini(&mut self, preference: obsession_runtime_protocol::GeminiRoutePreference) -> Result<OperationAccepted, BackendError> {
+        self.hosts.as_mut().ok_or(BackendError::ServiceUnavailable)?.refresh_gemini(preference)
+    }
+
     fn hosts_restore(
         &mut self,
         request: HostsMutationRequest,

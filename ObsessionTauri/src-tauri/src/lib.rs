@@ -10,6 +10,7 @@ mod commands;
 mod diag;
 mod dpi;
 mod dpi_engine;
+mod dpi_input;
 mod dpi_supervisor;
 mod eyes;
 mod hosts;
@@ -45,6 +46,7 @@ use util::LockExt;
 /// Идёт ли уже завершение приложения. Гейтит `begin_exit`, чтобы крестик/трей и
 /// последующий `RunEvent::ExitRequested` не запустили teardown дважды.
 static SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
+static DPI_INPUT: dpi_input::ToggleInput = dpi_input::ToggleInput::new();
 
 /// Пункты-галочки трея, отражающие состояние DPI/прокси. Храним, чтобы
 /// синхронизировать их из слушателей событий статуса.
@@ -113,8 +115,8 @@ pub fn run() {
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, _shortcut, event| {
-                    if event.state() == tauri_plugin_global_shortcut::ShortcutState::Pressed {
-                        toggle_dpi(app);
+                    if DPI_INPUT.key_event(event.state() == tauri_plugin_global_shortcut::ShortcutState::Pressed) {
+                        toggle_dpi(app, "hotkey");
                     }
                 })
                 .build(),
@@ -129,6 +131,11 @@ pub fn run() {
             let auto_recovery = settings.auto_recovery;
             let hotkey_toggle = settings.hotkey_toggle.clone();
             app.manage(AppState::new(paths, settings));
+            let initial_dpi = protected_runtime::dpi_status();
+            util::emit_log(&handle, "info", "dpi", &format!(
+                "Открытие Obsession {}: наблюдаемый DPI active={}; команда запуска не отправлялась.",
+                env!("CARGO_PKG_VERSION"), initial_dpi.active,
+            ));
 
             // Adaptive Zapret2 coordinator изолирован от Legacy Brain и всегда
             // готов принять passive observations/явную команду поиска. До
@@ -352,6 +359,7 @@ pub fn run() {
             commands::hosts_check,
             commands::hosts_uninstall,
             commands::hosts_restore,
+            commands::hosts_refresh_gemini,
             commands::runtime_get_snapshot,
             commands::bootstrap_get_snapshot,
             commands::get_settings,
@@ -558,7 +566,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
         .menu(&menu)
         .tooltip("Obsession")
         .on_menu_event(|app, event| match event.id.as_ref() {
-            "toggle_dpi" => toggle_dpi(app),
+            "toggle_dpi" => toggle_dpi(app, "tray"),
             "toggle_proxy" => toggle_proxy(app),
             "show" => show_main_window(app),
             "quit" => begin_exit(app),
@@ -600,9 +608,12 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
 
 /// Переключает DPI-обход из трея: конфиги берутся из сохранённых настроек
 /// (с откатом к дефолтному конфигу категории, если явный выбор пуст).
-fn toggle_dpi(app: &tauri::AppHandle) {
+fn toggle_dpi(app: &tauri::AppHandle, source: &'static str) {
+    let Some(permit) = DPI_INPUT.acquire() else { return; };
+    util::emit_log(app, "info", "dpi", &format!("Запрошено переключение DPI: источник={source}"));
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
+        let _permit = permit;
         let configs = {
             let st = app.state::<AppState>();
             let s = st.settings.lock_recover();

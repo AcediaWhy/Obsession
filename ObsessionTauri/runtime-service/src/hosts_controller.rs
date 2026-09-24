@@ -21,7 +21,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use obsession_runtime_protocol::{
     AiRouteFailureReason, AiRouteHealth, AiRouteKind, AiService, AiServiceRouteHealth,
-    HostsHealthSnapshot, HostsMutationRequest, HostsProvider, HostsRuntimeSnapshot,
+    GeminiRoutePreference, HostsHealthSnapshot, HostsMutationRequest, HostsProvider, HostsRuntimeSnapshot,
     OperationAccepted,
 };
 use serde::{Deserialize, Serialize};
@@ -93,6 +93,117 @@ trait HostsRouteProber: Send + Sync {
 struct HttpHostsDownloader {
     client: reqwest::blocking::Client,
     comss_client: reqwest::blocking::Client,
+}
+
+// This resolver is queried only for the fixed Gemini allowlist, never as the
+// system DNS. TLS verification remains enabled and redirects are forbidden.
+fn download_xbox_gemini() -> Result<Vec<u8>, BackendError> {
+    download_gemini_doh("https://xbox-dns.ru/dns-query", "Xbox DNS")
+}
+
+fn download_astracat_gemini() -> Result<Vec<u8>, BackendError> {
+    download_gemini_doh("https://dns.astracat.ru/dns-query", "Astracat DNS")
+}
+
+fn download_gemini_doh(url: &'static str, source: &'static str) -> Result<Vec<u8>, BackendError> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(COMSS_DOH_TIMEOUT).no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .build().map_err(|_| BackendError::ServiceUnavailable)?;
+    let resolved = Mutex::new(BTreeMap::new());
+    std::thread::scope(|scope| {
+        for domain in COMSS_GEMINI_DOMAINS {
+            let client = &client;
+            let resolved = &resolved;
+            scope.spawn(move || {
+                let result = (|| {
+                    let id = DNS_QUERY_SEQUENCE.fetch_add(1, Ordering::Relaxed) as u16;
+                    let response = client.post(url)
+                        .header("Accept", "application/dns-message")
+                        .header("Content-Type", "application/dns-message")
+                        .body(build_dns_query(domain, id)?).send()
+                        .and_then(|r| r.error_for_status()).map_err(|_| BackendError::RuntimeFailed)?;
+                    let mut bytes = Vec::new();
+                    response.take(MAX_DNS_RESPONSE_BYTES as u64 + 1).read_to_end(&mut bytes)
+                        .map_err(|_| BackendError::RuntimeFailed)?;
+                    if bytes.len() > MAX_DNS_RESPONSE_BYTES { return Err(BackendError::ProtectedResourceInvalid); }
+                    parse_dns_a_response(&bytes, id, domain)
+                })();
+                if let Ok(addresses) = result {
+                    resolved.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(domain, addresses);
+                }
+            });
+        }
+    });
+    let mut output = format!("# {source}: authenticated DoH, Gemini only\n");
+    for (domain, addresses) in resolved.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner) {
+        for address in addresses { output.push_str(&format!("{address} {domain}\n")); }
+    }
+    Ok(output.into_bytes())
+}
+
+#[cfg(test)]
+fn fresh_gemini_route(
+    downloader: Arc<dyn HostsDownloader>, prober: Arc<dyn HostsRouteProber>,
+) -> Result<(Vec<u8>, ServiceRoutePlan), BackendError> {
+    resolve_gemini_route(downloader, prober, GeminiRoutePreference::Auto)
+}
+
+fn resolve_gemini_route(
+    downloader: Arc<dyn HostsDownloader>, prober: Arc<dyn HostsRouteProber>,
+    preference: GeminiRoutePreference,
+) -> Result<(Vec<u8>, ServiceRoutePlan), BackendError> {
+    // Independent downloads: an unavailable provider must not prevent fallback.
+    // Manual selections are strict: a failed probe preserves the installed route.
+    let providers: &[HostsProvider] = match preference {
+        GeminiRoutePreference::Auto => &[HostsProvider::Geohide, HostsProvider::Astracat, HostsProvider::Xbox, HostsProvider::Comss],
+        GeminiRoutePreference::Geohide => &[HostsProvider::Geohide],
+        GeminiRoutePreference::Astracat => &[HostsProvider::Astracat],
+    };
+    for &provider in providers {
+        let Ok(payload) = downloader.download(provider) else { continue };
+        let Ok(feed) = prepare_payload(provider, &payload) else { continue };
+        let jobs = COMSS_GEMINI_DOMAINS.iter().flat_map(|host| {
+            feed.ipv4.get(*host).into_iter().flatten().copied()
+                .filter(|ip| is_probeable_ipv4(*ip)).take(MAX_PROBE_CANDIDATES_PER_DOMAIN)
+                .map(|ip| ProbeJob { key: ProbeKey { host: (*host).to_owned(), address: Some(ip) }, path: "/" })
+        }).collect();
+        let results = execute_probe_jobs(prober.clone(), jobs);
+        let Some(mut selected) = viable_feed_candidates(&feed, AiService::Gemini, &results) else { continue };
+        // Never install untested auxiliary addresses alongside a working main page.
+        for host in COMSS_GEMINI_DOMAINS {
+            if let Some((_, ip)) = feed.ipv4.get(host).into_iter().flatten().filter_map(|ip| {
+                let outcome = results.get(&ProbeKey { host: host.to_owned(), address: Some(*ip) })?;
+                outcome.working.then_some((outcome.elapsed_millis, *ip))
+            }).min_by_key(|(elapsed, _)| *elapsed) { selected.insert(host.to_owned(), ip); }
+        }
+        let mut replacement = String::new();
+        for (host, ip) in &selected { replacement.push_str(&format!("{ip} {host}\n")); }
+        return Ok((replacement.into_bytes(), ServiceRoutePlan {
+            service: AiService::Gemini,
+            route: if provider == HostsProvider::Geohide { AiRouteKind::Preferred } else { AiRouteKind::Fallback },
+            provider: Some(provider), selected_candidates: selected,
+        }));
+    }
+    Err(BackendError::RuntimeFailed)
+}
+
+fn replace_gemini_entries(current: &[u8], replacement: &[u8]) -> Result<Vec<u8>, BackendError> {
+    let text = std::str::from_utf8(current).map_err(|_| BackendError::ProtectedResourceInvalid)?;
+    let mut output = Vec::with_capacity(current.len() + replacement.len());
+    for line in text.split_inclusive('\n') {
+        let content = line.split('#').next().unwrap_or("");
+        let domains: Vec<_> = content.split_whitespace().skip(1).collect();
+        if domains.iter().any(|d| service_for_domain(d) == Some(AiService::Gemini)) {
+            // Mixed lines are ambiguous ownership: fail without altering anything.
+            if domains.iter().any(|d| service_for_domain(d) != Some(AiService::Gemini)) {
+                return Err(BackendError::Conflict);
+            }
+        } else { output.extend_from_slice(line.as_bytes()); }
+    }
+    if !output.ends_with(b"\n") { output.push(b'\n'); }
+    output.extend_from_slice(replacement);
+    Ok(output)
 }
 
 impl HttpHostsDownloader {
@@ -183,6 +294,12 @@ impl HttpHostsDownloader {
 
 impl HostsDownloader for HttpHostsDownloader {
     fn download(&self, provider: HostsProvider) -> Result<Vec<u8>, BackendError> {
+        if provider == HostsProvider::Xbox {
+            return download_xbox_gemini();
+        }
+        if provider == HostsProvider::Astracat {
+            return download_astracat_gemini();
+        }
         if provider == HostsProvider::Comss {
             return self.download_comss_hosts();
         }
@@ -239,17 +356,13 @@ impl HostsRouteProber for HttpsRouteProber {
         let mut last_reason = AiRouteFailureReason::Timeout;
         for _ in 0..2 {
             match client.get(&url).send() {
-                // Any valid HTTP response proves that TCP, TLS/SNI and the
-                // selected route work. Reading a response body made slow or
-                // intentionally streaming endpoints produce false timeouts.
-                Ok(response) if !is_google_sorry_redirect(host, &response) => {
-                    return ProbeOutcome {
-                        working: true,
-                        reason: None,
-                        elapsed_millis: elapsed_millis(started),
-                    };
-                }
-                Ok(_) => {
+                Ok(response) => {
+                    if route_response_usable(host, response) {
+                        return ProbeOutcome {
+                            working: true, reason: None,
+                            elapsed_millis: elapsed_millis(started),
+                        };
+                    }
                     last_reason = AiRouteFailureReason::Tls;
                 }
                 Err(error) => {
@@ -269,6 +382,25 @@ impl HostsRouteProber for HttpsRouteProber {
             elapsed_millis: elapsed_millis(started),
         }
     }
+}
+
+fn route_response_usable(host: &str, response: reqwest::blocking::Response) -> bool {
+    if is_google_sorry_redirect(host, &response) { return false; }
+    // API roots may deliberately answer 401/404. Only the actual Gemini web
+    // entry point must return its HTML shell, not a generic error/challenge.
+    if host != "gemini.google.com" { return true; }
+    if !response.status().is_success() { return false; }
+    let mut bytes = Vec::new();
+    if response.take(1024 * 1024 + 1).read_to_end(&mut bytes).is_err() { return false; }
+    gemini_page_usable(&bytes)
+}
+
+fn gemini_page_usable(bytes: &[u8]) -> bool {
+    if bytes.len() > 1024 * 1024 { return false; }
+    let text = String::from_utf8_lossy(bytes).to_ascii_lowercase();
+    let Some(title) = text.split("<title>").nth(1).and_then(|s| s.split("</title>").next()) else { return false; };
+    title.contains("gemini") && !text.contains("our systems have detected unusual traffic")
+        && !text.contains("unusual traffic from your computer network")
 }
 
 fn build_dns_query(domain: &str, transaction_id: u16) -> Result<Vec<u8>, BackendError> {
@@ -501,6 +633,8 @@ struct HostsManagedState {
     active_provider: Option<HostsProvider>,
     preferred_provider: HostsProvider,
     #[serde(default)]
+    gemini_preference: GeminiRoutePreference,
+    #[serde(default)]
     health: Option<HostsHealthSnapshot>,
     /// A pre-operation snapshot persisted before every system-file write.
     /// Startup restores it when the service died between write and commit.
@@ -515,6 +649,7 @@ impl Default for HostsManagedState {
             providers: BTreeMap::new(),
             active_provider: None,
             preferred_provider: HostsProvider::Malw,
+            gemini_preference: GeminiRoutePreference::Auto,
             health: None,
             pending_rollback: None,
         }
@@ -662,7 +797,7 @@ fn other_provider(provider: HostsProvider) -> HostsProvider {
     match provider {
         HostsProvider::Malw => HostsProvider::Geohide,
         HostsProvider::Geohide => HostsProvider::Malw,
-        HostsProvider::Comss => HostsProvider::Geohide,
+        HostsProvider::Astracat | HostsProvider::Comss | HostsProvider::Xbox => HostsProvider::Geohide,
     }
 }
 
@@ -818,8 +953,28 @@ impl HostsController {
         &mut self,
         request: HostsMutationRequest,
     ) -> Result<OperationAccepted, BackendError> {
+        self.install_scoped(request, None)
+    }
+
+    pub(crate) fn refresh_gemini(&mut self, preference: GeminiRoutePreference) -> Result<OperationAccepted, BackendError> {
+        let provider = self.state.active_provider.ok_or(BackendError::Conflict)?;
+        self.install_scoped(HostsMutationRequest { provider }, Some(preference))
+    }
+
+    fn install_scoped(
+        &mut self,
+        request: HostsMutationRequest,
+        gemini_selection: Option<GeminiRoutePreference>,
+    ) -> Result<OperationAccepted, BackendError> {
+        let gemini_only = gemini_selection.is_some();
+        let gemini_preference = gemini_selection.unwrap_or(self.state.gemini_preference);
         let provider = request.provider;
         let current = fs::read(&self.hosts_path).map_err(|_| BackendError::RuntimeFailed)?;
+        if gemini_only && (self.state.original.is_none()
+            || self.state.providers.get(provider_key(provider))
+                .and_then(|state| state.applied_sha256.as_deref()) != Some(sha256_hex(&current).as_str())) {
+            return Err(BackendError::Conflict);
+        }
         if self.state.original.is_none() {
             if detect_managed_provider(&current).is_some() {
                 // An older per-user installation has no protected original.
@@ -835,35 +990,59 @@ impl HostsController {
             return Err(BackendError::RuntimeFailed);
         }
 
-        let preferred_feed = prepare_payload(provider, &self.downloader.download(provider)?)?;
-        let fallback_provider = other_provider(provider);
-        let fallback_feed = prepare_payload(
-            fallback_provider,
-            &self.downloader.download(fallback_provider)?,
-        )?;
-        let comss_feed = if provider == HostsProvider::Comss {
-            Some(preferred_feed.clone())
+        let (managed_payload, prepared, plans) = if gemini_only {
+            let (replacement, plan) = resolve_gemini_route(self.downloader.clone(), self.prober.clone(), gemini_preference)?;
+            let managed = previous_managed.as_deref().ok_or(BackendError::Conflict)?;
+            (replace_gemini_entries(managed, &replacement)?,
+             replace_gemini_entries(&current, &replacement)?, vec![plan])
         } else {
-            self.downloader
-                .download(HostsProvider::Comss)
-                .ok()
-                .and_then(|payload| prepare_payload(HostsProvider::Comss, &payload).ok())
-        };
-        let plans = plan_service_routes(
+        let fallback_provider = other_provider(provider);
+        let fetch = |source| self.downloader.download(source)
+            .and_then(|payload| prepare_payload(source, &payload));
+        let preferred_result = fetch(provider);
+        let fallback_result = fetch(fallback_provider);
+        if preferred_result.is_err() && fallback_result.is_err() {
+            return Err(preferred_result.err().unwrap());
+        }
+        let preferred_feed = preferred_result.ok();
+        let fallback_feed = fallback_result.ok();
+        let preferred_feed = preferred_feed.unwrap_or_else(|| PreparedFeed {
+            provider,
+            normalized: fallback_feed.as_ref().map(|feed| feed.normalized.clone()).unwrap_or_default(),
+            ipv4: BTreeMap::new(),
+        });
+        let fallback_feed = fallback_feed.unwrap_or_else(|| PreparedFeed {
+            provider: fallback_provider, normalized: String::new(), ipv4: BTreeMap::new(),
+        });
+        let mut plans = plan_service_routes(
             self.prober.clone(),
             provider,
             &preferred_feed,
             &fallback_feed,
-            comss_feed.as_ref(),
+            None,
         );
-        let managed_payload =
-            render_hybrid_payload(&preferred_feed, &fallback_feed, comss_feed.as_ref(), &plans)?;
+        plans.retain(|plan| plan.service != AiService::Gemini);
+        let managed_payload = render_hybrid_payload(&preferred_feed, &fallback_feed, None, &plans)?;
+        let (gemini_payload, gemini_plan) = match resolve_gemini_route(
+            self.downloader.clone(), self.prober.clone(), gemini_preference,
+        ) {
+            Ok(route) => route,
+            Err(error) if gemini_preference != GeminiRoutePreference::Auto => return Err(error),
+            Err(_) => (Vec::new(), ServiceRoutePlan {
+                service: AiService::Gemini, route: AiRouteKind::Direct,
+                provider: None, selected_candidates: BTreeMap::new(),
+            }),
+        };
+        let managed_payload = replace_gemini_entries(&managed_payload, &gemini_payload)?;
+        plans.push(gemini_plan);
         let prepared = merge_preserving_user_entries(
             &managed_payload,
             &current,
             previous_managed.as_deref(),
             true,
         )?;
+        (managed_payload, prepared, plans)
+        };
 
         let before_commit = fs::read(&self.hosts_path).map_err(|_| BackendError::RuntimeFailed)?;
         if sha256_hex(&before_commit) != sha256_hex(&current) {
@@ -882,11 +1061,27 @@ impl HostsController {
             return Err(BackendError::RuntimeFailed);
         }
         flush_dns_best_effort();
-        let health = verify_post_write_routes(self.prober.clone(), provider, &plans);
+        let mut health = verify_post_write_routes(self.prober.clone(), provider, &plans);
         if !post_write_health_is_valid(&plans, &health) {
             let _ = self.rollback_pending();
             flush_dns_best_effort();
             return Err(BackendError::RuntimeFailed);
+        }
+
+        if gemini_only {
+            // Other routes were not tested or changed by this operation.
+            let mut combined = self.state.health.clone().unwrap_or_else(|| unchecked_health(provider, true));
+            for service in &mut combined.services {
+                if service.service == AiService::Gemini {
+                    if let Some(fresh) = health.services.first() { *service = fresh.clone(); }
+                } else {
+                    service.health = AiRouteHealth::Unchecked;
+                    service.reason = None;
+                }
+            }
+            combined.checked_at_unix = health.checked_at_unix;
+            combined.repair_recommended = false;
+            health = combined;
         }
 
         let applied =
@@ -937,6 +1132,7 @@ impl HostsController {
         }
         self.state.active_provider = Some(provider);
         self.state.preferred_provider = provider;
+        self.state.gemini_preference = gemini_preference;
         self.state.health = Some(health);
         self.state.pending_rollback = None;
         if let Err(error) = self.save_state() {
@@ -1381,6 +1577,8 @@ fn provider_url(provider: HostsProvider) -> &'static str {
             "https://github.com/Internet-Helper/GeoHideDNS/raw/refs/heads/main/hosts/hosts"
         }
         HostsProvider::Comss => "https://dns.comss.one/dns-query",
+        HostsProvider::Xbox => "https://xbox-dns.ru/dns-query",
+        HostsProvider::Astracat => "https://dns.astracat.ru/dns-query",
     }
 }
 
@@ -1389,6 +1587,8 @@ fn provider_key(provider: HostsProvider) -> &'static str {
         HostsProvider::Malw => "malw",
         HostsProvider::Geohide => "geohide",
         HostsProvider::Comss => "comss",
+        HostsProvider::Xbox => "xbox",
+        HostsProvider::Astracat => "astracat",
     }
 }
 
@@ -1407,6 +1607,8 @@ fn detect_managed_provider(bytes: &[u8]) -> Option<HostsProvider> {
         HostsProvider::Malw,
         HostsProvider::Geohide,
         HostsProvider::Comss,
+        HostsProvider::Xbox,
+        HostsProvider::Astracat,
     ]
     .into_iter()
     .find(|provider| contains_marker(bytes, *provider))
@@ -2064,6 +2266,7 @@ fn load_state(path: &Path) -> HostsManagedState {
         providers,
         active_provider: legacy.active_provider,
         preferred_provider,
+        gemini_preference: GeminiRoutePreference::Auto,
         health: None,
         pending_rollback: legacy.pending_rollback,
     }
@@ -2288,7 +2491,7 @@ mod tests {
             Ok(match provider {
                 HostsProvider::Malw => self.malw.clone(),
                 HostsProvider::Geohide => self.geohide.clone(),
-                HostsProvider::Comss => return Err(BackendError::RuntimeFailed),
+                HostsProvider::Astracat | HostsProvider::Comss | HostsProvider::Xbox => return Err(BackendError::RuntimeFailed),
             })
         }
     }
@@ -2466,6 +2669,230 @@ mod tests {
             parse_dns_a_response(&response, 0x4321, "gemini.google.com"),
             Err(BackendError::ProtectedResourceInvalid)
         );
+    }
+
+    #[test]
+    fn gemini_web_probe_requires_a_real_page_not_just_http_success() {
+        assert!(gemini_page_usable(b"<html><title>Google Gemini</title></html>"));
+        assert!(!gemini_page_usable(b"<html><title>Bad Gateway</title></html>"));
+        assert!(!gemini_page_usable(b"<title>Gemini</title>Our systems have detected unusual traffic"));
+        assert!(!gemini_page_usable(&vec![b'x'; 1024 * 1024 + 1]));
+    }
+
+    #[test]
+    fn targeted_replacement_preserves_other_lines_byte_for_byte() {
+        let before = b"# mine\r\n1.2.3.4 chatgpt.com\r\n5.6.7.8 gemini.google.com\r\n9.8.7.6 claude.ai # keep\r\n";
+        assert_eq!(replace_gemini_entries(before, b"87.228.47.194 gemini.google.com\n").unwrap(),
+            b"# mine\r\n1.2.3.4 chatgpt.com\r\n9.8.7.6 claude.ai # keep\r\n87.228.47.194 gemini.google.com\n");
+        assert_eq!(replace_gemini_entries(b"1.2.3.4 gemini.google.com example.com\n", b""), Err(BackendError::Conflict));
+    }
+
+    #[test]
+    fn manual_gemini_choice_survives_reload_and_reinstall() {
+        let root = temp_root("gemini-persist");
+        let mut c = controller(&root, b"# fixture\n");
+        c.install(HostsMutationRequest { provider: HostsProvider::Malw }).unwrap();
+        c.refresh_gemini(GeminiRoutePreference::Astracat).unwrap();
+        let mut reloaded = HostsController::from_paths(
+            c.hosts_path.clone(), c.state_path.clone(), c.backups_dir.clone(),
+            c.downloader.clone(), c.prober.clone(),
+        ).unwrap();
+        assert_eq!(reloaded.state.gemini_preference, GeminiRoutePreference::Astracat);
+        reloaded.install(HostsMutationRequest { provider: HostsProvider::Geohide }).unwrap();
+        let health = reloaded.state.health.as_ref().unwrap();
+        let gemini = health.services.iter().find(|entry| entry.service == AiService::Gemini).unwrap();
+        assert_eq!(gemini.provider, Some(HostsProvider::Astracat));
+
+        let before = fs::read(&reloaded.hosts_path).unwrap();
+        reloaded.downloader = Arc::new(ProviderDownloader {
+            malw: Vec::new(), geohide: Vec::new(),
+        });
+        assert!(reloaded.refresh_gemini(GeminiRoutePreference::Geohide).is_err());
+        assert_eq!(reloaded.state.gemini_preference, GeminiRoutePreference::Astracat);
+        assert_eq!(fs::read(&reloaded.hosts_path).unwrap(), before);
+    }
+
+    #[test]
+    fn one_unavailable_feed_does_not_block_the_other() {
+        for missing_preferred in [false, true] {
+            let root = temp_root("single-feed");
+            let mut c = controller(&root, b"# fixture\n");
+            let ip = Ipv4Addr::new(1, 2, 3, 4);
+            let feed = feed_for(ip, ip, ip);
+            c.downloader = Arc::new(ProviderDownloader {
+                malw: if missing_preferred { Vec::new() } else { feed.clone() },
+                geohide: if missing_preferred { feed } else { Vec::new() },
+            });
+            c.install(HostsMutationRequest { provider: HostsProvider::Malw }).unwrap();
+            let installed = fs::read_to_string(&c.hosts_path).unwrap();
+            assert!(installed.contains("1.2.3.4 chatgpt.com"));
+            assert!(installed.contains("1.2.3.4 claude.ai"));
+            assert!(!c.snapshot().unwrap().externally_modified);
+        }
+    }
+
+    #[test]
+    fn targeted_refresh_is_transactional_and_leaves_other_routes_untouched() {
+        let root = temp_root("gemini-only");
+        let old = Ipv4Addr::new(95, 81, 98, 64);
+        let next = Ipv4Addr::new(87, 228, 47, 194);
+        let mut c = controller(&root, b"# fixture\n");
+        c.install(HostsMutationRequest { provider: HostsProvider::Malw }).unwrap();
+        let before = fs::read(&c.hosts_path).unwrap();
+        c.downloader = Arc::new(ProviderDownloader {
+            malw: feed_for(old, old, old), geohide: feed_for(next, next, next),
+        });
+        c.refresh_gemini(GeminiRoutePreference::Auto).unwrap();
+        let after = fs::read(&c.hosts_path).unwrap();
+        assert_eq!(replace_gemini_entries(&before, b"").unwrap(), replace_gemini_entries(&after, b"").unwrap());
+        assert!(String::from_utf8_lossy(&after).contains("87.228.47.194 gemini.google.com"));
+        assert!(!c.snapshot().unwrap().externally_modified);
+
+        // A fresh candidate responds, but the installed system route fails:
+        // the original file must be restored and remain owned by the ledger.
+        c.prober = Arc::new(ScriptedProber { controls_online: true,
+            working_addresses: BTreeSet::from([next]),
+            system_failures: BTreeSet::from(["gemini.google.com".to_owned()]) });
+        assert!(c.refresh_gemini(GeminiRoutePreference::Auto).is_err());
+        assert_eq!(fs::read(&c.hosts_path).unwrap(), after);
+        assert!(!c.snapshot().unwrap().externally_modified);
+    }
+
+    #[test]
+    fn targeted_refresh_refuses_external_changes_and_all_dead_candidates() {
+        let root = temp_root("gemini-conflict");
+        let mut c = controller(&root, b"# fixture\n");
+        c.install(HostsMutationRequest { provider: HostsProvider::Malw }).unwrap();
+        let before = fs::read(&c.hosts_path).unwrap();
+        c.prober = Arc::new(ScriptedProber { controls_online: true,
+            working_addresses: BTreeSet::new(), system_failures: BTreeSet::new() });
+        assert!(c.refresh_gemini(GeminiRoutePreference::Auto).is_err());
+        assert_eq!(fs::read(&c.hosts_path).unwrap(), before);
+        let mut external = before;
+        external.extend_from_slice(b"# user edit\n");
+        fs::write(&c.hosts_path, &external).unwrap();
+        assert_eq!(c.refresh_gemini(GeminiRoutePreference::Auto), Err(BackendError::Conflict));
+        assert_eq!(fs::read(&c.hosts_path).unwrap(), external);
+    }
+
+    #[test]
+    fn gemini_refresh_prefers_xbox_and_falls_back_without_other_feeds() {
+        struct GeminiFeeds;
+        impl HostsDownloader for GeminiFeeds {
+            fn download(&self, provider: HostsProvider) -> Result<Vec<u8>, BackendError> {
+                let ip = match provider {
+                    HostsProvider::Xbox => Ipv4Addr::new(87, 228, 47, 194),
+                    HostsProvider::Comss => Ipv4Addr::new(132, 243, 119, 73),
+                    _ => return Err(BackendError::RuntimeFailed),
+                };
+                Ok(feed_for(ip, ip, ip))
+            }
+        }
+        let xbox = Ipv4Addr::new(87, 228, 47, 194);
+        let comss = Ipv4Addr::new(132, 243, 119, 73);
+        for (working, expected) in [(vec![xbox, comss], HostsProvider::Xbox), (vec![comss], HostsProvider::Comss)] {
+            let (payload, plan) = fresh_gemini_route(Arc::new(GeminiFeeds), Arc::new(ScriptedProber {
+                controls_online: true, working_addresses: working.into_iter().collect(), system_failures: BTreeSet::new(),
+            })).unwrap();
+            assert_eq!(plan.provider, Some(expected));
+            let text = String::from_utf8(payload).unwrap();
+            assert!(!text.contains("chatgpt"));
+            assert!(!text.contains("claude"));
+        }
+    }
+
+    #[test]
+    fn explicit_gemini_refresh_prefers_geohide_over_other_working_sources() {
+        struct GeminiFeeds;
+        impl HostsDownloader for GeminiFeeds {
+            fn download(&self, provider: HostsProvider) -> Result<Vec<u8>, BackendError> {
+                let ip = match provider {
+                    HostsProvider::Geohide => Ipv4Addr::new(193, 233, 112, 68),
+                    HostsProvider::Astracat => Ipv4Addr::new(217, 60, 179, 6),
+                    HostsProvider::Xbox => Ipv4Addr::new(87, 228, 47, 194),
+                    HostsProvider::Comss => Ipv4Addr::new(45, 88, 174, 254),
+                    HostsProvider::Malw => return Err(BackendError::RuntimeFailed),
+                };
+                Ok(feed_for(ip, ip, ip))
+            }
+        }
+
+        let (payload, plan) = fresh_gemini_route(
+            Arc::new(GeminiFeeds),
+            Arc::new(ScriptedProber {
+                controls_online: true,
+                working_addresses: BTreeSet::from([
+                    Ipv4Addr::new(193, 233, 112, 68),
+                    Ipv4Addr::new(217, 60, 179, 6),
+                    Ipv4Addr::new(87, 228, 47, 194),
+                    Ipv4Addr::new(45, 88, 174, 254),
+                ]),
+                system_failures: BTreeSet::new(),
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(plan.provider, Some(HostsProvider::Geohide));
+        assert_eq!(plan.route, AiRouteKind::Preferred);
+        let text = String::from_utf8(payload).unwrap();
+        assert!(text.contains("193.233.112.68 gemini.google.com"));
+        assert!(!text.contains("chatgpt"));
+        assert!(!text.contains("claude"));
+    }
+
+    #[test]
+    fn explicit_gemini_refresh_uses_astracat_when_geohide_is_unavailable() {
+        struct GeminiFeeds;
+        impl HostsDownloader for GeminiFeeds {
+            fn download(&self, provider: HostsProvider) -> Result<Vec<u8>, BackendError> {
+                let ip = match provider {
+                    HostsProvider::Geohide => Ipv4Addr::new(193, 233, 112, 68),
+                    HostsProvider::Astracat => Ipv4Addr::new(217, 60, 179, 6),
+                    HostsProvider::Xbox => Ipv4Addr::new(87, 228, 47, 194),
+                    _ => return Err(BackendError::RuntimeFailed),
+                };
+                Ok(feed_for(ip, ip, ip))
+            }
+        }
+
+        let (payload, plan) = fresh_gemini_route(
+            Arc::new(GeminiFeeds),
+            Arc::new(ScriptedProber {
+                controls_online: true,
+                working_addresses: BTreeSet::from([
+                    Ipv4Addr::new(217, 60, 179, 6),
+                    Ipv4Addr::new(87, 228, 47, 194),
+                ]),
+                system_failures: BTreeSet::new(),
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(plan.provider, Some(HostsProvider::Astracat));
+        assert_eq!(plan.route, AiRouteKind::Fallback);
+        let text = String::from_utf8(payload).unwrap();
+        assert!(text.contains("217.60.179.6 gemini.google.com"));
+        assert!(!text.contains("chatgpt"));
+        assert!(!text.contains("claude"));
+    }
+
+    #[test]
+    #[ignore = "explicit read-only network check; no system mutation"]
+    fn live_astracat_gemini_feed_without_hosts_changes() {
+        let payload = download_astracat_gemini().unwrap();
+        let feed = prepare_payload(HostsProvider::Astracat, &payload).unwrap();
+        for domain in COMSS_GEMINI_DOMAINS {
+            assert!(feed.ipv4.contains_key(domain), "Astracat has no {domain}");
+        }
+        println!("Astracat resolved {} Gemini domains", feed.ipv4.len());
+    }
+
+    #[test]
+    #[ignore = "explicit read-only network check; no system mutation"]
+    fn live_gemini_candidates_without_hosts_changes() {
+        let downloader = HttpHostsDownloader::new().unwrap();
+        let (payload, plan) = fresh_gemini_route(Arc::new(downloader), Arc::new(HttpsRouteProber)).unwrap();
+        println!("provider={:?}\n{}", plan.provider, String::from_utf8(payload).unwrap());
     }
 
     #[test]
@@ -2831,7 +3258,7 @@ mod tests {
         let health = controller.check(0).unwrap();
         assert_eq!(health.services[0].route, AiRouteKind::Preferred);
         assert_eq!(health.services[1].route, AiRouteKind::Preferred);
-        assert_eq!(health.services[2].route, AiRouteKind::Fallback);
+        assert_eq!(health.services[2].route, AiRouteKind::Preferred);
         assert!(health
             .services
             .iter()

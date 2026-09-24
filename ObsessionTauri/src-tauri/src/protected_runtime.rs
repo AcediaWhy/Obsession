@@ -275,6 +275,21 @@ pub async fn hosts_uninstall() -> Result<(), String> {
     hosts_mutation("hosts-uninstall", Request::HostsUninstall).await
 }
 
+pub async fn hosts_refresh_gemini(preference: obsession_runtime_protocol::GeminiRoutePreference) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        let response = tauri::async_runtime::spawn_blocking(move || {
+            call_service("hosts-refresh-gemini", Request::HostsRefreshGemini(preference), Duration::from_secs(240))
+        }).await.map_err(|e| e.to_string())??;
+        match response {
+            Response::Accepted(_) => Ok(()),
+            _ => Err("Обновление Gemini не подтверждено службой. Проверьте версию runtime.".into()),
+        }
+    }
+    #[cfg(not(windows))]
+    { Err(unavailable()) }
+}
+
 pub async fn hosts_restore(
     provider: obsession_runtime_protocol::HostsProvider,
 ) -> Result<(), String> {

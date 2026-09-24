@@ -805,6 +805,20 @@ mod tests {
     }
 
     #[test]
+    fn new_executor_never_starts_or_restores_dpi_while_reading_status() {
+        let (_test, plan, layout) = setup_plan();
+        // Stale materialized files are not authority to resume an old session.
+        let _stale = layout.materialize(&plan, 77).unwrap();
+        let state = Arc::new(Mutex::new(FakeState::default()));
+        let executor = DpiExecutor::new(layout, FakeLauncher(state.clone()));
+        for _ in 0..3 {
+            assert!(executor.snapshot().is_none());
+            assert!(executor.active_processes().is_empty());
+        }
+        assert_eq!(state.lock().unwrap().launches, 0);
+    }
+
+    #[test]
     fn windows_quoting_preserves_response_file_paths() {
         assert_eq!(quote_windows_argument("plain"), "plain");
         assert_eq!(

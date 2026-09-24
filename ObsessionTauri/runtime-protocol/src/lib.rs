@@ -10,7 +10,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u16 = 3;
+pub const PROTOCOL_VERSION: u16 = 4;
 pub const RUNTIME_PIPE_NAME: &str = r"\\.\pipe\ObsessionRuntime.v1";
 pub const MAX_FRAME_BYTES: usize = 64 * 1024;
 pub const MAX_REQUEST_ID_BYTES: usize = 64;
@@ -129,6 +129,8 @@ pub enum Request {
     DpiReplace(DpiReplaceRequest),
     DpiStop(DpiStopRequest),
     HostsInstall(HostsMutationRequest),
+    /// Explicit, service-owned refresh of Gemini only; no caller-supplied paths or IPs.
+    HostsRefreshGemini(GeminiRoutePreference),
     HostsCheck(HostsCheckRequest),
     HostsUninstall,
     HostsRestoreLastKnownGood(HostsMutationRequest),
@@ -151,6 +153,7 @@ impl Request {
             | Self::GetRuntimeSnapshot
             | Self::LegacyCleanup
             | Self::HostsInstall(_)
+            | Self::HostsRefreshGemini(_)
             | Self::HostsUninstall
             | Self::HostsRestoreLastKnownGood(_)
             | Self::FirewallCloseProxyLan
@@ -627,7 +630,19 @@ impl DpiStopRequest {
 pub enum HostsProvider {
     Malw,
     Geohide,
+    Astracat,
     Comss,
+    Xbox,
+}
+
+/// A route preference, never a caller-provided address or hostname.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum GeminiRoutePreference {
+    #[default]
+    Auto,
+    Geohide,
+    Astracat,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

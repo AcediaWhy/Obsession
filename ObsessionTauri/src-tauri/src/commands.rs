@@ -114,6 +114,7 @@ pub(crate) async fn dpi_start_session(
     app: &AppHandle,
     pairs: Vec<(String, String)>,
 ) -> Result<Vec<u32>, String> {
+    crate::util::emit_log(app, "info", "dpi", "Запрошен запуск DPI: источник=команда интерфейса");
     if runtime_is_shutting_down(app) {
         return Err("Приложение завершает работу.".to_string());
     }
@@ -143,6 +144,7 @@ pub(crate) async fn dpi_toggle_session(
         return Err("Приложение завершает работу.".to_string());
     }
     let active = crate::protected_runtime::dpi_active().await?;
+    crate::util::emit_log(app, "info", "dpi", &format!("Переключение DPI: служба до команды active={active}"));
     if active {
         dpi_stop_locked(app).await?;
         Ok(false)
@@ -612,6 +614,15 @@ pub async fn hosts_uninstall(app: AppHandle) -> Result<(), String> {
     let state = app.state::<AppState>();
     let _gate = state.hosts_gate.lock().await;
     crate::hosts::uninstall(&app).await
+}
+
+#[tauri::command]
+pub async fn hosts_refresh_gemini(app: AppHandle, preference: obsession_runtime_protocol::GeminiRoutePreference) -> Result<obsession_runtime_protocol::HostsHealthSnapshot, String> {
+    let state = app.state::<AppState>();
+    let _gate = state.hosts_gate.lock().await;
+    crate::protected_runtime::hosts_refresh_gemini(preference).await?;
+    state.hosts_revision.bump();
+    crate::protected_runtime::hosts_check(900).await
 }
 
 #[tauri::command]
