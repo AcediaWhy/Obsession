@@ -326,6 +326,8 @@ struct MachineUpdateJournal {
     transaction_id: String,
     phase: MachineUpdatePhase,
     service_existed: bool,
+    #[serde(default)]
+    was_uninstalled_shell: bool,
 }
 
 impl MachineUpdateJournal {
@@ -336,6 +338,7 @@ impl MachineUpdateJournal {
             transaction_id: transaction_id.to_owned(),
             phase: MachineUpdatePhase::Prepared,
             service_existed,
+            was_uninstalled_shell: false,
         }
     }
 
@@ -416,6 +419,10 @@ struct NativeMachineUpdateService<'a> {
 
 impl MachineUpdateService for NativeMachineUpdateService<'_> {
     fn stop_before_swap(&mut self) -> Result<(), String> {
+        // Повторная проверка нужна, если приложение открыли во время распаковки.
+        super::installed_app::stop_installed_application(
+            &self.paths.install_root.join(MACHINE_MAIN_BINARY),
+        )?;
         stop_runtime_service_if_present()?;
         stop_owned_windivert_driver(&machine_windivert_driver_path(self.paths))
     }
@@ -425,6 +432,9 @@ impl MachineUpdateService for NativeMachineUpdateService<'_> {
     }
 
     fn stop_before_rollback(&mut self) -> Result<(), String> {
+        super::installed_app::stop_installed_application(
+            &self.paths.install_root.join(MACHINE_MAIN_BINARY),
+        )?;
         stop_runtime_service_if_present()?;
         stop_owned_windivert_driver(&machine_windivert_driver_path(self.paths))
     }
@@ -543,6 +553,14 @@ fn provision_machine_runtime(
     let result: Result<(), String> = (|| {
         let setup_image = current_setup_image_identity()?;
         cleanup_stale_machine_results(&paths.runtime_data, request_id)?;
+        report.running(18, "stop")?;
+        if paths.install_root.exists() {
+            reject_reparse_point(&paths.install_root)?;
+        }
+        // Восстановление незавершённой транзакции тоже может переименовывать каталог.
+        super::installed_app::stop_installed_application(
+            &paths.install_root.join(MACHINE_MAIN_BINARY),
+        )?;
         recover_pending_machine_update(&paths)?;
         report.running(25, "install")?;
         install_machine_payload_if_missing(
@@ -1405,12 +1423,22 @@ fn install_machine_payload_if_missing(
             return Ok(());
         }
         reject_reparse_tree(&paths.install_root)?;
-        verify_install_layout(paths).map_err(|error| {
-            format!(
-                "existing protected installation is not safe to update transactionally: {error}"
-            )
-        })?;
+        let was_uninstalled_shell = match verify_install_layout(paths) {
+            Ok(()) => false,
+            Err(layout_error) => {
+                verify_uninstalled_shell(paths).map_err(|shell_error| {
+                    format!(
+                        "existing protected installation is not safe to update transactionally: \
+                         {layout_error}; incomplete uninstall recovery rejected: {shell_error}"
+                    )
+                })?;
+                true
+            }
+        };
         let service_existed = verify_runtime_service_before_update(&paths.service_binary)?;
+        if was_uninstalled_shell && service_existed {
+            return Err("incomplete uninstall cannot be recovered while ObsessionRuntime is registered".into());
+        }
         let mut service = NativeMachineUpdateService {
             paths,
             service_existed,
@@ -1420,6 +1448,7 @@ fn install_machine_payload_if_missing(
             &payload,
             transaction_id,
             service_existed,
+            was_uninstalled_shell,
             uninstaller,
             &mut service,
             |_| Ok(()),
@@ -1483,6 +1512,7 @@ fn transactional_update_machine_payload<S, F>(
     payload: &ParsedMachinePayload<'_>,
     transaction_id: &str,
     service_existed: bool,
+    was_uninstalled_shell: bool,
     uninstaller: Option<&SetupImageIdentity>,
     service: &mut S,
     mut checkpoint: F,
@@ -1519,6 +1549,7 @@ where
     }
 
     let mut journal = MachineUpdateJournal::new(transaction_id, service_existed);
+    journal.was_uninstalled_shell = was_uninstalled_shell;
     if let Err(error) = journal.write_phase(paths, MachineUpdatePhase::Prepared) {
         let _ = cleanup_machine_update_directory(paths, &stage, transaction_id, true);
         return Err(error);
@@ -1599,8 +1630,13 @@ fn rollback_machine_update<S: MachineUpdateService>(
         }
     }
 
-    verify_install_layout(paths)
-        .map_err(|error| format!("restored machine installation failed verification: {error}"))?;
+    if journal.was_uninstalled_shell {
+        verify_uninstalled_shell(paths)
+            .map_err(|error| format!("restored incomplete uninstall failed verification: {error}"))?;
+    } else {
+        verify_install_layout(paths)
+            .map_err(|error| format!("restored machine installation failed verification: {error}"))?;
+    }
     service.restore_after_rollback()?;
     journal.clear(paths)
 }
@@ -1720,6 +1756,7 @@ fn validate_machine_update_journal(journal: &MachineUpdateJournal) -> Result<(),
     if journal.schema_version != 1
         || journal.sequence == 0
         || !valid_machine_request_id(&journal.transaction_id)
+        || (journal.was_uninstalled_shell && journal.service_existed)
     {
         return Err("machine update journal has an invalid identity or schema".into());
     }
@@ -2115,6 +2152,40 @@ fn verify_install_layout(paths: &MachinePaths) -> Result<(), String> {
         .load_verified_catalog()
         .map_err(|error| format!("runtime manifest preflight failed: {error}"))?;
     verify_service_manifest_entry(&paths.manifest, &paths.service_binary)
+}
+
+fn verify_uninstalled_shell(paths: &MachinePaths) -> Result<(), String> {
+    reject_reparse_tree(&paths.install_root)?;
+    let mut found = BTreeSet::new();
+    for entry in fs::read_dir(&paths.install_root)
+        .map_err(|error| format!("could not inspect incomplete uninstall: {error}"))?
+    {
+        let entry = entry.map_err(|error| format!("could not inspect leftover entry: {error}"))?;
+        let name = entry
+            .file_name()
+            .to_str()
+            .map(str::to_ascii_lowercase)
+            .ok_or_else(|| "incomplete uninstall has a non-Unicode entry".to_string())?;
+        if name != MACHINE_MAIN_BINARY && name != MACHINE_UNINSTALL_BINARY {
+            return Err(format!("incomplete uninstall contains an unexpected entry: {name}"));
+        }
+        let metadata = fs::symlink_metadata(entry.path())
+            .map_err(|error| format!("could not inspect leftover {name}: {error}"))?;
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0
+            || !metadata.is_file()
+            || metadata.len() == 0
+            || metadata.len() > MAX_MACHINE_PAYLOAD_FILE_BYTES
+        {
+            return Err(format!("incomplete uninstall contains an invalid file: {name}"));
+        }
+        if !found.insert(name) {
+            return Err("incomplete uninstall contains duplicate file names".into());
+        }
+    }
+    if found.len() != 2 {
+        return Err("incomplete uninstall does not contain exactly the two expected executables".into());
+    }
+    Ok(())
 }
 
 #[derive(Debug, Deserialize)]
@@ -3119,6 +3190,109 @@ mod tests {
         (test, paths, old, new)
     }
 
+    fn uninstalled_shell_fixture() -> (TestDirectory, MachinePaths, Vec<u8>) {
+        let test = TestDirectory::new();
+        let program_files = test.0.join("Program Files");
+        let program_data = test.0.join("ProgramData");
+        fs::create_dir_all(&program_files).unwrap();
+        fs::create_dir_all(&program_data).unwrap();
+        let paths = MachinePaths::from_roots(program_files, program_data);
+        fs::create_dir_all(&paths.runtime_data).unwrap();
+        fs::create_dir(&paths.install_root).unwrap();
+        fs::write(paths.install_root.join(MACHINE_MAIN_BINARY), b"old app").unwrap();
+        fs::write(paths.install_root.join(MACHINE_UNINSTALL_BINARY), b"old setup").unwrap();
+        (test, paths, authenticated_test_payload(b"new app", b"new service"))
+    }
+
+    #[test]
+    fn incomplete_uninstall_recovery_requires_exactly_two_regular_executables() {
+        let (_test, paths, _) = uninstalled_shell_fixture();
+        verify_uninstalled_shell(&paths).unwrap();
+        fs::write(paths.install_root.join("notes.txt"), b"keep").unwrap();
+        assert!(verify_uninstalled_shell(&paths).is_err());
+        fs::remove_file(paths.install_root.join("notes.txt")).unwrap();
+        fs::remove_file(paths.install_root.join(MACHINE_UNINSTALL_BINARY)).unwrap();
+        assert!(verify_uninstalled_shell(&paths).is_err());
+    }
+
+    #[test]
+    fn incomplete_uninstall_recovery_rolls_back_without_losing_leftovers() {
+        for checkpoint_to_fail in [
+            MachineUpdateCheckpoint::Prepared,
+            MachineUpdateCheckpoint::ServiceStopped,
+            MachineUpdateCheckpoint::TargetBackedUp,
+            MachineUpdateCheckpoint::TargetSwapped,
+            MachineUpdateCheckpoint::SwappedJournaled,
+            MachineUpdateCheckpoint::PayloadVerified,
+            MachineUpdateCheckpoint::ServiceActivated,
+        ] {
+            let (_test, paths, new) = uninstalled_shell_fixture();
+            let payload = parse_machine_payload(&new).unwrap();
+            let mut service = TestMachineUpdateService;
+            let result = transactional_update_machine_payload(
+                &paths,
+                &payload,
+                &format!("{:032x}", checkpoint_to_fail as u8 + 20),
+                false,
+                true,
+                None,
+                &mut service,
+                |checkpoint| {
+                    if checkpoint == checkpoint_to_fail {
+                        Err("simulated interruption".into())
+                    } else {
+                        Ok(())
+                    }
+                },
+            );
+            assert!(result.unwrap_err().contains("rolled back safely"));
+            verify_uninstalled_shell(&paths).unwrap();
+            assert_eq!(fs::read(paths.install_root.join(MACHINE_MAIN_BINARY)).unwrap(), b"old app");
+            assert_eq!(fs::read(paths.install_root.join(MACHINE_UNINSTALL_BINARY)).unwrap(), b"old setup");
+            assert!(load_machine_update_journal(&paths).unwrap().is_none());
+        }
+    }
+
+    #[test]
+    fn incomplete_uninstall_recovery_commits_new_payload() {
+        let (_test, paths, new) = uninstalled_shell_fixture();
+        let payload = parse_machine_payload(&new).unwrap();
+        let mut service = TestMachineUpdateService;
+        transactional_update_machine_payload(
+            &paths, &payload, &"a".repeat(32), false, true, None, &mut service, |_| Ok(()),
+        )
+        .unwrap();
+        verify_install_layout(&paths).unwrap();
+        assert_eq!(fs::read(paths.install_root.join(MACHINE_MAIN_BINARY)).unwrap(), b"new app");
+        assert!(!paths.install_root.join(MACHINE_UNINSTALL_BINARY).exists());
+        assert!(load_machine_update_journal(&paths).unwrap().is_none());
+    }
+
+    #[test]
+    fn incomplete_uninstall_recovery_resumes_from_persisted_journal() {
+        let (_test, paths, new) = uninstalled_shell_fixture();
+        let payload = parse_machine_payload(&new).unwrap();
+        let transaction_id = "b".repeat(32);
+        let (stage, backup) = machine_update_paths(&paths, &transaction_id);
+        fs::create_dir(&stage).unwrap();
+        materialize_machine_payload(&payload, &stage).unwrap();
+        let mut journal = MachineUpdateJournal::new(&transaction_id, false);
+        journal.was_uninstalled_shell = true;
+        journal.write_phase(&paths, MachineUpdatePhase::Prepared).unwrap();
+        journal.write_phase(&paths, MachineUpdatePhase::Committing).unwrap();
+        durable_rename(&paths.install_root, &backup).unwrap();
+        durable_rename(&stage, &paths.install_root).unwrap();
+        journal.write_phase(&paths, MachineUpdatePhase::Swapped).unwrap();
+
+        let persisted = load_machine_update_journal(&paths).unwrap().unwrap();
+        assert!(persisted.was_uninstalled_shell);
+        let mut service = TestMachineUpdateService;
+        recover_machine_update_with_service(&paths, &persisted, &mut service).unwrap();
+        verify_uninstalled_shell(&paths).unwrap();
+        assert_eq!(fs::read(paths.install_root.join(MACHINE_MAIN_BINARY)).unwrap(), b"old app");
+        assert!(load_machine_update_journal(&paths).unwrap().is_none());
+    }
+
     #[test]
     fn machine_update_rolls_back_at_every_precommit_fault_checkpoint() {
         let checkpoints = [
@@ -3139,6 +3313,7 @@ mod tests {
                 &new_payload,
                 &format!("{:032x}", checkpoint_to_fail as u8 + 1),
                 true,
+                false,
                 None,
                 &mut service,
                 |checkpoint| {
@@ -3183,6 +3358,7 @@ mod tests {
             &new_payload,
             &transaction_id,
             true,
+            false,
             None,
             &mut service,
             |checkpoint| {
@@ -3574,7 +3750,7 @@ mod tests {
             let payload = parse_machine_payload(&packed).unwrap();
             let mut service = TestMachineUpdateService;
             let result = transactional_update_machine_payload(
-                &paths, &payload, &"c".repeat(32), true, None, &mut service,
+                &paths, &payload, &"c".repeat(32), true, false, None, &mut service,
                 |checkpoint| {
                     if fail_after_swap && checkpoint == MachineUpdateCheckpoint::TargetSwapped {
                         Err("compressed package rollback fixture".into())

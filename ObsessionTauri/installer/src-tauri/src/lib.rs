@@ -4,6 +4,7 @@
 // native update/uninstall transaction.
 
 mod machine_handoff;
+mod installed_app;
 mod payload_compression;
 pub mod machine_worker;
 mod upgrade;
@@ -752,7 +753,7 @@ pub fn run() {
         }
     };
 
-    tauri::Builder::default()
+    let application = tauri::Builder::default()
         .on_window_event(|_window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 if INSTALLING.load(Ordering::SeqCst) {
@@ -770,8 +771,12 @@ pub fn run() {
             close_setup,
             minimize_setup
         ])
-        .run(tauri::generate_context!())
+        .build(tauri::generate_context!())
         .expect("ошибка запуска Obsession Setup");
+    // Обычный run завершает процесс сразу. run_return освобождает WebView,
+    // после чего нативная очистка может удалить профиль закрытого окна.
+    application.run_return(|_, _| {});
+    uninstall::finish_after_window();
 }
 
 #[cfg(test)]

@@ -20,8 +20,27 @@ protected installed uninstaller.
 
 No other users' profiles, shared WebView2 runtime, manually saved downloads,
 Windows event history, or arbitrary user exports are scanned/deleted. This is
-not a forensic eraser. Locked WebView files can remain and are listed in the
-result; machine-owned locked files use the existing reboot-deletion mechanism.
+not a forensic eraser. Locked application files are listed in the result;
+machine-owned locked files use the existing reboot-deletion mechanism.
+
+## Очистка кэша окна после закрытия
+
+Если выбран кэш, профили `com.vlarpsu.obsession.setup` в Local/Roaming AppData
+не удаляются при работающем WebView. После успешного машинного удаления экран
+сообщает о незавершённой очистке и предлагает закрыть окно. `run_return`
+завершает WebView, после чего нативная часть удаляет только эти два профиля.
+Она повторяет проверку путей и очистку до 20 раз с интервалом 500 мс. Чужие
+процессы не завершаются. Если файлы всё ещё заняты, появляется нативное
+предупреждение; автоматическое удаление этих остатков после перезагрузки
+не обещается. При аварийном завершении процесса отложенная очистка не выполнится.
+
+Настройки и остальные выбранные данные очищаются по исходному плану до
+экрана завершения. Если кэш не выбран, отложенная очистка не назначается.
+
+Проверка исправления: 77 Rust-тестов пройдены (1 пакетный тест пропущен),
+включая занятой файл, повтор после освобождения, данные закрытия WebView,
+соседние файлы и выбор категорий; 5 frontend-тестов и production build пройдены.
+Живое удаление на компьютере разработчика для этой проверки не запускалось.
 
 ## Safety
 

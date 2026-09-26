@@ -75,6 +75,33 @@ fn owned_temp(name: &str) -> bool {
 #[derive(Default)]
 pub(crate) struct Plan { files: Vec<PathBuf>, directories: Vec<PathBuf> }
 
+// Кэш окна удаляется только после остановки WebView; остальные цели остаются
+// в заранее проверенном плане и очищаются до экрана завершения.
+pub(crate) fn defer_setup_cache(mut plan: Plan, cache: bool) -> Result<(Plan, Vec<PathBuf>), String> {
+    let deferred = if cache {
+        roots()?.into_iter().map(|(path, _)| path)
+            .filter(|path| path.file_name().is_some_and(|name| name == "com.vlarpsu.obsession.setup"))
+            .collect::<Vec<_>>()
+    } else { Vec::new() };
+    plan.files.retain(|path| !deferred.iter().any(|root| path.starts_with(root)));
+    plan.directories.retain(|path| !deferred.iter().any(|root| path.starts_with(root)));
+    Ok((plan, deferred))
+}
+
+pub(crate) fn finish_setup_cache(roots: &[PathBuf]) -> Vec<String> {
+    // WebView может дописать файлы при закрытии. После остановки окна строится
+    // новый ограниченный план, с повторной проверкой junction и каждого пути.
+    let mut errors = Vec::new();
+    for root in roots {
+        let mut plan = Plan::default();
+        match collect(root, root, &mut plan) {
+            Ok(()) => errors.extend(execute(plan)),
+            Err(error) => errors.push(error),
+        }
+    }
+    errors
+}
+
 fn inspect(path: &Path) -> Result<Option<fs::Metadata>, String> {
     // Recheck the whole ancestry, not just the final component.
     for parent in path.ancestors() {
@@ -173,6 +200,56 @@ pub(crate) fn execute(mut plan: Plan) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn deferred_cache_retries_after_file_handle_is_released() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let root = std::env::current_dir().unwrap().join("target")
+            .join(format!("deferred-cache-{}", std::process::id()));
+        let owned = root.join("setup-cache");
+        fs::create_dir_all(&owned).unwrap();
+        let file = owned.join("lockfile");
+        fs::write(&file, b"cache").unwrap();
+        fs::write(root.join("neighbor"), b"keep").unwrap();
+        let lock = fs::OpenOptions::new().read(true).share_mode(1).open(&file).unwrap();
+        assert!(!finish_setup_cache(&[owned.clone()]).is_empty());
+        assert!(file.exists());
+        drop(lock);
+        // При завершении WebView могут появиться новые файлы в том же профиле.
+        fs::write(owned.join("shutdown-data"), b"cache").unwrap();
+        assert!(finish_setup_cache(&[owned.clone()]).is_empty());
+        assert!(!owned.exists());
+        assert!(root.join("neighbor").exists());
+        fs::remove_file(root.join("neighbor")).unwrap();
+        fs::remove_dir(root).unwrap();
+    }
+
+    #[test]
+    fn cache_opt_out_keeps_the_original_plan() {
+        let mut plan = Plan::default();
+        plan.files.push(PathBuf::from(r"C:\fixture\settings.json"));
+        let (plan, deferred) = defer_setup_cache(plan, false).unwrap();
+        assert!(deferred.is_empty());
+        assert_eq!(plan.files, vec![PathBuf::from(r"C:\fixture\settings.json")]);
+    }
+
+    #[test]
+    fn setup_cache_is_deferred_but_application_data_is_not() {
+        let setup_roots: Vec<_> = roots().unwrap().into_iter().map(|(p, _)| p)
+            .filter(|p| p.file_name().is_some_and(|n| n == "com.vlarpsu.obsession.setup"))
+            .collect();
+        let keep = PathBuf::from(r"C:\fixture\settings.json");
+        let mut plan = Plan::default();
+        plan.files.push(keep.clone());
+        for root in &setup_roots {
+            plan.files.push(root.join("EBWebView/lockfile"));
+            plan.directories.push(root.clone());
+        }
+        let (plan, deferred) = defer_setup_cache(plan, true).unwrap();
+        assert_eq!(deferred, setup_roots);
+        assert_eq!(plan.files, vec![keep]);
+        assert!(plan.directories.is_empty());
+    }
+
     #[test]
     fn temp_matching_is_narrow() {
         assert!(owned_temp("obsession-installer-safety-123-abc123-0.ps1"));
