@@ -1,0 +1,74 @@
+/* Декор расположен за содержимым и не участвует в навигации или переходах. */
+.paper-atmosphere {
+  position: absolute; inset: 43px 0 69px; z-index: 0;
+  overflow: hidden; pointer-events: none;
+  opacity: 1; transition: opacity 400ms ease;
+}
+.paper-light {
+  position: absolute; inset: -20%;
+  background: radial-gradient(ellipse at 25% 32%, #fff9df88, transparent 48%),
+    radial-gradient(ellipse at 80% 75%, #ccaa6720, transparent 42%);
+  animation: paper-light-drift 22s ease-in-out infinite alternate;
+}
+.margin-sketches { position: absolute; width: 100%; height: 100%; overflow: visible; }
+.margin-sketches g {
+  stroke: #8d6249; stroke-width: 1.25; stroke-linecap: round; stroke-linejoin: round;
+  opacity: .38; transform-box: fill-box; transform-origin: center;
+}
+.sketch-orbit { stroke-dasharray: 2 7; opacity: .55; }
+.sketch-left { animation: paper-sketch-sway 12s ease-in-out infinite alternate; }
+.sketch-right { animation: paper-sketch-sway 15s -7s ease-in-out infinite alternate-reverse; }
+.margin-sketches .sketch-bottom { opacity: .25; }
+.paper-dust { position: absolute; inset: 0; }
+.paper-dust i {
+  position: absolute; width: 3px; height: 3px; border-radius: 50%;
+  background: #98784b; opacity: 0;
+  animation: paper-dust-float 15s linear infinite;
+}
+.paper-dust i:nth-child(1) { left: 9%; top: 70%; animation-delay: -3s; }
+.paper-dust i:nth-child(2) { left: 24%; top: 38%; animation-delay: -11s; width: 2px; height: 2px; }
+.paper-dust i:nth-child(3) { left: 79%; top: 63%; animation-delay: -8s; }
+.paper-dust i:nth-child(4) { left: 91%; top: 87%; animation-delay: -14s; width: 2px; height: 2px; }
+.paper-dust i:nth-child(5) { left: 14%; top: 93%; animation-delay: -6s; width: 2px; height: 2px; }
+.paper-dust i:nth-child(6) { left: 68%; top: 30%; animation-delay: -1s; }
+.paper-dust i:nth-child(7) { left: 85%; top: 42%; animation-delay: -12s; width: 2px; height: 2px; }
+.paper-dust i:nth-child(8) { left: 39%; top: 90%; animation-delay: -9s; width: 2px; height: 2px; }
+body[data-step="options"] .paper-atmosphere { opacity: .24; }
+body[data-step="installing"] .paper-atmosphere { opacity: .32; }
+body[data-step="error"] .paper-atmosphere,
+body[data-step="bootstrapping"] .paper-atmosphere { opacity: .1; }
+/* Движение картинки отделено от transform контейнера, которым управляет FLIP. */
+body[data-step="welcome"] .scene-cat img,
+body[data-step="done"] .scene-cat img {
+  transform-origin: 50% 95%; animation: paper-cat-breathe 6s ease-in-out infinite;
+}
+.welcome-copy .hero-title::after, .done-title::after {
+  content: ""; display: block; width: 65%; height: 6px; margin: 4px auto -5px;
+  border-top: 1px solid #7d2f3155; border-radius: 50%; transform: rotate(-2deg);
+}
+.progress-fill { position: relative; overflow: hidden; }
+.progress-fill::after {
+  content: ""; position: absolute; inset: 0; width: 55%;
+  background: linear-gradient(90deg, transparent, #fff3d955, transparent);
+  animation: paper-ink-flow 2.8s ease-in-out infinite;
+}
+@keyframes paper-light-drift { to { transform: translate(4%, -3%); } }
+@keyframes paper-sketch-sway { to { transform: translateY(-5px) rotate(3deg); } }
+@keyframes paper-cat-breathe {
+  0%, 100% { transform: translateY(0) rotate(-1deg); }
+  50% { transform: translateY(-3px) rotate(1deg); }
+}
+@keyframes paper-dust-float {
+  0% { opacity: 0; transform: translate(0, 15px); }
+  20%, 65% { opacity: .3; }
+  100% { opacity: 0; transform: translate(18px, -70px); }
+}
+@keyframes paper-ink-flow { from { transform: translateX(-110%); } to { transform: translateX(290%); } }
+@media (prefers-reduced-motion: reduce) {
+  .paper-light, .margin-sketches g, .paper-dust i, .scene-cat img, .progress-fill::after { animation: none !important; }
+  .paper-atmosphere { transition: none; }
+  .paper-dust, .progress-fill::after { display: none; }
+}
+@media (forced-colors: active) {
+  .paper-atmosphere, .progress-fill::after, .hero-title::after { display: none; }
+}

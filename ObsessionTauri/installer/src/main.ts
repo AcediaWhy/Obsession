@@ -3,7 +3,10 @@ import { listen } from "@tauri-apps/api/event";
 
 import "./style.css";
 import "./paper.css";
+import "./paperMotion.css";
+import "./paperEffects.css";
 import mothInk from "../../src-tauri/icons/icon.png";
+import { createPaperMotion } from "./paperMotion";
 import {
   applyProgressEvent,
   escapeHtml,
@@ -143,6 +146,31 @@ root.innerHTML = `
     <div class="ambient-orb ambient-orb-two"></div>
     <div class="grain"></div>
   </div>
+  <div class="paper-atmosphere" aria-hidden="true">
+    <div class="paper-light"></div>
+    <svg class="margin-sketches" viewBox="0 0 720 390" fill="none">
+      <g class="sketch-left">
+        <path class="sketch-orbit" d="M132 69c-58 12-76 68-51 100 16 21 42 21 59 5" />
+        <path d="m77 81 3-10 4 9 10 3-10 3-3 10-4-10-9-2 9-3Z" />
+        <path d="m145 120 2-6 3 6 6 2-6 2-2 6-3-6-6-2 6-2Z" />
+        <path d="m103 208 8-3m-13-6 3-8" />
+      </g>
+      <g class="sketch-right">
+        <path class="sketch-orbit" d="M571 104c42-16 76 8 71 44-3 25-29 39-56 28" />
+        <path d="m608 87 4-13 5 13 12 4-12 4-4 13-5-13-12-4 12-4Z" />
+        <path d="m575 213 3-8 3 8 8 3-8 3-3 8-3-8-8-3 8-3Z" />
+        <path d="m650 206 6 5m-2-16 7-2" />
+      </g>
+      <g class="sketch-bottom">
+        <path d="M83 302c21 8 44 9 65 2m-57 7c14 3 28 3 39 1" />
+        <path d="M572 306c13-13 27-12 33-5 6 9-6 16-11 11-4-5 6-14 19-14" />
+        <path d="m151 303 7-4-3 8m397-21 3-7 3 7 7 2-7 3-2 7-3-7-7-2 6-3Z" />
+      </g>
+    </svg>
+    <div class="paper-dust">
+      <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+    </div>
+  </div>
   <header class="titlebar" data-tauri-drag-region>
     <div class="titlebar-brand" data-tauri-drag-region>
       <span class="brand-mark" aria-hidden="true"></span>
@@ -169,16 +197,15 @@ root.innerHTML = `
 `;
 
 const el = (id: string) => document.getElementById(id)!;
+const paperMotion = createPaperMotion(root, el("stage"), mothInk);
 
 function bind(id: string, fn: () => void) {
   el(id).addEventListener("click", fn);
 }
 
 function eyeHtml(size: number, quiet = false): string {
-  // Historical internal names are retained; the artwork is the approved peek cat.
-  return `<div class="moth-mark${quiet ? " moth-quiet" : ""}" style="--moth-size:${size}px" aria-hidden="true">
-    <img src="${mothInk}" alt="" draggable="false" />
-  </div>`;
+  // Место в раскладке принадлежит экрану; сам котик живёт в постоянном слое окна.
+  return `<div class="cat-slot${quiet ? " cat-slot-quiet" : ""}" style="--cat-size:${size}px" aria-hidden="true"></div>`;
 }
 
 function shieldIcon(): string {
@@ -267,6 +294,7 @@ function focusScreenHeading() {
 }
 
 function render() {
+  paperMotion.capture();
   const stage = el("stage");
   const left = el("foot-left");
   const right = el("foot-right");
@@ -300,6 +328,7 @@ function render() {
         <section class="screen welcome-screen">
           <div class="cat-welcome">${eyeHtml(116)}<span class="cat-hello" aria-hidden="true">мрр.</span></div>
           <div class="welcome-copy">
+            <p class="page-caption">${copy.eyebrow}</p>
             <h1 class="hero-title" data-screen-title tabindex="-1">${copy.title}</h1>
             <p class="hero-description">${copy.description}</p>
             <div class="meta-row" aria-label="Информация о версии">
@@ -318,6 +347,8 @@ function render() {
       stage.innerHTML = `
         <section class="screen options-screen">
           <header class="screen-header">
+            ${eyeHtml(58, true)}
+            <p class="page-caption">Параметры установки</p>
             <h1 class="screen-title" data-screen-title tabindex="-1">${copy.optionsTitle}</h1>
             <p class="screen-description">${copy.optionsDescription}</p>
           </header>
@@ -329,13 +360,13 @@ function render() {
                   <input type="checkbox" id="cb-desktop" ${state.desktop ? "checked" : ""}/>
                   <span class="shortcut-sketch" aria-hidden="true"><svg viewBox="0 0 48 48"><path d="M7 9 41 8 40 32 8 33ZM18 40h14m-8-7v7"/><path d="m17 22 4 4 10-10"/></svg></span>
                   <span class="choice-control" aria-hidden="true"></span>
-                  <span class="choice-copy"><strong>На рабочем столе</strong></span>
+                  <span class="choice-copy"><strong>На рабочем столе</strong><small>Всегда под рукой</small></span>
                 </label>
                 <label class="choice-card" for="cb-start">
                   <input type="checkbox" id="cb-start" ${state.startMenu ? "checked" : ""}/>
                   <span class="shortcut-sketch" aria-hidden="true"><svg viewBox="0 0 48 48"><path d="m9 10 13-1v13H9Zm18-1 13-1v14H27ZM9 27h13v13L9 39Zm18 0h13v14l-13-1Z"/></svg></span>
                   <span class="choice-control" aria-hidden="true"></span>
-                  <span class="choice-copy"><strong>В меню «Пуск»</strong></span>
+                  <span class="choice-copy"><strong>В меню «Пуск»</strong><small>Среди твоих приложений</small></span>
                 </label>
               </div>
             </fieldset>
@@ -372,6 +403,7 @@ function render() {
           <div class="progress-heading">
             ${eyeHtml(70, true)}
             <div>
+              <p class="page-caption">${copy.badge}</p>
               <h1 class="screen-title" data-screen-title tabindex="-1">${copy.progressTitle}</h1>
             </div>
             <strong class="progress-percent" id="progress-pct">${state.pct}%</strong>
@@ -395,6 +427,7 @@ function render() {
           <div class="done-visual">
             ${eyeHtml(126, true)}
           </div>
+          <p class="page-caption">Всё готово</p>
           <h1 class="hero-title done-title" data-screen-title tabindex="-1">${copy.done}</h1>
           <p class="hero-description done-description">${copy.doneDescription}</p>
           <div class="result-path"><span>${folderIcon()}</span><code id="done-path"></code></div>
@@ -444,6 +477,7 @@ function render() {
   else if (state.step === "done") el("announcer").textContent = copy.done;
   else if (state.step !== "installing") el("announcer").textContent = "";
   focusScreenHeading();
+  paperMotion.play(state.step, STEP_INDEX[state.step]);
 }
 
 let installing = false;

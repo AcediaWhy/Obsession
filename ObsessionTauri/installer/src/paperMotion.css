@@ -1,0 +1,96 @@
+/* Общая бумажная сцена: сменой шагов управляет paperMotion.ts. */
+#app { overflow: hidden; }
+.screen, .cat-hello, .done-visual { animation: none; }
+.stage { padding-inline: 48px; }
+.screen { position: relative; }
+.screen-ghost { pointer-events: none; z-index: 2; }
+.scene-cat {
+  position: absolute; z-index: 3; pointer-events: none;
+  transform-origin: 0 0; mix-blend-mode: multiply;
+}
+.scene-cat img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.cat-slot { width: var(--cat-size); height: var(--cat-size); flex: none; }
+.page-caption {
+  color: #876044; font: 9px var(--font-mono); letter-spacing: .13em;
+  text-transform: uppercase; line-height: 1.5;
+}
+.welcome-screen { gap: 15px; }
+.welcome-copy { gap: 10px; }
+.hero-title { font-size: 46px; letter-spacing: -.035em; }
+.hero-description { max-width: 330px; }
+.cat-welcome { padding: 0 14px; }
+.cat-hello { top: 15px; right: -29px; font-size: 18px; opacity: .8; }
+.meta-row { margin-top: 8px; font-size: 9px; letter-spacing: .04em; }
+.options-screen { max-width: 552px; gap: 20px; }
+.options-screen .screen-header {
+  position: relative; text-align: left; gap: 4px; padding-left: 80px;
+  min-height: 66px; align-content: center;
+}
+.screen-header .cat-slot { position: absolute; left: 0; top: 4px; }
+.screen-title { font-size: 29px; line-height: 1.25; }
+.screen-description { font-size: 12px; line-height: 1.6; }
+.shortcut-grid { gap: 20px; }
+.choice-card {
+  min-height: 138px; gap: 12px; padding: 17px;
+  border-color: #947a5745; background: #fffaf08c;
+  box-shadow: 0 2px 2px #624b2510, 2px 5px 0 #a78d6310;
+  transition: transform 180ms ease, background 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
+}
+.choice-card:has(input:checked) { border-color: #7d2f3185; background: #fffaf0; }
+.choice-card:has(input:focus-visible) { outline: 2px solid #7d2f31; outline-offset: 4px; }
+.choice-card:hover { box-shadow: 0 6px 15px #624b2510, 2px 6px 0 #a78d6315; }
+.choice-copy { display: grid; gap: 4px; text-align: center; }
+.choice-copy strong { font-size: 13px; }
+.choice-copy small { font-size: 10px; color: #83725d; font-weight: 400; }
+.choice-control { width: 17px; height: 17px; }
+.shortcut-sketch svg { width: 39px; height: 39px; }
+.options-layout { gap: 10px; }
+.quiet-note span { font-size: 10px; }
+.progress-screen { max-width: 552px; gap: 25px; }
+.progress-heading { gap: 17px; }
+.progress-heading .page-caption { margin-bottom: 6px; }
+.progress-heading .screen-title { font-size: 27px; }
+.progress-percent { font-family: var(--font-mono); font-size: 23px; letter-spacing: -.07em; }
+.progress-labels { font-size: 11px; }
+.progress-track { height: 8px; }
+.timeline { margin-top: 23px; }
+.timeline-copy strong { font-size: 11px; }
+.done-screen { gap: 10px; }
+.done-visual { margin-bottom: 5px; }
+.done-title { font-size: 36px; }
+.result-path { margin-top: 6px; background: #fff9ec60; border-color: #947a5733; }
+.footer { grid-template-columns: 125px 1fr 190px; padding-inline: 30px; }
+.btn { min-height: 40px; font-size: 12px; }
+.btn-primary { min-width: 144px; }
+.btn:active { transform: translateY(1px); }
+.btn:focus-visible, .window-button:focus-visible { outline-color: #7d2f31; }
+.stepper { justify-content: center; }
+.stepper-dot { transition: background 180ms ease; }
+.stepper-item.is-current .stepper-dot { background: #7d2f31; }
+body[data-step="welcome"] .footer { grid-template-columns: 125px 1fr 190px; justify-items: stretch; }
+body[data-step="welcome"] .footer-left { display: flex; }
+body[data-step="welcome"] .stepper { display: flex; }
+body[data-step="welcome"] .btn-primary { min-width: 144px; }
+.screen-ghost .cat-slot { visibility: hidden; }
+@media (max-height: 490px) {
+  .stage { padding-block: 8px; overflow-y: auto; }
+  .screen { flex-shrink: 0; margin-block: auto; }
+  .welcome-screen { gap: 6px; }
+  .cat-welcome .cat-slot { width: 86px; height: 86px; }
+  .hero-title { font-size: 35px; }
+  .options-screen { gap: 12px; }
+  .choice-card { min-height: 112px; padding: 10px; gap: 7px; }
+  .done-visual .cat-slot { width: 82px; height: 82px; }
+}
+@media (max-width: 620px) {
+  .stage { padding-inline: 26px; }
+  .footer { padding-inline: 20px; grid-template-columns: 80px 1fr 175px; gap: 6px; }
+  body[data-step="welcome"] .footer { grid-template-columns: 80px 1fr 175px; }
+  .screen-title { font-size: 25px; }
+  .progress-heading .screen-title { font-size: 23px; }
+  .stepper-item .stepper-label { display: none; }
+  .stepper-item:not(:last-child)::after { margin-inline: 4px; width: 8px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .choice-card, .scene-cat, .btn { transition: none; }
+}
