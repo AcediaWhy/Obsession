@@ -79,6 +79,11 @@ pub fn emit_log(app: &AppHandle, level: &str, source: &str, message: &str) {
     append_log_file(app, &ts, level, source, message);
 }
 
+/// Сохраняет техническую диагностику на диск без события для журнала интерфейса.
+pub(crate) fn write_diagnostic_log(app: &AppHandle, level: &str, source: &str, message: &str) {
+    append_log_file(app, &now_hms(), level, source, message);
+}
+
 /// Минимальный интервал между однотипными нативными уведомлениями Windows.
 const NOTIFY_COOLDOWN: Duration = Duration::from_secs(45);
 

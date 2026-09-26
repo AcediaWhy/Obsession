@@ -36,6 +36,64 @@ fn redact_proxy_log_line(message: &str) -> std::borrow::Cow<'_, str> {
     TG_PROXY_LINK_RE.replace_all(message, "tg://proxy?[redacted]")
 }
 
+const PROXY_WARNING_INTERVAL: Duration = Duration::from_secs(30);
+
+fn proxy_ui_log_message(message: &str) -> Option<(&'static str, &str)> {
+    let message = message.trim();
+    let body = match message.split_once(' ') {
+        Some((time, body))
+            if time.len() == 8
+                && time.bytes().enumerate().all(|(index, byte)| {
+                    if index == 2 || index == 5 {
+                        byte == b':'
+                    } else {
+                        byte.is_ascii_digit()
+                    }
+                }) =>
+        {
+            body.trim_start()
+        }
+        _ => message,
+    };
+    if let Some(error) = body
+        .strip_prefix("[ERROR]")
+        .or_else(|| body.strip_prefix("error:"))
+    {
+        return Some(("error", error.trim()));
+    }
+    let warning = body.strip_prefix("[WARN]")?.trim();
+    if warning.starts_with('[') {
+        if warning.contains("no upstream route available") {
+            return Some((
+                "warn",
+                "Telegram-прокси: не удалось найти доступный маршрут к серверу Telegram.",
+            ));
+        }
+        if warning.contains("not in config") {
+            return Some((
+                "warn",
+                "Telegram-прокси: запрошенный сервер Telegram отсутствует в конфигурации.",
+            ));
+        }
+        if warning.contains("bad handshake") {
+            return Some((
+                "warn",
+                "Telegram-прокси: подключение отклонено из-за неверного секрета или протокола.",
+            ));
+        }
+        // Сбои отдельных кандидатов и сессий ожидаемы при переборе маршрутов.
+        return None;
+    }
+    Some(("warn", warning))
+}
+
+fn should_show_proxy_warning(
+    previous: Option<std::time::Instant>,
+    now: std::time::Instant,
+) -> bool {
+    previous.is_none_or(|previous| now.duration_since(previous) >= PROXY_WARNING_INTERVAL)
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RuntimeResourceManifest {
@@ -912,6 +970,7 @@ fn spawn_link_reader<R>(
 {
     tokio::spawn(async move {
         let mut lines = BufReader::new(stream).lines();
+        let mut last_warning = None;
         while let Ok(Some(line)) = lines.next_line().await {
             if !is_current(&app, generation, pid) {
                 break;
@@ -921,7 +980,22 @@ fn spawn_link_reader<R>(
                 continue;
             }
             let safe_msg = redact_proxy_log_line(msg);
-            util::emit_log(&app, "info", "proxy", &format!("[tg] {safe_msg}"));
+            let visible = proxy_ui_log_message(&safe_msg).filter(|(level, _)| {
+                if *level != "warn" {
+                    return true;
+                }
+                let now = std::time::Instant::now();
+                if !should_show_proxy_warning(last_warning, now) {
+                    return false;
+                }
+                last_warning = Some(now);
+                true
+            });
+            if let Some((level, message)) = visible {
+                util::emit_log(&app, level, "proxy", message);
+            }
+            // Полный вывод сохраняется после удаления ссылок с секретом.
+            util::write_diagnostic_log(&app, "info", "proxy", &format!("[tg] {safe_msg}"));
             if let Some(m) = TG_PROXY_LINK_RE.find(msg) {
                 let link = m.as_str().to_string();
                 let accepted = {
@@ -1015,6 +1089,59 @@ mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[test]
+    fn proxy_ui_hides_connection_chatter_and_route_candidate_failures() {
+        for line in [
+            "21:30:35 [INFO] [127.0.0.1:50262] handshake ok: DC2 media proto=Padded",
+            "21:30:35 [INFO] [127.0.0.1:50262] DC2 media route race winner: telegram-wss",
+            "21:30:35 [WARN] [127.0.0.1:50262] DC2 media relay example.com failed: HTTP 503",
+            "21:30:35 [WARN] [127.0.0.1:50262] DC2 media direct TCP timed out",
+            "21:30:35 [WARN] [127.0.0.1:50262] DC2m public relay demoted after unstable session",
+            "tg://proxy?server=127.0.0.1&port=1443&secret=test",
+        ] {
+            assert_eq!(proxy_ui_log_message(line), None, "{line}");
+        }
+    }
+
+    #[test]
+    fn proxy_ui_preserves_errors_and_summarizes_unavailable_routes() {
+        assert_eq!(
+            proxy_ui_log_message("error: bind: address already in use"),
+            Some(("error", "bind: address already in use"))
+        );
+        assert_eq!(
+            proxy_ui_log_message("21:30:35 [ERROR] fatal failure"),
+            Some(("error", "fatal failure"))
+        );
+        assert_eq!(
+            proxy_ui_log_message("[WARN] CF worker: ignored"),
+            Some(("warn", "CF worker: ignored"))
+        );
+        assert_eq!(
+            proxy_ui_log_message(
+                "21:30:35 [WARN] [127.0.0.1:50262] DC2 media no upstream route available"
+            ),
+            Some((
+                "warn",
+                "Telegram-прокси: не удалось найти доступный маршрут к серверу Telegram."
+            ))
+        );
+    }
+
+    #[test]
+    fn repeated_proxy_warnings_are_bounded() {
+        let now = std::time::Instant::now();
+        assert!(should_show_proxy_warning(None, now));
+        assert!(!should_show_proxy_warning(
+            Some(now),
+            now + Duration::from_secs(29)
+        ));
+        assert!(should_show_proxy_warning(
+            Some(now),
+            now + PROXY_WARNING_INTERVAL
+        ));
+    }
 
     #[test]
     fn proxy_links_are_redacted_without_losing_surrounding_diagnostics() {
