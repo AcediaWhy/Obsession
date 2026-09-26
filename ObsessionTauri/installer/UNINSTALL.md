@@ -1,27 +1,15 @@
-# Paper uninstaller
+# Деинсталлятор с бумажным оформлением
 
-The installed `uninstall.exe --uninstall` now opens a dedicated paper-style UI.
-Windows Apps & Features already points at this entry. Install/repair with the
-new setup first to replace an older installed uninstaller. The downloaded setup
-is not a standalone remover: the elevated worker accepts only the exact
-protected installed uninstaller.
+Установленный `uninstall.exe --uninstall` открывает отдельный интерфейс с бумажным оформлением. Список приложений Windows уже ссылается на эту точку входа. Чтобы заменить прежний установленный деинсталлятор, сначала выполните установку или восстановление новым Setup. Скачанный Setup не является отдельной программой удаления: worker с повышенными правами принимает только точный защищённый установленный деинсталлятор.
 
-## Choices and scope
+## Выбор данных и границы удаления
 
-- Settings/profiles: current-user data in LocalAppData/vlarpsu/Obsession,
-  RoamingAppData/Obsession, and the legacy LocalAppData/Obsession directory.
-- Cache/logs: known cache entries in those directories plus Local/Roaming
-  `com.vlarpsu.obsession` and `com.vlarpsu.obsession.setup` WebView data.
-- Temporary: only `obsession-installer-safety-PID-HEX-ATTEMPT.ps1` files created
-  by the setup's TempArtifacts helper, not all Temp or arbitrary prefix matches.
-- Retired `bin` directories in the three data roots are removed regardless of
-  the keep-settings choice. Machine files, service, protected runtime state,
-  owned shortcuts and owned current-user registry pointers are always removed.
+- Настройки и профили: данные текущего пользователя в LocalAppData/vlarpsu/Obsession, RoamingAppData/Obsession и прежнем каталоге LocalAppData/Obsession.
+- Кэш и журналы: известные записи кэша в этих каталогах и данные WebView `com.vlarpsu.obsession` и `com.vlarpsu.obsession.setup` в Local/Roaming.
+- Временные файлы: только `obsession-installer-safety-PID-HEX-ATTEMPT.ps1`, созданные помощником TempArtifacts установщика. Весь Temp и произвольные совпадения по префиксу не затрагиваются.
+- Прежние каталоги `bin` в трёх корнях пользовательских данных удаляются независимо от выбора сохранения настроек. Файлы уровня компьютера, служба, защищённое состояние runtime, принадлежащие приложению ярлыки и указатели реестра текущего пользователя удаляются всегда.
 
-No other users' profiles, shared WebView2 runtime, manually saved downloads,
-Windows event history, or arbitrary user exports are scanned/deleted. This is
-not a forensic eraser. Locked application files are listed in the result;
-machine-owned locked files use the existing reboot-deletion mechanism.
+Не просматриваются и не удаляются профили других пользователей, общий runtime WebView2, вручную сохранённые загрузки, история событий Windows и произвольные пользовательские экспорты. Это не средство безвозвратного стирания следов. Занятые файлы приложения перечисляются в результате; для занятых файлов уровня компьютера используется существующий механизм удаления после перезагрузки.
 
 ## Очистка кэша окна после закрытия
 
@@ -37,39 +25,16 @@ machine-owned locked files use the existing reboot-deletion mechanism.
 Настройки и остальные выбранные данные очищаются по исходному плану до
 экрана завершения. Если кэш не выбран, отложенная очистка не назначается.
 
-Проверка исправления: 77 Rust-тестов пройдены (1 пакетный тест пропущен),
-включая занятой файл, повтор после освобождения, данные закрытия WebView,
-соседние файлы и выбор категорий; 5 frontend-тестов и production build пройдены.
-Живое удаление на компьютере разработчика для этой проверки не запускалось.
+## Безопасность
 
-## Safety
+Интерфейс передаёт три логических значения, а не пути удаления. Известные каталоги определяются для интерактивного пользователя через Windows Shell; пользовательская очистка выполняется вне worker с повышенными правами. Пути с reparse points среди предков отклоняются. Перечисление файлов ограничено, файлы удаляются по одному, каталоги — только когда пусты. Новые и занятые записи показываются пользователю, а не скрываются рекурсивным удалением. Удаление данных необратимо и требует отдельного экрана явного подтверждения.
 
-The UI sends three booleans, never deletion paths. Known folders are resolved
-for the interactive user via Windows Shell; user-data cleanup stays outside the
-elevated worker. Reparse-point ancestry is rejected. File enumeration is bounded,
-files are removed individually, and directories are removed only when empty.
-New or locked entries are reported rather than hidden by recursive deletion.
-Data deletion is permanent and requires the explicit confirmation screen.
+Перед удалением компонентов уровня компьютера установленное приложение останавливается существующим помощником с проверкой точного пути. Проверяется снимок hosts службы с подтверждённой подлинностью; активные управляемые изменения hosts удаляются через операцию слияния, сохраняющую посторонние записи. Если это нельзя подтвердить, удаление прекращается и интерфейс предлагает восстановление вместо уничтожения данных отката. При отсутствии или недоступности службы сначала требуется восстановление установки.
 
-Before machine teardown the installed app is stopped by the existing exact-path
-helper. The authenticated service's hosts snapshot is checked; active managed
-hosts changes are uninstalled through its preserving merge operation. If this
-cannot be confirmed, teardown stops and the UI asks for repair instead of
-discarding recovery data. Missing/unavailable services require repair first.
+Без WebView2 нативный запрос Yes/No/Cancel предлагает полную очистку или сохранение настроек. No означает сохранение настроек; Cancel не выполняет удаление.
 
-Without WebView2, a native Yes/No/Cancel prompt offers full cleanup or retaining
-settings. No selects retaining settings; Cancel performs no removal.
+## Проверки
 
-## Verification
+Автоматические тесты установщика проверяют точные имена временных файлов, классификацию кэша, сочетания переключателей, границы каталогов, занятые и новые файлы, повторную очистку после освобождения и отказ для небезопасных путей. Команды запуска приведены в [руководстве разработчика](../README.md#проверки).
 
-74 Rust tests passed (one package test intentionally ignored in the normal suite).
-The six new cleanup tests cover narrow temporary names, cache classification,
-switch combinations, exact fixture boundaries, new-file reporting and refusal
-of relative/escaped paths. Frontend production build passed. The safe browser
-preview (`?preview=uninstall`) was exercised through choice, confirmation,
-progress and completion; it never invokes uninstall commands.
-
-Live elevated uninstall/reboot testing was not performed on the user's machine.
-Before distributing broadly, validate install → keep settings → reinstall →
-full uninstall in a disposable Windows VM, including UAC cancellation, missing
-service, WebView locks and externally edited hosts.
+Безопасное браузерное превью `?preview=uninstall` позволяет проверить выбор, подтверждение, прогресс и завершение; команды удаления оно не вызывает. Настоящее удаление с повышенными правами и перезагрузкой проверяют в одноразовой Windows VM по [списку перед выпуском](../docs/RELEASE_CHECKLIST.md).

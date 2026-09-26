@@ -1,10 +1,10 @@
-# Peek cat identity
+# Символ выглядывающего кота
 
-The user approved the peek-a-boo cat after inspecting actual 16–64px previews. This supersedes the earlier moth identity; moth files are retained as earlier artwork, not active assets.
+Пользователь утвердил выглядывающего кота после просмотра настоящих превью 16–64px. Этот символ заменяет прежнего мотылька; файлы мотылька сохранены как ранние рисунки, а не действующие ресурсы.
 
-- `peek-cat.png`: approved imagegen adaptation of the user-supplied `peek a boo.jpg`; identical to `artifacts/peek-cat-study/peek-cat.png`.
-- Preserve its tilted face, uneven eyes, irregular outline, framing and warm light background. Do not regenerate it for routine icon exports.
-- Generate sizes with `npx tauri icon src/assets/brand/peek-cat.png --output src-tauri/target/peek-cat-icons`.
-- Copy root PNGs and ICO to `src-tauri/icons`, the ICO to `installer/src-tauri/icons/icon.ico` and `src-tauri/resources/icons/tray.ico`.
-- Navigation uses the generated 128px PNG (64 KiB decoded RGBA). Installer artwork uses the generated 512px PNG. Neither uses a video decoder.
-- Existing internal helper/component names are retained. Active and inactive tray states share the same icon; the tooltip and menu carry status.
+- `peek-cat.png`: утверждённая адаптация imagegen предоставленного пользователем `peek a boo.jpg`; идентична `artifacts/peek-cat-study/peek-cat.png`.
+- Сохраняйте наклон лица, неодинаковые глаза, неровный контур, кадрирование и тёплый светлый фон. Не создавайте изображение заново для обычного экспорта иконок.
+- Создавайте размеры командой `npx tauri icon src/assets/brand/peek-cat.png --output src-tauri/target/peek-cat-icons`.
+- Копируйте корневые PNG и ICO в `src-tauri/icons`, ICO — в `installer/src-tauri/icons/icon.ico` и `src-tauri/resources/icons/tray.ico`.
+- Навигация использует созданный PNG 128px (64 KiB декодированных RGBA-данных). Иллюстрация установщика — PNG 512px. Видеодекодер не используется.
+- Существующие внутренние имена помощников и компонентов сохранены. Активное и неактивное состояния трея используют одну иконку; статус показывают подсказка и меню.

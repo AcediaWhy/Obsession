@@ -1,36 +1,38 @@
 # Obsession — руководство разработчика
 
-Этот каталог содержит desktop-приложение Obsession, защищённую Windows-службу, общий IPC-протокол и фирменный transactional setup.
+Этот каталог содержит настольное приложение Obsession, защищённую Windows-службу, общий IPC-протокол и собственный транзакционный установщик.
 
 Пользовательское описание и ссылка на опубликованный установщик находятся в [корневом README](../README.md).
 
-## Workspace
+Актуальные руководства собраны в [указателе документации](docs/README.md).
+
+## Структура проекта
 
 | Каталог | Назначение |
 |---|---|
-| `src/` | React-интерфейс, Zustand stores и визуальные сцены тем. |
-| `src-tauri/` | Tauri host: окно, трей, команды frontend-моста и непривилегированная orchestration-логика. |
-| `runtime-protocol/` | Версионированные request/response/event типы для IPC. |
+| `src/` | React-интерфейс, состояние Zustand и визуальные сцены тем. |
+| `src-tauri/` | Хост Tauri: окно, трей, команды моста фронтенда и управление операциями без повышенных прав. |
+| `runtime-protocol/` | Версионированные типы запросов, ответов и событий для IPC. |
 | `runtime-client/` | Клиент named pipe с проверкой совместимости и ожиданием занятой службы. |
-| `runtime-service/` | Machine-wide Windows service, выполняющая allowlisted привилегированные операции. |
+| `runtime-service/` | Windows-служба для всего компьютера, выполняющая привилегированные операции из разрешённого списка. |
 | `runtime-reliability/` | Общая логика проверки и восстановления runtime-состояния. |
 | `installer/` | UI и Rust backend фирменного setup размером `720×500`. |
 | `scripts/` | Подготовка manifest/resources и сборка setup. |
-| `docs/` | Спецификации runtime, onboarding и темы Obsession. |
+| `docs/` | Архитектура, диагностика, проверка релиза и скриншоты приложения. |
 
 ## Стек
 
-- **Frontend:** React 18, TypeScript, Vite 6, Tailwind CSS, Framer Motion, Zustand.
-- **Desktop host:** Tauri 2 и Rust stable.
+- **Фронтенд:** React 18, TypeScript, Vite 6, Tailwind CSS, Framer Motion, Zustand.
+- **Хост приложения:** Tauri 2 и Rust stable.
 - **Runtime:** Tokio, Windows API, named pipe IPC, WinDivert/winws и Obsession Telegram Proxy.
-- **Графика:** собственные WebGL2 и Canvas 2D pipelines с SVG/CSS fallback.
-- **Тесты:** Vitest и Rust unit/integration tests для каждого crate.
+- **Графика:** собственные схемы рендеринга WebGL2 и Canvas 2D с резервным SVG/CSS-отображением.
+- **Тесты:** Vitest и модульные и интеграционные Rust-тесты для каждого crate.
 
 ## Требования
 
 - Windows 10/11 x64.
 - Node.js и npm, совместимые с Vite 6; зависимости закреплены в `package-lock.json`.
-- Rust stable с MSVC toolchain.
+- Rust stable с набором инструментов MSVC.
 - Системные зависимости из [Tauri prerequisites](https://tauri.app/start/prerequisites/).
 
 Установите зависимости приложения и установщика из корня репозитория:
@@ -42,13 +44,13 @@ npm --prefix ObsessionTauri/installer ci
 
 ## Запуск
 
-Полный Tauri dev build:
+Полная сборка Tauri для разработки:
 
 ```powershell
 npm --prefix ObsessionTauri run tauri dev
 ```
 
-Только Vite поднимает frontend, но основной `App` ожидает Tauri API. Для изолированной работы над сценами используйте специальные harness-страницы, например:
+Vite запускает только фронтенд, но основной `App` ожидает Tauri API. Для изолированной работы над сценами используйте специальные тестовые страницы, например:
 
 ```text
 http://127.0.0.1:1420/devtools/labs/obsession-choir-dev.html
@@ -60,9 +62,9 @@ http://127.0.0.1:1420/devtools/labs/overview-dev.html
 `index.html`; общие компоненты тем остаются в исходниках приложения.
 
 > [!IMPORTANT]
-> Dev-приложение не повышает себя до администратора. DPI, `hosts` и firewall-команды доступны только через совместимую установленную службу ObsessionRuntime. Отсутствующая capability должна оставаться fail-closed.
+> Приложение разработки не повышает себя до администратора. DPI, `hosts` и команды брандмауэра доступны только через совместимую установленную службу ObsessionRuntime. При отсутствии нужной возможности операция должна оставаться заблокированной.
 
-Перед запуском dev-сборки выйдите из установленного приложения через трей: защита от второго экземпляра может показать уже открытое окно вместо нового. Браузерное превью обзора использует демонстрационные статусы и не подтверждает работу обхода.
+Перед запуском сборки разработки выйдите из установленного приложения через трей: защита от второго экземпляра может показать уже открытое окно вместо нового. Браузерное превью обзора использует демонстрационные статусы и не подтверждает работу обхода.
 
 Для бумажного установщика есть отдельное безопасное превью:
 
@@ -74,7 +76,7 @@ npm --prefix ObsessionTauri/installer run dev
 
 ## Проверки
 
-Frontend:
+Фронтенд:
 
 ```powershell
 npm --prefix ObsessionTauri test
@@ -83,7 +85,7 @@ npm --prefix ObsessionTauri/installer test
 npm --prefix ObsessionTauri/installer run build
 ```
 
-Rust formatting и основные crates:
+Форматирование Rust и основные crates:
 
 ```powershell
 cargo fmt --manifest-path ObsessionTauri/src-tauri/Cargo.toml --all -- --check
@@ -109,7 +111,7 @@ npm --prefix ObsessionTauri run verify:dpi-parsers
 
 ## Сборка
 
-Production frontend и Tauri binary:
+Фронтенд для распространения и исполняемый файл Tauri:
 
 ```powershell
 npm --prefix ObsessionTauri run build
@@ -129,60 +131,57 @@ Obsession-Setup_<version>_x64.exe
 Obsession-Setup_<version>_x64.exe.sha256
 ```
 
-Setup собирает приложение, службу и проверенные runtime-ресурсы в единый сжатый payload. Размер зависит от ресурсов конкретной сборки. Установленный `uninstall.exe --uninstall` открывает отдельный интерфейс удаления с выбором сохраняемых данных.
+Setup собирает приложение, службу и проверенные ресурсы runtime в единый сжатый пакет. Размер зависит от ресурсов конкретной сборки. Установленный `uninstall.exe --uninstall` открывает отдельный интерфейс удаления с выбором сохраняемых данных.
 
-Подробнее: [сжатие payload](installer/PAYLOAD_COMPRESSION.md), [бумажный интерфейс](installer/PAPER_PREVIEW.md), [границы удаления и проверка в VM](installer/UNINSTALL.md).
+Подробнее: [сжатие payload](installer/PAYLOAD_COMPRESSION.md), [границы удаления и проверка в VM](installer/UNINSTALL.md).
 
 ## Архитектурные границы
 
 ```mermaid
 flowchart TB
-    FE["React frontend"] -->|"Tauri commands"| HOST["Tauri host"]
+    FE["Фронтенд React"] -->|"Команды Tauri"| HOST["Хост Tauri"]
     HOST -->|"runtime-client"| PIPE["versioned named pipe"]
-    PIPE --> SERVICE["ObsessionRuntime service"]
-    SERVICE --> DPI["DPI supervisor"]
-    SERVICE --> HOSTS["hosts transaction"]
-    SERVICE --> PROXY["Telegram / firewall lease"]
-    INSTALLER["Transactional setup"] --> SERVICE
+    PIPE --> SERVICE["Служба ObsessionRuntime"]
+    SERVICE --> DPI["Управление DPI"]
+    SERVICE --> HOSTS["Транзакция hosts"]
+    SERVICE --> PROXY["Telegram / аренда правила брандмауэра"]
+    INSTALLER["Транзакционный установщик"] --> SERVICE
 ```
 
 Основные правила:
 
-- frontend не передаёт службе произвольные executable paths, URL, домены или команды оболочки;
-- protocol version и capabilities проверяются до privileged mutation;
+- фронтенд не передаёт службе произвольные пути исполняемых файлов, URL, домены или команды оболочки;
+- версия протокола и возможности проверяются до привилегированных изменений;
 - длительные проверки могут занимать единственный pipe, поэтому runtime-client отличает занятую службу от недоступной;
-- progress events ускоряют UI, но snapshot остаётся источником истины;
-- фоновые health checks являются read-only;
-- установка `hosts` использует pre-operation snapshot, post-write verification и полный rollback при неожиданном отказе;
-- setup выполняет install/update/repair транзакционно и не продолжает обычный retry после неполного rollback.
+- события прогресса ускоряют отображение, но снимок состояния остаётся источником истины;
+- фоновые проверки работоспособности только читают состояние;
+- установка `hosts` использует снимок до операции, проверку после записи и полный откат при неожиданном отказе;
+- установщик выполняет установку, обновление и восстановление транзакционно и не продолжает обычную повторную попытку после неполного отката.
 
-Подробнее см. [SECURE_RUNTIME_ARCHITECTURE.md](docs/SECURE_RUNTIME_ARCHITECTURE.md) и [ONBOARDING_OVERHAUL_SPEC.md](docs/ONBOARDING_OVERHAUL_SPEC.md).
+Подробнее см. [архитектуру защищённого runtime](docs/SECURE_RUNTIME_ARCHITECTURE.md).
 
 ## Функциональные области
 
 - `src-tauri/src/dpi.rs` — управление Legacy/Zapret2, конфигурациями и логами.
-- `src-tauri/src/legacy_reliability/` — наблюдение, environment gate и подтверждение Legacy-стратегий.
+- `src-tauri/src/legacy_reliability/` — наблюдение, проверка условий окружения и подтверждение стратегий Legacy.
 - `src-tauri/src/adaptive_strategy/` — генерация, проверка и кэш Zapret2-кандидатов.
-- `src-tauri/src/hosts.rs` — frontend-facing façade для protected hosts runtime.
+- `src-tauri/src/hosts.rs` — интерфейс защищённых операций hosts для фронтенда.
 - `src-tauri/src/onboarding.rs` — совместимость с журналами прежнего мастера: проверка и откат незавершённых настроек. Приложение сразу открывает «Обзор»; приветственный мастер больше не показывается.
-- `src-tauri/src/proxy.rs` — Obsession Telegram Proxy и LAN lease client.
-- `src/design/components/obsessionChoir/` — Black Choir geometry, motion и WebGL pipeline.
-- `src/store/` — состояние экранов и синхронизация snapshot с UI.
+- `src-tauri/src/proxy.rs` — Obsession Telegram Proxy и клиент аренды доступа LAN.
+- `src/design/components/obsessionChoir/` — геометрия, движение и схема WebGL Black Choir.
+- `src/store/` — состояние экранов и синхронизация снимков с интерфейсом.
 
 ## Ресурсы и безопасность сборки
 
-winws, WinDivert, Obsession Telegram Proxy, конфигурации и списки находятся в `src-tauri/resources/`. Скрипт подготовки создаёт manifest с хешами, а setup устанавливает payload в `%ProgramFiles%\Obsession`.
+winws, WinDivert, Obsession Telegram Proxy, конфигурации и списки находятся в `src-tauri/resources/`. Скрипт подготовки создаёт манифест с хешами, а установщик размещает пакет в `%ProgramFiles%\Obsession`.
 
-Не добавляйте в frontend обходные пути для прямой записи системных файлов или запуска произвольных процессов. Если требуется новая привилегированная возможность, она должна получить отдельный тип протокола, backend-валидацию, capability и тесты отказа.
+Не добавляйте во фронтенд обходные пути для прямой записи системных файлов или запуска произвольных процессов. Для новой привилегированной возможности нужны отдельный тип протокола, проверка backend, объявление возможности и тесты отказа.
 
 ## Документация
 
-- [Protected runtime architecture](docs/SECURE_RUNTIME_ARCHITECTURE.md)
-- [Onboarding V2 specification](docs/ONBOARDING_OVERHAUL_SPEC.md)
-- [Obsession theme specification](docs/OBSESSION_THEME_SPEC.md)
-- [Legacy: один процесс для выбранных категорий](docs/LEGACY_SINGLE_PROCESS_2026-09-22.md)
-- [Восстановление TCP timestamps](docs/LEGACY_TCP_TIMESTAMPS_2026-09-22.md)
-- [Диагностика и частичные результаты](docs/LEGACY_TEST_REPORTS_2026-09-22.md)
-- [Экспериментальные Discord-конфиги](docs/DISCORD_SPEED_CANDIDATES_2026-09-22.md)
+- [Архитектура защищённого runtime](docs/SECURE_RUNTIME_ARCHITECTURE.md)
+- [Диагностика и конфигурации DPI](docs/DIAGNOSTICS.md)
+- [Проверка перед выпуском](docs/RELEASE_CHECKLIST.md)
+- [Удаление приложения](installer/UNINSTALL.md)
 
 Автор интерфейса и проекта: **AcediaWhy**.

@@ -1,23 +1,19 @@
 # Obsession Telegram Proxy
 
-Headless Rust MTProto-to-WebSocket bridge used by Obsession. The implementation
-is an independent rewrite derived from Flowseal's `tg-ws-proxy`; attribution and
-license terms are in `NOTICE` and `LICENSE`.
+Мост MTProto → WebSocket на Rust без графического интерфейса, используемый Obsession. Это самостоятельная реализация, созданная на основе `tg-ws-proxy` проекта Flowseal. Указание авторства и условия лицензии находятся в `NOTICE` и `LICENSE`.
 
-## Privacy defaults
+## Настройки приватности по умолчанию
 
-- Direct Telegram DC connections are attempted first.
-- Public Cloudflare relay domains are disabled by default. They are used only
-  when the process is started with `--cfproxy`.
-- `--no-cfproxy` remains available as an explicit compatibility-safe disable.
-- The relay cache can only reorder the built-in allowlist; it cannot add hosts.
-- The example Cloudflare Worker is intentionally fail-closed because Telegram
-  currently rejects Cloudflare Workers egress.
-- Proxy secrets and full `tg://` links must not be written to application logs.
+- Сначала выполняются попытки прямого подключения к DC Telegram.
+- Публичные relay-домены Cloudflare по умолчанию отключены. Они используются только при запуске процесса с `--cfproxy`.
+- `--no-cfproxy` остаётся явным отключением, безопасным для совместимости.
+- Кэш relay может менять порядок только встроенного разрешённого списка; добавлять хосты он не может.
+- Пример Cloudflare Worker намеренно блокирует работу при отказе, поскольку Telegram сейчас отклоняет исходящие подключения Cloudflare Workers.
+- Секреты прокси и полные ссылки `tg://` не должны попадать в журналы приложения.
 
-Run `obsession-tg-proxy --help` for the complete CLI contract.
+Полный контракт CLI доступен по команде `obsession-tg-proxy --help`.
 
-## Build and test
+## Сборка и тестирование
 
 ```powershell
 cargo fmt --check
@@ -26,5 +22,4 @@ cargo test --locked
 ./scripts/build-for-obsession.ps1
 ```
 
-The final script builds the locked release binary, copies it into Obsession,
-synchronizes the license files, and regenerates the protected runtime manifest.
+Последний скрипт собирает релизный файл с закреплёнными зависимостями, копирует его в Obsession, синхронизирует лицензии и заново создаёт защищённый манифест runtime.
