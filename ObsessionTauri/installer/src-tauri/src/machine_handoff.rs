@@ -135,6 +135,7 @@ struct MachineWorkerReport {
 fn canonical_stage(stage: &str) -> Option<&'static str> {
     match stage {
         "prepare" => Some("prepare"),
+        "stop" => Some("stop"),
         "install" => Some("install"),
         "verify" => Some("verify"),
         "finish" => Some("finish"),
@@ -317,6 +318,51 @@ fn run_machine_worker(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn machine_report_accepts_worker_stop_stage_and_preserves_failure() {
+        let request_id = machine_request_id();
+        let path = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!("machine-report-{request_id}.json"));
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut report = serde_json::json!({
+            "schema_version": 1,
+            "request_id": request_id,
+            "sequence": 2,
+            "pct": 18,
+            "stage": "stop",
+            "state": "running",
+            "error": null,
+        });
+        fs::write(&path, serde_json::to_vec(&report).unwrap()).unwrap();
+        let running = read_machine_report(&path, &request_id, false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(running.stage, "stop");
+        assert_eq!(running.state, MachineReportState::Running);
+
+        report["sequence"] = 4.into();
+        report["pct"] = 100.into();
+        report["stage"] = "finish".into();
+        report["state"] = "failed".into();
+        report["error"] = "machine update rolled back safely".into();
+        fs::write(&path, serde_json::to_vec(&report).unwrap()).unwrap();
+        let failed = read_machine_report(&path, &request_id, true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(failed.state, MachineReportState::Failed);
+        assert_eq!(
+            failed.error.as_deref(),
+            Some("machine update rolled back safely")
+        );
+
+        report["stage"] = "unknown".into();
+        fs::write(&path, serde_json::to_vec(&report).unwrap()).unwrap();
+        assert!(read_machine_report(&path, &request_id, true).is_err());
+        fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn machine_worker_command_line_is_fixed() {

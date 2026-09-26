@@ -1,4 +1,4 @@
-//! Завершение только той копии приложения, которую заменяет машинный установщик.
+//! Завершение приложения и его прокси только из заменяемой папки установки.
 
 use std::ffi::OsString;
 use std::mem::size_of;
@@ -90,8 +90,9 @@ fn application_pids() -> Result<Vec<u32>, String> {
                     .iter()
                     .position(|value| *value == 0)
                     .unwrap_or(entry.szExeFile.len());
-                if String::from_utf16_lossy(&entry.szExeFile[..end])
-                    .eq_ignore_ascii_case("obsession.exe")
+                let name = String::from_utf16_lossy(&entry.szExeFile[..end]);
+                if name.eq_ignore_ascii_case("obsession.exe")
+                    || name.eq_ignore_ascii_case("obsession-tg-proxy.exe")
                 {
                     pids.push(entry.th32ProcessID);
                 }
@@ -117,6 +118,17 @@ pub(crate) fn stop_installed_application(expected: &Path) -> Result<usize, Strin
         return Err("invalid installed application path".into());
     }
     let expected_key = image_key(expected);
+    let proxy_key = image_key(
+        &expected
+            .parent()
+            .ok_or("missing installation directory")?
+            .join("bin")
+            .join("obsession-tg-proxy.exe"),
+    );
+    let is_owned = |path: &Path| {
+        let actual_key = image_key(path);
+        actual_key == expected_key || actual_key == proxy_key
+    };
     let mut stopped = 0;
     for pid in application_pids()? {
         // Для чужой копии даже право завершения не запрашивается.
@@ -127,7 +139,7 @@ pub(crate) fn stop_installed_application(expected: &Path) -> Result<usize, Strin
         let Some(actual) = process_image(&inspect, pid)? else {
             continue;
         };
-        if image_key(&actual) != expected_key {
+        if !is_owned(&actual) {
             continue;
         }
         let Some(process) = open_process(pid, access | PROCESS_TERMINATE)? else {
@@ -138,10 +150,12 @@ pub(crate) fn stop_installed_application(expected: &Path) -> Result<usize, Strin
         let Some(actual) = process_image(&process, pid)? else {
             continue;
         };
-        if image_key(&actual) != expected_key {
+        if !is_owned(&actual) {
             continue;
         }
-        // WM_CLOSE может скрыть окно в трей, оставив executable занятым.
+        // WM_CLOSE может скрыть окно в трей. TerminateProcess не завершает
+        // дочерний прокси, поэтому его точный путь проверяется отдельно,
+        // в том числе когда основное приложение уже завершилось.
         if let Err(error) = unsafe { TerminateProcess(process.0, 0) } {
             if unsafe { WaitForSingleObject(process.0, 0) } != WAIT_OBJECT_0 {
                 return Err(format!(
@@ -173,6 +187,26 @@ mod tests {
     }
 
     impl Fixture {
+        fn spawn_proxy_in(root: &Path) -> Self {
+            let bin = root.join("bin");
+            fs::create_dir(&bin).unwrap();
+            let executable = bin.join("obsession-tg-proxy.exe");
+            fs::copy(std::env::current_exe().unwrap(), &executable).unwrap();
+            let child = Command::new(&executable)
+                .args([
+                    "--ignored",
+                    "--exact",
+                    "installed_app::tests::process_fixture",
+                ])
+                .creation_flags(0x08000000)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap();
+            Self { child, executable }
+        }
+
         fn spawn(label: &str) -> Self {
             let nonce = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -245,5 +279,25 @@ mod tests {
             image_key(Path::new(r"C:\Other\Obsession\obsession.exe"))
         );
         assert!(stop_installed_application(Path::new("obsession.exe")).is_err());
+    }
+
+    #[test]
+    fn stops_orphaned_installed_proxy_and_preserves_other_installation() {
+        let mut owned = Fixture::spawn("proxy-owner");
+        let other = Fixture::spawn("other-proxy-owner");
+        let mut other_proxy = Fixture::spawn_proxy_in(other.executable.parent().unwrap());
+        let mut owned_proxy = Fixture::spawn_proxy_in(owned.executable.parent().unwrap());
+        owned.child.kill().unwrap();
+        owned.child.wait().unwrap();
+
+        assert_eq!(stop_installed_application(&owned.executable).unwrap(), 1);
+        assert!(owned_proxy.child.try_wait().unwrap().is_some());
+        assert!(other_proxy.child.try_wait().unwrap().is_none());
+        fs::rename(
+            &owned_proxy.executable,
+            owned_proxy.executable.with_extension("retired"),
+        )
+        .unwrap();
+        assert_eq!(stop_installed_application(&owned.executable).unwrap(), 0);
     }
 }
