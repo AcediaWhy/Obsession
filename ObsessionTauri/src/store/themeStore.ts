@@ -4,7 +4,6 @@ import { create } from "zustand";
 // Rust-Settings): храним в localStorage, применяем мгновенно.
 export type Theme =
   | "goldenmeadow"
-  | "obsession"
   | "aurora"
   | "ophanim"
   | "japan"
@@ -15,7 +14,6 @@ export type Theme =
 
 const THEME_IDS: Theme[] = [
   "goldenmeadow",
-  "obsession",
   "aurora",
   "ophanim",
   "japan",
@@ -29,9 +27,8 @@ const THEME_IDS: Theme[] = [
 // после разблокировки (см. окошко пасхалок в Настройках).
 export const THEMES: { id: Theme; label: string; secret?: string }[] = [
   { id: "goldenmeadow", label: "Golden Meadow" },
-  { id: "obsession", label: "Obsession" },
   { id: "aurora", label: "Aurora" },
-  // Keep the persisted slot: existing Ophanim selections become Alchemist.
+  // Сохраняем прежний идентификатор: выбор Ophanim теперь открывает Alchemist.
   { id: "ophanim", label: "Alchemist" },
   { id: "japan", label: "Rain" },
   { id: "midnight", label: "Midnight" },
@@ -41,22 +38,26 @@ export const THEMES: { id: Theme; label: string; secret?: string }[] = [
 ];
 
 const KEY = "obsession.theme";
+const DEFAULT_THEME: Theme = "goldenmeadow";
 
 export function resolveStoredTheme(value: string | null): Theme {
-  // Existing QuietPond selections follow the theme slot that replaced it.
-  if (value === "quietpond") return "goldenmeadow";
+  // Удалённые темы переводятся на доступную тему до создания UI.
+  if (value === "quietpond" || value === "obsession") return DEFAULT_THEME;
   return value && THEME_IDS.includes(value as Theme)
     ? (value as Theme)
-    : "obsession";
+    : DEFAULT_THEME;
 }
 
 function load(): Theme {
   try {
-    return resolveStoredTheme(localStorage.getItem(KEY));
+    const stored = localStorage.getItem(KEY);
+    const resolved = resolveStoredTheme(stored);
+    if (stored !== resolved) localStorage.setItem(KEY, resolved);
+    return resolved;
   } catch {
     /* localStorage может быть недоступен — молча откатываемся к дефолту */
   }
-  return "obsession";
+  return DEFAULT_THEME;
 }
 
 interface ThemeState {
@@ -67,11 +68,12 @@ interface ThemeState {
 export const useThemeStore = create<ThemeState>((set) => ({
   theme: load(),
   setTheme: (theme) => {
+    const resolved = resolveStoredTheme(theme);
     try {
-      localStorage.setItem(KEY, theme);
+      localStorage.setItem(KEY, resolved);
     } catch {
       /* игнорируем ошибки записи */
     }
-    set({ theme });
+    set({ theme: resolved });
   },
 }));

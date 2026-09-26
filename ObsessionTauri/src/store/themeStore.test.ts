@@ -7,10 +7,9 @@ describe("theme availability", () => {
     useSecretStore.setState({ unlocked: [] });
   });
 
-  it("offers Golden Meadow first among six regular themes and keeps three themes secret", () => {
+  it("offers Golden Meadow first among five regular themes and keeps three themes secret", () => {
     expect(THEMES.filter((theme) => !theme.secret).map((theme) => theme.id)).toEqual([
       "goldenmeadow",
-      "obsession",
       "aurora",
       "ophanim",
       "japan",
@@ -23,9 +22,10 @@ describe("theme availability", () => {
     ]);
   });
 
-  it("defaults only missing or invalid values to Obsession", () => {
-    expect(resolveStoredTheme(null)).toBe("obsession");
-    expect(resolveStoredTheme("unknown-theme")).toBe("obsession");
+  it("defaults missing, invalid and removed themes to Golden Meadow", () => {
+    expect(resolveStoredTheme(null)).toBe("goldenmeadow");
+    expect(resolveStoredTheme("unknown-theme")).toBe("goldenmeadow");
+    expect(resolveStoredTheme("obsession")).toBe("goldenmeadow");
     expect(resolveStoredTheme("aurora")).toBe("aurora");
     expect(resolveStoredTheme("midnight")).toBe("midnight");
     expect(resolveStoredTheme("yanineko")).toBe("yanineko");

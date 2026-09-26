@@ -19,4 +19,17 @@ describe("Yani Neko theme persistence", () => {
     useThemeStore.getState().setTheme("aurora");
     expect(storage.setItem).toHaveBeenCalledWith("obsession.theme", "aurora");
   });
+
+  it("replaces a saved Obsession theme before the first render", async () => {
+    const storage = {
+      getItem: vi.fn(() => "obsession"),
+      setItem: vi.fn(),
+    };
+    vi.stubGlobal("localStorage", storage);
+    vi.resetModules();
+    const { useThemeStore } = await import("./themeStore");
+
+    expect(useThemeStore.getState().theme).toBe("goldenmeadow");
+    expect(storage.setItem).toHaveBeenCalledWith("obsession.theme", "goldenmeadow");
+  });
 });

@@ -2,8 +2,8 @@ import type { ReactNode } from "react";
 import type { Tab } from "./NavRail";
 import type { Theme } from "../../store/themeStore";
 
-// Shared geometry scale, individual objects for each world. Palette variables
-// belong to the SVG, so drawings remain legible on each theme's menu surface.
+// Общая геометрия и отдельные рисунки для каждой темы. Палитра берётся из SVG,
+// чтобы значки оставались различимыми на поверхности меню.
 const paper = "var(--nav-icon-paper)";
 const color = "var(--nav-icon-color)";
 const shade = "var(--nav-icon-shade)";
@@ -11,35 +11,6 @@ const ink = "var(--nav-icon-ink)";
 type CollectionTheme = Exclude<Theme, "goldenmeadow" | "ophanim" | "japan">;
 
 export const themeNavCollections: Record<CollectionTheme, Record<Tab, ReactNode>> = {
-  obsession: {
-    overview: <g className="theme-icon-blink">
-      <path d="M2 16Q16 1 30 16 16 31 2 16Z" fill={paper} />
-      <circle cx="16" cy="16" r="7" fill={color} /><ellipse cx="16" cy="16" rx="2.5" ry="5" fill={shade} stroke="none" /><circle cx="18" cy="13" r="1.5" fill={paper} stroke="none" />
-    </g>,
-    dpi: <g className="theme-icon-rock">
-      <circle cx="10" cy="10" r="7" fill={paper} /><circle cx="10" cy="10" r="3" fill={shade} />
-      <path d="m14 16 12 13 4-4-3-3-2 2-2-2 2-2-7-7Z" fill={color} />
-    </g>,
-    ai: <>
-      <path d="M8 14h16v14H8Z" fill={paper} /><path d="M5 29h22M12 17v7" />
-      <path className="theme-icon-flicker" d="M16 2q-9 9-3 12 10 3 6-7l-2 3Z" fill={color} />
-    </>,
-    telegram: <g className="theme-icon-float">
-      <path d="M3 8h26v19H3Z" fill={paper} /><path d="m3 8 13 11L29 8M3 27l9-10m17 10-9-10" />
-      <circle cx="16" cy="20" r="4.5" fill={color} /><path d="m16 17 2 3-2 3-2-3Z" fill={paper} stroke="none" />
-    </g>,
-    lists: <g className="theme-icon-page">
-      <path d="M5 3h22v26H5Z" fill={shade} /><path d="M9 3v26m4-20h9m-9 5h9m-9 5h6" stroke={paper} /><path d="M21 2v9l-3-2-3 2V2Z" fill={color} />
-    </g>,
-    profiles: <g className="theme-icon-rock">
-      <path d="M4 7h13v21H4Z" fill={shade} /><path d="M13 3h15v22H13Z" fill={paper} />
-      <circle cx="20.5" cy="10" r="3" fill={color} stroke="none" /><path d="M16 20v-2a4.5 4.5 0 0 1 9 0v2Z" fill={color} stroke="none" />
-    </g>,
-    settings: <g className="theme-icon-turn">
-      <path d="m13 2 6 0 1 5 4-2 4 4-2 4 4 1v6l-5 1 2 4-4 4-4-2-1 3h-6l-1-5-4 2-4-4 2-4-3-1v-6l5-1-2-4 4-4 4 2Z" fill={paper} />
-      <circle cx="16" cy="16" r="7" fill={shade} /><circle cx="16" cy="16" r="3" fill={color} />
-    </g>,
-  },
   aurora: {
     overview: <>
       <path className="theme-icon-sail" d="M3 7q5 6 10 0t16 0v12q-8-6-16 1T3 20Z" fill={color} />

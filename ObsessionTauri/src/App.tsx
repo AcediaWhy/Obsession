@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactElement } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactElement } from "react";
 import {
   AnimatePresence,
   motion,
@@ -33,7 +33,7 @@ import { initTraySleep } from "./design/traySleep";
 import { dur, ease, spring } from "./design/tokens";
 import { toast } from "./store/toastStore";
 import { useObsessionVisualPhase } from "./design/useObsessionVisualPhase";
-import { obsessionFocusForScreen, type ObsessionVisualPhase } from "./design/obsessionVisualState";
+import type { ObsessionVisualPhase } from "./design/obsessionVisualState";
 
 function ThemeScene({
   theme,
@@ -108,43 +108,30 @@ export default function App() {
   // поверхностями/контролами вместо universal selector по всему дереву.
   const shellRef = useRef<HTMLDivElement>(null);
   const prevTheme = useRef(theme);
-  const [focusCapture, setFocusCapture] = useState(false);
   useLayoutEffect(() => {
     const shell = shellRef.current;
     if (!shell) return;
     if (prevTheme.current === theme) {
       if (motionOff) {
         delete shell.dataset.themeMorph;
-        setFocusCapture(false);
       }
       return;
     }
-    const enteringObsession = theme === "obsession";
     prevTheme.current = theme;
     if (motionOff) {
       delete shell.dataset.themeMorph;
-      setFocusCapture(false);
       return;
     }
 
     shell.dataset.themeMorph = "true";
-    if (enteringObsession) setFocusCapture(true);
     const timer = window.setTimeout(() => {
       delete shell.dataset.themeMorph;
-      setFocusCapture(false);
     }, dur.slow * 1000);
     return () => {
       window.clearTimeout(timer);
       delete shell.dataset.themeMorph;
-      setFocusCapture(false);
     };
   }, [theme, motionOff]);
-
-  const obsessionFocus = obsessionFocusForScreen(tab);
-  const obsessionStyle = {
-    "--obsession-focus-x": `${obsessionFocus.x * 100}%`,
-    "--obsession-focus-y": `${obsessionFocus.y * 100}%`,
-  } as CSSProperties;
 
   // Инициализация сторов и подписок — один раз при старте.
   useEffect(() => {
@@ -216,7 +203,6 @@ export default function App() {
         data-theme={theme}
         data-reduce-motion={motionOff}
         className="relative h-screen w-screen overflow-hidden"
-        style={obsessionStyle}
       >
         <ParallaxProvider>
           <div
@@ -244,12 +230,6 @@ export default function App() {
                 />
               </AnimatePresence>
             </Parallax>
-
-            <div
-              aria-hidden="true"
-              data-active={focusCapture || undefined}
-              className="obsession-focus-capture pointer-events-none absolute inset-0 z-[1]"
-            />
 
             {/* Титлбар — чистый хром, без параллакса. */}
             <div className="absolute inset-x-0 top-0 z-20">

@@ -14,10 +14,6 @@
   --note-paper: #302519; --note-ink: #fff2da; --note-muted: #e1c9a2;
   --note-line: #c69b58; --note-accent: #dcb167; --note-ok: #9ed3a1; --note-warn: #f1c777;
 }
-[data-theme="obsession"] .overview-board {
-  --note-paper: #292226; --note-ink: #f0e4df; --note-muted: #c4adaa;
-  --note-line: #997777; --note-accent: #e4aaaa;
-}
 [data-theme="aurora"] .overview-board {
   --note-paper: #202638; --note-ink: #e8edff; --note-muted: #aebbd8;
   --note-line: #7c8dac; --note-accent: #a9c9f7;

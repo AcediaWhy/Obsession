@@ -10,7 +10,6 @@ import { FallenCore } from "./FallenCore";
 import { CatnapCore } from "./CatnapCore";
 import { MidnightCore } from "./MidnightCore";
 import { YaniCatCore } from "./YaniCatCore";
-import { ObsessionChoirCore } from "./ObsessionChoirCore";
 
 type Props = {
   active: boolean;
@@ -30,7 +29,6 @@ function ThemedCore({ theme, ...props }: Props & { theme: Theme }) {
   const isPresent = useIsPresent();
   const coreProps = { ...props, paused: props.paused || !isPresent };
   if (theme === "goldenmeadow") return <GoldenMeadowCore {...coreProps} />;
-  if (theme === "obsession") return <ObsessionChoirCore {...coreProps} />;
   if (theme === "ophanim") return <AlchemistCore {...coreProps} />;
   if (theme === "fallendown") return <FallenCore {...coreProps} />;
   if (theme === "catnap") return <CatnapCore {...coreProps} />;

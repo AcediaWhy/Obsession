@@ -21,11 +21,6 @@ import { api } from "../lib/tauri";
 
 const AI_PROVIDERS = ["malw", "geohide"];
 
-// Временно не предлагаем незавершённые темы в пользовательском выборе.
-// Сама тема и сохранённые значения остаются валидными, чтобы вернуть её после
-// доработки без миграции настроек или восстановления удалённого кода.
-const HIDDEN_THEME_IDS: ReadonlySet<Theme> = new Set(["obsession"]);
-
 export function SettingsScreen() {
   // Точечные селекторы (как в Overview): подписка на весь стор перерисовывала бы
   // весь экран — с ThemePicker и его канвасами — на каждый флип saving/saved
@@ -272,7 +267,7 @@ function ThemePicker() {
   const unlocked = useSecretStore((s) => s.unlocked);
 
   const visible = THEMES.filter(
-    (th) => !HIDDEN_THEME_IDS.has(th.id) && (!th.secret || unlocked.includes(th.secret)),
+    (th) => !th.secret || unlocked.includes(th.secret),
   );
 
   return (

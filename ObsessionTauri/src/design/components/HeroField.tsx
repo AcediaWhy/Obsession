@@ -9,8 +9,6 @@ import { RainFallback } from "./RainFallback";
 import { CatnapField } from "./CatnapField";
 import { MidnightField } from "./MidnightField";
 import { YaniNekoField } from "./YaniNekoField";
-import { ObsessionChoirField } from "./ObsessionChoirField";
-import { ObsessionChoirFallback } from "./ObsessionChoirFallback";
 import type { ObsessionVisualPhase } from "../obsessionVisualState";
 
 // Гибридная WebGL-сцена Rain грузится только после выбора темы. Suspense и
@@ -45,22 +43,6 @@ function webgl2Supported(): boolean {
   }
 }
 let webgl2Available: boolean | undefined;
-
-class ObsessionBoundary extends Component<
-  { children: ReactNode; fallback: ReactNode },
-  { failed: boolean }
-> {
-  state = { failed: false };
-  static getDerivedStateFromError() {
-    return { failed: true };
-  }
-  componentDidCatch(error: unknown) {
-    console.warn("Obsession WebGL scene failed, using the optical fallback:", error);
-  }
-  render() {
-    return this.state.failed ? this.props.fallback : this.props.children;
-  }
-}
 
 // Ловим сбои 3D-сцены (драйвер/WebGL/шейдер) и показываем 2D-версию.
 class Fallback3D extends Component<{ children: ReactNode; fallback: ReactNode }, { failed: boolean }> {
@@ -105,13 +87,6 @@ export function HeroField({
   let scene: ReactNode;
   if (theme === "goldenmeadow") {
     scene = <GoldenMeadowField paused={frozen} />;
-  } else if (theme === "obsession") {
-    const fallback = <ObsessionChoirFallback paused={frozen} phase={phase} screen={screen} />;
-    scene = (webgl2Available ??= webgl2Supported()) ? (
-      <ObsessionBoundary fallback={fallback}>
-        <ObsessionChoirField paused={frozen} phase={phase} screen={screen} />
-      </ObsessionBoundary>
-    ) : fallback;
   } else if (theme === "ophanim") {
     scene = <AlchemistField paused={frozen} />;
   } else if (theme === "fallendown") {
