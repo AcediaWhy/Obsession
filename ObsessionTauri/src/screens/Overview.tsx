@@ -1,11 +1,14 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 
 import { useDpiStore } from "../store/dpiStore";
 import { useProxyStore } from "../store/proxyStore";
 import { useHostsStore } from "../store/hostsStore";
+import { useThemeStore, type Theme } from "../store/themeStore";
+import { OverviewOrnament, OverviewStatusEffect } from "./OverviewAtmosphere";
 import catIcon from "../../src-tauri/icons/128x128.png";
 import "../styles/overview.css";
+import "../styles/overview-atmospheres.css";
 import { api, type NetworkInfo } from "../lib/tauri";
 import { GlassPanel } from "../design/components/GlassPanel";
 import { Stagger, StaggerItem } from "../design/components/Stagger";
@@ -29,6 +32,8 @@ const AI_STATUS_LABEL: Record<string, string> = {
   offline: "оффлайн",
 };
 
+const HIDE_NETWORK_KEY = "obsession.overview.hideNetwork";
+
 export function OverviewScreen() {
   // Точечные селекторы вместо подписки на весь стор: экран не должен
   // ре-рендериться на изменения testingLabel/testResults/netStats и пр., которые
@@ -45,8 +50,24 @@ export function OverviewScreen() {
   const hostsStatus = useHostsStore((s) => s.status);
   const hostsLocalVersion = useHostsStore((s) => s.localVersion);
   const hostsProvider = useHostsStore((s) => s.provider);
+  const theme = useThemeStore((s) => s.theme);
   const motionOff = useMotionOff();
   const [net, setNet] = useState<NetworkInfo | null>(null);
+  const [networkHidden, setNetworkHidden] = useState(() => {
+    try {
+      return localStorage.getItem(HIDE_NETWORK_KEY) === "true";
+    } catch {
+      return false;
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(HIDE_NETWORK_KEY, String(networkHidden));
+    } catch {
+      // При недоступном localStorage переключатель действует до закрытия экрана.
+    }
+  }, [networkHidden]);
 
   useEffect(() => {
     // cancelled-гвард: getNetworkIdentity() может быть медленным/оффлайн; уход с
@@ -75,6 +96,7 @@ export function OverviewScreen() {
 
       {/* Командный центр: котик с короткой реакцией на включение защиты. */}
       <GlassPanel spotlight={false} className="overview-note overview-command" data-active={protectedNow}>
+        <OverviewStatusEffect theme={theme} event={String(protectedNow)} disabled={still} />
         <div className="overview-command-content flex items-center gap-5">
           <motion.div className="overview-mascot" aria-hidden="true" initial={false}
             animate={dpiActive && !still ? { rotate: [0, -7, 3, 0], y: [0, -3, 0, 0] } : { rotate: 0, y: 0 }}
@@ -149,6 +171,8 @@ export function OverviewScreen() {
         <StaggerItem glass>
           <StatusCard
             entryOrder={0}
+            theme={theme}
+            still={still}
             icon={<Icon.Bolt size={18} />}
             title="DPI-обход"
             on={dpiActive}
@@ -167,6 +191,8 @@ export function OverviewScreen() {
         <StaggerItem glass>
           <StatusCard
             entryOrder={1}
+            theme={theme}
+            still={still}
             icon={<Icon.Send size={18} />}
             title="Telegram-прокси"
             on={proxyRunning}
@@ -185,6 +211,8 @@ export function OverviewScreen() {
         <StaggerItem glass>
           <StatusCard
             entryOrder={2}
+            theme={theme}
+            still={still}
             icon={<Icon.Robot size={18} />}
             title="ИИ-разблокировка"
             on={hostsStatus === "installed" || hostsStatus === "outdated"}
@@ -202,8 +230,27 @@ export function OverviewScreen() {
         <StaggerItem glass>
           <StatusCard
             entryOrder={3}
+            theme={theme}
+            still={still}
             icon={<Icon.Globe size={18} />}
             title="Сеть"
+            detailHidden={networkHidden}
+            headingAction={
+              <button
+                type="button"
+                className="overview-network-visibility"
+                aria-label={networkHidden ? "Показать сведения о сети" : "Скрыть сведения о сети"}
+                title={networkHidden ? "Показать сведения о сети" : "Скрыть сведения о сети"}
+                aria-pressed={networkHidden}
+                onClick={() => setNetworkHidden((hidden) => !hidden)}
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z" />
+                  <circle cx="12" cy="12" r="3" />
+                  {networkHidden && <path d="m3 3 18 18" />}
+                </svg>
+              </button>
+            }
             on={!!net?.online}
             onLabel="Определена"
             offLabel={net ? "Не определена" : "…"}
@@ -224,6 +271,8 @@ export function OverviewScreen() {
 
 function StatusCard({
   entryOrder = 0,
+  theme,
+  still,
   icon,
   title,
   on,
@@ -232,8 +281,12 @@ function StatusCard({
   detail,
   warn = false,
   neutral = false,
+  headingAction,
+  detailHidden = false,
 }: {
   entryOrder?: number;
+  theme: Theme;
+  still: boolean;
   icon: React.ReactNode;
   title: string;
   on: boolean;
@@ -242,8 +295,10 @@ function StatusCard({
   detail: string;
   warn?: boolean;
   neutral?: boolean;
+  headingAction?: React.ReactNode;
+  detailHidden?: boolean;
 }) {
-  const motionOff = useMotionOff();
+  const motionOff = still;
   const tone = warn
     ? "text-warn"
     : on
@@ -252,9 +307,31 @@ function StatusCard({
         : "text-ok"
       : "text-ink-muted";
   const dot = warn ? "bg-warn" : on ? (neutral ? "bg-accent" : "bg-ok") : "bg-ink-muted";
-  // Учитываем не только on: outdated -> installed остаётся on=true, но это всё
-  // равно полноценная смена состояния, которую должны заметить label/dot/wash.
+  // Учитываем не только on: outdated -> installed остаётся on=true, но это
+  // полноценная смена состояния для подписи, точки и мягкой волны.
   const stateKey = `${on}:${warn}:${neutral}:${on ? onLabel : offLabel}`;
+  const materialEnabled = !still;
+  const moveMaterial = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!materialEnabled || event.pointerType === "touch") return;
+    const card = event.currentTarget;
+    const bounds = card.getBoundingClientRect();
+    const x = Math.max(0, Math.min(100, ((event.clientX - bounds.left) / bounds.width) * 100));
+    const y = Math.max(0, Math.min(100, ((event.clientY - bounds.top) / bounds.height) * 100));
+    card.style.setProperty("--overview-pointer-x", `${x}%`);
+    card.style.setProperty("--overview-pointer-y", `${y}%`);
+    if (theme === "ophanim" || theme === "fallendown") {
+      // Готовые слои с узором перемещаются через transform без перерисовки градиента.
+      card.style.setProperty("--overview-pointer-px", `${(x / 100) * bounds.width}px`);
+      card.style.setProperty("--overview-pointer-py", `${(y / 100) * bounds.height}px`);
+    }
+    card.style.setProperty("--overview-surface-energy", "1");
+  };
+  const settleMaterial = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const card = event.currentTarget;
+    card.style.setProperty("--overview-surface-energy", "0");
+    card.style.setProperty("--overview-pointer-x", "50%");
+    card.style.setProperty("--overview-pointer-y", "50%");
+  };
 
   return (
     <motion.div
@@ -277,7 +354,11 @@ function StatusCard({
       <GlassPanel
         spotlight={false}
         data-active={on}
-        data-tone={warn ? "warn" : neutral ? "neutral" : "ok"}
+        data-tone={warn ? "warn" : on ? neutral ? "neutral" : "ok" : "off"}
+        data-material={materialEnabled}
+        onPointerEnter={moveMaterial}
+        onPointerMove={moveMaterial}
+        onPointerLeave={settleMaterial}
         transition={
           motionOff
             ? { duration: dur.fast, ease: ease.enter }
@@ -287,36 +368,22 @@ function StatusCard({
                 delay: entryOrder * cascade.step,
               }
         }
-        className="overview-note overview-service relative flex h-full flex-col gap-3 overflow-hidden"
+        className="overview-note overview-service relative h-full"
       >
-        {/* Одноразовый wash при настоящей смене состояния. initial={false}
-            оставляет холодный mount спокойным; постоянного pulse у карточки нет. */}
-        <AnimatePresence initial={false}>
-          <motion.span
-            key={stateKey}
-            aria-hidden
-            initial={
-              motionOff
-                ? { opacity: 0 }
-                : { x: "-130%", opacity: 0 }
-            }
-            animate={
-              motionOff
-                ? { opacity: 0 }
-                : { x: "300%", opacity: [0, 0.08, 0] }
-            }
-            exit={{ opacity: 0, transition: { duration: 0 } }}
-            transition={{ duration: dur.slow + dur.base, ease: ease.xfade }}
-            className={`pointer-events-none absolute inset-y-0 left-0 w-1/2 -skew-x-12 bg-gradient-to-r from-transparent via-current to-transparent ${tone}`}
-          />
-        </AnimatePresence>
+        <span className="overview-fx-material" aria-hidden="true" />
+        <span className="overview-fx-hover" aria-hidden="true"><OverviewOrnament theme={theme} /></span>
+        <OverviewStatusEffect theme={theme} event={stateKey} disabled={still} />
 
-        <div className="overview-note-heading relative flex items-center gap-2.5">
-          <span className="overview-note-icon flex h-9 w-9 items-center justify-center text-ink-soft">
+        <div className="overview-note-heading">
+          <span className="overview-note-icon text-ink-soft">
             {icon}
           </span>
           <span className="overview-note-title text-sm font-semibold text-ink">{title}</span>
-          <span className="overview-note-status ml-auto flex items-center gap-1.5" aria-live="polite">
+          <span className="overview-note-tools">
+            <span className="overview-note-number">0{entryOrder + 1}</span>
+            {headingAction}
+          </span>
+          <span className="overview-note-status flex items-center gap-1.5" aria-live="polite">
             <span className="relative h-2 w-2 shrink-0">
               <AnimatePresence initial={false} mode="sync">
                 <motion.span
@@ -333,7 +400,7 @@ function StatusCard({
                 />
               </AnimatePresence>
             </span>
-            <span className="grid min-w-[6.75rem] justify-items-end">
+            <span className="grid min-w-0">
               <AnimatePresence initial={false} mode="sync">
                 <motion.span
                   key={stateKey}
@@ -354,7 +421,10 @@ function StatusCard({
         </div>
 
         <div className="overview-note-detail relative grid min-w-0">
-          <AnimatePresence initial={false} mode="sync">
+          {detailHidden ? (
+            // Приватная строка удаляется сразу, без сохранения в уходящем кроссфейде.
+            <p className="col-start-1 row-start-1 text-xs text-ink-muted">Сведения о сети скрыты</p>
+          ) : <AnimatePresence initial={false} mode="sync">
             <motion.p
               key={detail}
               initial={{ opacity: 0 }}
@@ -368,7 +438,7 @@ function StatusCard({
             >
               {detail}
             </motion.p>
-          </AnimatePresence>
+          </AnimatePresence>}
         </div>
       </GlassPanel>
     </motion.div>
