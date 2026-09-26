@@ -37,6 +37,9 @@ Thumbs.db
 skills-lock.json
 .codex-dev/
 .codex-tmp/
+.gitnexus/
+/AGENTS.md
+/CLAUDE.md
 # Локальная обвязка AI-агентов (навыки, планы, кэш) — на любом уровне дерева.
 .claude/
 .superpowers/
