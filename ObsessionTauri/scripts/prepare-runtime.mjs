@@ -32,7 +32,6 @@ const MAX_RESOURCE_PATH_BYTES = 240;
 const MAX_STRATEGY_DEPENDENCIES = 32;
 
 const CATEGORY_DIRECTORIES = [
-  ["atrisk", "atRisk"],
   ["discord", "discord"],
   ["gaming", "gaming"],
   ["universal", "universal"],

@@ -14,7 +14,7 @@ import {
 } from "../lib/tauri";
 import { withDeadline } from "../lib/asyncDeadline";
 
-const CATEGORY_ORDER = ["discord", "youtube_twitch", "gaming", "universal", "atrisk"];
+const CATEGORY_ORDER = ["discord", "youtube_twitch", "gaming", "universal"];
 const ZAPRET2_CATEGORIES = new Set(["discord", "youtube_twitch", "gaming"]);
 export const TRANSITION_WATCHDOG_MS = 8_000;
 export const TRANSITION_RECONCILE_TIMEOUT_MS = 4_000;
@@ -107,7 +107,7 @@ export const useDpiStore = create<DpiState>((set, get) => ({
     const legacy =
       settings.selected_categories.length > 0
         ? settings.selected_categories.filter((category) =>
-            config.categories.includes(category),
+            CATEGORY_ORDER.includes(category) && config.categories.includes(category),
           )
         : ["discord"];
     const zapret2 =

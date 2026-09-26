@@ -165,14 +165,17 @@ impl Paths {
         self.configs_dir().join(category).join(conf_file)
     }
 
-    /// Категории DPI (папки внутри configs, кроме служебных).
+    /// Доступные категории DPI без служебных и снятых с поддержки групп.
     pub fn get_categories(&self) -> Vec<String> {
         let mut out = Vec::new();
         if let Ok(rd) = fs::read_dir(self.configs_dir()) {
             for e in rd.flatten() {
                 if e.path().is_dir() {
                     if let Some(name) = e.file_name().to_str() {
-                        if name != "lists" && name != "bin" {
+                        if name != "lists"
+                            && name != "bin"
+                            && !crate::settings::is_retired_dpi_category(name)
+                        {
                             out.push(name.to_string());
                         }
                     }
@@ -207,7 +210,9 @@ impl Paths {
                 let p = e.path();
                 if p.extension().and_then(|s| s.to_str()) == Some("txt") {
                     if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
-                        out.push(stem.to_string());
+                        if !crate::settings::is_retired_dpi_category(stem) {
+                            out.push(stem.to_string());
+                        }
                     }
                 }
             }
@@ -387,6 +392,35 @@ fn copy_dir(src: &Path, dst: &Path, overwrite: bool) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retired_category_is_hidden_even_when_old_resources_remain() {
+        let root = std::env::temp_dir().join(format!(
+            "obsession-retired-resources-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        std::fs::create_dir_all(root.join("configs/atrisk")).unwrap();
+        std::fs::create_dir_all(root.join("configs/gaming")).unwrap();
+        std::fs::create_dir_all(root.join("lists")).unwrap();
+        std::fs::write(root.join("lists/atrisk.txt"), "old.example\n").unwrap();
+        std::fs::write(root.join("lists/gaming.txt"), "game.example\n").unwrap();
+        let paths = Paths {
+            base_dir: root.clone(),
+            resource_dir: root.clone(),
+        };
+
+        assert_eq!(paths.get_categories(), ["gaming"]);
+        assert_eq!(paths.get_list_names(), ["gaming"]);
+        let lists = crate::lists::list_all(&paths.lists_dir());
+        assert_eq!(lists.len(), 1);
+        assert_eq!(lists[0].name, "gaming");
+        assert!(root.join("lists/atrisk.txt").exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn code_bearing_resources_and_mutable_user_data_use_separate_roots() {

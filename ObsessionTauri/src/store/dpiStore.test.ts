@@ -6,11 +6,54 @@ vi.mock("../lib/tauri", () => ({
 }));
 
 import { useDpiStore } from "./dpiStore";
-import type { DpiStatus } from "../lib/tauri";
+import type { AppConfig, DpiStatus } from "../lib/tauri";
 
 function status(partial: Partial<DpiStatus>): DpiStatus {
   return { active: false, processes: [], started_at: null, ...partial };
 }
+
+describe("dpiStore.initialize: снятая с поддержки категория", () => {
+  it.each([
+    { stored: ["atrisk", "gaming"], expected: ["gaming"] },
+    { stored: ["atrisk"], expected: ["discord"] },
+  ])("не запускает скрытую группу из старого выбора $stored", ({ stored, expected }) => {
+    const config: AppConfig = {
+      categories: ["atrisk", "discord", "gaming"],
+      configs: {
+        atrisk: ["atrisk_1.conf"], discord: ["discord_1.conf"], gaming: ["gaming_1.conf"],
+      },
+      lists: [],
+    };
+    useDpiStore.getState().initialize(config, {
+      minimize_to_tray: true,
+      start_minimized: false,
+      dpi_engine: "legacy",
+      selected_categories: stored,
+      selected_configs: { atrisk: "atrisk_1.conf", gaming: "gaming_1.conf" },
+      zapret2_selected_categories: ["discord"],
+      proxy_port: 1443,
+      fake_tls_domain: "",
+      ai_provider: "malw",
+      has_completed_onboarding: true,
+      auto_recovery: false,
+      legacy_reliability_migration_version: 1,
+      legacy_reliability_enabled: true,
+      legacy_reliability_mode: "observe_only",
+      legacy_automatic_paused: true,
+      legacy_reliability_frozen_categories: [],
+      reduce_motion: false,
+      hotkey_toggle: "Ctrl+Shift+KeyO",
+      lan_publish_secs: 0,
+      zapret2_level: 0,
+      adaptive_strategy_enabled: false,
+      adaptive_search_mode: "balanced",
+    });
+    expect(useDpiStore.getState().selectedCategories).toEqual(expected);
+    expect(useDpiStore.getState().categorySelections.legacy).toEqual(expected);
+    expect(useDpiStore.getState().selectedConfigs).not.toHaveProperty("atrisk");
+    expect(useDpiStore.getState().selectedConfigs.gaming).toBe("gaming_1.conf");
+  });
+});
 
 describe("dpiStore.applyStatus", () => {
   beforeEach(() => {

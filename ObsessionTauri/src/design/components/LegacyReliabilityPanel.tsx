@@ -65,7 +65,6 @@ const CATEGORY_LABEL: Record<string, string> = {
   youtube_twitch: "YouTube / Twitch",
   gaming: "Gaming",
   universal: "Universal",
-  atrisk: "Под угрозой",
 };
 
 const CATEGORY_ORDER = [
@@ -73,7 +72,6 @@ const CATEGORY_ORDER = [
   "youtube_twitch",
   "gaming",
   "universal",
-  "atrisk",
 ];
 
 const TONE_CLASS: Record<LegacyReliabilityTone, string> = {

@@ -67,6 +67,9 @@ pub fn list_all(lists_dir: &Path) -> Vec<ListInfo> {
             let Some(name) = p.file_stem().and_then(|s| s.to_str()) else {
                 continue;
             };
+            if crate::settings::is_retired_dpi_category(name) {
+                continue;
+            }
             let bytes = e.metadata().map(|m| m.len()).unwrap_or(0);
             // Для больших ipset-файлов не читаем содержимое ради счётчика —
             // это десятки тысяч строк; показываем entries=0 как «н/д».

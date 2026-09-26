@@ -851,7 +851,6 @@ mod tests {
             resource_dir,
         };
         let selections = [
-            ("atrisk".to_string(), "atrisk_1.conf".to_string()),
             ("discord".to_string(), "discord_1.conf".to_string()),
             ("gaming".to_string(), "gaming_1.conf".to_string()),
             ("universal".to_string(), "universal_1.conf".to_string()),

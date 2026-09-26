@@ -31,7 +31,6 @@ const LEGACY_CATEGORY_LABELS: Record<string, string> = {
   youtube_twitch: "YouTube / Twitch",
   gaming: "Gaming",
   universal: "Universal",
-  atrisk: "Под угрозой",
 };
 
 const ZAPRET2_CATEGORY_LABELS: Record<string, string> = {
@@ -40,7 +39,7 @@ const ZAPRET2_CATEGORY_LABELS: Record<string, string> = {
   gaming: "Gaming + GitHub",
 };
 
-const CATEGORY_ORDER = ["discord", "youtube_twitch", "gaming", "universal", "atrisk"];
+const CATEGORY_ORDER = ["discord", "youtube_twitch", "gaming", "universal"];
 
 export function DpiScreen() {
   const protectedDpiAvailable = useSettingsStore(
@@ -99,7 +98,7 @@ export function DpiScreen() {
     ? ZAPRET2_CATEGORY_LABELS
     : LEGACY_CATEGORY_LABELS;
   const categories = (s.config?.categories ?? [])
-    .filter((category) => !zapret2Selected || category in ZAPRET2_CATEGORY_LABELS)
+    .filter((category) => category in categoryLabels)
     .sort((a, b) => CATEGORY_ORDER.indexOf(a) - CATEGORY_ORDER.indexOf(b));
 
   useEffect(() => {

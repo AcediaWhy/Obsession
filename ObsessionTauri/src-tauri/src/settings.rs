@@ -18,7 +18,7 @@ const LEGACY_RELIABILITY_MIGRATION_VERSION: u8 = 1;
 pub struct Settings {
     pub minimize_to_tray: bool,
     pub start_minimized: bool,
-    /// Legacy categories stay independent from the Zapret2 service selection.
+    /// Категории Legacy хранятся отдельно от выбора категорий Zapret2.
     pub selected_categories: Vec<String>,
     pub zapret2_selected_categories: Vec<String>,
     pub selected_configs: HashMap<String, String>,
@@ -153,6 +153,7 @@ impl Settings {
             settings.legacy_automatic_paused = true;
         }
         sanitize_frozen_categories(&mut settings.legacy_reliability_frozen_categories);
+        settings.remove_retired_dpi_categories();
         settings
     }
 
@@ -216,6 +217,15 @@ impl Settings {
                 _ => "balanced".to_string(),
             };
         }
+        self.remove_retired_dpi_categories();
+    }
+
+    fn remove_retired_dpi_categories(&mut self) {
+        remove_retired_dpi_selection(&mut self.selected_categories, &mut self.selected_configs);
+        self.zapret2_selected_categories
+            .retain(|category| !is_retired_dpi_category(category));
+        self.legacy_reliability_frozen_categories
+            .retain(|category| !is_retired_dpi_category(category));
     }
 
     /// Durable temp write + atomic replace в том же каталоге.
@@ -245,6 +255,29 @@ impl Settings {
             let _ = std::fs::remove_file(&temporary);
         }
         result
+    }
+}
+
+pub(crate) fn is_retired_dpi_category(category: &str) -> bool {
+    matches!(
+        category.trim().to_ascii_lowercase().as_str(),
+        "atrisk" | "at_risk" | "at-risk"
+    )
+}
+
+/// Удаляет прежнюю группу из настроек и профилей. Если выбранной была только
+/// она, возвращает Discord; намеренно пустой выбор сохраняется пустым.
+pub(crate) fn remove_retired_dpi_selection(
+    categories: &mut Vec<String>,
+    configs: &mut HashMap<String, String>,
+) {
+    let had_retired = categories
+        .iter()
+        .any(|category| is_retired_dpi_category(category));
+    categories.retain(|category| !is_retired_dpi_category(category));
+    configs.retain(|category, _| !is_retired_dpi_category(category));
+    if had_retired && categories.is_empty() {
+        categories.push("discord".to_string());
     }
 }
 
@@ -351,6 +384,43 @@ mod tests {
         assert!(settings.reduce_motion);
         assert_eq!(settings.fake_tls_domain, "old.example");
         assert_eq!(settings.selected_categories, vec!["discord"]);
+    }
+
+    #[test]
+    fn retired_category_is_removed_from_loaded_settings_and_patches() {
+        let dir = test_dir("retired-category");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            Settings::file(&dir),
+            r#"{"selected_categories":["atrisk","gaming"],
+                "selected_configs":{"atrisk":"atrisk_1.conf","gaming":"gaming_2.conf"},
+                "legacy_reliability_frozen_categories":["at_risk","gaming"],
+                "proxy_port":2443}"#,
+        )
+        .unwrap();
+
+        let mut settings = Settings::load(&dir);
+        assert_eq!(settings.selected_categories, ["gaming"]);
+        assert_eq!(settings.selected_configs.len(), 1);
+        assert_eq!(settings.selected_configs["gaming"], "gaming_2.conf");
+        assert_eq!(settings.legacy_reliability_frozen_categories, ["gaming"]);
+        assert_eq!(settings.proxy_port, 2443);
+
+        settings.apply_patch(SettingsPatch {
+            selected_categories: Some(vec!["AtRisk".into()]),
+            selected_configs: Some(HashMap::from([("at_risk".into(), "atrisk_3.conf".into())])),
+            ..Default::default()
+        });
+        assert_eq!(settings.selected_categories, ["discord"]);
+        assert!(settings.selected_configs.is_empty());
+        assert_eq!(settings.proxy_port, 2443);
+
+        settings.apply_patch(SettingsPatch {
+            selected_categories: Some(Vec::new()),
+            ..Default::default()
+        });
+        assert!(settings.selected_categories.is_empty());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
