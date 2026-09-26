@@ -33,6 +33,7 @@ mod settings;
 mod state;
 mod util;
 mod webmem;
+mod window_restore;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -131,6 +132,9 @@ pub fn run() {
             let auto_recovery = settings.auto_recovery;
             let hotkey_toggle = settings.hotkey_toggle.clone();
             app.manage(AppState::new(paths, settings));
+            let window_config = app.config().app.windows.iter()
+                .find(|window| window.label == "main").cloned().unwrap_or_default();
+            app.manage(window_restore::MainWindowGeometry::new(&window_config));
             let initial_dpi = protected_runtime::dpi_status();
             util::emit_log(&handle, "info", "dpi", &format!(
                 "Открытие Obsession {}: наблюдаемый DPI active={}; команда запуска не отправлялась.",
@@ -281,16 +285,18 @@ pub fn run() {
 
             // Окно создано скрытым. В dev/debug показываем всегда, в release — если не выбран старт в трее.
             if !start_minimized || cfg!(debug_assertions) {
-                if let Some(win) = app.get_webview_window("main") {
-                    let _ = win.show();
-                    let _ = win.unminimize();
-                    let _ = win.set_focus();
-                }
+                show_main_window(&handle);
             }
             Ok(())
         })
         .on_window_event(|window, event| {
+            if let WindowEvent::Resized(size) = event {
+                window_restore::remember(window, *size);
+            }
             if let WindowEvent::CloseRequested { api, .. } = event {
+                if let Ok(size) = window.inner_size() {
+                    window_restore::remember(window, size);
+                }
                 let app = window.app_handle().clone();
                 // lock_recover, НЕ lock().unwrap(): этот обработчик крутится на
                 // главном потоке event-loop. Отравленный паникой другого держателя
@@ -405,23 +411,30 @@ pub fn run() {
         });
 }
 
-/// Восстанавливает окно перед показом из трея. Windows может считать свёрнутое
-/// окно видимым за пределами экрана; после unminimize проверяем его координаты
-/// и при необходимости возвращаем в видимую область.
+/// Восстанавливает геометрию на главном потоке до пробуждения WebView и анимаций.
 fn show_main_window(app: &tauri::AppHandle) {
-    if let Some(win) = app.get_webview_window("main") {
-        webmem::set_low_memory(app, false);
-        let _ = win.unminimize();
-        let _ = win.show();
-        if let Ok(pos) = win.outer_position() {
-            if pos.x < -10_000 || pos.y < -10_000 {
-                let _ = win.set_position(tauri::Position::Physical(
-                    tauri::PhysicalPosition::new(100, 80),
-                ));
+    let handle = app.clone();
+    let result = app.run_on_main_thread(move || {
+        if let Some(win) = handle.get_webview_window("main") {
+            if let Err(error) = window_restore::restore(&win) {
+                util::emit_log(
+                    &handle,
+                    "error",
+                    "window",
+                    &format!("Не удалось восстановить окно: {error}"),
+                );
             }
+            webmem::set_low_memory(&handle, false);
+            let _ = handle.emit("window-visibility", true);
         }
-        let _ = win.set_focus();
-        let _ = app.emit("window-visibility", true);
+    });
+    if let Err(error) = result {
+        util::emit_log(
+            app,
+            "error",
+            "window",
+            &format!("Не удалось запланировать восстановление окна: {error}"),
+        );
     }
 }
 
