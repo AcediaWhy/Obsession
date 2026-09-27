@@ -11,7 +11,7 @@ beforeEach(() => {
   useDpiStore.setState({ active:false, transitioning:false, testing:false, testCancel:false,
     selectedCategories:["discord"], selectedConfigs:{discord:"old.conf"},
     config:{configs:{discord:["one.conf","two.conf"]}} as unknown as AppConfig,
-    loadStats:vi.fn().mockResolvedValue(undefined), error:"", engines:[] });
+    loadStats:vi.fn().mockResolvedValue(undefined), error:"", engines:[], netStats:{} });
 });
 describe("autopick outcomes", () => {
   it("reports exhaustion without silently blessing the previous config", async () => {
@@ -56,5 +56,34 @@ describe("autopick outcomes", () => {
     expect(useDpiStore.getState().testReports["old.conf"].status).toBe("partial");
     expect(useDpiStore.getState().testing).toBe(false);
     expect(api.recordWorkingConfig).not.toHaveBeenCalled();
+  });
+  it("retests the network's last working config before other candidates", async () => {
+    useDpiStore.setState({
+      selectedConfigs: {discord:"one.conf"},
+      netStats: {discord:{conf:"two.conf", success_count:5, confirmed_at:123}},
+    });
+    vi.mocked(api.dpiTest).mockResolvedValue(result(true));
+    await useDpiStore.getState().autoConfigure();
+    expect(api.dpiTest).toHaveBeenCalledTimes(1);
+    expect(api.dpiTest).toHaveBeenCalledWith("discord", "two.conf", true);
+    expect(api.recordWorkingConfig).toHaveBeenCalledWith("discord", "two.conf");
+  });
+  it("tries current config next, ignores absent cached files, and keeps candidates unique", async () => {
+    useDpiStore.setState({
+      selectedConfigs: {discord:"two.conf"},
+      netStats: {discord:{conf:"removed.conf", success_count:5, confirmed_at:123}},
+    });
+    vi.mocked(api.dpiTest).mockResolvedValue(result(false));
+    await useDpiStore.getState().autoConfigure();
+    expect(vi.mocked(api.dpiTest).mock.calls).toEqual([
+      ["discord", "two.conf", true], ["discord", "one.conf", true],
+    ]);
+    expect(useDpiStore.getState().selectedConfigs.discord).toBe("two.conf");
+  });
+  it("manual testing requests a complete report rather than stopping at the first failure", async () => {
+    vi.mocked(api.dpiTest).mockResolvedValue(result(false));
+    await useDpiStore.getState().testAll();
+    expect(api.dpiTest).toHaveBeenCalledTimes(1);
+    expect(api.dpiTest).toHaveBeenCalledWith("discord", "old.conf");
   });
 });

@@ -1477,9 +1477,9 @@ fn diagnostic_fence(snapshot: &ObserveOnlySnapshot, category: &str) -> Option<Ga
     })
 }
 
-/// Two independent, fenced service failures with healthy neutral controls
-/// may start bounded recovery even when Eyes only observed a ServerHello.
-/// DNS failures, 4xx/5xx replies and loss of sensor/network identity cannot.
+/// Повторные сбои одного адреса Discord или YouTube / Twitch при работающих
+/// контрольных адресах допускают восстановление без пассивного подтверждения.
+/// Ошибки DNS, ответы 4xx/5xx и потеря достоверности наблюдения его не запускают.
 fn record_service_diagnostic(
     diagnostics: &mut BTreeMap<String, ActiveDiagnostic>,
     snapshot: &ObserveOnlySnapshot,
@@ -1509,6 +1509,20 @@ fn record_service_diagnostic(
                             .is_some_and(|u| u.host_str() == Some(*host))
                 })
             });
+    let is_video_health = report.category == "youtube_twitch"
+        && !report.category_targets.is_empty()
+        && report.category_targets.iter().all(|target| {
+            obsession_runtime_reliability::service_health::YOUTUBE_TWITCH_HEALTH_HOSTS
+                .iter()
+                .any(|host| {
+                    target.endpoint == *host
+                        || reqwest::Url::parse(&target.endpoint)
+                            .ok()
+                            .is_some_and(|url| {
+                                url.scheme() == "https" && url.host_str() == Some(*host)
+                            })
+                })
+        });
     if healthy && !is_discord_health && active_diagnostic_classification(&report).is_none() {
         diagnostics.remove(&report.category);
         return;
@@ -1524,7 +1538,7 @@ fn record_service_diagnostic(
         })
         .map(|r| r.endpoint.clone())
         .collect::<BTreeSet<_>>();
-    let eligible = is_discord_health
+    let eligible = (is_discord_health || is_video_health)
         && !failed_hosts.is_empty()
         && snapshot.health.state == EyeHealthState::Ready
         && fence.network_fingerprint.stable_key().is_some()
@@ -2087,9 +2101,25 @@ mod tests {
     use super::*;
 
     fn service_report(snapshot: &ObserveOnlySnapshot, now: u64, failing: bool) -> GateReport {
+        service_report_for(
+            snapshot,
+            "discord",
+            ["discord.com", "updates.discord.com"],
+            now,
+            failing,
+        )
+    }
+
+    fn service_report_for(
+        snapshot: &ObserveOnlySnapshot,
+        category: &str,
+        hosts: [&str; 2],
+        now: u64,
+        failing: bool,
+    ) -> GateReport {
         GateReport {
-            fence: diagnostic_fence(snapshot, "discord").unwrap(),
-            category: "discord".into(),
+            fence: diagnostic_fence(snapshot, category).unwrap(),
+            category: category.into(),
             classification: if failing {
                 GateClassification::TargetUnavailable
             } else {
@@ -2100,21 +2130,298 @@ mod tests {
                 EndpointProbeOutcome::http("https://control-two.example/", 10, 204),
             ],
             category_targets: vec![
-                EndpointProbeOutcome::http("discord.com", 10, 200),
+                EndpointProbeOutcome::http(hosts[0], 10, 200),
                 if failing {
-                    EndpointProbeOutcome::timed_out(
-                        "updates.discord.com",
-                        EndpointProbeStage::Transport,
-                        5000,
-                    )
+                    EndpointProbeOutcome::timed_out(hosts[1], EndpointProbeStage::Transport, 5000)
                 } else {
-                    EndpointProbeOutcome::http("updates.discord.com", 10, 200)
+                    EndpointProbeOutcome::http(hosts[1], 10, 200)
                 },
             ],
             baseline_latency_ms: Some(10),
             slow_threshold_ms: None,
             generated_at_monotonic_ms: now,
             valid_until_monotonic_ms: now + 10000,
+        }
+    }
+
+    fn video_snapshot_and_registry() -> (ObserveOnlySnapshot, TargetRegistry) {
+        let records = ["video_1.conf", "video_2.conf"].map(|config| {
+            LegacyConfigRecord::new(
+                "youtube_twitch",
+                config,
+                if config == "video_1.conf" {
+                    "--wf-tcp=443 --hostlist=lists/video.txt --dpi-desync=fake"
+                } else {
+                    "--wf-tcp=443 --hostlist=lists/video.txt --dpi-desync=multisplit"
+                },
+            )
+            .with_hostlist("lists/video.txt", "youtube.com\ntwitch.tv\n")
+        });
+        let registry = TargetRegistry::from_records_with_active_selections(
+            records,
+            [("youtube_twitch", "video_1.conf")],
+        )
+        .unwrap();
+        let (ingress, receiver) = channel();
+        let manager = ObserveOnlyManager::new_with_registry(
+            LegacySessionContext::new(
+                SessionId::new(11),
+                vec!["youtube_twitch".into()],
+                NetworkFingerprint::Stable {
+                    key: "network-fingerprint".into(),
+                },
+            ),
+            SensorGeneration::new(13),
+            Arc::new(registry.clone()),
+            BTreeMap::from([("youtube_twitch".into(), LaneGeneration::new(19))]),
+            ingress.counters(),
+            receiver,
+        )
+        .unwrap();
+        let mut snapshot = manager.snapshot();
+        snapshot.health.state = EyeHealthState::Ready;
+        snapshot.lanes[0].classification = AssessmentClassification::Working;
+        snapshot.lanes[0].working_confirmed_recently = true;
+        (snapshot, registry)
+    }
+
+    fn video_report(snapshot: &ObserveOnlySnapshot, now: u64, failing: bool) -> GateReport {
+        service_report_for(
+            snapshot,
+            "youtube_twitch",
+            ["www.twitch.tv", "www.youtube.com"],
+            now,
+            failing,
+        )
+    }
+
+    #[test]
+    fn repeated_video_failure_reaches_recovery_and_respects_each_mode() {
+        let (snapshot, registry) = video_snapshot_and_registry();
+        let mut diagnostics = BTreeMap::new();
+        record_service_diagnostic(
+            &mut diagnostics,
+            &snapshot,
+            video_report(&snapshot, 100, true),
+            100,
+        );
+        let first = project_active_diagnostics(snapshot.clone(), &mut diagnostics, 100);
+        assert!(prepare_recovery_input(&first, &registry).is_none());
+        record_service_diagnostic(
+            &mut diagnostics,
+            &snapshot,
+            video_report(&snapshot, 15100, true),
+            15100,
+        );
+        let second = project_active_diagnostics(snapshot, &mut diagnostics, 15100);
+        assert_eq!(
+            second.lanes[0].classification,
+            AssessmentClassification::DpiSuspected
+        );
+        let input = prepare_recovery_input(&second, &registry).unwrap();
+        assert_eq!(input.fence.category, "youtube_twitch");
+        for mode in [
+            ProtocolRecoveryMode::ObserveOnly,
+            ProtocolRecoveryMode::Assisted,
+            ProtocolRecoveryMode::Automatic,
+        ] {
+            let mut runtime = LegacyRecoveryRuntime::new();
+            runtime
+                .set_controls(LegacyRecoveryControlsRequest {
+                    mode,
+                    automatic_paused: mode != ProtocolRecoveryMode::Automatic,
+                    frozen_categories: Vec::new(),
+                })
+                .unwrap();
+            let owner = ProcessOwner {
+                pid: 41,
+                process_start_identity: obsession_runtime_reliability::legacy_reliability::contracts::ProcessStartIdentity::new(43),
+                config_fingerprint: input.previous.fingerprint().clone(),
+                lane_generation: input.fence.lane_generation,
+            };
+            let action = runtime
+                .poll_at(
+                    LegacyRecoveryScan {
+                        generation: 7,
+                        revision: 1,
+                        session_id: second.session.session_id,
+                        input: Some(input.clone()),
+                    },
+                    Some(owner),
+                    15100,
+                )
+                .unwrap();
+            let public = runtime.public_snapshot(true);
+            match mode {
+                ProtocolRecoveryMode::ObserveOnly => {
+                    assert!(action.is_none());
+                    assert!(public.proposal.is_none());
+                    assert!(public.active_attempt.is_none());
+                }
+                ProtocolRecoveryMode::Assisted => {
+                    assert!(action.is_none());
+                    assert_eq!(
+                        public.proposal.unwrap().category,
+                        DpiCategory::YoutubeTwitch
+                    );
+                    assert!(public.active_attempt.is_none());
+                }
+                ProtocolRecoveryMode::Automatic => {
+                    assert!(matches!(action, Some(RecoveryAction::Preflight { .. })));
+                    assert!(public.active_attempt.is_some());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn video_recovery_accepts_repeated_body_stalls_and_independent_service_failures() {
+        for scenario in ["body", "twitch", "both", "youtube_only"] {
+            let (snapshot, registry) = video_snapshot_and_registry();
+            let mut diagnostics = BTreeMap::new();
+            for now in [100, 15100] {
+                let mut report = video_report(&snapshot, now, true);
+                match scenario {
+                    "body" => {
+                        let mut outcome = EndpointProbeOutcome::failed(
+                            "www.youtube.com",
+                            EndpointProbeStage::HttpResponse,
+                            5000,
+                        );
+                        outcome.http_status = Some(200);
+                        report.category_targets[1] = outcome;
+                    }
+                    "twitch" | "both" => {
+                        report.category_targets[0] = EndpointProbeOutcome::timed_out(
+                            "www.twitch.tv",
+                            EndpointProbeStage::Transport,
+                            5000,
+                        );
+                        if scenario == "twitch" {
+                            report.category_targets[1] =
+                                EndpointProbeOutcome::http("www.youtube.com", 10, 200);
+                        }
+                    }
+                    "youtube_only" => {
+                        report.category_targets.remove(0);
+                    }
+                    _ => unreachable!(),
+                }
+                record_service_diagnostic(&mut diagnostics, &snapshot, report, now);
+            }
+            let projected = project_active_diagnostics(snapshot, &mut diagnostics, 15100);
+            assert!(
+                prepare_recovery_input(&projected, &registry).is_some(),
+                "{scenario}"
+            );
+        }
+    }
+
+    #[test]
+    fn video_failures_require_same_host_and_reset_after_success_or_expiry() {
+        let (snapshot, _) = video_snapshot_and_registry();
+        for reset in ["healthy", "expired", "different_host"] {
+            let mut diagnostics = BTreeMap::new();
+            record_service_diagnostic(
+                &mut diagnostics,
+                &snapshot,
+                video_report(&snapshot, 100, true),
+                100,
+            );
+            if reset == "healthy" {
+                record_service_diagnostic(
+                    &mut diagnostics,
+                    &snapshot,
+                    video_report(&snapshot, 15100, false),
+                    15100,
+                );
+                assert!(!diagnostics.contains_key("youtube_twitch"));
+            }
+            let now = if reset == "expired" {
+                101 + ACTIVE_DIAGNOSTIC_TTL_MS
+            } else {
+                30100
+            };
+            let mut report = video_report(&snapshot, now, true);
+            if reset == "different_host" {
+                report.category_targets[0] = EndpointProbeOutcome::timed_out(
+                    "www.twitch.tv",
+                    EndpointProbeStage::Transport,
+                    5000,
+                );
+                report.category_targets[1] = EndpointProbeOutcome::http("www.youtube.com", 10, 200);
+            }
+            record_service_diagnostic(&mut diagnostics, &snapshot, report, now);
+            assert_eq!(diagnostics["youtube_twitch"].failure_rounds, 1, "{reset}");
+            assert_ne!(
+                diagnostics["youtube_twitch"].classification,
+                AssessmentClassification::DpiSuspected
+            );
+        }
+    }
+
+    #[test]
+    fn video_recovery_rejects_dns_http_errors_untrusted_targets_and_stale_evidence() {
+        for scenario in [
+            "dns",
+            "http403",
+            "http503",
+            "controls",
+            "offline",
+            "sensor",
+            "network",
+            "stale",
+            "foreign_host",
+            "replayed",
+        ] {
+            let (mut snapshot, registry) = video_snapshot_and_registry();
+            if scenario == "sensor" {
+                snapshot.health.state = EyeHealthState::Degraded;
+            }
+            if scenario == "network" {
+                snapshot.session.network_fingerprint_at_start = NetworkFingerprint::Unknown;
+            }
+            let mut diagnostics = BTreeMap::new();
+            for now in [100, 15100] {
+                let mut report = video_report(&snapshot, now, true);
+                match scenario {
+                    "dns" => {
+                        report.category_targets[1] = EndpointProbeOutcome::timed_out(
+                            "www.youtube.com",
+                            EndpointProbeStage::Dns,
+                            5000,
+                        )
+                    }
+                    "http403" => {
+                        report.category_targets[1] =
+                            EndpointProbeOutcome::http("www.youtube.com", 10, 403)
+                    }
+                    "http503" => {
+                        report.category_targets[1] =
+                            EndpointProbeOutcome::http("www.youtube.com", 10, 503)
+                    }
+                    "controls" => {
+                        report.controls.clear();
+                        report.classification = GateClassification::UpstreamDegraded;
+                    }
+                    "offline" => report.classification = GateClassification::Offline,
+                    "stale" => report.fence.lane_generation = LaneGeneration::new(99),
+                    "foreign_host" => {
+                        report.category_targets[1].endpoint = "www.youtube.com.example".into()
+                    }
+                    "replayed" => {
+                        report.generated_at_monotonic_ms = 100;
+                        report.valid_until_monotonic_ms = 20100;
+                    }
+                    _ => {}
+                }
+                record_service_diagnostic(&mut diagnostics, &snapshot, report, now);
+            }
+            let projected = project_active_diagnostics(snapshot, &mut diagnostics, 15100);
+            assert!(
+                prepare_recovery_input(&projected, &registry).is_none(),
+                "{scenario}"
+            );
         }
     }
 

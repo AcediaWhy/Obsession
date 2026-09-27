@@ -5,6 +5,7 @@ use super::*;
 const DISCORD_UPDATER: &str = "https://updates.discord.com/distributions/app/manifests/latest?channel=stable&platform=win&arch=x64";
 const DISCORD_IMAGE: &str = "https://cdn.discordapp.com/embed/avatars/0.png";
 const YOUTUBE_IMAGE: &str = "https://i.ytimg.com/vi/jNQXAC9IVRw/hqdefault.jpg";
+const PROBE_ROUND_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Debug, Serialize)]
 pub struct ProbeResult {
@@ -46,6 +47,66 @@ fn cancelled(app: &AppHandle, epoch: u64) -> bool {
     state.shutting_down.load(Ordering::SeqCst)
         || state.test_generation.load(Ordering::SeqCst) != epoch
         || state.test_cancel.load(Ordering::SeqCst)
+}
+
+async fn collect_probes<C, P, F>(
+    urls: &[&str],
+    fail_fast: bool,
+    timeout: Duration,
+    cancel: C,
+    make_probe: F,
+) -> (Vec<ProbeResult>, bool)
+where
+    C: std::future::Future<Output = ()>,
+    P: std::future::Future<Output = ProbeResult> + Send + 'static,
+    F: Fn(String) -> P,
+{
+    let started = std::time::Instant::now();
+    let mut tasks = tokio::task::JoinSet::new();
+    for (index, url) in urls.iter().enumerate() {
+        let future = make_probe((*url).to_owned());
+        tasks.spawn(async move { (index, future.await) });
+    }
+    let mut results: Vec<Option<ProbeResult>> = urls.iter().map(|_| None).collect();
+    let mut was_cancelled = false;
+    let mut stopped_reason = "Проверка прервана из-за ошибки сетевой задачи.";
+    let deadline = tokio::time::sleep(timeout);
+    tokio::pin!(cancel, deadline);
+    while !tasks.is_empty() {
+        tokio::select! {
+            biased;
+            _ = &mut cancel => {
+                was_cancelled = true;
+                stopped_reason = "Проверка отменена.";
+                break;
+            }
+            _ = &mut deadline => {
+                stopped_reason = "Истёк общий срок проверки конфигурации.";
+                break;
+            }
+            joined = tasks.join_next() => {
+                let Some(Ok((index, result))) = joined else { break; };
+                let failed = !result.passed;
+                results[index] = Some(result);
+                if fail_fast && failed {
+                    stopped_reason = "Проверка прервана: другая обязательная проверка не пройдена.";
+                    break;
+                }
+            }
+        }
+    }
+    // Закрываем все сетевые задачи до остановки тестового winws, чтобы
+    // запросы одной конфигурации не продолжались при проверке следующей.
+    tasks.abort_all();
+    while tasks.join_next().await.is_some() {}
+    let elapsed_ms = started.elapsed().as_millis() as u64;
+    let checks = results.into_iter().zip(urls).map(|(result, url)| {
+        result.unwrap_or_else(|| ProbeResult {
+            url: (*url).to_owned(), passed: false, elapsed_ms, bytes: 0,
+            attempts: 0, http_status: None, error: Some(stopped_reason.into()),
+        })
+    }).collect();
+    (checks, was_cancelled)
 }
 
 async fn probe(url: &str) -> ProbeResult {
@@ -125,7 +186,7 @@ fn validate_image(url: &str, body: &[u8]) -> Result<(), String> {
     if valid { Ok(()) } else { Err("Response is not a complete expected PNG/JPEG image".into()) }
 }
 
-pub(crate) async fn run(app: &AppHandle, category: &str, config: &str) -> Result<TestReport, String> {
+pub(crate) async fn run(app: &AppHandle, category: &str, config: &str, fail_fast: bool) -> Result<TestReport, String> {
     let urls = targets(category)?;
     #[cfg(windows)]
     {
@@ -145,29 +206,23 @@ pub(crate) async fn run(app: &AppHandle, category: &str, config: &str) -> Result
             Response::Started(started) => started.generation,
             _ => return Err("Неожиданный ответ службы при запуске теста.".into()),
         };
-        let check = async {
-            tokio::time::sleep(Duration::from_millis(800)).await;
-            let mut checks = Vec::new();
-            for url in urls {
-                let result = probe(url).await;
-                util::emit_log(app, if result.passed { "info" } else { "warn" }, "dpi",
-                    &format!("{config}: {url}: {}; {} мс; {} байт; попыток {}; {}",
-                        if result.passed { "OK" } else { "не подтверждено" }, result.elapsed_ms,
-                        result.bytes, result.attempts, result.error.as_deref().unwrap_or("")));
-                checks.push(result);
-            }
-            checks
-        };
+        tokio::time::sleep(Duration::from_millis(800)).await;
         let cancel = async {
             loop {
                 if cancelled(app, epoch) { break; }
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
         };
-        let (checks, was_cancelled) = tokio::select! {
-            result = check => (result, false),
-            _ = cancel => (Vec::new(), true),
-        };
+        let (checks, was_cancelled) = collect_probes(
+            urls, fail_fast, PROBE_ROUND_TIMEOUT, cancel,
+            |url| async move { probe(&url).await },
+        ).await;
+        for result in &checks {
+            util::emit_log(app, if result.passed { "info" } else { "warn" }, "dpi",
+                &format!("{config}: {}: {}; {} мс; {} байт; попыток {}; {}", result.url,
+                    if result.passed { "OK" } else if result.attempts == 0 { "не завершено" } else { "не подтверждено" },
+                    result.elapsed_ms, result.bytes, result.attempts, result.error.as_deref().unwrap_or("")));
+        }
         // Stop exactly the generation returned by this start, not a fresh
         // snapshot which could belong to another client. Cleanup errors abort
         // the entire picker; it must not continue against an unknown runtime.
@@ -180,12 +235,13 @@ pub(crate) async fn run(app: &AppHandle, category: &str, config: &str) -> Result
         Ok(report(checks, was_cancelled || cancelled(app, epoch)))
     }
     #[cfg(not(windows))]
-    { let _ = (app, config, urls); Err(unavailable()) }
+    { let _ = (app, config, urls, fail_fast); Err(unavailable()) }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
     /// Explicit opt-in smoke check; never starts/stops DPI or changes settings.
     #[tokio::test]
     #[ignore = "live public endpoints; requires an explicitly requested network diagnostic"]
@@ -197,6 +253,110 @@ mod tests {
     fn evidence(passed: bool) -> ProbeResult {
         ProbeResult { url: "https://example.com".into(), passed, elapsed_ms: 20,
             bytes: 0, attempts: 1, http_status: None, error: None }
+    }
+
+    #[tokio::test]
+    async fn category_probes_start_concurrently_and_keep_target_order() {
+        let urls = ["one", "two", "three", "four"];
+        let barrier = Arc::new(tokio::sync::Barrier::new(urls.len()));
+        let (checks, was_cancelled) = tokio::time::timeout(Duration::from_secs(2), collect_probes(
+            &urls, false, Duration::from_secs(1), std::future::pending(),
+            |url| {
+                let barrier = Arc::clone(&barrier);
+                async move {
+                    barrier.wait().await;
+                    let mut result = evidence(true);
+                    result.url = url;
+                    result
+                }
+            },
+        )).await.unwrap();
+        assert!(!was_cancelled);
+        assert!(report(checks, false).passed);
+        let (checks, _) = collect_probes(&urls, false, Duration::from_secs(1),
+            std::future::pending(), |url| async move {
+                let mut result = evidence(true);
+                result.url = url;
+                result
+            }).await;
+        assert_eq!(checks.iter().map(|r| r.url.as_str()).collect::<Vec<_>>(), urls);
+    }
+
+    struct ProbeDropCounter(Arc<std::sync::atomic::AtomicUsize>);
+    impl Drop for ProbeDropCounter {
+        fn drop(&mut self) { self.0.fetch_add(1, Ordering::SeqCst); }
+    }
+
+    #[tokio::test]
+    async fn failed_picker_probe_aborts_and_joins_stalled_peers_before_returning() {
+        let urls = ["failed", "stalled-one", "stalled-two", "stalled-three"];
+        let barrier = Arc::new(tokio::sync::Barrier::new(urls.len()));
+        let dropped = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (checks, was_cancelled) = collect_probes(&urls, true, Duration::from_secs(1),
+            std::future::pending(), |url| {
+                let barrier = Arc::clone(&barrier);
+                let dropped = Arc::clone(&dropped);
+                async move {
+                    let _guard = ProbeDropCounter(dropped);
+                    barrier.wait().await;
+                    if url == "failed" { evidence(false) }
+                    else { std::future::pending().await }
+                }
+            }).await;
+        assert!(!was_cancelled);
+        assert_eq!(dropped.load(Ordering::SeqCst), urls.len());
+        assert_eq!(checks[0].attempts, 1);
+        assert!(checks[1..].iter().all(|r| r.attempts == 0 && !r.passed));
+        assert!(!report(checks, false).passed);
+    }
+
+    #[tokio::test]
+    async fn manual_probe_failure_still_collects_every_endpoint() {
+        let urls = ["failed", "working-one", "working-two"];
+        let (checks, was_cancelled) = collect_probes(&urls, false, Duration::from_secs(1),
+            std::future::pending(), |url| async move {
+                tokio::task::yield_now().await;
+                evidence(url != "failed")
+            }).await;
+        assert!(!was_cancelled);
+        assert!(checks.iter().all(|r| r.attempts == 1));
+        assert_eq!(report(checks, false).status, "partial");
+    }
+
+    #[tokio::test]
+    async fn cancellation_joins_all_probes_and_never_confirms_the_config() {
+        let urls = ["one", "two", "three"];
+        let started = Arc::new(tokio::sync::Semaphore::new(0));
+        let dropped = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let cancellation_signal = Arc::clone(&started);
+        let (checks, was_cancelled) = collect_probes(&urls, true, Duration::from_secs(1),
+            async move { cancellation_signal.acquire_many_owned(3).await.unwrap().forget(); },
+            |_| {
+                let started = Arc::clone(&started);
+                let dropped = Arc::clone(&dropped);
+                async move {
+                    let _guard = ProbeDropCounter(dropped);
+                    started.add_permits(1);
+                    std::future::pending::<ProbeResult>().await
+                }
+            }).await;
+        assert!(was_cancelled);
+        assert_eq!(dropped.load(Ordering::SeqCst), urls.len());
+        assert_eq!(report(checks, was_cancelled).status, "cancelled");
+    }
+
+    #[tokio::test]
+    async fn round_deadline_cannot_turn_incomplete_probes_into_success() {
+        let (checks, was_cancelled) = collect_probes(&["working", "stalled"], false,
+            Duration::from_millis(40), std::future::pending(), |url| async move {
+                if url == "working" { evidence(true) }
+                else { std::future::pending().await }
+            }).await;
+        assert!(!was_cancelled);
+        assert!(checks[0].passed);
+        assert!(!checks[1].passed);
+        assert!(checks[1].error.as_ref().unwrap().contains("общий срок"));
+        assert_eq!(report(checks, false).status, "partial");
     }
 
     #[test]

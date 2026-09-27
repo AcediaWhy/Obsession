@@ -567,8 +567,8 @@ export const api = {
   dpiStart: (configs: { category: string; config_file: string }[]) =>
     invoke<number[]>("dpi_start", { configs }),
   dpiStop: () => invoke<void>("dpi_stop"),
-  dpiTest: (category: string, configFile: string) =>
-    invoke<DpiTestReport>("dpi_test", { category, configFile }),
+  dpiTest: (category: string, configFile: string, failFast = false) =>
+    invoke<DpiTestReport>("dpi_test", { category, configFile, failFast }),
   dpiTestCancel: () => invoke<void>("dpi_test_cancel"),
   dpiEngineList: () => invoke<EngineOption[]>("dpi_engine_list"),
   dpiZapret2Profiles: (categories: string[]) =>

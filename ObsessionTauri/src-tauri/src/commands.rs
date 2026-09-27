@@ -278,7 +278,7 @@ pub async fn dpi_engine_set(app: AppHandle, engine: String) -> Result<(), String
 }
 
 #[tauri::command]
-pub async fn dpi_test(app: AppHandle, category: String, config_file: String) -> Result<crate::protected_runtime::legacy_test::TestReport, String> {
+pub async fn dpi_test(app: AppHandle, category: String, config_file: String, fail_fast: Option<bool>) -> Result<crate::protected_runtime::legacy_test::TestReport, String> {
     if runtime_is_shutting_down(&app) {
         return Err("Приложение завершает работу.".into());
     }
@@ -312,7 +312,7 @@ pub async fn dpi_test(app: AppHandle, category: String, config_file: String) -> 
     if runtime_is_shutting_down(&app) {
         return Err("Приложение завершает работу.".into());
     }
-    crate::protected_runtime::legacy_test::run(&app, &category, &config_file).await
+    crate::protected_runtime::legacy_test::run(&app, &category, &config_file, fail_fast.unwrap_or(false)).await
 }
 
 /// Отмена текущего теста. Намеренно НЕ берёт `dpi_gate` (его держит бегущий

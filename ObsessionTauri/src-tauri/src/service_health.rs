@@ -5,12 +5,21 @@ pub const DISCORD_UPDATE_PATH: &str =
     "/distributions/app/manifests/latest?channel=stable&platform=win&arch=x64";
 pub const DISCORD_API_PATH: &str = "/api/v10/gateway";
 pub const DISCORD_HEALTH_HOSTS: [&str; 2] = ["updates.discord.com", "discord.com"];
+pub const YOUTUBE_TWITCH_HEALTH_HOSTS: [&str; 2] = ["www.youtube.com", "www.twitch.tv"];
 const BODY_LIMIT: usize = 256 * 1024;
 
 pub fn probe_hosts(category: &str, allowed: &[&str], limit: usize) -> Vec<String> {
-    if category == "discord" {
-        let hosts = DISCORD_HEALTH_HOSTS
-            .into_iter()
+    let preferred: &[&str] = match category {
+        "discord" => &DISCORD_HEALTH_HOSTS,
+        "youtube_twitch" => &YOUTUBE_TWITCH_HEALTH_HOSTS,
+        _ => &[],
+    };
+    if !preferred.is_empty() {
+        // Список обхода содержит также технические домены и расширения.
+        // Для фоновой проверки выбираем сайты сервисов в пределах активной конфигурации.
+        let hosts = preferred
+            .iter()
+            .copied()
             .filter(|host| {
                 allowed.iter().any(|suffix| {
                     *host == *suffix
@@ -162,6 +171,47 @@ mod tests {
             probe_hosts("video", &["one.example", "two.example"], 1),
             vec!["one.example"]
         );
+    }
+
+    #[test]
+    fn video_health_checks_services_instead_of_alphabetical_hostlist_entries() {
+        use crate::legacy_reliability::target_registry::{LegacyConfigRecord, TargetRegistry};
+
+        let record = LegacyConfigRecord::new(
+            "youtube_twitch",
+            "youtube_twitch_11.conf",
+            include_str!("../resources/configs/youtube_twitch/youtube_twitch_11.conf"),
+        )
+        .with_hostlist(
+            "lists/youtube_twitch.txt",
+            include_str!("../resources/lists/youtube_twitch.txt"),
+        );
+        let registry = TargetRegistry::from_records_with_active_selections(
+            [record],
+            [("youtube_twitch", "youtube_twitch_11.conf")],
+        )
+        .unwrap();
+        let allowed = registry.active_targets_for_category("youtube_twitch");
+        assert_eq!(&allowed[..2], &["1e100.net", "7tv.app"]);
+        assert_eq!(
+            probe_hosts("youtube_twitch", &allowed, 2),
+            ["www.youtube.com", "www.twitch.tv"]
+        );
+    }
+
+    #[test]
+    fn video_health_respects_selected_hosts_and_probe_budget() {
+        for (allowed, limit, expected) in [
+            (vec!["youtube.com", "twitch.tv"], 1, vec!["www.youtube.com"]),
+            (vec!["youtube.com", "twitch.tv"], 0, vec![]),
+            (vec!["twitch.tv", "7tv.app"], 2, vec!["www.twitch.tv"]),
+            (vec!["www.youtube.com"], 2, vec!["www.youtube.com"]),
+            (vec!["notyoutube.com"], 2, vec!["notyoutube.com"]),
+            (vec!["youtube.com.example"], 2, vec!["youtube.com.example"]),
+            (vec![], 2, vec![]),
+        ] {
+            assert_eq!(probe_hosts("youtube_twitch", &allowed, limit), expected);
+        }
     }
 
     #[tokio::test]

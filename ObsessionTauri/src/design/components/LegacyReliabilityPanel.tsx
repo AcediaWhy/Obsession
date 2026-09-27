@@ -45,7 +45,7 @@ const CLASSIFICATION_DISPLAY = {
   offline: { label: "Нет подключения", tone: "muted" },
   dns_failure: { label: "Сбой DNS", tone: "muted" },
   upstream_degraded: { label: "Проблема сети", tone: "muted" },
-  target_unavailable: { label: "Сервис недоступен", tone: "muted" },
+  target_unavailable: { label: "Доступ не подтверждён", tone: "muted" },
   service_slow: { label: "Сервис отвечает медленно", tone: "muted" },
   sensor_unreliable: { label: "Данные ненадёжны", tone: "danger" },
 } as const satisfies Record<

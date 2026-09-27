@@ -351,13 +351,20 @@ export const useDpiStore = create<DpiState>((set, get) => ({
     const failed: string[] = [];
     try {
       outer: for (const cat of selectedCategories) {
-        const files = config?.configs[cat] ?? [];
+        const available = config?.configs[cat] ?? [];
+        // Сначала перепроверяем успешный для этой сети и текущий варианты.
+        // Кэш определяет порядок, но не заменяет сетевую проверку.
+        const files = [...new Set([
+          get().netStats[cat]?.conf,
+          selected[cat],
+          ...available,
+        ])].filter((file): file is string => !!file && available.includes(file));
         let found = false;
         set({ testingLabel: cat });
-        for (const file of files) {
+        for (const [index, file] of files.entries()) {
           if (get().testCancel) break outer;
-          set({ testingLabel: `${cat}: ${file}` });
-          const report = await api.dpiTest(cat, file);
+          set({ testingLabel: `${cat}: ${file} (${index + 1}/${files.length})` });
+          const report = await api.dpiTest(cat, file, true);
           if (get().testCancel || report.status === "cancelled") break outer;
           const ok = report.passed;
           set((state) => ({ testReports: { ...state.testReports, [file]: report } }));

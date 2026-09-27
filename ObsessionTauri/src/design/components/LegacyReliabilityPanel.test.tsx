@@ -269,7 +269,7 @@ describe("LegacyReliabilityPanel", () => {
     ["offline", "Нет подключения", "muted"],
     ["dns_failure", "Сбой DNS", "muted"],
     ["upstream_degraded", "Проблема сети", "muted"],
-    ["target_unavailable", "Сервис недоступен", "muted"],
+    ["target_unavailable", "Доступ не подтверждён", "muted"],
     ["service_slow", "Сервис отвечает медленно", "muted"],
     ["sensor_unreliable", "Данные ненадёжны", "danger"],
   ])("maps %s lane assessment to %s", (classification, label, tone) => {
