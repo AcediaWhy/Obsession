@@ -180,6 +180,7 @@ winws, WinDivert, Obsession Telegram Proxy, конфигурации и спис
 ## Документация
 
 - [Архитектура защищённого runtime](docs/SECURE_RUNTIME_ARCHITECTURE.md)
+- [Как работает автообход](docs/AUTO_BYPASS.md)
 - [Диагностика и конфигурации DPI](docs/DIAGNOSTICS.md)
 - [Проверка перед выпуском](docs/RELEASE_CHECKLIST.md)
 - [Удаление приложения](installer/UNINSTALL.md)
