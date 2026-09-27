@@ -1,65 +1,44 @@
-# Obsession zapret2 patch stack
+# Патчи Obsession для zapret2
 
-Obsession does not vendor a mutable fork of zapret2. `upstream.lock.json` pins an
-exact upstream tag/commit, the LuaJIT input, the signed Cygwin bootstrap and the
-toolchain package versions. The byte-exact official Windows release archive is
-also pinned as the source of the v1.0.5.2 `WinDivert.dll`. `patches/` is an ordered
-`git format-patch` series.
+Obsession не хранит изменяемый форк zapret2. Файл `upstream.lock.json` фиксирует точный тег и коммит исходного проекта, версию LuaJIT, подписанный установщик Cygwin и версии пакетов для сборки. Официальный архив выпуска для Windows также зафиксирован побайтово: из него берётся `WinDivert.dll` версии v1.0.5.2. Каталог `patches/` содержит упорядоченную серию патчей в формате `git format-patch`.
 
-The current patchset (`v1.0.5.2-h2`, upstream `6b6c63e`) contains:
+Исходный [zapret2 распространяется под MIT](https://github.com/bol-van/zapret2/blob/master/docs/LICENSE.txt). Для [WinDivert действуют LGPLv3 или GPLv2](https://github.com/basil00/WinDivert/blob/master/LICENSE); лицензия кода Obsession не заменяет эти условия.
 
-1. nested IPv4/IPv6 length validation for the packet dissector;
-2. CSPRNG-backed randomness for wire-visible fake data;
-3. LRU and byte budgets for conntrack, reassembly and delayed packets;
-4. a token-bucket limit for unauthenticated QUIC Initial decryption;
-5. compiler/linker mitigations, explicit source lists and an ASan target.
+Текущий набор патчей (`v1.0.5.2-h2`, исходный коммит `6b6c63e`) включает:
 
-The h2 port keeps all five protections. Upstream now checks IPv4 total length
-against header length and uses `size_t` in the dissector, so patch 1 retains only
-the missing short-buffer guards. Upstream removed `ReasmResize`; patch 3 no
-longer modifies that dead function. Patches 2, 4 and 5 are unchanged. Lua files
-are taken together from the v1.0.5.2 release; its compatibility API remains 6.
-The Windows DLL and compiler versions are unchanged from h1.
+1. Проверку длины вложенных структур IPv4/IPv6 при разборе пакетов.
+2. Использование криптографически стойкого генератора случайных чисел для поддельных данных, отправляемых в сеть.
+3. LRU-ограничения и лимиты памяти для учёта соединений, сборки потоков и отложенных пакетов.
+4. Ограничение частоты расшифровки неподтверждённых пакетов QUIC Initial с помощью token bucket.
+5. Защитные настройки компилятора и компоновщика, явные списки исходных файлов и сборку с ASan.
 
-Build from the repository root:
+При переносе на h2 сохранены все пять защит. Исходный проект теперь проверяет, что общая длина IPv4 не меньше длины заголовка, и использует `size_t` в коде разбора; поэтому в первом патче оставлены только недостающие проверки коротких буферов. Исходный проект удалил `ReasmResize`, и третий патч больше не затрагивает эту неиспользуемую функцию. Патчи 2, 4 и 5 не изменились. Все Lua-файлы взяты из одного выпуска v1.0.5.2; версия их API совместимости осталась равной 6. Версии Windows DLL и компилятора не изменились относительно h1.
+
+Сборка из корня репозитория:
 
 ```powershell
 ./ObsessionTauri/scripts/build-zapret2.ps1 -OutputDirectory ./artifacts/zapret2
 ```
 
-The script verifies every pinned input and patch before compiling. It refuses a
-changed Cygwin bootstrap, package drift, a patch hash mismatch, a wrong upstream
-commit, a `winws2.exe` without ASLR, high-entropy VA, NX and stack-protector
-imports, or a `WinDivert.dll` that differs from the pinned official release. The
-DLL must retain `DYNAMIC_BASE` and must not restore the `HIGH_ENTROPY_VA` flag
-removed by upstream in v1.0.4. The script also compares every output with
-`artifact.lock.json`; use
-`-AllowArtifactHashChange` only while deliberately reviewing an upgrade. The
-output includes `build-provenance.json`, the matching `cygwin1.dll`, and the
-pinned `WinDivert.dll`.
+Перед компиляцией скрипт проверяет каждый зафиксированный входной файл и патч. Сборка останавливается, если изменился установщик Cygwin, версии пакетов или хеш патча, не совпал коммит исходного проекта, у `winws2.exe` отсутствуют ASLR, high-entropy VA, NX или импорты защиты стека, либо `WinDivert.dll` отличается от зафиксированного официального выпуска. У DLL должен оставаться флаг `DYNAMIC_BASE`; флаг `HIGH_ENTROPY_VA`, удалённый в исходном проекте начиная с v1.0.4, восстанавливать нельзя.
 
-## Updating upstream safely
+Скрипт также сравнивает каждый выходной файл с `artifact.lock.json`. Параметр `-AllowArtifactHashChange` используйте только при осознанной проверке обновления. В результат входят `build-provenance.json`, соответствующий `cygwin1.dll` и зафиксированный `WinDivert.dll`.
 
-1. Update the upstream tag, commit, source timestamp and official archive hash
-   in `upstream.lock.json` after checking the release against its published digest.
-2. Apply the existing patches with `git am` to a clean checkout of that commit.
-3. Resolve conflicts patch-by-patch; never squash the series before review.
-4. Re-run the builder and the Obsession runtime tests.
-5. Review the upstream diff for the packet paths touched by patches 1, 3 and 4.
-6. Bump `WINWS2_VERSION`, the strategy-pack `winws2_min`, resource provenance,
-   binary sizes/hashes and `runtime-manifest.json` in the same Obsession commit.
+## Как безопасно обновлять исходный проект
 
-If a patch applies cleanly, that proves only textual compatibility. A successful
-clean build, PE checks and runtime regression tests remain mandatory before the
-new artifact is shipped.
+1. После сверки нового выпуска с опубликованным хешем обновите тег, коммит, временную метку исходников и хеш официального архива в `upstream.lock.json`.
+2. Примените существующие патчи командой `git am` к чистой копии этого коммита.
+3. Разрешайте конфликты для каждого патча отдельно; не объединяйте серию перед проверкой.
+4. Повторно запустите сборку и тесты runtime Obsession.
+5. Проверьте изменения исходного проекта в обработке пакетов, затронутой патчами 1, 3 и 4.
+6. В одном коммите Obsession обновите `WINWS2_VERSION`, `winws2_min` в пакете стратегий, сведения о происхождении ресурсов, размеры и хеши бинарных файлов, а также `runtime-manifest.json`.
 
-## Verification of v1.0.5.2-h2
+Успешное применение патча подтверждает только текстовую совместимость. Перед выпуском нового артефакта всё равно необходимы чистая сборка, проверка PE-файлов и регрессионные тесты runtime.
 
-Two clean builds with the pinned Cygwin toolchain produced the same executable:
+## Проверка v1.0.5.2-h2
+
+Две чистые сборки с зафиксированным набором инструментов Cygwin дали один и тот же исполняемый файл:
 `d2a3dc3f6bb11f343e6ff74fa083a03e973ddb36d1901632d5ccfc07ccc2912e`.
-The full application and service unit suites passed. Run
-`npm run verify:dpi-parsers` from `ObsessionTauri` on Windows to build the service
-and check 68 materialized invocations with the shipped engines' `--dry-run`.
-This exercises argument parsing and resource loading, not packet processing.
-It does not install a service or start network capture. The test child uses
-`RunAsInvoker`; production elevation behavior is unchanged.
+Полные наборы модульных тестов приложения и службы прошли.
+
+На Windows запустите `npm run verify:dpi-parsers` из каталога `ObsessionTauri`. Команда собирает службу и проверяет 68 сформированных команд запуска с поставляемыми движками в режиме `--dry-run`. Она проверяет разбор аргументов и загрузку ресурсов, но не обработку пакетов, не устанавливает службу и не запускает захват трафика. Дочерний тестовый процесс использует `RunAsInvoker`; поведение повышения прав в рабочем приложении не меняется.
