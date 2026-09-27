@@ -1,4 +1,3 @@
-/target
-/target-new
-/dist
+# Локальные артефакты прокси
 /.wrangler/
+/nul

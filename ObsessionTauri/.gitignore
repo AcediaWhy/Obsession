@@ -1,26 +1,14 @@
-# Dependencies
-node_modules/
+# Генерируемые файлы приложения и установщика
+/src-tauri/resources/runtime/
+/installer/src-tauri/payload/
+/installer/src-tauri/gen-version.conf.json
+/dist-release/
 
-# Build output
-dist/
-src-tauri/target/
-src-tauri/gen/schemas/
+# Локальная подготовка иконок
+/icon-source.png
 
-# Logs
-*.log
-
-# Editor
-.DS_Store
-.idea/
-.vscode/
-
-# Локальные артефакты иконок (бэкап старых + исходник для регенерации)
-src-tauri/icons.space-backup/
-icon-source.png
-
-# Инсталлер-оболочка «Obsession Setup» (node_modules/ и dist/ покрыты выше)
-installer/src-tauri/target/
-installer/src-tauri/gen/schemas/
-installer/src-tauri/payload/
-installer/src-tauri/gen-version.conf.json
-dist-release/
+# Отладочные скрипты и результаты измерений
+/.dev-logs/
+/scripts/_*
+/artifacts/golden-meadow-perf/native.jsonl
+/artifacts/tauri-existing-vite.dev.json
