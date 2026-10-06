@@ -1,0 +1,5761 @@
+{
+  "schemaVersion": 1,
+  "capturedAtUtc": "2026-10-04T20:12:37.753013+00:00",
+  "kind": "large_tls_layout_and_real_client_comparison",
+  "userDirectCaptures": [
+    {
+      "session": "20261004T190152Z-c89b629d",
+      "netlogSha256": "fa016fd6d26b0c5c3eeb372e67eda50018d8dd0901f64d199ea3e4ec23a1afd4",
+      "complete": true,
+      "proxyResolution": {
+        "direct": 19,
+        "proxied": 0,
+        "unknown": 0
+      },
+      "tls": [
+        {
+          "source": 41,
+          "handshakeBytes": 1755,
+          "sni": "cdn.discordapp.com",
+          "sniOffset": 122,
+          "sniEndOffset": 140,
+          "sessionTicketBytes": 0,
+          "alpn": [
+            "h2",
+            "http/1.1"
+          ],
+          "extensionTypes": [
+            56026,
+            0,
+            43,
+            5,
+            16,
+            45,
+            17613,
+            13,
+            18,
+            51,
+            27,
+            10,
+            65281,
+            35,
+            23,
+            11,
+            65037,
+            51914
+          ],
+          "keyShares": [
+            {
+              "group": 39578,
+              "keyBytes": 1
+            },
+            {
+              "group": 4588,
+              "keyBytes": 1216
+            },
+            {
+              "group": 29,
+              "keyBytes": 32
+            }
+          ],
+          "remoteAddresses": [
+            "162.159.129.233:443"
+          ],
+          "tcpMs": 49,
+          "tlsMs": 19069,
+          "tlsStartUtc": "2026-10-04T19:01:52.756Z",
+          "tlsEndUtc": "2026-10-04T19:02:11.825Z",
+          "resumed": null,
+          "encryptedClientHelloAccepted": null,
+          "netError": -101,
+          "serverHelloObserved": false
+        },
+        {
+          "source": 60,
+          "handshakeBytes": 1755,
+          "sni": "cdn.discordapp.com",
+          "sniOffset": 1732,
+          "sniEndOffset": 1750,
+          "sessionTicketBytes": 0,
+          "alpn": [
+            "h2",
+            "http/1.1"
+          ],
+          "extensionTypes": [
+            2570,
+            51,
+            16,
+            43,
+            45,
+            10,
+            35,
+            5,
+            65037,
+            18,
+            23,
+            17613,
+            27,
+            65281,
+            11,
+            13,
+            0,
+            14906
+          ],
+          "keyShares": [
+            {
+              "group": 56026,
+              "keyBytes": 1
+            },
+            {
+              "group": 4588,
+              "keyBytes": 1216
+            },
+            {
+              "group": 29,
+              "keyBytes": 32
+            }
+          ],
+          "remoteAddresses": [
+            "162.159.129.233:443"
+          ],
+          "tcpMs": 47,
+          "tlsMs": 19051,
+          "tlsStartUtc": "2026-10-04T19:02:11.873Z",
+          "tlsEndUtc": "2026-10-04T19:02:30.924Z",
+          "resumed": null,
+          "encryptedClientHelloAccepted": null,
+          "netError": -101,
+          "serverHelloObserved": false
+        },
+        {
+          "source": 61,
+          "handshakeBytes": 1812,
+          "sni": "discord.com",
+          "sniOffset": 191,
+          "sniEndOffset": 202,
+          "sessionTicketBytes": 0,
+          "alpn": [
+            "h2",
+            "http/1.1"
+          ],
+          "extensionTypes": [
+            2570,
+            43,
+            16,
+            5,
+            11,
+            17613,
+            10,
+            0,
+            18,
+            23,
+            27,
+            51,
+            65281,
+            65037,
+            35,
+            45,
+            13,
+            39578
+          ],
+          "keyShares": [
+            {
+              "group": 31354,
+              "keyBytes": 1
+            },
+            {
+              "group": 4588,
+              "keyBytes": 1216
+            },
+            {
+              "group": 29,
+              "keyBytes": 32
+            }
+          ],
+          "remoteAddresses": [
+            "162.159.137.232:443"
+          ],
+          "tcpMs": 46,
+          "tlsMs": 19056,
+          "tlsStartUtc": "2026-10-04T19:02:13.780Z",
+          "tlsEndUtc": "2026-10-04T19:02:32.836Z",
+          "resumed": null,
+          "encryptedClientHelloAccepted": null,
+          "netError": -101,
+          "serverHelloObserved": false
+        },
+        {
+          "source": 65,
+          "handshakeBytes": 1716,
+          "sni": "discord.com",
+          "sniOffset": 180,
+          "sniEndOffset": 191,
+          "sessionTicketBytes": 0,
+          "alpn": [
+            "h2",
+            "http/1.1"
+          ],
+          "extensionTypes": [
+            39578,
+            43,
+            11,
+            27,
+            65281,
+            18,
+            10,
+            17613,
+            0,
+            51,
+            5,
+            23,
+            35,
+            45,
+            16,
+            65037,
+            13,
+            51914
+          ],
+          "keyShares": [
+            {
+              "group": 60138,
+              "keyBytes": 1
+            },
+            {
+              "group": 4588,
+              "keyBytes": 1216
+            },
+            {
+              "group": 29,
+              "keyBytes": 32
+            }
+          ],
+          "remoteAddresses": [
+            "162.159.137.232:443"
+          ],
+          "tcpMs": 49,
+          "tlsMs": 19066,
+          "tlsStartUtc": "2026-10-04T19:02:53.925Z",
+          "tlsEndUtc": "2026-10-04T19:03:12.991Z",
+          "resumed": null,
+          "encryptedClientHelloAccepted": null,
+          "netError": -101,
+          "serverHelloObserved": false
+        },
+        {
+          "source": 93,
+          "handshakeBytes": 1716,
+          "sni": "discord.com",
+          "sniOffset": 1459,
+          "sniEndOffset": 1470,
+          "sessionTicketBytes": 0,
+          "alpn": [
+            "h2",
+            "http/1.1"
+          ],
+          "extensionTypes": [
+            51914,
+            23,
+            18,
+            5,
+            35,
+            11,
+            16,
+            10,
+            51,
+            17613,
+            0,
+            45,
+            13,
+            65281,
+            43,
+            65037,
+            27,
+            19018
+          ],
+          "keyShares": [
+            {
+              "group": 31354,
+              "keyBytes": 1
+            },
+            {
+              "group": 4588,
+              "keyBytes": 1216
+            },
+            {
+              "group": 29,
+              "keyBytes": 32
+            }
+          ],
+          "remoteAddresses": [
+            "162.159.135.232:443"
+          ],
+          "tcpMs": 50,
+          "tlsMs": 19049,
+          "tlsStartUtc": "2026-10-04T19:03:16.038Z",
+          "tlsEndUtc": "2026-10-04T19:03:35.087Z",
+          "resumed": null,
+          "encryptedClientHelloAccepted": null,
+          "netError": -101,
+          "serverHelloObserved": false
+        },
+        {
+          "source": 96,
+          "handshakeBytes": 1716,
+          "sni": "discord.com",
+          "sniOffset": 1449,
+          "sniEndOffset": 1460,
+          "sessionTicketBytes": 0,
+          "alpn": [
+            "h2",
+            "http/1.1"
+          ],
+          "extensionTypes": [
+            60138,
+            45,
+            51,
+            10,
+            5,
+            18,
+            27,
+            16,
+            0,
+            43,
+            23,
+            65037,
+            13,
+            65281,
+            17613,
+            11,
+            35,
+            19018
+          ],
+          "keyShares": [
+            {
+              "group": 64250,
+              "keyBytes": 1
+            },
+            {
+              "group": 4588,
+              "keyBytes": 1216
+            },
+            {
+              "group": 29,
+              "keyBytes": 32
+            }
+          ],
+          "remoteAddresses": [
+            "162.159.135.232:443"
+          ],
+          "tcpMs": 46,
+          "tlsMs": 19058,
+          "tlsStartUtc": "2026-10-04T19:03:35.134Z",
+          "tlsEndUtc": "2026-10-04T19:03:54.192Z",
+          "resumed": null,
+          "encryptedClientHelloAccepted": null,
+          "netError": -101,
+          "serverHelloObserved": false
+        },
+        {
+          "source": 112,
+          "handshakeBytes": 1748,
+          "sni": "discord.com",
+          "sniOffset": 1732,
+          "sniEndOffset": 1743,
+          "sessionTicketBytes": 0,
+          "alpn": [
+            "h2",
+            "http/1.1"
+          ],
+          "extensionTypes": [
+            39578,
+            45,
+            17613,
+            11,
+            16,
+            10,
+            23,
+            35,
+            43,
+            13,
+            65281,
+            51,
+            5,
+            18,
+            27,
+            65037,
+            0,
+            35466
+          ],
+          "keyShares": [
+            {
+              "group": 43690,
+              "keyBytes": 1
+            },
+            {
+              "group": 4588,
+              "keyBytes": 1216
+            },
+            {
+              "group": 29,
+              "keyBytes": 32
+            }
+          ],
+          "remoteAddresses": [
+            "162.159.135.232:443"
+          ],
+          "tcpMs": 50,
+          "tlsMs": 19074,
+          "tlsStartUtc": "2026-10-04T19:04:00.845Z",
+          "tlsEndUtc": "2026-10-04T19:04:19.919Z",
+          "resumed": null,
+          "encryptedClientHelloAccepted": null,
+          "netError": -101,
+          "serverHelloObserved": false
+        },
+        {
+          "source": 116,
+          "handshakeBytes": 1812,
+          "sni": "discord.com",
+          "sniOffset": 145,
+          "sniEndOffset": 156,
+          "sessionTicketBytes": 0,
+          "alpn": [
+            "h2",
+            "http/1.1"
+          ],
+          "extensionTypes": [
+            51914,
+            10,
+            27,
+            0,
+            16,
+            65037,
+            35,
+            45,
+            51,
+            43,
+            18,
+            13,
+            17613,
+            65281,
+            23,
+            5,
+            11,
+            56026
+          ],
+          "keyShares": [
+            {
+              "group": 23130,
+              "keyBytes": 1
+            },
+            {
+              "group": 4588,
+              "keyBytes": 1216
+            },
+            {
+              "group": 29,
+              "keyBytes": 32
+            }
+          ],
+          "remoteAddresses": [
+            "162.159.135.232:443"
+          ],
+          "tcpMs": 45,
+          "tlsMs": 19055,
+          "tlsStartUtc": "2026-10-04T19:04:19.965Z",
+          "tlsEndUtc": "2026-10-04T19:04:39.020Z",
+          "resumed": null,
+          "encryptedClientHelloAccepted": null,
+          "netError": -101,
+          "serverHelloObserved": false
+        },
+        {
+          "source": 132,
+          "handshakeBytes": 1748,
+          "sni": "discord.com",
+          "sniOffset": 197,
+          "sniEndOffset": 208,
+          "sessionTicketBytes": 0,
+          "alpn": [
+            "h2",
+            "http/1.1"
+          ],
+          "extensionTypes": [
+            64250,
+            35,
+            65281,
+            16,
+            43,
+            27,
+            45,
+            5,
+            17613,
+            11,
+            0,
+            23,
+            51,
+            18,
+            65037,
+            13,
+            10,
+            60138
+          ],
+          "keyShares": [
+            {
+              "group": 19018,
+              "keyBytes": 1
+            },
+            {
+              "group": 4588,
+              "keyBytes": 1216
+            },
+            {
+              "group": 29,
+              "keyBytes": 32
+            }
+          ],
+          "remoteAddresses": [
+            "162.159.135.232:443"
+          ],
+          "tcpMs": 48,
+          "tlsMs": 19037,
+          "tlsStartUtc": "2026-10-04T19:04:51.171Z",
+          "tlsEndUtc": "2026-10-04T19:05:10.208Z",
+          "resumed": null,
+          "encryptedClientHelloAccepted": null,
+          "netError": -101,
+          "serverHelloObserved": false
+        },
+        {
+          "source": 135,
+          "handshakeBytes": 1812,
+          "sni": "discord.com",
+          "sniOffset": 1774,
+          "sniEndOffset": 1785,
+          "sessionTicketBytes": 0,
+          "alpn": [
+            "h2",
+            "http/1.1"
+          ],
+          "extensionTypes": [
+            64250,
+            10,
+            11,
+            16,
+            5,
+            23,
+            27,
+            35,
+            65037,
+            65281,
+            51,
+            45,
+            18,
+            43,
+            17613,
+            0,
+            13,
+            56026
+          ],
+          "keyShares": [
+            {
+              "group": 14906,
+              "keyBytes": 1
+            },
+            {
+              "group": 4588,
+              "keyBytes": 1216
+            },
+            {
+              "group": 29,
+              "keyBytes": 32
+            }
+          ],
+          "remoteAddresses": [
+            "162.159.135.232:443"
+          ],
+          "tcpMs": 48,
+          "tlsMs": 19056,
+          "tlsStartUtc": "2026-10-04T19:05:10.256Z",
+          "tlsEndUtc": "2026-10-04T19:05:29.312Z",
+          "resumed": null,
+          "encryptedClientHelloAccepted": null,
+          "netError": -101,
+          "serverHelloObserved": false
+        },
+        {
+          "source": 154,
+          "handshakeBytes": 1780,
+          "sni": "discord.com",
+          "sniOffset": 145,
+          "sniEndOffset": 156,
+          "sessionTicketBytes": 0,
+          "alpn": [
+            "h2",
+            "http/1.1"
+          ],
+          "extensionTypes": [
+            51914,
+            10,
+            27,
+            0,
+            17613,
+            16,
+            51,
+            13,
+            18,
+            5,
+            43,
+            23,
+            45,
+            65037,
+            35,
+            65281,
+            11,
+            56026
+          ],
+          "keyShares": [
+            {
+              "group": 10794,
+              "keyBytes": 1
+            },
+            {
+              "group": 4588,
+              "keyBytes": 1216
+            },
+            {
+              "group": 29,
+              "keyBytes": 32
+            }
+          ],
+          "remoteAddresses": [
+            "162.159.135.232:443"
+          ],
+          "tcpMs": 45,
+          "tlsMs": 19061,
+          "tlsStartUtc": "2026-10-04T19:05:49.387Z",
+          "tlsEndUtc": "2026-10-04T19:06:08.448Z",
+          "resumed": null,
+          "encryptedClientHelloAccepted": null,
+          "netError": -101,
+          "serverHelloObserved": false
+        },
+        {
+          "source": 157,
+          "handshakeBytes": 1780,
+          "sni": "discord.com",
+          "sniOffset": 1712,
+          "sniEndOffset": 1723,
+          "sessionTicketBytes": 0,
+          "alpn": [
+            "h2",
+            "http/1.1"
+          ],
+          "extensionTypes": [
+            19018,
+            16,
+            35,
+            23,
+            27,
+            43,
+            51,
+            65037,
+            10,
+            5,
+            0,
+            65281,
+            13,
+            17613,
+            45,
+            18,
+            11,
+            35466
+          ],
+          "keyShares": [
+            {
+              "group": 19018,
+              "keyBytes": 1
+            },
+            {
+              "group": 4588,
+              "keyBytes": 1216
+            },
+            {
+              "group": 29,
+              "keyBytes": 32
+            }
+          ],
+          "remoteAddresses": [
+            "162.159.135.232:443"
+          ],
+          "tcpMs": 48,
+          "tlsMs": 19046,
+          "tlsStartUtc": "2026-10-04T19:06:08.496Z",
+          "tlsEndUtc": "2026-10-04T19:06:27.542Z",
+          "resumed": null,
+          "encryptedClientHelloAccepted": null,
+          "netError": -101,
+          "serverHelloObserved": false
+        },
+        {
+          "source": 173,
+          "handshakeBytes": 1780,
+          "sni": "discord.com",
+          "sniOffset": 126,
+          "sniEndOffset": 137,
+          "sessionTicketBytes": 0,
+          "alpn": [
+            "h2",
+            "http/1.1"
+          ],
+          "extensionTypes": [
+            39578,
+            23,
+            0,
+            16,
+            13,
+            18,
+            10,
+            5,
+            65037,
+            27,
+            43,
+            35,
+            17613,
+            11,
+            65281,
+            45,
+            51,
+            6682
+          ],
+          "keyShares": [
+            {
+              "group": 35466,
+              "keyBytes": 1
+            },
+            {
+              "group": 4588,
+              "keyBytes": 1216
+            },
+            {
+              "group": 29,
+              "keyBytes": 32
+            }
+          ],
+          "remoteAddresses": [
+            "162.159.135.232:443"
+          ],
+          "tcpMs": 48,
+          "tlsMs": 19054,
+          "tlsStartUtc": "2026-10-04T19:06:47.621Z",
+          "tlsEndUtc": "2026-10-04T19:07:06.675Z",
+          "resumed": null,
+          "encryptedClientHelloAccepted": null,
+          "netError": -101,
+          "serverHelloObserved": false
+        },
+        {
+          "source": 177,
+          "handshakeBytes": 1780,
+          "sni": "discord.com",
+          "sniOffset": 447,
+          "sniEndOffset": 458,
+          "sessionTicketBytes": 0,
+          "alpn": [
+            "h2",
+            "http/1.1"
+          ],
+          "extensionTypes": [
+            10794,
+            27,
+            45,
+            18,
+            10,
+            16,
+            65037,
+            43,
+            17613,
+            0,
+            11,
+            23,
+            13,
+            35,
+            65281,
+            5,
+            51,
+            64250
+          ],
+          "keyShares": [
+            {
+              "group": 23130,
+              "keyBytes": 1
+            },
+            {
+              "group": 4588,
+              "keyBytes": 1216
+            },
+            {
+              "group": 29,
+              "keyBytes": 32
+            }
+          ],
+          "remoteAddresses": [
+            "162.159.135.232:443"
+          ],
+          "tcpMs": 46,
+          "tlsMs": 19047,
+          "tlsStartUtc": "2026-10-04T19:07:06.722Z",
+          "tlsEndUtc": "2026-10-04T19:07:25.769Z",
+          "resumed": null,
+          "encryptedClientHelloAccepted": null,
+          "netError": -101,
+          "serverHelloObserved": false
+        },
+        {
+          "source": 193,
+          "handshakeBytes": 1716,
+          "sni": "discord.com",
+          "sniOffset": 1633,
+          "sniEndOffset": 1644,
+          "sessionTicketBytes": 0,
+          "alpn": [
+            "h2",
+            "http/1.1"
+          ],
+          "extensionTypes": [
+            23130,
+            10,
+            17613,
+            65037,
+            43,
+            51,
+            16,
+            0,
+            27,
+            65281,
+            18,
+            13,
+            45,
+            11,
+            5,
+            35,
+            23,
+            19018
+          ],
+          "keyShares": [
+            {
+              "group": 39578,
+              "keyBytes": 1
+            },
+            {
+              "group": 4588,
+              "keyBytes": 1216
+            },
+            {
+              "group": 29,
+              "keyBytes": 32
+            }
+          ],
+          "remoteAddresses": [
+            "162.159.135.232:443"
+          ],
+          "tcpMs": 48,
+          "tlsMs": 19062,
+          "tlsStartUtc": "2026-10-04T19:07:45.841Z",
+          "tlsEndUtc": "2026-10-04T19:08:04.903Z",
+          "resumed": null,
+          "encryptedClientHelloAccepted": null,
+          "netError": -101,
+          "serverHelloObserved": false
+        },
+        {
+          "source": 196,
+          "handshakeBytes": 1716,
+          "sni": "discord.com",
+          "sniOffset": 1678,
+          "sniEndOffset": 1689,
+          "sessionTicketBytes": 0,
+          "alpn": [
+            "h2",
+            "http/1.1"
+          ],
+          "extensionTypes": [
+            47802,
+            35,
+            27,
+            51,
+            5,
+            45,
+            65037,
+            23,
+            18,
+            10,
+            16,
+            11,
+            65281,
+            43,
+            17613,
+            0,
+            13,
+            31354
+          ],
+          "keyShares": [
+            {
+              "group": 35466,
+              "keyBytes": 1
+            },
+            {
+              "group": 4588,
+              "keyBytes": 1216
+            },
+            {
+              "group": 29,
+              "keyBytes": 32
+            }
+          ],
+          "remoteAddresses": [
+            "162.159.135.232:443"
+          ],
+          "tcpMs": 48,
+          "tlsMs": 19050,
+          "tlsStartUtc": "2026-10-04T19:08:04.951Z",
+          "tlsEndUtc": "2026-10-04T19:08:24.001Z",
+          "resumed": null,
+          "encryptedClientHelloAccepted": null,
+          "netError": -101,
+          "serverHelloObserved": false
+        },
+        {
+          "source": 213,
+          "handshakeBytes": 1748,
+          "sni": "discord.com",
+          "sniOffset": 393,
+          "sniEndOffset": 404,
+          "sessionTicketBytes": 0,
+          "alpn": [
+            "h2",
+            "http/1.1"
+          ],
+          "extensionTypes": [
+            47802,
+            43,
+            10,
+            13,
+            65037,
+            0,
+            17613,
+            5,
+            65281,
+            51,
+            16,
+            27,
+            23,
+            18,
+            45,
+            35,
+            11,
+            14906
+          ],
+          "keyShares": [
+            {
+              "group": 60138,
+              "keyBytes": 1
+            },
+            {
+              "group": 4588,
+              "keyBytes": 1216
+            },
+            {
+              "group": 29,
+              "keyBytes": 32
+            }
+          ],
+          "remoteAddresses": [
+            "162.159.128.233:443"
+          ],
+          "tcpMs": 49,
+          "tlsMs": 19061,
+          "tlsStartUtc": "2026-10-04T19:08:44.085Z",
+          "tlsEndUtc": "2026-10-04T19:09:03.146Z",
+          "resumed": null,
+          "encryptedClientHelloAccepted": null,
+          "netError": -101,
+          "serverHelloObserved": false
+        },
+        {
+          "source": 216,
+          "handshakeBytes": 1716,
+          "sni": "discord.com",
+          "sniOffset": 122,
+          "sniEndOffset": 133,
+          "sessionTicketBytes": 0,
+          "alpn": [
+            "h2",
+            "http/1.1"
+          ],
+          "extensionTypes": [
+            27242,
+            0,
+            27,
+            35,
+            65037,
+            10,
+            65281,
+            11,
+            13,
+            45,
+            43,
+            16,
+            23,
+            17613,
+            51,
+            18,
+            5,
+            31354
+          ],
+          "keyShares": [
+            {
+              "group": 27242,
+              "keyBytes": 1
+            },
+            {
+              "group": 4588,
+              "keyBytes": 1216
+            },
+            {
+              "group": 29,
+              "keyBytes": 32
+            }
+          ],
+          "remoteAddresses": [
+            "162.159.128.233:443"
+          ],
+          "tcpMs": 45,
+          "tlsMs": 19060,
+          "tlsStartUtc": "2026-10-04T19:09:03.192Z",
+          "tlsEndUtc": "2026-10-04T19:09:22.252Z",
+          "resumed": null,
+          "encryptedClientHelloAccepted": null,
+          "netError": -101,
+          "serverHelloObserved": false
+        },
+        {
+          "source": 232,
+          "handshakeBytes": 1716,
+          "sni": "discord.com",
+          "sniOffset": 389,
+          "sniEndOffset": 400,
+          "sessionTicketBytes": 0,
+          "alpn": [
+            "h2",
+            "http/1.1"
+          ],
+          "extensionTypes": [
+            19018,
+            13,
+            35,
+            17613,
+            11,
+            16,
+            65281,
+            45,
+            65037,
+            27,
+            0,
+            5,
+            23,
+            18,
+            43,
+            51,
+            10,
+            31354
+          ],
+          "keyShares": [
+            {
+              "group": 39578,
+              "keyBytes": 1
+            },
+            {
+              "group": 4588,
+              "keyBytes": 1216
+            },
+            {
+              "group": 29,
+              "keyBytes": 32
+            }
+          ],
+          "remoteAddresses": [
+            "162.159.128.233:443"
+          ],
+          "tcpMs": 48,
+          "tlsMs": 19070,
+          "tlsStartUtc": "2026-10-04T19:09:42.314Z",
+          "tlsEndUtc": "2026-10-04T19:10:01.384Z",
+          "resumed": null,
+          "encryptedClientHelloAccepted": null,
+          "netError": -101,
+          "serverHelloObserved": false
+        },
+        {
+          "source": 236,
+          "handshakeBytes": 1812,
+          "sni": "discord.com",
+          "sniOffset": 468,
+          "sniEndOffset": 479,
+          "sessionTicketBytes": 0,
+          "alpn": [
+            "h2",
+            "http/1.1"
+          ],
+          "extensionTypes": [
+            51914,
+            5,
+            13,
+            35,
+            17613,
+            65037,
+            10,
+            0,
+            27,
+            45,
+            11,
+            51,
+            65281,
+            23,
+            18,
+            43,
+            16,
+            39578
+          ],
+          "keyShares": [
+            {
+              "group": 14906,
+              "keyBytes": 1
+            },
+            {
+              "group": 4588,
+              "keyBytes": 1216
+            },
+            {
+              "group": 29,
+              "keyBytes": 32
+            }
+          ],
+          "remoteAddresses": [
+            "162.159.128.233:443"
+          ],
+          "tcpMs": 47,
+          "tlsMs": 19075,
+          "tlsStartUtc": "2026-10-04T19:10:01.432Z",
+          "tlsEndUtc": "2026-10-04T19:10:20.507Z",
+          "resumed": null,
+          "encryptedClientHelloAccepted": null,
+          "netError": -101,
+          "serverHelloObserved": false
+        },
+        {
+          "source": 252,
+          "handshakeBytes": 1780,
+          "sni": "discord.com",
+          "sniOffset": 1433,
+          "sniEndOffset": 1444,
+          "sessionTicketBytes": 0,
+          "alpn": [
+            "h2",
+            "http/1.1"
+          ],
+          "extensionTypes": [
+            19018,
+            43,
+            13,
+            51,
+            27,
+            35,
+            0,
+            45,
+            65281,
+            65037,
+            18,
+            5,
+            10,
+            17613,
+            16,
+            23,
+            11,
+            64250
+          ],
+          "keyShares": [
+            {
+              "group": 10794,
+              "keyBytes": 1
+            },
+            {
+              "group": 4588,
+              "keyBytes": 1216
+            },
+            {
+              "group": 29,
+              "keyBytes": 32
+            }
+          ],
+          "remoteAddresses": [
+            "162.159.128.233:443"
+          ],
+          "tcpMs": 1584,
+          "tlsMs": 19038,
+          "tlsStartUtc": "2026-10-04T19:10:42.121Z",
+          "tlsEndUtc": "2026-10-04T19:11:01.159Z",
+          "resumed": null,
+          "encryptedClientHelloAccepted": null,
+          "netError": -101,
+          "serverHelloObserved": false
+        },
+        {
+          "source": 254,
+          "handshakeBytes": 1780,
+          "sni": "discord.com",
+          "sniOffset": 414,
+          "sniEndOffset": 425,
+          "sessionTicketBytes": 0,
+          "alpn": [
+            "h2",
+            "http/1.1"
+          ],
+          "extensionTypes": [
+            31354,
+            65037,
+            23,
+            16,
+            5,
+            27,
+            0,
+            51,
+            10,
+            11,
+            43,
+            35,
+            45,
+            18,
+            13,
+            17613,
+            65281,
+            6682
+          ],
+          "keyShares": [
+            {
+              "group": 10794,
+              "keyBytes": 1
+            },
+            {
+              "group": 4588,
+              "keyBytes": 1216
+            },
+            {
+              "group": 29,
+              "keyBytes": 32
+            }
+          ],
+          "remoteAddresses": [
+            "162.159.128.233:443"
+          ],
+          "tcpMs": 1332,
+          "tlsMs": 19036,
+          "tlsStartUtc": "2026-10-04T19:10:42.124Z",
+          "tlsEndUtc": "2026-10-04T19:11:01.160Z",
+          "resumed": null,
+          "encryptedClientHelloAccepted": null,
+          "netError": -101,
+          "serverHelloObserved": false
+        },
+        {
+          "source": 257,
+          "handshakeBytes": 1748,
+          "sni": "discord.com",
+          "sniOffset": 1457,
+          "sniEndOffset": 1468,
+          "sessionTicketBytes": 0,
+          "alpn": [
+            "h2",
+            "http/1.1"
+          ],
+          "extensionTypes": [
+            35466,
+            27,
+            17613,
+            10,
+            35,
+            11,
+            43,
+            51,
+            45,
+            5,
+            0,
+            18,
+            13,
+            65281,
+            65037,
+            23,
+            16,
+            64250
+          ],
+          "keyShares": [
+            {
+              "group": 10794,
+              "keyBytes": 1
+            },
+            {
+              "group": 4588,
+              "keyBytes": 1216
+            },
+            {
+              "group": 29,
+              "keyBytes": 32
+            }
+          ],
+          "remoteAddresses": [
+            "162.159.128.233:443"
+          ],
+          "tcpMs": 45,
+          "tlsMs": 19035,
+          "tlsStartUtc": "2026-10-04T19:11:01.205Z",
+          "tlsEndUtc": "2026-10-04T19:11:20.240Z",
+          "resumed": null,
+          "encryptedClientHelloAccepted": null,
+          "netError": -101,
+          "serverHelloObserved": false
+        },
+        {
+          "source": 258,
+          "handshakeBytes": 1748,
+          "sni": "discord.com",
+          "sniOffset": 1728,
+          "sniEndOffset": 1739,
+          "sessionTicketBytes": 0,
+          "alpn": [
+            "h2",
+            "http/1.1"
+          ],
+          "extensionTypes": [
+            43690,
+            13,
+            10,
+            27,
+            35,
+            23,
+            51,
+            16,
+            11,
+            5,
+            65037,
+            17613,
+            43,
+            65281,
+            45,
+            0,
+            18,
+            14906
+          ],
+          "keyShares": [
+            {
+              "group": 10794,
+              "keyBytes": 1
+            },
+            {
+              "group": 4588,
+              "keyBytes": 1216
+            },
+            {
+              "group": 29,
+              "keyBytes": 32
+            }
+          ],
+          "remoteAddresses": [
+            "162.159.128.233:443"
+          ],
+          "tcpMs": 49,
+          "tlsMs": 19031,
+          "tlsStartUtc": "2026-10-04T19:11:01.209Z",
+          "tlsEndUtc": "2026-10-04T19:11:20.240Z",
+          "resumed": null,
+          "encryptedClientHelloAccepted": null,
+          "netError": -101,
+          "serverHelloObserved": false
+        },
+        {
+          "source": 275,
+          "handshakeBytes": 1716,
+          "sni": "discord.com",
+          "sniOffset": 1648,
+          "sniEndOffset": 1659,
+          "sessionTicketBytes": 0,
+          "alpn": [
+            "h2",
+            "http/1.1"
+          ],
+          "extensionTypes": [
+            35466,
+            35,
+            13,
+            11,
+            23,
+            17613,
+            51,
+            45,
+            18,
+            65281,
+            65037,
+            5,
+            0,
+            43,
+            16,
+            27,
+            10,
+            43690
+          ],
+          "keyShares": [
+            {
+              "group": 51914,
+              "keyBytes": 1
+            },
+            {
+              "group": 4588,
+              "keyBytes": 1216
+            },
+            {
+              "group": 29,
+              "keyBytes": 32
+            }
+          ],
+          "remoteAddresses": [
+            "162.159.128.233:443"
+          ],
+          "tcpMs": 47,
+          "tlsMs": 19076,
+          "tlsStartUtc": "2026-10-04T19:11:40.310Z",
+          "tlsEndUtc": "2026-10-04T19:11:59.386Z",
+          "resumed": null,
+          "encryptedClientHelloAccepted": null,
+          "netError": -101,
+          "serverHelloObserved": false
+        },
+        {
+          "source": 278,
+          "handshakeBytes": 1812,
+          "sni": "discord.com",
+          "sniOffset": 501,
+          "sniEndOffset": 512,
+          "sessionTicketBytes": 0,
+          "alpn": [
+            "h2",
+            "http/1.1"
+          ],
+          "extensionTypes": [
+            64250,
+            27,
+            11,
+            17613,
+            18,
+            65281,
+            16,
+            10,
+            23,
+            35,
+            43,
+            65037,
+            5,
+            0,
+            45,
+            51,
+            13,
+            35466
+          ],
+          "keyShares": [
+            {
+              "group": 60138,
+              "keyBytes": 1
+            },
+            {
+              "group": 4588,
+              "keyBytes": 1216
+            },
+            {
+              "group": 29,
+              "keyBytes": 32
+            }
+          ],
+          "remoteAddresses": [
+            "162.159.128.233:443"
+          ],
+          "tcpMs": 47,
+          "tlsMs": 19044,
+          "tlsStartUtc": "2026-10-04T19:11:59.433Z",
+          "tlsEndUtc": "2026-10-04T19:12:18.477Z",
+          "resumed": null,
+          "encryptedClientHelloAccepted": null,
+          "netError": -101,
+          "serverHelloObserved": false
+        },
+        {
+          "source": 294,
+          "handshakeBytes": 1716,
+          "sni": "discord.com",
+          "sniOffset": 1655,
+          "sniEndOffset": 1666,
+          "sessionTicketBytes": 0,
+          "alpn": [
+            "h2",
+            "http/1.1"
+          ],
+          "extensionTypes": [
+            31354,
+            17613,
+            35,
+            13,
+            11,
+            51,
+            18,
+            16,
+            5,
+            23,
+            65037,
+            0,
+            27,
+            10,
+            65281,
+            43,
+            45,
+            35466
+          ],
+          "keyShares": [
+            {
+              "group": 39578,
+              "keyBytes": 1
+            },
+            {
+              "group": 4588,
+              "keyBytes": 1216
+            },
+            {
+              "group": 29,
+              "keyBytes": 32
+            }
+          ],
+          "remoteAddresses": [
+            "162.159.128.233:443"
+          ],
+          "tcpMs": 46,
+          "tlsMs": 19063,
+          "tlsStartUtc": "2026-10-04T19:12:38.538Z",
+          "tlsEndUtc": "2026-10-04T19:12:57.601Z",
+          "resumed": null,
+          "encryptedClientHelloAccepted": null,
+          "netError": -101,
+          "serverHelloObserved": false
+        },
+        {
+          "source": 298,
+          "handshakeBytes": 1716,
+          "sni": "discord.com",
+          "sniOffset": 1444,
+          "sniEndOffset": 1455,
+          "sessionTicketBytes": 0,
+          "alpn": [
+            "h2",
+            "http/1.1"
+          ],
+          "extensionTypes": [
+            2570,
+            16,
+            35,
+            27,
+            11,
+            10,
+            23,
+            51,
+            0,
+            17613,
+            65037,
+            43,
+            18,
+            65281,
+            45,
+            5,
+            13,
+            6682
+          ],
+          "keyShares": [
+            {
+              "group": 10794,
+              "keyBytes": 1
+            },
+            {
+              "group": 4588,
+              "keyBytes": 1216
+            },
+            {
+              "group": 29,
+              "keyBytes": 32
+            }
+          ],
+          "remoteAddresses": [
+            "162.159.137.232:443"
+          ],
+          "tcpMs": 47,
+          "tlsMs": 19063,
+          "tlsStartUtc": "2026-10-04T19:12:57.652Z",
+          "tlsEndUtc": "2026-10-04T19:13:16.715Z",
+          "resumed": null,
+          "encryptedClientHelloAccepted": null,
+          "netError": -101,
+          "serverHelloObserved": false
+        },
+        {
+          "source": 314,
+          "handshakeBytes": 1812,
+          "sni": "discord.com",
+          "sniOffset": 191,
+          "sniEndOffset": 202,
+          "sessionTicketBytes": 0,
+          "alpn": [
+            "h2",
+            "http/1.1"
+          ],
+          "extensionTypes": [
+            56026,
+            17613,
+            65281,
+            23,
+            11,
+            35,
+            27,
+            10,
+            16,
+            0,
+            45,
+            65037,
+            51,
+            5,
+            18,
+            43,
+            13,
+            35466
+          ],
+          "keyShares": [
+            {
+              "group": 6682,
+              "keyBytes": 1
+            },
+            {
+              "group": 4588,
+              "keyBytes": 1216
+            },
+            {
+              "group": 29,
+              "keyBytes": 32
+            }
+          ],
+          "remoteAddresses": [
+            "162.159.137.232:443"
+          ],
+          "tcpMs": 48,
+          "tlsMs": 19054,
+          "tlsStartUtc": "2026-10-04T19:13:36.789Z",
+          "tlsEndUtc": "2026-10-04T19:13:55.843Z",
+          "resumed": null,
+          "encryptedClientHelloAccepted": null,
+          "netError": -101,
+          "serverHelloObserved": false
+        },
+        {
+          "source": 317,
+          "handshakeBytes": 1780,
+          "sni": "discord.com",
+          "sniOffset": 1700,
+          "sniEndOffset": 1711,
+          "sessionTicketBytes": 0,
+          "alpn": [
+            "h2",
+            "http/1.1"
+          ],
+          "extensionTypes": [
+            23130,
+            51,
+            35,
+            11,
+            23,
+            10,
+            65037,
+            65281,
+            16,
+            18,
+            0,
+            27,
+            45,
+            13,
+            17613,
+            5,
+            43,
+            19018
+          ],
+          "keyShares": [
+            {
+              "group": 2570,
+              "keyBytes": 1
+            },
+            {
+              "group": 4588,
+              "keyBytes": 1216
+            },
+            {
+              "group": 29,
+              "keyBytes": 32
+            }
+          ],
+          "remoteAddresses": [
+            "162.159.137.232:443"
+          ],
+          "tcpMs": 46,
+          "tlsMs": 19055,
+          "tlsStartUtc": "2026-10-04T19:13:55.889Z",
+          "tlsEndUtc": "2026-10-04T19:14:14.944Z",
+          "resumed": null,
+          "encryptedClientHelloAccepted": null,
+          "netError": -101,
+          "serverHelloObserved": false
+        },
+        {
+          "source": 334,
+          "handshakeBytes": 1748,
+          "sni": "discord.com",
+          "sniOffset": 1719,
+          "sniEndOffset": 1730,
+          "sessionTicketBytes": 0,
+          "alpn": [
+            "h2",
+            "http/1.1"
+          ],
+          "extensionTypes": [
+            47802,
+            51,
+            65281,
+            11,
+            13,
+            65037,
+            10,
+            5,
+            27,
+            43,
+            16,
+            18,
+            23,
+            45,
+            0,
+            35,
+            17613,
+            2570
+          ],
+          "keyShares": [
+            {
+              "group": 27242,
+              "keyBytes": 1
+            },
+            {
+              "group": 4588,
+              "keyBytes": 1216
+            },
+            {
+              "group": 29,
+              "keyBytes": 32
+            }
+          ],
+          "remoteAddresses": [
+            "162.159.137.232:443"
+          ],
+          "tcpMs": 47,
+          "tlsMs": 19046,
+          "tlsStartUtc": "2026-10-04T19:14:35.022Z",
+          "tlsEndUtc": "2026-10-04T19:14:54.068Z",
+          "resumed": null,
+          "encryptedClientHelloAccepted": null,
+          "netError": -101,
+          "serverHelloObserved": false
+        },
+        {
+          "source": 337,
+          "handshakeBytes": 1812,
+          "sni": "discord.com",
+          "sniOffset": 437,
+          "sniEndOffset": 448,
+          "sessionTicketBytes": 0,
+          "alpn": [
+            "h2",
+            "http/1.1"
+          ],
+          "extensionTypes": [
+            39578,
+            65037,
+            18,
+            17613,
+            10,
+            0,
+            16,
+            23,
+            27,
+            43,
+            51,
+            65281,
+            13,
+            5,
+            45,
+            35,
+            11,
+            10794
+          ],
+          "keyShares": [
+            {
+              "group": 23130,
+              "keyBytes": 1
+            },
+            {
+              "group": 4588,
+              "keyBytes": 1216
+            },
+            {
+              "group": 29,
+              "keyBytes": 32
+            }
+          ],
+          "remoteAddresses": [
+            "162.159.137.232:443"
+          ],
+          "tcpMs": 43,
+          "tlsMs": 19058,
+          "tlsStartUtc": "2026-10-04T19:14:54.113Z",
+          "tlsEndUtc": "2026-10-04T19:15:13.171Z",
+          "resumed": null,
+          "encryptedClientHelloAccepted": null,
+          "netError": -101,
+          "serverHelloObserved": false
+        },
+        {
+          "source": 353,
+          "handshakeBytes": 1780,
+          "sni": "discord.com",
+          "sniOffset": 1726,
+          "sniEndOffset": 1737,
+          "sessionTicketBytes": 0,
+          "alpn": [
+            "h2",
+            "http/1.1"
+          ],
+          "extensionTypes": [
+            51914,
+            11,
+            45,
+            65037,
+            16,
+            43,
+            51,
+            18,
+            17613,
+            13,
+            27,
+            0,
+            23,
+            10,
+            65281,
+            35,
+            5,
+            35466
+          ],
+          "keyShares": [
+            {
+              "group": 14906,
+              "keyBytes": 1
+            },
+            {
+              "group": 4588,
+              "keyBytes": 1216
+            },
+            {
+              "group": 29,
+              "keyBytes": 32
+            }
+          ],
+          "remoteAddresses": [
+            "162.159.137.232:443"
+          ],
+          "tcpMs": 46,
+          "tlsMs": 19042,
+          "tlsStartUtc": "2026-10-04T19:15:33.237Z",
+          "tlsEndUtc": "2026-10-04T19:15:52.279Z",
+          "resumed": null,
+          "encryptedClientHelloAccepted": null,
+          "netError": -101,
+          "serverHelloObserved": false
+        },
+        {
+          "source": 357,
+          "handshakeBytes": 1780,
+          "sni": "discord.com",
+          "sniOffset": 166,
+          "sniEndOffset": 177,
+          "sessionTicketBytes": 0,
+          "alpn": [
+            "h2",
+            "http/1.1"
+          ],
+          "extensionTypes": [
+            31354,
+            27,
+            16,
+            18,
+            17613,
+            45,
+            0,
+            65281,
+            43,
+            11,
+            13,
+            51,
+            65037,
+            23,
+            5,
+            10,
+            35,
+            35466
+          ],
+          "keyShares": [
+            {
+              "group": 23130,
+              "keyBytes": 1
+            },
+            {
+              "group": 4588,
+              "keyBytes": 1216
+            },
+            {
+              "group": 29,
+              "keyBytes": 32
+            }
+          ],
+          "remoteAddresses": [
+            "162.159.138.232:443"
+          ],
+          "tcpMs": 45,
+          "tlsMs": 19048,
+          "tlsStartUtc": "2026-10-04T19:15:52.329Z",
+          "tlsEndUtc": "2026-10-04T19:16:11.377Z",
+          "resumed": null,
+          "encryptedClientHelloAccepted": null,
+          "netError": -101,
+          "serverHelloObserved": false
+        },
+        {
+          "source": 373,
+          "handshakeBytes": 1748,
+          "sni": "discord.com",
+          "sniOffset": 1670,
+          "sniEndOffset": 1681,
+          "sessionTicketBytes": 0,
+          "alpn": [
+            "h2",
+            "http/1.1"
+          ],
+          "extensionTypes": [
+            64250,
+            27,
+            51,
+            65037,
+            45,
+            23,
+            13,
+            43,
+            17613,
+            0,
+            16,
+            35,
+            10,
+            65281,
+            18,
+            11,
+            5,
+            47802
+          ],
+          "keyShares": [
+            {
+              "group": 31354,
+              "keyBytes": 1
+            },
+            {
+              "group": 4588,
+              "keyBytes": 1216
+            },
+            {
+              "group": 29,
+              "keyBytes": 32
+            }
+          ],
+          "remoteAddresses": [
+            "162.159.138.232:443"
+          ],
+          "tcpMs": 50,
+          "tlsMs": 19061,
+          "tlsStartUtc": "2026-10-04T19:16:31.446Z",
+          "tlsEndUtc": "2026-10-04T19:16:50.507Z",
+          "resumed": null,
+          "encryptedClientHelloAccepted": null,
+          "netError": -101,
+          "serverHelloObserved": false
+        },
+        {
+          "source": 376,
+          "handshakeBytes": 1812,
+          "sni": "discord.com",
+          "sniOffset": 1757,
+          "sniEndOffset": 1768,
+          "sessionTicketBytes": 0,
+          "alpn": [
+            "h2",
+            "http/1.1"
+          ],
+          "extensionTypes": [
+            19018,
+            27,
+            51,
+            5,
+            13,
+            35,
+            17613,
+            65037,
+            23,
+            10,
+            43,
+            0,
+            18,
+            45,
+            65281,
+            16,
+            11,
+            6682
+          ],
+          "keyShares": [
+            {
+              "group": 43690,
+              "keyBytes": 1
+            },
+            {
+              "group": 4588,
+              "keyBytes": 1216
+            },
+            {
+              "group": 29,
+              "keyBytes": 32
+            }
+          ],
+          "remoteAddresses": [
+            "162.159.138.232:443"
+          ],
+          "tcpMs": 47,
+          "tlsMs": 19069,
+          "tlsStartUtc": "2026-10-04T19:16:50.555Z",
+          "tlsEndUtc": "2026-10-04T19:17:09.624Z",
+          "resumed": null,
+          "encryptedClientHelloAccepted": null,
+          "netError": -101,
+          "serverHelloObserved": false
+        }
+      ],
+      "requestCounts": {
+        "discord.com/other/None": 16
+      },
+      "requestBytes": 0,
+      "failedTls": 36,
+      "capture": {
+        "schema": "discord_startup_capture_v1",
+        "startUtc": "2026-10-04T19:01:52.2009263Z",
+        "discordVersion": "1.0.9260",
+        "requestedSeconds": 60,
+        "captureModeRequested": "default",
+        "stopMethod": "manual_discord_exit",
+        "contextBefore": {
+          "engine": "zapret2",
+          "categories": [
+            "discord",
+            "youtube_twitch"
+          ],
+          "level": 4,
+          "profiles": [
+            {
+              "category": "discord",
+              "transport": "tls",
+              "profileId": "research_discord_tls_window_disorder"
+            }
+          ],
+          "winws2Pids": [
+            24092
+          ]
+        },
+        "netLogFile": "netlog.json",
+        "zapret2PidsAtStart": [
+          24092
+        ],
+        "status": "missing_or_incomplete",
+        "netLogBytes": 127722,
+        "eventCount": 0,
+        "lastPollUtc": "2026-10-04T19:03:12.8380712Z",
+        "finishUtc": "2026-10-04T19:03:12.8401444Z",
+        "elapsedSeconds": 80.5,
+        "contextAfter": {
+          "engine": "zapret2",
+          "categories": [
+            "discord",
+            "youtube_twitch"
+          ],
+          "level": 4,
+          "profiles": [
+            {
+              "category": "discord",
+              "transport": "tls",
+              "profileId": "research_discord_tls_window_disorder"
+            }
+          ],
+          "winws2Pids": [
+            24092
+          ]
+        },
+        "analysisStatus": "safe_summary_saved"
+      }
+    },
+    {
+      "session": "20261004T191733Z-cd6ef4b8",
+      "netlogSha256": "e043b1bae0f0f7fa34c6b25e9697c64b028064861a86171159ca13ad36c3b434",
+      "complete": true,
+      "proxyResolution": {
+        "direct": 4,
+        "proxied": 0,
+        "unknown": 0
+      },
+      "tls": [
+        {
+          "source": 41,
+          "handshakeBytes": 1723,
+          "sni": "cdn.discordapp.com",
+          "sniOffset": 1659,
+          "sniEndOffset": 1677,
+          "sessionTicketBytes": 0,
+          "alpn": [
+            "h2",
+            "http/1.1"
+          ],
+          "extensionTypes": [
+            14906,
+            23,
+            13,
+            35,
+            5,
+            65037,
+            43,
+            51,
+            10,
+            65281,
+            17613,
+            0,
+            11,
+            18,
+            16,
+            27,
+            45,
+            6682
+          ],
+          "keyShares": [
+            {
+              "group": 35466,
+              "keyBytes": 1
+            },
+            {
+              "group": 4588,
+              "keyBytes": 1216
+            },
+            {
+              "group": 29,
+              "keyBytes": 32
+            }
+          ],
+          "remoteAddresses": [
+            "162.159.129.233:443"
+          ],
+          "tcpMs": 49,
+          "tlsMs": null,
+          "tlsStartUtc": "2026-10-04T19:17:34.145Z",
+          "tlsEndUtc": null,
+          "resumed": null,
+          "encryptedClientHelloAccepted": null,
+          "netError": null,
+          "serverHelloObserved": false
+        }
+      ],
+      "requestCounts": {
+        "discord.com/other/None": 1
+      },
+      "requestBytes": 0,
+      "failedTls": 0,
+      "capture": {
+        "schema": "discord_startup_capture_v1",
+        "startUtc": "2026-10-04T19:17:33.6565973Z",
+        "discordVersion": "1.0.9260",
+        "requestedSeconds": 60,
+        "captureModeRequested": "default",
+        "stopMethod": "manual_discord_exit",
+        "contextBefore": {
+          "engine": "zapret2",
+          "categories": [
+            "discord",
+            "youtube_twitch"
+          ],
+          "level": 4,
+          "profiles": [
+            {
+              "category": "discord",
+              "transport": "tls",
+              "profileId": "research_discord_tls_window_disorder"
+            }
+          ],
+          "winws2Pids": [
+            24092
+          ]
+        },
+        "netLogFile": "netlog.json",
+        "zapret2PidsAtStart": [
+          24092
+        ],
+        "status": "captured",
+        "netLogBytes": 135492,
+        "eventCount": 490,
+        "lastPollUtc": "2026-10-04T19:17:45.8275300Z",
+        "finishUtc": "2026-10-04T19:17:45.8643900Z",
+        "elapsedSeconds": 12.1,
+        "contextAfter": {
+          "engine": "zapret2",
+          "categories": [
+            "discord",
+            "youtube_twitch"
+          ],
+          "level": 4,
+          "profiles": [
+            {
+              "category": "discord",
+              "transport": "tls",
+              "profileId": "research_discord_tls_window_disorder"
+            }
+          ],
+          "winws2Pids": [
+            24092
+          ]
+        },
+        "analysisStatus": "safe_summary_saved"
+      }
+    },
+    {
+      "session": "20261004T191922Z-8dd516e8",
+      "netlogSha256": "3ddb845e4337a5446524acf46316b996389dce74acf7aa7691817e9e2abaaded",
+      "complete": true,
+      "proxyResolution": {
+        "direct": 6,
+        "proxied": 0,
+        "unknown": 0
+      },
+      "tls": [
+        {
+          "source": 41,
+          "handshakeBytes": 1787,
+          "sni": "cdn.discordapp.com",
+          "sniOffset": 1404,
+          "sniEndOffset": 1422,
+          "sessionTicketBytes": 0,
+          "alpn": [
+            "h2",
+            "http/1.1"
+          ],
+          "extensionTypes": [
+            39578,
+            51,
+            18,
+            43,
+            0,
+            11,
+            13,
+            10,
+            45,
+            35,
+            16,
+            65037,
+            27,
+            17613,
+            23,
+            5,
+            65281,
+            47802
+          ],
+          "keyShares": [
+            {
+              "group": 43690,
+              "keyBytes": 1
+            },
+            {
+              "group": 4588,
+              "keyBytes": 1216
+            },
+            {
+              "group": 29,
+              "keyBytes": 32
+            }
+          ],
+          "remoteAddresses": [
+            "162.159.133.233:443"
+          ],
+          "tcpMs": 44,
+          "tlsMs": 19060,
+          "tlsStartUtc": "2026-10-04T19:19:23.020Z",
+          "tlsEndUtc": "2026-10-04T19:19:42.080Z",
+          "resumed": null,
+          "encryptedClientHelloAccepted": null,
+          "netError": -101,
+          "serverHelloObserved": false
+        },
+        {
+          "source": 60,
+          "handshakeBytes": 1787,
+          "sni": "cdn.discordapp.com",
+          "sniOffset": 122,
+          "sniEndOffset": 140,
+          "sessionTicketBytes": 0,
+          "alpn": [
+            "h2",
+            "http/1.1"
+          ],
+          "extensionTypes": [
+            31354,
+            0,
+            13,
+            17613,
+            23,
+            51,
+            10,
+            35,
+            65037,
+            43,
+            27,
+            65281,
+            18,
+            5,
+            45,
+            16,
+            11,
+            23130
+          ],
+          "keyShares": [
+            {
+              "group": 56026,
+              "keyBytes": 1
+            },
+            {
+              "group": 4588,
+              "keyBytes": 1216
+            },
+            {
+              "group": 29,
+              "keyBytes": 32
+            }
+          ],
+          "remoteAddresses": [
+            "162.159.133.233:443"
+          ],
+          "tcpMs": 152,
+          "tlsMs": 29005,
+          "tlsStartUtc": "2026-10-04T19:19:42.232Z",
+          "tlsEndUtc": "2026-10-04T19:20:11.237Z",
+          "resumed": null,
+          "encryptedClientHelloAccepted": null,
+          "netError": -101,
+          "serverHelloObserved": false
+        },
+        {
+          "source": 61,
+          "handshakeBytes": 1812,
+          "sni": "discord.com",
+          "sniOffset": 524,
+          "sniEndOffset": 535,
+          "sessionTicketBytes": 0,
+          "alpn": [
+            "h2",
+            "http/1.1"
+          ],
+          "extensionTypes": [
+            43690,
+            16,
+            23,
+            5,
+            27,
+            10,
+            45,
+            65037,
+            43,
+            18,
+            35,
+            13,
+            11,
+            17613,
+            0,
+            51,
+            65281,
+            47802
+          ],
+          "keyShares": [
+            {
+              "group": 2570,
+              "keyBytes": 1
+            },
+            {
+              "group": 4588,
+              "keyBytes": 1216
+            },
+            {
+              "group": 29,
+              "keyBytes": 32
+            }
+          ],
+          "remoteAddresses": [
+            "162.159.137.232:443"
+          ],
+          "tcpMs": 47,
+          "tlsMs": 19062,
+          "tlsStartUtc": "2026-10-04T19:19:44.051Z",
+          "tlsEndUtc": "2026-10-04T19:20:03.113Z",
+          "resumed": null,
+          "encryptedClientHelloAccepted": null,
+          "netError": -101,
+          "serverHelloObserved": false
+        },
+        {
+          "source": 65,
+          "handshakeBytes": 1748,
+          "sni": "discord.com",
+          "sniOffset": 1632,
+          "sniEndOffset": 1643,
+          "sessionTicketBytes": 0,
+          "alpn": [
+            "h2",
+            "http/1.1"
+          ],
+          "extensionTypes": [
+            39578,
+            65037,
+            51,
+            27,
+            45,
+            23,
+            35,
+            0,
+            43,
+            16,
+            17613,
+            11,
+            18,
+            13,
+            65281,
+            10,
+            5,
+            60138
+          ],
+          "keyShares": [
+            {
+              "group": 64250,
+              "keyBytes": 1
+            },
+            {
+              "group": 4588,
+              "keyBytes": 1216
+            },
+            {
+              "group": 29,
+              "keyBytes": 32
+            }
+          ],
+          "remoteAddresses": [
+            "162.159.137.232:443"
+          ],
+          "tcpMs": 47,
+          "tlsMs": 19064,
+          "tlsStartUtc": "2026-10-04T19:20:24.208Z",
+          "tlsEndUtc": "2026-10-04T19:20:43.272Z",
+          "resumed": null,
+          "encryptedClientHelloAccepted": null,
+          "netError": -101,
+          "serverHelloObserved": false
+        },
+        {
+          "source": 97,
+          "handshakeBytes": 1748,
+          "sni": "discord.com",
+          "sniOffset": 137,
+          "sniEndOffset": 148,
+          "sessionTicketBytes": 0,
+          "alpn": [
+            "h2",
+            "http/1.1"
+          ],
+          "extensionTypes": [
+            19018,
+            23,
+            43,
+            0,
+            16,
+            45,
+            27,
+            13,
+            35,
+            5,
+            18,
+            65037,
+            10,
+            11,
+            51,
+            17613,
+            65281,
+            6682
+          ],
+          "keyShares": [
+            {
+              "group": 23130,
+              "keyBytes": 1
+            },
+            {
+              "group": 4588,
+              "keyBytes": 1216
+            },
+            {
+              "group": 29,
+              "keyBytes": 32
+            }
+          ],
+          "remoteAddresses": [
+            "162.159.138.232:443"
+          ],
+          "tcpMs": 44,
+          "tlsMs": 19057,
+          "tlsStartUtc": "2026-10-04T19:20:45.927Z",
+          "tlsEndUtc": "2026-10-04T19:21:04.984Z",
+          "resumed": null,
+          "encryptedClientHelloAccepted": null,
+          "netError": -101,
+          "serverHelloObserved": false
+        },
+        {
+          "source": 100,
+          "handshakeBytes": 1812,
+          "sni": "discord.com",
+          "sniOffset": 1751,
+          "sniEndOffset": 1762,
+          "sessionTicketBytes": 0,
+          "alpn": [
+            "h2",
+            "http/1.1"
+          ],
+          "extensionTypes": [
+            10794,
+            43,
+            65037,
+            45,
+            23,
+            16,
+            51,
+            65281,
+            10,
+            27,
+            17613,
+            0,
+            13,
+            35,
+            5,
+            18,
+            11,
+            56026
+          ],
+          "keyShares": [
+            {
+              "group": 64250,
+              "keyBytes": 1
+            },
+            {
+              "group": 4588,
+              "keyBytes": 1216
+            },
+            {
+              "group": 29,
+              "keyBytes": 32
+            }
+          ],
+          "remoteAddresses": [
+            "162.159.138.232:443"
+          ],
+          "tcpMs": 47,
+          "tlsMs": 19084,
+          "tlsStartUtc": "2026-10-04T19:21:05.031Z",
+          "tlsEndUtc": "2026-10-04T19:21:24.115Z",
+          "resumed": null,
+          "encryptedClientHelloAccepted": null,
+          "netError": -101,
+          "serverHelloObserved": false
+        },
+        {
+          "source": 116,
+          "handshakeBytes": 1780,
+          "sni": "discord.com",
+          "sniOffset": 173,
+          "sniEndOffset": 184,
+          "sessionTicketBytes": 0,
+          "alpn": [
+            "h2",
+            "http/1.1"
+          ],
+          "extensionTypes": [
+            6682,
+            5,
+            16,
+            23,
+            35,
+            10,
+            0,
+            51,
+            18,
+            17613,
+            27,
+            65281,
+            65037,
+            43,
+            13,
+            11,
+            45,
+            2570
+          ],
+          "keyShares": [
+            {
+              "group": 10794,
+              "keyBytes": 1
+            },
+            {
+              "group": 4588,
+              "keyBytes": 1216
+            },
+            {
+              "group": 29,
+              "keyBytes": 32
+            }
+          ],
+          "remoteAddresses": [
+            "162.159.138.232:443"
+          ],
+          "tcpMs": 49,
+          "tlsMs": 19043,
+          "tlsStartUtc": "2026-10-04T19:21:31.442Z",
+          "tlsEndUtc": "2026-10-04T19:21:50.485Z",
+          "resumed": null,
+          "encryptedClientHelloAccepted": null,
+          "netError": -101,
+          "serverHelloObserved": false
+        },
+        {
+          "source": 120,
+          "handshakeBytes": 1748,
+          "sni": "discord.com",
+          "sniOffset": 1722,
+          "sniEndOffset": 1733,
+          "sessionTicketBytes": 0,
+          "alpn": [
+            "h2",
+            "http/1.1"
+          ],
+          "extensionTypes": [
+            31354,
+            17613,
+            11,
+            16,
+            27,
+            51,
+            18,
+            23,
+            43,
+            10,
+            65281,
+            5,
+            13,
+            65037,
+            0,
+            45,
+            35,
+            19018
+          ],
+          "keyShares": [
+            {
+              "group": 64250,
+              "keyBytes": 1
+            },
+            {
+              "group": 4588,
+              "keyBytes": 1216
+            },
+            {
+              "group": 29,
+              "keyBytes": 32
+            }
+          ],
+          "remoteAddresses": [
+            "162.159.138.232:443"
+          ],
+          "tcpMs": 44,
+          "tlsMs": null,
+          "tlsStartUtc": "2026-10-04T19:21:50.530Z",
+          "tlsEndUtc": null,
+          "resumed": null,
+          "encryptedClientHelloAccepted": null,
+          "netError": null,
+          "serverHelloObserved": false
+        }
+      ],
+      "requestCounts": {
+        "discord.com/other/None": 3
+      },
+      "requestBytes": 0,
+      "failedTls": 7,
+      "capture": {
+        "schema": "discord_startup_capture_v1",
+        "startUtc": "2026-10-04T19:19:22.5965016Z",
+        "discordVersion": "1.0.9260",
+        "requestedSeconds": 60,
+        "captureModeRequested": "default",
+        "stopMethod": "manual_discord_exit",
+        "contextBefore": {
+          "engine": "zapret2",
+          "categories": [
+            "discord",
+            "youtube_twitch"
+          ],
+          "level": 4,
+          "profiles": [
+            {
+              "category": "discord",
+              "transport": "tls",
+              "profileId": "research_discord_tls_window_disorder"
+            }
+          ],
+          "winws2Pids": [
+            20664
+          ]
+        },
+        "netLogFile": "netlog.json",
+        "zapret2PidsAtStart": [
+          20664
+        ],
+        "status": "missing_or_incomplete",
+        "netLogBytes": 126663,
+        "eventCount": 0,
+        "lastPollUtc": "2026-10-04T19:20:43.2272216Z",
+        "finishUtc": "2026-10-04T19:20:43.2282413Z",
+        "elapsedSeconds": 80.6,
+        "contextAfter": {
+          "engine": "zapret2",
+          "categories": [
+            "discord",
+            "youtube_twitch"
+          ],
+          "level": 4,
+          "profiles": [
+            {
+              "category": "discord",
+              "transport": "tls",
+              "profileId": "research_discord_tls_window_disorder"
+            }
+          ],
+          "winws2Pids": [
+            20664
+          ]
+        },
+        "analysisStatus": "safe_summary_saved"
+      }
+    }
+  ],
+  "proxiedNativeTrialExcludedFromDirectProof": {
+    "session": "hostfake-md5-20261004T194203Z",
+    "netlogSha256": "60680493720fcd92f935686f80c080bcf22f078cfe26ecd87ce8d453df7b531f",
+    "complete": false,
+    "proxyResolution": {
+      "direct": 0,
+      "proxied": 8,
+      "unknown": 0
+    },
+    "tls": [
+      {
+        "source": 25,
+        "handshakeBytes": 1787,
+        "sni": "cdn.discordapp.com",
+        "sniOffset": 404,
+        "sniEndOffset": 422,
+        "sessionTicketBytes": 0,
+        "alpn": [
+          "h2",
+          "http/1.1"
+        ],
+        "extensionTypes": [
+          27242,
+          45,
+          65037,
+          65281,
+          35,
+          17613,
+          18,
+          0,
+          11,
+          16,
+          43,
+          10,
+          51,
+          5,
+          27,
+          13,
+          23,
+          31354
+        ],
+        "keyShares": [
+          {
+            "group": 39578,
+            "keyBytes": 1
+          },
+          {
+            "group": 4588,
+            "keyBytes": 1216
+          },
+          {
+            "group": 29,
+            "keyBytes": 32
+          }
+        ],
+        "remoteAddresses": [],
+        "tcpMs": 2,
+        "tlsMs": 85,
+        "tlsStartUtc": "2026-10-04T19:42:03.334Z",
+        "tlsEndUtc": "2026-10-04T19:42:03.419Z",
+        "resumed": false,
+        "encryptedClientHelloAccepted": false,
+        "netError": null,
+        "serverHelloObserved": true
+      },
+      {
+        "source": 29,
+        "handshakeBytes": 1812,
+        "sni": "discord.com",
+        "sniOffset": 408,
+        "sniEndOffset": 419,
+        "sessionTicketBytes": 0,
+        "alpn": [
+          "h2",
+          "http/1.1"
+        ],
+        "extensionTypes": [
+          60138,
+          65037,
+          0,
+          45,
+          18,
+          51,
+          35,
+          43,
+          5,
+          27,
+          11,
+          10,
+          23,
+          13,
+          65281,
+          16,
+          17613,
+          10794
+        ],
+        "keyShares": [
+          {
+            "group": 56026,
+            "keyBytes": 1
+          },
+          {
+            "group": 4588,
+            "keyBytes": 1216
+          },
+          {
+            "group": 29,
+            "keyBytes": 32
+          }
+        ],
+        "remoteAddresses": [],
+        "tcpMs": 1,
+        "tlsMs": 82,
+        "tlsStartUtc": "2026-10-04T19:42:03.335Z",
+        "tlsEndUtc": "2026-10-04T19:42:03.417Z",
+        "resumed": false,
+        "encryptedClientHelloAccepted": false,
+        "netError": null,
+        "serverHelloObserved": true
+      },
+      {
+        "source": 1150,
+        "handshakeBytes": 1807,
+        "sni": "gateway.discord.gg",
+        "sniOffset": 1784,
+        "sniEndOffset": 1802,
+        "sessionTicketBytes": 0,
+        "alpn": [
+          "http/1.1"
+        ],
+        "extensionTypes": [
+          47802,
+          27,
+          11,
+          65281,
+          43,
+          35,
+          51,
+          10,
+          18,
+          16,
+          5,
+          13,
+          23,
+          65037,
+          45,
+          0,
+          51914
+        ],
+        "keyShares": [
+          {
+            "group": 19018,
+            "keyBytes": 1
+          },
+          {
+            "group": 4588,
+            "keyBytes": 1216
+          },
+          {
+            "group": 29,
+            "keyBytes": 32
+          }
+        ],
+        "remoteAddresses": [],
+        "tcpMs": 4,
+        "tlsMs": 198,
+        "tlsStartUtc": "2026-10-04T19:42:04.390Z",
+        "tlsEndUtc": "2026-10-04T19:42:04.588Z",
+        "resumed": false,
+        "encryptedClientHelloAccepted": false,
+        "netError": null,
+        "serverHelloObserved": true
+      }
+    ],
+    "requestCounts": {
+      "discord.com/other/200": 2,
+      "discord.com/assets/None": 788,
+      "gateway.discord.gg/other/101": 1,
+      "discord.com/other/None": 2,
+      "discord.com/api/None": 1
+    },
+    "requestBytes": 5966834,
+    "failedTls": 0,
+    "actualClient": {
+      "profile": "research_discord_tls_hostfake_md5",
+      "categoryCombination": [
+        "discord",
+        "youtube_twitch"
+      ],
+      "session": "hostfake-md5-20261004T194203Z",
+      "ownedRootPid": 20968,
+      "limitSeconds": 45,
+      "elapsedMs": 3078,
+      "clientEvents": [
+        {
+          "event": "READY",
+          "localTime": "23:42:05.972",
+          "observedAfterMs": 3015
+        },
+        {
+          "event": "READY_SUPPLEMENTAL",
+          "localTime": "23:42:05.974",
+          "observedAfterMs": 3015
+        }
+      ],
+      "readyObserved": true,
+      "rootExited": true,
+      "netlogExists": true,
+      "termination": "only_owned_root_after_trial",
+      "visualRenderingVerified": false
+    }
+  },
+  "directNativeTrial": {
+    "session": "hostfake-md5-20261004T200521Z",
+    "netlogSha256": "0f1f4e5327243f1fe851da66414d20281ea5ba01b4d83e6c94cd90f8e55c48d2",
+    "complete": false,
+    "proxyResolution": {
+      "direct": 23,
+      "proxied": 0,
+      "unknown": 0
+    },
+    "tls": [
+      {
+        "source": 30,
+        "handshakeBytes": 1819,
+        "sni": "cdn.discordapp.com",
+        "sniOffset": 1431,
+        "sniEndOffset": 1449,
+        "sessionTicketBytes": 0,
+        "alpn": [
+          "h2",
+          "http/1.1"
+        ],
+        "extensionTypes": [
+          14906,
+          65281,
+          45,
+          16,
+          5,
+          51,
+          18,
+          0,
+          23,
+          17613,
+          11,
+          35,
+          27,
+          10,
+          13,
+          65037,
+          43,
+          64250
+        ],
+        "keyShares": [
+          {
+            "group": 23130,
+            "keyBytes": 1
+          },
+          {
+            "group": 4588,
+            "keyBytes": 1216
+          },
+          {
+            "group": 29,
+            "keyBytes": 32
+          }
+        ],
+        "remoteAddresses": [
+          "162.159.129.233:443"
+        ],
+        "tcpMs": 48,
+        "tlsMs": 56,
+        "tlsStartUtc": "2026-10-04T20:05:21.845Z",
+        "tlsEndUtc": "2026-10-04T20:05:21.901Z",
+        "resumed": false,
+        "encryptedClientHelloAccepted": false,
+        "netError": null,
+        "serverHelloObserved": true
+      },
+      {
+        "source": 37,
+        "handshakeBytes": 1780,
+        "sni": "discord.com",
+        "sniOffset": 420,
+        "sniEndOffset": 431,
+        "sessionTicketBytes": 0,
+        "alpn": [
+          "h2",
+          "http/1.1"
+        ],
+        "extensionTypes": [
+          51914,
+          35,
+          5,
+          16,
+          27,
+          45,
+          65037,
+          0,
+          11,
+          10,
+          23,
+          17613,
+          13,
+          51,
+          18,
+          43,
+          65281,
+          47802
+        ],
+        "keyShares": [
+          {
+            "group": 19018,
+            "keyBytes": 1
+          },
+          {
+            "group": 4588,
+            "keyBytes": 1216
+          },
+          {
+            "group": 29,
+            "keyBytes": 32
+          }
+        ],
+        "remoteAddresses": [
+          "162.159.135.232:443"
+        ],
+        "tcpMs": 45,
+        "tlsMs": 52,
+        "tlsStartUtc": "2026-10-04T20:05:21.849Z",
+        "tlsEndUtc": "2026-10-04T20:05:21.901Z",
+        "resumed": false,
+        "encryptedClientHelloAccepted": false,
+        "netError": null,
+        "serverHelloObserved": true
+      },
+      {
+        "source": 1351,
+        "handshakeBytes": 1807,
+        "sni": "gateway.discord.gg",
+        "sniOffset": 122,
+        "sniEndOffset": 140,
+        "sessionTicketBytes": 0,
+        "alpn": [
+          "http/1.1"
+        ],
+        "extensionTypes": [
+          19018,
+          0,
+          51,
+          10,
+          23,
+          13,
+          16,
+          43,
+          65281,
+          5,
+          45,
+          11,
+          27,
+          65037,
+          18,
+          35,
+          56026
+        ],
+        "keyShares": [
+          {
+            "group": 39578,
+            "keyBytes": 1
+          },
+          {
+            "group": 4588,
+            "keyBytes": 1216
+          },
+          {
+            "group": 29,
+            "keyBytes": 32
+          }
+        ],
+        "remoteAddresses": [
+          "162.159.136.234:443"
+        ],
+        "tcpMs": 45,
+        "tlsMs": 132,
+        "tlsStartUtc": "2026-10-04T20:05:23.224Z",
+        "tlsEndUtc": "2026-10-04T20:05:23.356Z",
+        "resumed": false,
+        "encryptedClientHelloAccepted": false,
+        "netError": null,
+        "serverHelloObserved": true
+      },
+      {
+        "source": 1722,
+        "handshakeBytes": 1723,
+        "sni": "status.discord.com",
+        "sniOffset": 1481,
+        "sniEndOffset": 1499,
+        "sessionTicketBytes": 0,
+        "alpn": [
+          "h2",
+          "http/1.1"
+        ],
+        "extensionTypes": [
+          2570,
+          27,
+          23,
+          51,
+          16,
+          5,
+          18,
+          13,
+          45,
+          11,
+          10,
+          0,
+          65037,
+          35,
+          17613,
+          65281,
+          43,
+          19018
+        ],
+        "keyShares": [
+          {
+            "group": 31354,
+            "keyBytes": 1
+          },
+          {
+            "group": 4588,
+            "keyBytes": 1216
+          },
+          {
+            "group": 29,
+            "keyBytes": 32
+          }
+        ],
+        "remoteAddresses": [
+          "162.159.138.232:443"
+        ],
+        "tcpMs": 50,
+        "tlsMs": 56,
+        "tlsStartUtc": "2026-10-04T20:05:25.483Z",
+        "tlsEndUtc": "2026-10-04T20:05:25.539Z",
+        "resumed": false,
+        "encryptedClientHelloAccepted": false,
+        "netError": null,
+        "serverHelloObserved": true
+      }
+    ],
+    "requestCounts": {
+      "discord.com/other/200": 2,
+      "discord.com/assets/None": 830,
+      "gateway.discord.gg/other/101": 1,
+      "discord.com/other/302": 1,
+      "status.discord.com/api/200": 1,
+      "discord.com/api/404": 1,
+      "discord.com/assets/200": 6,
+      "discord.com/api/200": 2,
+      "discord.com/api/None": 3,
+      "cdn.discordapp.com/other/None": 26,
+      "cdn.discordapp.com/other/304": 2
+    },
+    "requestBytes": 6110772,
+    "failedTls": 0,
+    "actualClient": {
+      "profile": "research_discord_tls_hostfake_md5",
+      "categoryCombination": [
+        "discord",
+        "youtube_twitch"
+      ],
+      "session": "hostfake-md5-20261004T200521Z",
+      "ownedRootPid": 26116,
+      "limitSeconds": 45,
+      "elapsedMs": 4625,
+      "clientEvents": [
+        {
+          "event": "READY",
+          "localTime": "00:05:25.378",
+          "observedAfterMs": 4046
+        },
+        {
+          "event": "READY_SUPPLEMENTAL",
+          "localTime": "00:05:25.802",
+          "observedAfterMs": 4546
+        }
+      ],
+      "readyObserved": true,
+      "rootExited": true,
+      "netlogExists": true,
+      "termination": "only_owned_root_after_trial",
+      "visualRenderingVerified": false,
+      "noProxyServerRequested": true
+    }
+  },
+  "fixedProfileTrials": [
+    {
+      "generation": 1790869840864250,
+      "probes": [
+        {
+          "elapsedMs": 188,
+          "host": "discord.com",
+          "metadata": {
+            "applicationOk": true,
+            "authenticatedTls": true,
+            "handshakeBytes": 1876,
+            "hybridKeyBytes": 1216,
+            "kind": "large_early_sni",
+            "sniOffset": 183
+          },
+          "observation": {
+            "bytes": 35,
+            "status": 200
+          },
+          "remote": "162.159.137.232:443"
+        },
+        {
+          "elapsedMs": 241,
+          "host": "discord.com",
+          "metadata": {
+            "applicationOk": true,
+            "authenticatedTls": true,
+            "handshakeBytes": 1876,
+            "hybridKeyBytes": 1216,
+            "kind": "large_late_sni",
+            "sniOffset": 1425
+          },
+          "observation": {
+            "bytes": 35,
+            "status": 200
+          },
+          "remote": "162.159.137.232:443"
+        },
+        {
+          "elapsedMs": 195,
+          "host": "cdn.discordapp.com",
+          "metadata": {
+            "applicationOk": true,
+            "authenticatedTls": true,
+            "handshakeBytes": 1883,
+            "hybridKeyBytes": 1216,
+            "kind": "large_early_sni",
+            "sniOffset": 170
+          },
+          "observation": {
+            "bytes": 1268,
+            "status": 200
+          },
+          "remote": "162.159.133.233:443"
+        },
+        {
+          "elapsedMs": 222,
+          "host": "cdn.discordapp.com",
+          "metadata": {
+            "applicationOk": true,
+            "authenticatedTls": true,
+            "handshakeBytes": 1883,
+            "hybridKeyBytes": 1216,
+            "kind": "large_late_sni",
+            "sniOffset": 1401
+          },
+          "observation": {
+            "bytes": 1268,
+            "status": 200
+          },
+          "remote": "162.159.133.233:443"
+        }
+      ],
+      "profile": "legacy_discord_14"
+    },
+    {
+      "generation": 1790869840864251,
+      "probes": [
+        {
+          "elapsedMs": 4005,
+          "host": "discord.com",
+          "metadata": {
+            "applicationOk": false,
+            "authenticatedTls": false,
+            "handshakeBytes": 1876,
+            "hybridKeyBytes": 1216,
+            "kind": "large_early_sni",
+            "sniOffset": 138
+          },
+          "observation": {
+            "timeout": true
+          },
+          "remote": "162.159.137.232:443"
+        },
+        {
+          "elapsedMs": 4003,
+          "host": "discord.com",
+          "metadata": {
+            "applicationOk": false,
+            "authenticatedTls": false,
+            "handshakeBytes": 1876,
+            "hybridKeyBytes": 1216,
+            "kind": "large_late_sni",
+            "sniOffset": 1425
+          },
+          "observation": {
+            "timeout": true
+          },
+          "remote": "162.159.137.232:443"
+        },
+        {
+          "elapsedMs": 4001,
+          "host": "cdn.discordapp.com",
+          "metadata": {
+            "applicationOk": false,
+            "authenticatedTls": false,
+            "handshakeBytes": 1883,
+            "hybridKeyBytes": 1216,
+            "kind": "large_early_sni",
+            "sniOffset": 116
+          },
+          "observation": {
+            "timeout": true
+          },
+          "remote": "162.159.133.233:443"
+        },
+        {
+          "elapsedMs": 4014,
+          "host": "cdn.discordapp.com",
+          "metadata": {
+            "applicationOk": false,
+            "authenticatedTls": false,
+            "handshakeBytes": 1883,
+            "hybridKeyBytes": 1216,
+            "kind": "large_late_sni",
+            "sniOffset": 1438
+          },
+          "observation": {
+            "timeout": true
+          },
+          "remote": "162.159.133.233:443"
+        }
+      ],
+      "profile": "research_discord_tls_window_disorder"
+    },
+    {
+      "generation": 1790869840864252,
+      "probes": [
+        {
+          "elapsedMs": 4015,
+          "host": "discord.com",
+          "metadata": {
+            "applicationOk": false,
+            "authenticatedTls": false,
+            "handshakeBytes": 1876,
+            "hybridKeyBytes": 1216,
+            "kind": "large_early_sni",
+            "sniOffset": 104
+          },
+          "observation": {
+            "timeout": true
+          },
+          "remote": "162.159.137.232:443"
+        },
+        {
+          "elapsedMs": 181,
+          "host": "discord.com",
+          "metadata": {
+            "applicationOk": true,
+            "authenticatedTls": true,
+            "handshakeBytes": 1876,
+            "hybridKeyBytes": 1216,
+            "kind": "large_late_sni",
+            "sniOffset": 1430
+          },
+          "observation": {
+            "bytes": 35,
+            "status": 200
+          },
+          "remote": "162.159.137.232:443"
+        },
+        {
+          "elapsedMs": 4009,
+          "host": "cdn.discordapp.com",
+          "metadata": {
+            "applicationOk": false,
+            "authenticatedTls": false,
+            "handshakeBytes": 1883,
+            "hybridKeyBytes": 1216,
+            "kind": "large_early_sni",
+            "sniOffset": 137
+          },
+          "observation": {
+            "timeout": true
+          },
+          "remote": "162.159.133.233:443"
+        },
+        {
+          "elapsedMs": 205,
+          "host": "cdn.discordapp.com",
+          "metadata": {
+            "applicationOk": true,
+            "authenticatedTls": true,
+            "handshakeBytes": 1883,
+            "hybridKeyBytes": 1216,
+            "kind": "large_late_sni",
+            "sniOffset": 1451
+          },
+          "observation": {
+            "bytes": 1268,
+            "status": 200
+          },
+          "remote": "162.159.133.233:443"
+        }
+      ],
+      "profile": "discord_tls_multidisorder_alt"
+    },
+    {
+      "generation": 1790869840864253,
+      "probes": [
+        {
+          "elapsedMs": 4006,
+          "host": "discord.com",
+          "metadata": {
+            "applicationOk": false,
+            "authenticatedTls": false,
+            "handshakeBytes": 1876,
+            "hybridKeyBytes": 1216,
+            "kind": "large_early_sni",
+            "sniOffset": 119
+          },
+          "observation": {
+            "timeout": true
+          },
+          "remote": "162.159.137.232:443"
+        },
+        {
+          "elapsedMs": 4004,
+          "host": "discord.com",
+          "metadata": {
+            "applicationOk": false,
+            "authenticatedTls": false,
+            "handshakeBytes": 1876,
+            "hybridKeyBytes": 1216,
+            "kind": "large_late_sni",
+            "sniOffset": 1427
+          },
+          "observation": {
+            "timeout": true
+          },
+          "remote": "162.159.137.232:443"
+        },
+        {
+          "elapsedMs": 4012,
+          "host": "cdn.discordapp.com",
+          "metadata": {
+            "applicationOk": false,
+            "authenticatedTls": false,
+            "handshakeBytes": 1883,
+            "hybridKeyBytes": 1216,
+            "kind": "large_early_sni",
+            "sniOffset": 151
+          },
+          "observation": {
+            "timeout": true
+          },
+          "remote": "162.159.133.233:443"
+        },
+        {
+          "elapsedMs": 4009,
+          "host": "cdn.discordapp.com",
+          "metadata": {
+            "applicationOk": false,
+            "authenticatedTls": false,
+            "handshakeBytes": 1883,
+            "hybridKeyBytes": 1216,
+            "kind": "large_late_sni",
+            "sniOffset": 1439
+          },
+          "observation": {
+            "timeout": true
+          },
+          "remote": "162.159.133.233:443"
+        }
+      ],
+      "profile": "classic_discord_tls_legacy_sni"
+    },
+    {
+      "generation": 1790869840864254,
+      "probes": [
+        {
+          "elapsedMs": 4008,
+          "host": "discord.com",
+          "metadata": {
+            "applicationOk": false,
+            "authenticatedTls": false,
+            "handshakeBytes": 1876,
+            "hybridKeyBytes": 1216,
+            "kind": "large_early_sni",
+            "sniOffset": 153
+          },
+          "observation": {
+            "timeout": true
+          },
+          "remote": "162.159.137.232:443"
+        },
+        {
+          "elapsedMs": 4002,
+          "host": "discord.com",
+          "metadata": {
+            "applicationOk": false,
+            "authenticatedTls": false,
+            "handshakeBytes": 1876,
+            "hybridKeyBytes": 1216,
+            "kind": "large_late_sni",
+            "sniOffset": 1425
+          },
+          "observation": {
+            "timeout": true
+          },
+          "remote": "162.159.137.232:443"
+        },
+        {
+          "elapsedMs": 4014,
+          "host": "cdn.discordapp.com",
+          "metadata": {
+            "applicationOk": false,
+            "authenticatedTls": false,
+            "handshakeBytes": 1883,
+            "hybridKeyBytes": 1216,
+            "kind": "large_early_sni",
+            "sniOffset": 119
+          },
+          "observation": {
+            "timeout": true
+          },
+          "remote": "162.159.133.233:443"
+        },
+        {
+          "elapsedMs": 4012,
+          "host": "cdn.discordapp.com",
+          "metadata": {
+            "applicationOk": false,
+            "authenticatedTls": false,
+            "handshakeBytes": 1883,
+            "hybridKeyBytes": 1216,
+            "kind": "large_late_sni",
+            "sniOffset": 1438
+          },
+          "observation": {
+            "timeout": true
+          },
+          "remote": "162.159.133.233:443"
+        }
+      ],
+      "profile": "classic_discord_tls_legacy_sni_extension"
+    },
+    {
+      "generation": 1790869840864255,
+      "probes": [
+        {
+          "elapsedMs": 4010,
+          "host": "discord.com",
+          "metadata": {
+            "applicationOk": false,
+            "authenticatedTls": false,
+            "handshakeBytes": 1876,
+            "hybridKeyBytes": 1216,
+            "kind": "large_early_sni",
+            "sniOffset": 154
+          },
+          "observation": {
+            "timeout": true
+          },
+          "remote": "162.159.137.232:443"
+        },
+        {
+          "elapsedMs": 179,
+          "host": "discord.com",
+          "metadata": {
+            "applicationOk": true,
+            "authenticatedTls": true,
+            "handshakeBytes": 1876,
+            "hybridKeyBytes": 1216,
+            "kind": "large_late_sni",
+            "sniOffset": 1451
+          },
+          "observation": {
+            "bytes": 35,
+            "status": 200
+          },
+          "remote": "162.159.137.232:443"
+        },
+        {
+          "elapsedMs": 4005,
+          "host": "cdn.discordapp.com",
+          "metadata": {
+            "applicationOk": false,
+            "authenticatedTls": false,
+            "handshakeBytes": 1883,
+            "hybridKeyBytes": 1216,
+            "kind": "large_early_sni",
+            "sniOffset": 104
+          },
+          "observation": {
+            "timeout": true
+          },
+          "remote": "162.159.133.233:443"
+        },
+        {
+          "elapsedMs": 208,
+          "host": "cdn.discordapp.com",
+          "metadata": {
+            "applicationOk": true,
+            "authenticatedTls": true,
+            "handshakeBytes": 1883,
+            "hybridKeyBytes": 1216,
+            "kind": "large_late_sni",
+            "sniOffset": 1441
+          },
+          "observation": {
+            "bytes": 1268,
+            "status": 200
+          },
+          "remote": "162.159.133.233:443"
+        }
+      ],
+      "profile": "research_discord_tls_sni_ladder"
+    },
+    {
+      "generation": 1790869840864256,
+      "probes": [
+        {
+          "elapsedMs": 104,
+          "host": "discord.com",
+          "metadata": {
+            "applicationOk": false,
+            "authenticatedTls": false,
+            "handshakeBytes": 1876,
+            "hybridKeyBytes": 1216,
+            "kind": "large_early_sni",
+            "sniOffset": 144
+          },
+          "observation": {
+            "error": "received fatal alert: HandshakeFailure"
+          },
+          "remote": "162.159.137.232:443"
+        },
+        {
+          "elapsedMs": 101,
+          "host": "discord.com",
+          "metadata": {
+            "applicationOk": false,
+            "authenticatedTls": false,
+            "handshakeBytes": 1876,
+            "hybridKeyBytes": 1216,
+            "kind": "large_late_sni",
+            "sniOffset": 1433
+          },
+          "observation": {
+            "error": "received fatal alert: HandshakeFailure"
+          },
+          "remote": "162.159.137.232:443"
+        },
+        {
+          "elapsedMs": 94,
+          "host": "cdn.discordapp.com",
+          "metadata": {
+            "applicationOk": false,
+            "authenticatedTls": false,
+            "handshakeBytes": 1883,
+            "hybridKeyBytes": 1216,
+            "kind": "large_early_sni",
+            "sniOffset": 152
+          },
+          "observation": {
+            "error": "received fatal alert: HandshakeFailure"
+          },
+          "remote": "162.159.133.233:443"
+        },
+        {
+          "elapsedMs": 95,
+          "host": "cdn.discordapp.com",
+          "metadata": {
+            "applicationOk": false,
+            "authenticatedTls": false,
+            "handshakeBytes": 1883,
+            "hybridKeyBytes": 1216,
+            "kind": "large_late_sni",
+            "sniOffset": 1373
+          },
+          "observation": {
+            "error": "received fatal alert: HandshakeFailure"
+          },
+          "remote": "162.159.133.233:443"
+        }
+      ],
+      "profile": "discord_tls_text"
+    },
+    {
+      "generation": 1790869840864257,
+      "probes": [
+        {
+          "elapsedMs": 4013,
+          "host": "discord.com",
+          "metadata": {
+            "applicationOk": false,
+            "authenticatedTls": false,
+            "handshakeBytes": 1876,
+            "hybridKeyBytes": 1216,
+            "kind": "large_early_sni",
+            "sniOffset": 119
+          },
+          "observation": {
+            "timeout": true
+          },
+          "remote": "162.159.137.232:443"
+        },
+        {
+          "elapsedMs": 4010,
+          "host": "discord.com",
+          "metadata": {
+            "applicationOk": false,
+            "authenticatedTls": false,
+            "handshakeBytes": 1876,
+            "hybridKeyBytes": 1216,
+            "kind": "large_late_sni",
+            "sniOffset": 1412
+          },
+          "observation": {
+            "timeout": true
+          },
+          "remote": "162.159.137.232:443"
+        },
+        {
+          "elapsedMs": 4005,
+          "host": "cdn.discordapp.com",
+          "metadata": {
+            "applicationOk": false,
+            "authenticatedTls": false,
+            "handshakeBytes": 1883,
+            "hybridKeyBytes": 1216,
+            "kind": "large_early_sni",
+            "sniOffset": 104
+          },
+          "observation": {
+            "timeout": true
+          },
+          "remote": "162.159.133.233:443"
+        },
+        {
+          "elapsedMs": 4003,
+          "host": "cdn.discordapp.com",
+          "metadata": {
+            "applicationOk": false,
+            "authenticatedTls": false,
+            "handshakeBytes": 1883,
+            "hybridKeyBytes": 1216,
+            "kind": "large_late_sni",
+            "sniOffset": 1429
+          },
+          "observation": {
+            "timeout": true
+          },
+          "remote": "162.159.133.233:443"
+        }
+      ],
+      "profile": "classic_discord_tls_split_sni"
+    },
+    {
+      "generation": 1790869840864258,
+      "probes": [
+        {
+          "elapsedMs": 4003,
+          "host": "discord.com",
+          "metadata": {
+            "applicationOk": false,
+            "authenticatedTls": false,
+            "handshakeBytes": 1876,
+            "hybridKeyBytes": 1216,
+            "kind": "large_early_sni",
+            "sniOffset": 178
+          },
+          "observation": {
+            "timeout": true
+          },
+          "remote": "162.159.137.232:443"
+        },
+        {
+          "elapsedMs": 4002,
+          "host": "discord.com",
+          "metadata": {
+            "applicationOk": false,
+            "authenticatedTls": false,
+            "handshakeBytes": 1876,
+            "hybridKeyBytes": 1216,
+            "kind": "large_late_sni",
+            "sniOffset": 1451
+          },
+          "observation": {
+            "timeout": true
+          },
+          "remote": "162.159.137.232:443"
+        },
+        {
+          "elapsedMs": 4015,
+          "host": "cdn.discordapp.com",
+          "metadata": {
+            "applicationOk": false,
+            "authenticatedTls": false,
+            "handshakeBytes": 1883,
+            "hybridKeyBytes": 1216,
+            "kind": "large_early_sni",
+            "sniOffset": 104
+          },
+          "observation": {
+            "timeout": true
+          },
+          "remote": "162.159.133.233:443"
+        },
+        {
+          "elapsedMs": 4012,
+          "host": "cdn.discordapp.com",
+          "metadata": {
+            "applicationOk": false,
+            "authenticatedTls": false,
+            "handshakeBytes": 1883,
+            "hybridKeyBytes": 1216,
+            "kind": "large_late_sni",
+            "sniOffset": 1436
+          },
+          "observation": {
+            "timeout": true
+          },
+          "remote": "162.159.133.233:443"
+        }
+      ],
+      "profile": "classic_discord_tls_split_extension"
+    },
+    {
+      "generation": 1790869840864259,
+      "probes": [
+        {
+          "elapsedMs": 4009,
+          "host": "discord.com",
+          "metadata": {
+            "applicationOk": false,
+            "authenticatedTls": false,
+            "handshakeBytes": 1876,
+            "hybridKeyBytes": 1216,
+            "kind": "large_early_sni",
+            "sniOffset": 110
+          },
+          "observation": {
+            "timeout": true
+          },
+          "remote": "162.159.137.232:443"
+        },
+        {
+          "elapsedMs": 207,
+          "host": "discord.com",
+          "metadata": {
+            "applicationOk": true,
+            "authenticatedTls": true,
+            "handshakeBytes": 1876,
+            "hybridKeyBytes": 1216,
+            "kind": "large_late_sni",
+            "sniOffset": 1415
+          },
+          "observation": {
+            "bytes": 35,
+            "status": 200
+          },
+          "remote": "162.159.137.232:443"
+        },
+        {
+          "elapsedMs": 4006,
+          "host": "cdn.discordapp.com",
+          "metadata": {
+            "applicationOk": false,
+            "authenticatedTls": false,
+            "handshakeBytes": 1883,
+            "hybridKeyBytes": 1216,
+            "kind": "large_early_sni",
+            "sniOffset": 104
+          },
+          "observation": {
+            "timeout": true
+          },
+          "remote": "162.159.133.233:443"
+        },
+        {
+          "elapsedMs": 171,
+          "host": "cdn.discordapp.com",
+          "metadata": {
+            "applicationOk": true,
+            "authenticatedTls": true,
+            "handshakeBytes": 1883,
+            "hybridKeyBytes": 1216,
+            "kind": "large_late_sni",
+            "sniOffset": 1366
+          },
+          "observation": {
+            "bytes": 1268,
+            "status": 200
+          },
+          "remote": "162.159.133.233:443"
+        }
+      ],
+      "profile": "classic_discord_tls_disorder_extension"
+    },
+    {
+      "generation": 1790869840864260,
+      "probes": [
+        {
+          "elapsedMs": 4009,
+          "host": "discord.com",
+          "metadata": {
+            "applicationOk": false,
+            "authenticatedTls": false,
+            "handshakeBytes": 1876,
+            "hybridKeyBytes": 1216,
+            "kind": "large_early_sni",
+            "sniOffset": 104
+          },
+          "observation": {
+            "timeout": true
+          },
+          "remote": "162.159.137.232:443"
+        },
+        {
+          "elapsedMs": 4003,
+          "host": "discord.com",
+          "metadata": {
+            "applicationOk": false,
+            "authenticatedTls": false,
+            "handshakeBytes": 1876,
+            "hybridKeyBytes": 1216,
+            "kind": "large_late_sni",
+            "sniOffset": 1451
+          },
+          "observation": {
+            "timeout": true
+          },
+          "remote": "162.159.137.232:443"
+        },
+        {
+          "elapsedMs": 4002,
+          "host": "cdn.discordapp.com",
+          "metadata": {
+            "applicationOk": false,
+            "authenticatedTls": false,
+            "handshakeBytes": 1883,
+            "hybridKeyBytes": 1216,
+            "kind": "large_early_sni",
+            "sniOffset": 123
+          },
+          "observation": {
+            "timeout": true
+          },
+          "remote": "162.159.133.233:443"
+        },
+        {
+          "elapsedMs": 4016,
+          "host": "cdn.discordapp.com",
+          "metadata": {
+            "applicationOk": false,
+            "authenticatedTls": false,
+            "handshakeBytes": 1883,
+            "hybridKeyBytes": 1216,
+            "kind": "large_late_sni",
+            "sniOffset": 1445
+          },
+          "observation": {
+            "timeout": true
+          },
+          "remote": "162.159.133.233:443"
+        }
+      ],
+      "profile": "classic_discord_tls_fake_seq_split"
+    },
+    {
+      "generation": 1790869840864261,
+      "probes": [
+        {
+          "elapsedMs": 4012,
+          "host": "discord.com",
+          "metadata": {
+            "applicationOk": false,
+            "authenticatedTls": false,
+            "handshakeBytes": 1876,
+            "hybridKeyBytes": 1216,
+            "kind": "large_early_sni",
+            "sniOffset": 138
+          },
+          "observation": {
+            "timeout": true
+          },
+          "remote": "162.159.137.232:443"
+        },
+        {
+          "elapsedMs": 4008,
+          "host": "discord.com",
+          "metadata": {
+            "applicationOk": false,
+            "authenticatedTls": false,
+            "handshakeBytes": 1876,
+            "hybridKeyBytes": 1216,
+            "kind": "large_late_sni",
+            "sniOffset": 1419
+          },
+          "observation": {
+            "timeout": true
+          },
+          "remote": "162.159.137.232:443"
+        },
+        {
+          "elapsedMs": 4007,
+          "host": "cdn.discordapp.com",
+          "metadata": {
+            "applicationOk": false,
+            "authenticatedTls": false,
+            "handshakeBytes": 1883,
+            "hybridKeyBytes": 1216,
+            "kind": "large_early_sni",
+            "sniOffset": 138
+          },
+          "observation": {
+            "timeout": true
+          },
+          "remote": "162.159.133.233:443"
+        },
+        {
+          "elapsedMs": 4005,
+          "host": "cdn.discordapp.com",
+          "metadata": {
+            "applicationOk": false,
+            "authenticatedTls": false,
+            "handshakeBytes": 1883,
+            "hybridKeyBytes": 1216,
+            "kind": "large_late_sni",
+            "sniOffset": 1442
+          },
+          "observation": {
+            "timeout": true
+          },
+          "remote": "162.159.133.233:443"
+        }
+      ],
+      "profile": "discord_tls_fakedsplit"
+    },
+    {
+      "generation": 1790869840864262,
+      "probes": [
+        {
+          "elapsedMs": 4016,
+          "host": "discord.com",
+          "metadata": {
+            "applicationOk": false,
+            "authenticatedTls": false,
+            "handshakeBytes": 1876,
+            "hybridKeyBytes": 1216,
+            "kind": "large_early_sni",
+            "sniOffset": 176
+          },
+          "observation": {
+            "timeout": true
+          },
+          "remote": "162.159.137.232:443"
+        },
+        {
+          "elapsedMs": 4012,
+          "host": "discord.com",
+          "metadata": {
+            "applicationOk": false,
+            "authenticatedTls": false,
+            "handshakeBytes": 1876,
+            "hybridKeyBytes": 1216,
+            "kind": "large_late_sni",
+            "sniOffset": 1445
+          },
+          "observation": {
+            "timeout": true
+          },
+          "remote": "162.159.137.232:443"
+        },
+        {
+          "elapsedMs": 4009,
+          "host": "cdn.discordapp.com",
+          "metadata": {
+            "applicationOk": false,
+            "authenticatedTls": false,
+            "handshakeBytes": 1883,
+            "hybridKeyBytes": 1216,
+            "kind": "large_early_sni",
+            "sniOffset": 156
+          },
+          "observation": {
+            "timeout": true
+          },
+          "remote": "162.159.133.233:443"
+        },
+        {
+          "elapsedMs": 4005,
+          "host": "cdn.discordapp.com",
+          "metadata": {
+            "applicationOk": false,
+            "authenticatedTls": false,
+            "handshakeBytes": 1883,
+            "hybridKeyBytes": 1216,
+            "kind": "large_late_sni",
+            "sniOffset": 1372
+          },
+          "observation": {
+            "timeout": true
+          },
+          "remote": "162.159.133.233:443"
+        }
+      ],
+      "profile": "discord_tls_fakeddisorder"
+    },
+    {
+      "generation": 1790869840864263,
+      "probes": [
+        {
+          "elapsedMs": 180,
+          "host": "discord.com",
+          "metadata": {
+            "applicationOk": true,
+            "authenticatedTls": true,
+            "handshakeBytes": 1876,
+            "hybridKeyBytes": 1216,
+            "kind": "large_early_sni",
+            "sniOffset": 119
+          },
+          "observation": {
+            "bytes": 35,
+            "status": 200
+          },
+          "remote": "162.159.137.232:443"
+        },
+        {
+          "elapsedMs": 221,
+          "host": "discord.com",
+          "metadata": {
+            "applicationOk": true,
+            "authenticatedTls": true,
+            "handshakeBytes": 1876,
+            "hybridKeyBytes": 1216,
+            "kind": "large_late_sni",
+            "sniOffset": 1451
+          },
+          "observation": {
+            "bytes": 35,
+            "status": 200
+          },
+          "remote": "162.159.137.232:443"
+        },
+        {
+          "elapsedMs": 90,
+          "host": "cdn.discordapp.com",
+          "metadata": {
+            "applicationOk": false,
+            "authenticatedTls": false,
+            "handshakeBytes": 1883,
+            "hybridKeyBytes": 1216,
+            "kind": "large_early_sni",
+            "sniOffset": 155
+          },
+          "observation": {
+            "error": "received fatal alert: HandshakeFailure"
+          },
+          "remote": "162.159.133.233:443"
+        },
+        {
+          "elapsedMs": 202,
+          "host": "cdn.discordapp.com",
+          "metadata": {
+            "applicationOk": true,
+            "authenticatedTls": true,
+            "handshakeBytes": 1883,
+            "hybridKeyBytes": 1216,
+            "kind": "large_late_sni",
+            "sniOffset": 1436
+          },
+          "observation": {
+            "bytes": 1268,
+            "status": 200
+          },
+          "remote": "162.159.133.233:443"
+        }
+      ],
+      "profile": "research_discord_tls_hostfake_ack"
+    },
+    {
+      "generation": 1790869840864264,
+      "probes": [
+        {
+          "elapsedMs": 185,
+          "host": "discord.com",
+          "metadata": {
+            "applicationOk": true,
+            "authenticatedTls": true,
+            "handshakeBytes": 1876,
+            "hybridKeyBytes": 1216,
+            "kind": "large_early_sni",
+            "sniOffset": 104
+          },
+          "observation": {
+            "bytes": 35,
+            "status": 200
+          },
+          "remote": "162.159.137.232:443"
+        },
+        {
+          "elapsedMs": 237,
+          "host": "discord.com",
+          "metadata": {
+            "applicationOk": true,
+            "authenticatedTls": true,
+            "handshakeBytes": 1876,
+            "hybridKeyBytes": 1216,
+            "kind": "large_late_sni",
+            "sniOffset": 1429
+          },
+          "observation": {
+            "bytes": 35,
+            "status": 200
+          },
+          "remote": "162.159.137.232:443"
+        },
+        {
+          "elapsedMs": 188,
+          "host": "cdn.discordapp.com",
+          "metadata": {
+            "applicationOk": true,
+            "authenticatedTls": true,
+            "handshakeBytes": 1883,
+            "hybridKeyBytes": 1216,
+            "kind": "large_early_sni",
+            "sniOffset": 189
+          },
+          "observation": {
+            "bytes": 1268,
+            "status": 200
+          },
+          "remote": "162.159.133.233:443"
+        },
+        {
+          "elapsedMs": 219,
+          "host": "cdn.discordapp.com",
+          "metadata": {
+            "applicationOk": true,
+            "authenticatedTls": true,
+            "handshakeBytes": 1883,
+            "hybridKeyBytes": 1216,
+            "kind": "large_late_sni",
+            "sniOffset": 1451
+          },
+          "observation": {
+            "bytes": 1268,
+            "status": 200
+          },
+          "remote": "162.159.133.233:443"
+        }
+      ],
+      "profile": "research_discord_tls_hostfake_md5"
+    }
+  ],
+  "md5LargeRepeatTrials": [
+    {
+      "generation": 1790869840864265,
+      "probes": [
+        {
+          "elapsedMs": 192,
+          "host": "discord.com",
+          "metadata": {
+            "applicationOk": true,
+            "authenticatedTls": true,
+            "handshakeBytes": 1876,
+            "hybridKeyBytes": 1216,
+            "kind": "large_early_sni",
+            "sniOffset": 116
+          },
+          "observation": {
+            "bytes": 35,
+            "status": 200
+          },
+          "remote": "162.159.137.232:443"
+        },
+        {
+          "elapsedMs": 244,
+          "host": "discord.com",
+          "metadata": {
+            "applicationOk": true,
+            "authenticatedTls": true,
+            "handshakeBytes": 1876,
+            "hybridKeyBytes": 1216,
+            "kind": "large_late_sni",
+            "sniOffset": 1425
+          },
+          "observation": {
+            "bytes": 35,
+            "status": 200
+          },
+          "remote": "162.159.137.232:443"
+        },
+        {
+          "elapsedMs": 203,
+          "host": "cdn.discordapp.com",
+          "metadata": {
+            "applicationOk": true,
+            "authenticatedTls": true,
+            "handshakeBytes": 1883,
+            "hybridKeyBytes": 1216,
+            "kind": "large_early_sni",
+            "sniOffset": 180
+          },
+          "observation": {
+            "bytes": 1268,
+            "status": 200
+          },
+          "remote": "162.159.133.233:443"
+        },
+        {
+          "elapsedMs": 233,
+          "host": "cdn.discordapp.com",
+          "metadata": {
+            "applicationOk": true,
+            "authenticatedTls": true,
+            "handshakeBytes": 1883,
+            "hybridKeyBytes": 1216,
+            "kind": "large_late_sni",
+            "sniOffset": 1377
+          },
+          "observation": {
+            "bytes": 1268,
+            "status": 200
+          },
+          "remote": "162.159.133.233:443"
+        }
+      ],
+      "profile": "research_discord_tls_hostfake_md5"
+    },
+    {
+      "actualClient": {
+        "analysisSaved": true,
+        "categoryCombination": [
+          "discord",
+          "youtube_twitch"
+        ],
+        "clientEvents": [
+          {
+            "event": "READY",
+            "localTime": "23:42:05.972",
+            "observedAfterMs": 3015
+          },
+          {
+            "event": "READY_SUPPLEMENTAL",
+            "localTime": "23:42:05.974",
+            "observedAfterMs": 3015
+          }
+        ],
+        "elapsedMs": 3078,
+        "limitSeconds": 45,
+        "netlogExists": true,
+        "ownedRootPid": 20968,
+        "profile": "research_discord_tls_hostfake_md5",
+        "readyObserved": true,
+        "rootExited": true,
+        "session": "hostfake-md5-20261004T194203Z",
+        "termination": "only_owned_root_after_trial",
+        "visualRenderingVerified": false
+      }
+    },
+    {
+      "generation": 1790869840864266,
+      "probes": [
+        {
+          "elapsedMs": 186,
+          "host": "discord.com",
+          "metadata": {
+            "applicationOk": true,
+            "authenticatedTls": true,
+            "handshakeBytes": 1876,
+            "hybridKeyBytes": 1216,
+            "kind": "large_early_sni",
+            "sniOffset": 130
+          },
+          "observation": {
+            "bytes": 35,
+            "status": 200
+          },
+          "remote": "162.159.137.232:443"
+        },
+        {
+          "elapsedMs": 237,
+          "host": "discord.com",
+          "metadata": {
+            "applicationOk": true,
+            "authenticatedTls": true,
+            "handshakeBytes": 1876,
+            "hybridKeyBytes": 1216,
+            "kind": "large_late_sni",
+            "sniOffset": 1439
+          },
+          "observation": {
+            "bytes": 35,
+            "status": 200
+          },
+          "remote": "162.159.137.232:443"
+        },
+        {
+          "elapsedMs": 215,
+          "host": "cdn.discordapp.com",
+          "metadata": {
+            "applicationOk": true,
+            "authenticatedTls": true,
+            "handshakeBytes": 1883,
+            "hybridKeyBytes": 1216,
+            "kind": "large_early_sni",
+            "sniOffset": 162
+          },
+          "observation": {
+            "bytes": 1268,
+            "status": 200
+          },
+          "remote": "162.159.133.233:443"
+        },
+        {
+          "elapsedMs": 225,
+          "host": "cdn.discordapp.com",
+          "metadata": {
+            "applicationOk": true,
+            "authenticatedTls": true,
+            "handshakeBytes": 1883,
+            "hybridKeyBytes": 1216,
+            "kind": "large_late_sni",
+            "sniOffset": 1425
+          },
+          "observation": {
+            "bytes": 1268,
+            "status": 200
+          },
+          "remote": "162.159.133.233:443"
+        }
+      ],
+      "profile": "research_discord_tls_hostfake_md5"
+    },
+    {
+      "generation": 1790869840864267,
+      "probes": [
+        {
+          "elapsedMs": 253,
+          "host": "discord.com",
+          "metadata": {
+            "applicationOk": true,
+            "authenticatedTls": true,
+            "handshakeBytes": 1876,
+            "hybridKeyBytes": 1216,
+            "kind": "large_early_sni",
+            "sniOffset": 104
+          },
+          "observation": {
+            "bytes": 35,
+            "status": 200
+          },
+          "remote": "162.159.137.232:443"
+        },
+        {
+          "elapsedMs": 192,
+          "host": "discord.com",
+          "metadata": {
+            "applicationOk": true,
+            "authenticatedTls": true,
+            "handshakeBytes": 1876,
+            "hybridKeyBytes": 1216,
+            "kind": "large_late_sni",
+            "sniOffset": 1399
+          },
+          "observation": {
+            "bytes": 35,
+            "status": 200
+          },
+          "remote": "162.159.137.232:443"
+        },
+        {
+          "elapsedMs": 214,
+          "host": "cdn.discordapp.com",
+          "metadata": {
+            "applicationOk": true,
+            "authenticatedTls": true,
+            "handshakeBytes": 1883,
+            "hybridKeyBytes": 1216,
+            "kind": "large_early_sni",
+            "sniOffset": 164
+          },
+          "observation": {
+            "bytes": 1268,
+            "status": 200
+          },
+          "remote": "162.159.133.233:443"
+        },
+        {
+          "elapsedMs": 224,
+          "host": "cdn.discordapp.com",
+          "metadata": {
+            "applicationOk": true,
+            "authenticatedTls": true,
+            "handshakeBytes": 1883,
+            "hybridKeyBytes": 1216,
+            "kind": "large_late_sni",
+            "sniOffset": 1411
+          },
+          "observation": {
+            "bytes": 1268,
+            "status": 200
+          },
+          "remote": "162.159.133.233:443"
+        }
+      ],
+      "profile": "research_discord_tls_hostfake_md5"
+    }
+  ],
+  "md5DirectRepeatTrials": [
+    {
+      "generation": 1790869840864273,
+      "probes": [
+        {
+          "elapsedMs": 187,
+          "host": "discord.com",
+          "metadata": {
+            "applicationOk": true,
+            "authenticatedTls": true,
+            "handshakeBytes": 1876,
+            "hybridKeyBytes": 1216,
+            "kind": "large_early_sni",
+            "sniOffset": 145
+          },
+          "observation": {
+            "bytes": 35,
+            "status": 200
+          },
+          "remote": "162.159.137.232:443"
+        },
+        {
+          "elapsedMs": 236,
+          "host": "discord.com",
+          "metadata": {
+            "applicationOk": true,
+            "authenticatedTls": true,
+            "handshakeBytes": 1876,
+            "hybridKeyBytes": 1216,
+            "kind": "large_late_sni",
+            "sniOffset": 1451
+          },
+          "observation": {
+            "bytes": 35,
+            "status": 200
+          },
+          "remote": "162.159.137.232:443"
+        },
+        {
+          "elapsedMs": 205,
+          "host": "cdn.discordapp.com",
+          "metadata": {
+            "applicationOk": true,
+            "authenticatedTls": true,
+            "handshakeBytes": 1883,
+            "hybridKeyBytes": 1216,
+            "kind": "large_early_sni",
+            "sniOffset": 104
+          },
+          "observation": {
+            "bytes": 1268,
+            "status": 200
+          },
+          "remote": "162.159.133.233:443"
+        },
+        {
+          "elapsedMs": 220,
+          "host": "cdn.discordapp.com",
+          "metadata": {
+            "applicationOk": true,
+            "authenticatedTls": true,
+            "handshakeBytes": 1883,
+            "hybridKeyBytes": 1216,
+            "kind": "large_late_sni",
+            "sniOffset": 1402
+          },
+          "observation": {
+            "bytes": 1268,
+            "status": 200
+          },
+          "remote": "162.159.133.233:443"
+        }
+      ],
+      "profile": "research_discord_tls_hostfake_md5"
+    },
+    {
+      "actualClient": {
+        "analysisSaved": true,
+        "categoryCombination": [
+          "discord",
+          "youtube_twitch"
+        ],
+        "clientEvents": [
+          {
+            "event": "READY",
+            "localTime": "00:05:25.378",
+            "observedAfterMs": 4046
+          },
+          {
+            "event": "READY_SUPPLEMENTAL",
+            "localTime": "00:05:25.802",
+            "observedAfterMs": 4546
+          }
+        ],
+        "elapsedMs": 4625,
+        "limitSeconds": 45,
+        "netlogExists": true,
+        "noProxyServerRequested": true,
+        "ownedRootPid": 26116,
+        "profile": "research_discord_tls_hostfake_md5",
+        "readyObserved": true,
+        "rootExited": true,
+        "session": "hostfake-md5-20261004T200521Z",
+        "termination": "only_owned_root_after_trial",
+        "visualRenderingVerified": false
+      }
+    },
+    {
+      "generation": 1790869840864274,
+      "probes": [
+        {
+          "elapsedMs": 248,
+          "host": "discord.com",
+          "metadata": {
+            "applicationOk": true,
+            "authenticatedTls": true,
+            "handshakeBytes": 1876,
+            "hybridKeyBytes": 1216,
+            "kind": "large_early_sni",
+            "sniOffset": 116
+          },
+          "observation": {
+            "bytes": 35,
+            "status": 200
+          },
+          "remote": "162.159.137.232:443"
+        },
+        {
+          "elapsedMs": 185,
+          "host": "discord.com",
+          "metadata": {
+            "applicationOk": true,
+            "authenticatedTls": true,
+            "handshakeBytes": 1876,
+            "hybridKeyBytes": 1216,
+            "kind": "large_late_sni",
+            "sniOffset": 1417
+          },
+          "observation": {
+            "bytes": 35,
+            "status": 200
+          },
+          "remote": "162.159.137.232:443"
+        },
+        {
+          "elapsedMs": 199,
+          "host": "cdn.discordapp.com",
+          "metadata": {
+            "applicationOk": true,
+            "authenticatedTls": true,
+            "handshakeBytes": 1883,
+            "hybridKeyBytes": 1216,
+            "kind": "large_early_sni",
+            "sniOffset": 171
+          },
+          "observation": {
+            "bytes": 1268,
+            "status": 200
+          },
+          "remote": "162.159.133.233:443"
+        },
+        {
+          "elapsedMs": 214,
+          "host": "cdn.discordapp.com",
+          "metadata": {
+            "applicationOk": true,
+            "authenticatedTls": true,
+            "handshakeBytes": 1883,
+            "hybridKeyBytes": 1216,
+            "kind": "large_late_sni",
+            "sniOffset": 1451
+          },
+          "observation": {
+            "bytes": 1268,
+            "status": 200
+          },
+          "remote": "162.159.133.233:443"
+        }
+      ],
+      "profile": "research_discord_tls_hostfake_md5"
+    },
+    {
+      "generation": 1790869840864275,
+      "probes": [
+        {
+          "elapsedMs": 192,
+          "host": "discord.com",
+          "metadata": {
+            "applicationOk": true,
+            "authenticatedTls": true,
+            "handshakeBytes": 1876,
+            "hybridKeyBytes": 1216,
+            "kind": "large_early_sni",
+            "sniOffset": 104
+          },
+          "observation": {
+            "bytes": 35,
+            "status": 200
+          },
+          "remote": "162.159.137.232:443"
+        },
+        {
+          "elapsedMs": 247,
+          "host": "discord.com",
+          "metadata": {
+            "applicationOk": true,
+            "authenticatedTls": true,
+            "handshakeBytes": 1876,
+            "hybridKeyBytes": 1216,
+            "kind": "large_late_sni",
+            "sniOffset": 1382
+          },
+          "observation": {
+            "bytes": 35,
+            "status": 200
+          },
+          "remote": "162.159.137.232:443"
+        },
+        {
+          "elapsedMs": 200,
+          "host": "cdn.discordapp.com",
+          "metadata": {
+            "applicationOk": true,
+            "authenticatedTls": true,
+            "handshakeBytes": 1883,
+            "hybridKeyBytes": 1216,
+            "kind": "large_early_sni",
+            "sniOffset": 104
+          },
+          "observation": {
+            "bytes": 1268,
+            "status": 200
+          },
+          "remote": "162.159.133.233:443"
+        },
+        {
+          "elapsedMs": 219,
+          "host": "cdn.discordapp.com",
+          "metadata": {
+            "applicationOk": true,
+            "authenticatedTls": true,
+            "handshakeBytes": 1883,
+            "hybridKeyBytes": 1216,
+            "kind": "large_late_sni",
+            "sniOffset": 1427
+          },
+          "observation": {
+            "bytes": 1268,
+            "status": 200
+          },
+          "remote": "162.159.133.233:443"
+        }
+      ],
+      "profile": "research_discord_tls_hostfake_md5"
+    }
+  ],
+  "v4FunctionTrials": [
+    {
+      "category": "discord",
+      "elapsedMs": 3015,
+      "functions": [
+        {
+          "bytes": 0,
+          "elapsedMs": 3015,
+          "function": "api_large_tls",
+          "httpStatus": null,
+          "ipFamily": "ipv4",
+          "label": "API · большой TLS, две формы SNI",
+          "outcome": "inconclusive",
+          "proof": "none",
+          "reason": "Проба не завершилась в пределах срока раунда; сохранён последний наблюдаемый этап.",
+          "remoteAddress": "162.159.128.233:443",
+          "required": true,
+          "stage": "tls_large_early_sni",
+          "target": "https://discord.com/api/v10/gateway",
+          "tlsHandshakes": [
+            {
+              "applicationOk": false,
+              "authenticatedTls": false,
+              "handshakeBytes": 1876,
+              "hybridKeyBytes": 1216,
+              "kind": "large_early_sni",
+              "sniOffset": 129
+            }
+          ],
+          "transferBytes": 0,
+          "transferMs": null
+        },
+        {
+          "bytes": 0,
+          "elapsedMs": 3014,
+          "function": "cdn_large_tls",
+          "httpStatus": null,
+          "ipFamily": "ipv4",
+          "label": "CDN · большой TLS, две формы SNI",
+          "outcome": "inconclusive",
+          "proof": "none",
+          "reason": "Проба не завершилась в пределах срока раунда; сохранён последний наблюдаемый этап.",
+          "remoteAddress": "162.159.129.233:443",
+          "required": true,
+          "stage": "tls_large_early_sni",
+          "target": "https://cdn.discordapp.com/embed/avatars/0.png",
+          "tlsHandshakes": [
+            {
+              "applicationOk": false,
+              "authenticatedTls": false,
+              "handshakeBytes": 1883,
+              "hybridKeyBytes": 1216,
+              "kind": "large_early_sni",
+              "sniOffset": 183
+            }
+          ],
+          "transferBytes": 0,
+          "transferMs": null
+        },
+        {
+          "bytes": 35,
+          "elapsedMs": 560,
+          "function": "api",
+          "httpStatus": 200,
+          "ipFamily": "ipv4",
+          "label": "REST API",
+          "outcome": "passed",
+          "proof": "http_document",
+          "reason": null,
+          "remoteAddress": "162.159.128.233:443",
+          "required": true,
+          "stage": "complete",
+          "target": "https://discord.com/api/v10/gateway",
+          "transferBytes": 0,
+          "transferMs": null
+        },
+        {
+          "bytes": 128,
+          "elapsedMs": 723,
+          "function": "gateway",
+          "httpStatus": 101,
+          "ipFamily": "ipv4",
+          "label": "Gateway WSS Hello",
+          "outcome": "passed",
+          "proof": "gateway_hello",
+          "reason": null,
+          "remoteAddress": "162.159.130.234:443",
+          "required": true,
+          "stage": "complete",
+          "target": "wss://gateway.discord.gg/?v=10&encoding=json",
+          "transferBytes": 0,
+          "transferMs": null
+        },
+        {
+          "bytes": 1268,
+          "elapsedMs": 518,
+          "function": "cdn",
+          "httpStatus": 200,
+          "ipFamily": "ipv4",
+          "label": "Картинка CDN",
+          "outcome": "passed",
+          "proof": "http_document",
+          "reason": null,
+          "remoteAddress": "162.159.129.233:443",
+          "required": true,
+          "stage": "complete",
+          "target": "https://cdn.discordapp.com/embed/avatars/0.png",
+          "transferBytes": 0,
+          "transferMs": null
+        },
+        {
+          "bytes": 594976,
+          "elapsedMs": 1221,
+          "function": "client_assets",
+          "httpStatus": 206,
+          "ipFamily": "ipv4",
+          "label": "Загрузка файлов Discord",
+          "outcome": "passed",
+          "proof": "http_transfer",
+          "reason": null,
+          "remoteAddress": "162.159.128.233:443",
+          "required": true,
+          "stage": "complete",
+          "target": "https://discord.com/assets/web.24a0dd4254453b09.js",
+          "transferBytes": 524288,
+          "transferMs": 652
+        },
+        {
+          "bytes": 10734,
+          "elapsedMs": 498,
+          "function": "updater",
+          "httpStatus": 200,
+          "ipFamily": "ipv4",
+          "label": "Манифест обновления",
+          "outcome": "passed",
+          "proof": "http_document",
+          "reason": null,
+          "remoteAddress": "162.159.128.233:443",
+          "required": false,
+          "stage": "complete",
+          "target": "https://updates.discord.com/distributions/app/manifests/latest?channel=stable&platform=win&arch=x64",
+          "transferBytes": 0,
+          "transferMs": null
+        },
+        {
+          "bytes": 32768,
+          "elapsedMs": 453,
+          "function": "site",
+          "httpStatus": 200,
+          "ipFamily": "ipv4",
+          "label": "Веб-страница",
+          "outcome": "passed",
+          "proof": "http_document",
+          "reason": null,
+          "remoteAddress": "162.159.128.233:443",
+          "required": false,
+          "stage": "complete",
+          "target": "https://discord.com/",
+          "transferBytes": 0,
+          "transferMs": null
+        }
+      ],
+      "generation": 1790869840864268,
+      "profile": "research_discord_tls_window_disorder"
+    },
+    {
+      "category": "discord",
+      "elapsedMs": 3011,
+      "functions": [
+        {
+          "bytes": 0,
+          "elapsedMs": 3011,
+          "function": "api_large_tls",
+          "httpStatus": null,
+          "ipFamily": "ipv4",
+          "label": "API · большой TLS, две формы SNI",
+          "outcome": "inconclusive",
+          "proof": "none",
+          "reason": "Проба не завершилась в пределах срока раунда; сохранён последний наблюдаемый этап.",
+          "remoteAddress": "162.159.128.233:443",
+          "required": true,
+          "stage": "tls_large_early_sni",
+          "target": "https://discord.com/api/v10/gateway",
+          "tlsHandshakes": [
+            {
+              "applicationOk": false,
+              "authenticatedTls": false,
+              "handshakeBytes": 1876,
+              "hybridKeyBytes": 1216,
+              "kind": "large_early_sni",
+              "sniOffset": 125
+            }
+          ],
+          "transferBytes": 0,
+          "transferMs": null
+        },
+        {
+          "bytes": 0,
+          "elapsedMs": 3011,
+          "function": "cdn_large_tls",
+          "httpStatus": null,
+          "ipFamily": "ipv4",
+          "label": "CDN · большой TLS, две формы SNI",
+          "outcome": "inconclusive",
+          "proof": "none",
+          "reason": "Проба не завершилась в пределах срока раунда; сохранён последний наблюдаемый этап.",
+          "remoteAddress": "162.159.129.233:443",
+          "required": true,
+          "stage": "tls_large_early_sni",
+          "target": "https://cdn.discordapp.com/embed/avatars/0.png",
+          "tlsHandshakes": [
+            {
+              "applicationOk": false,
+              "authenticatedTls": false,
+              "handshakeBytes": 1883,
+              "hybridKeyBytes": 1216,
+              "kind": "large_early_sni",
+              "sniOffset": 126
+            }
+          ],
+          "transferBytes": 0,
+          "transferMs": null
+        },
+        {
+          "bytes": 35,
+          "elapsedMs": 225,
+          "function": "api",
+          "httpStatus": 200,
+          "ipFamily": "ipv4",
+          "label": "REST API",
+          "outcome": "passed",
+          "proof": "http_document",
+          "reason": null,
+          "remoteAddress": "162.159.128.233:443",
+          "required": true,
+          "stage": "complete",
+          "target": "https://discord.com/api/v10/gateway",
+          "transferBytes": 0,
+          "transferMs": null
+        },
+        {
+          "bytes": 128,
+          "elapsedMs": 397,
+          "function": "gateway",
+          "httpStatus": 101,
+          "ipFamily": "ipv4",
+          "label": "Gateway WSS Hello",
+          "outcome": "passed",
+          "proof": "gateway_hello",
+          "reason": null,
+          "remoteAddress": "162.159.130.234:443",
+          "required": true,
+          "stage": "complete",
+          "target": "wss://gateway.discord.gg/?v=10&encoding=json",
+          "transferBytes": 0,
+          "transferMs": null
+        },
+        {
+          "bytes": 1268,
+          "elapsedMs": 222,
+          "function": "cdn",
+          "httpStatus": 200,
+          "ipFamily": "ipv4",
+          "label": "Картинка CDN",
+          "outcome": "passed",
+          "proof": "http_document",
+          "reason": null,
+          "remoteAddress": "162.159.129.233:443",
+          "required": true,
+          "stage": "complete",
+          "target": "https://cdn.discordapp.com/embed/avatars/0.png",
+          "transferBytes": 0,
+          "transferMs": null
+        },
+        {
+          "bytes": 594948,
+          "elapsedMs": 574,
+          "function": "client_assets",
+          "httpStatus": 206,
+          "ipFamily": "ipv4",
+          "label": "Загрузка файлов Discord",
+          "outcome": "passed",
+          "proof": "http_transfer",
+          "reason": null,
+          "remoteAddress": "162.159.128.233:443",
+          "required": true,
+          "stage": "complete",
+          "target": "https://discord.com/assets/web.24a0dd4254453b09.js",
+          "transferBytes": 524288,
+          "transferMs": 312
+        },
+        {
+          "bytes": 10734,
+          "elapsedMs": 219,
+          "function": "updater",
+          "httpStatus": 200,
+          "ipFamily": "ipv4",
+          "label": "Манифест обновления",
+          "outcome": "passed",
+          "proof": "http_document",
+          "reason": null,
+          "remoteAddress": "162.159.128.233:443",
+          "required": false,
+          "stage": "complete",
+          "target": "https://updates.discord.com/distributions/app/manifests/latest?channel=stable&platform=win&arch=x64",
+          "transferBytes": 0,
+          "transferMs": null
+        },
+        {
+          "bytes": 32768,
+          "elapsedMs": 245,
+          "function": "site",
+          "httpStatus": 200,
+          "ipFamily": "ipv4",
+          "label": "Веб-страница",
+          "outcome": "passed",
+          "proof": "http_document",
+          "reason": null,
+          "remoteAddress": "162.159.128.233:443",
+          "required": false,
+          "stage": "complete",
+          "target": "https://discord.com/",
+          "transferBytes": 0,
+          "transferMs": null
+        }
+      ],
+      "generation": 1790869840864269,
+      "profile": "discord_tls_multidisorder_alt"
+    },
+    {
+      "category": "discord",
+      "elapsedMs": 966,
+      "functions": [
+        {
+          "bytes": 70,
+          "elapsedMs": 421,
+          "function": "api_large_tls",
+          "httpStatus": 200,
+          "ipFamily": "ipv4",
+          "label": "API · большой TLS, две формы SNI",
+          "outcome": "passed",
+          "proof": "large_tls_application",
+          "reason": null,
+          "remoteAddress": "162.159.128.233:443",
+          "required": true,
+          "stage": "complete",
+          "target": "https://discord.com/api/v10/gateway",
+          "tlsHandshakes": [
+            {
+              "applicationOk": true,
+              "authenticatedTls": true,
+              "handshakeBytes": 1876,
+              "hybridKeyBytes": 1216,
+              "kind": "large_early_sni",
+              "sniOffset": 168
+            },
+            {
+              "applicationOk": true,
+              "authenticatedTls": true,
+              "handshakeBytes": 1876,
+              "hybridKeyBytes": 1216,
+              "kind": "large_late_sni",
+              "sniOffset": 1445
+            }
+          ],
+          "transferBytes": 0,
+          "transferMs": null
+        },
+        {
+          "bytes": 2536,
+          "elapsedMs": 407,
+          "function": "cdn_large_tls",
+          "httpStatus": 200,
+          "ipFamily": "ipv4",
+          "label": "CDN · большой TLS, две формы SNI",
+          "outcome": "passed",
+          "proof": "large_tls_application",
+          "reason": null,
+          "remoteAddress": "162.159.129.233:443",
+          "required": true,
+          "stage": "complete",
+          "target": "https://cdn.discordapp.com/embed/avatars/0.png",
+          "tlsHandshakes": [
+            {
+              "applicationOk": true,
+              "authenticatedTls": true,
+              "handshakeBytes": 1883,
+              "hybridKeyBytes": 1216,
+              "kind": "large_early_sni",
+              "sniOffset": 133
+            },
+            {
+              "applicationOk": true,
+              "authenticatedTls": true,
+              "handshakeBytes": 1883,
+              "hybridKeyBytes": 1216,
+              "kind": "large_late_sni",
+              "sniOffset": 1398
+            }
+          ],
+          "transferBytes": 0,
+          "transferMs": null
+        },
+        {
+          "bytes": 35,
+          "elapsedMs": 238,
+          "function": "api",
+          "httpStatus": 200,
+          "ipFamily": "ipv4",
+          "label": "REST API",
+          "outcome": "passed",
+          "proof": "http_document",
+          "reason": null,
+          "remoteAddress": "162.159.128.233:443",
+          "required": true,
+          "stage": "complete",
+          "target": "https://discord.com/api/v10/gateway",
+          "transferBytes": 0,
+          "transferMs": null
+        },
+        {
+          "bytes": 128,
+          "elapsedMs": 388,
+          "function": "gateway",
+          "httpStatus": 101,
+          "ipFamily": "ipv4",
+          "label": "Gateway WSS Hello",
+          "outcome": "passed",
+          "proof": "gateway_hello",
+          "reason": null,
+          "remoteAddress": "162.159.130.234:443",
+          "required": true,
+          "stage": "complete",
+          "target": "wss://gateway.discord.gg/?v=10&encoding=json",
+          "transferBytes": 0,
+          "transferMs": null
+        },
+        {
+          "bytes": 1268,
+          "elapsedMs": 253,
+          "function": "cdn",
+          "httpStatus": 200,
+          "ipFamily": "ipv4",
+          "label": "Картинка CDN",
+          "outcome": "passed",
+          "proof": "http_document",
+          "reason": null,
+          "remoteAddress": "162.159.129.233:443",
+          "required": true,
+          "stage": "complete",
+          "target": "https://cdn.discordapp.com/embed/avatars/0.png",
+          "transferBytes": 0,
+          "transferMs": null
+        },
+        {
+          "bytes": 594976,
+          "elapsedMs": 577,
+          "function": "client_assets",
+          "httpStatus": 206,
+          "ipFamily": "ipv4",
+          "label": "Загрузка файлов Discord",
+          "outcome": "passed",
+          "proof": "http_transfer",
+          "reason": null,
+          "remoteAddress": "162.159.128.233:443",
+          "required": true,
+          "stage": "complete",
+          "target": "https://discord.com/assets/web.24a0dd4254453b09.js",
+          "transferBytes": 524288,
+          "transferMs": 304
+        },
+        {
+          "bytes": 10734,
+          "elapsedMs": 218,
+          "function": "updater",
+          "httpStatus": 200,
+          "ipFamily": "ipv4",
+          "label": "Манифест обновления",
+          "outcome": "passed",
+          "proof": "http_document",
+          "reason": null,
+          "remoteAddress": "162.159.128.233:443",
+          "required": false,
+          "stage": "complete",
+          "target": "https://updates.discord.com/distributions/app/manifests/latest?channel=stable&platform=win&arch=x64",
+          "transferBytes": 0,
+          "transferMs": null
+        },
+        {
+          "bytes": 32768,
+          "elapsedMs": 237,
+          "function": "site",
+          "httpStatus": 200,
+          "ipFamily": "ipv4",
+          "label": "Веб-страница",
+          "outcome": "passed",
+          "proof": "http_document",
+          "reason": null,
+          "remoteAddress": "162.159.128.233:443",
+          "required": false,
+          "stage": "complete",
+          "target": "https://discord.com/",
+          "transferBytes": 0,
+          "transferMs": null
+        }
+      ],
+      "generation": 1790869840864270,
+      "profile": "research_discord_tls_hostfake_md5"
+    },
+    {
+      "category": "discord",
+      "elapsedMs": 965,
+      "functions": [
+        {
+          "bytes": 70,
+          "elapsedMs": 365,
+          "function": "api_large_tls",
+          "httpStatus": 200,
+          "ipFamily": "ipv4",
+          "label": "API · большой TLS, две формы SNI",
+          "outcome": "passed",
+          "proof": "large_tls_application",
+          "reason": null,
+          "remoteAddress": "162.159.128.233:443",
+          "required": true,
+          "stage": "complete",
+          "target": "https://discord.com/api/v10/gateway",
+          "tlsHandshakes": [
+            {
+              "applicationOk": true,
+              "authenticatedTls": true,
+              "handshakeBytes": 1876,
+              "hybridKeyBytes": 1216,
+              "kind": "large_early_sni",
+              "sniOffset": 142
+            },
+            {
+              "applicationOk": true,
+              "authenticatedTls": true,
+              "handshakeBytes": 1876,
+              "hybridKeyBytes": 1216,
+              "kind": "large_late_sni",
+              "sniOffset": 1415
+            }
+          ],
+          "transferBytes": 0,
+          "transferMs": null
+        },
+        {
+          "bytes": 2536,
+          "elapsedMs": 390,
+          "function": "cdn_large_tls",
+          "httpStatus": 200,
+          "ipFamily": "ipv4",
+          "label": "CDN · большой TLS, две формы SNI",
+          "outcome": "passed",
+          "proof": "large_tls_application",
+          "reason": null,
+          "remoteAddress": "162.159.129.233:443",
+          "required": true,
+          "stage": "complete",
+          "target": "https://cdn.discordapp.com/embed/avatars/0.png",
+          "tlsHandshakes": [
+            {
+              "applicationOk": true,
+              "authenticatedTls": true,
+              "handshakeBytes": 1883,
+              "hybridKeyBytes": 1216,
+              "kind": "large_early_sni",
+              "sniOffset": 182
+            },
+            {
+              "applicationOk": true,
+              "authenticatedTls": true,
+              "handshakeBytes": 1883,
+              "hybridKeyBytes": 1216,
+              "kind": "large_late_sni",
+              "sniOffset": 1408
+            }
+          ],
+          "transferBytes": 0,
+          "transferMs": null
+        },
+        {
+          "bytes": 35,
+          "elapsedMs": 244,
+          "function": "api",
+          "httpStatus": 200,
+          "ipFamily": "ipv4",
+          "label": "REST API",
+          "outcome": "passed",
+          "proof": "http_document",
+          "reason": null,
+          "remoteAddress": "162.159.128.233:443",
+          "required": true,
+          "stage": "complete",
+          "target": "https://discord.com/api/v10/gateway",
+          "transferBytes": 0,
+          "transferMs": null
+        },
+        {
+          "bytes": 128,
+          "elapsedMs": 427,
+          "function": "gateway",
+          "httpStatus": 101,
+          "ipFamily": "ipv4",
+          "label": "Gateway WSS Hello",
+          "outcome": "passed",
+          "proof": "gateway_hello",
+          "reason": null,
+          "remoteAddress": "162.159.130.234:443",
+          "required": true,
+          "stage": "complete",
+          "target": "wss://gateway.discord.gg/?v=10&encoding=json",
+          "transferBytes": 0,
+          "transferMs": null
+        },
+        {
+          "bytes": 1268,
+          "elapsedMs": 221,
+          "function": "cdn",
+          "httpStatus": 200,
+          "ipFamily": "ipv4",
+          "label": "Картинка CDN",
+          "outcome": "passed",
+          "proof": "http_document",
+          "reason": null,
+          "remoteAddress": "162.159.129.233:443",
+          "required": true,
+          "stage": "complete",
+          "target": "https://cdn.discordapp.com/embed/avatars/0.png",
+          "transferBytes": 0,
+          "transferMs": null
+        },
+        {
+          "bytes": 594948,
+          "elapsedMs": 599,
+          "function": "client_assets",
+          "httpStatus": 206,
+          "ipFamily": "ipv4",
+          "label": "Загрузка файлов Discord",
+          "outcome": "passed",
+          "proof": "http_transfer",
+          "reason": null,
+          "remoteAddress": "162.159.128.233:443",
+          "required": true,
+          "stage": "complete",
+          "target": "https://discord.com/assets/web.24a0dd4254453b09.js",
+          "transferBytes": 524288,
+          "transferMs": 318
+        },
+        {
+          "bytes": 10734,
+          "elapsedMs": 219,
+          "function": "updater",
+          "httpStatus": 200,
+          "ipFamily": "ipv4",
+          "label": "Манифест обновления",
+          "outcome": "passed",
+          "proof": "http_document",
+          "reason": null,
+          "remoteAddress": "162.159.128.233:443",
+          "required": false,
+          "stage": "complete",
+          "target": "https://updates.discord.com/distributions/app/manifests/latest?channel=stable&platform=win&arch=x64",
+          "transferBytes": 0,
+          "transferMs": null
+        },
+        {
+          "bytes": 0,
+          "elapsedMs": 537,
+          "function": "site",
+          "httpStatus": null,
+          "ipFamily": "ipv4",
+          "label": "Веб-страница",
+          "outcome": "inconclusive",
+          "proof": "none",
+          "reason": "Обязательные пробы завершены; ожидание вспомогательной пробы прекращено.",
+          "remoteAddress": "162.159.128.233:443",
+          "required": false,
+          "stage": "transport",
+          "target": "https://discord.com/",
+          "transferBytes": 0,
+          "transferMs": null
+        }
+      ],
+      "generation": 1790869840864271,
+      "profile": "research_discord_tls_hostfake_md5"
+    },
+    {
+      "category": "discord",
+      "elapsedMs": 2305,
+      "functions": [
+        {
+          "bytes": 70,
+          "elapsedMs": 382,
+          "function": "api_large_tls",
+          "httpStatus": 200,
+          "ipFamily": "ipv4",
+          "label": "API · большой TLS, две формы SNI",
+          "outcome": "passed",
+          "proof": "large_tls_application",
+          "reason": null,
+          "remoteAddress": "162.159.128.233:443",
+          "required": true,
+          "stage": "complete",
+          "target": "https://discord.com/api/v10/gateway",
+          "tlsHandshakes": [
+            {
+              "applicationOk": true,
+              "authenticatedTls": true,
+              "handshakeBytes": 1876,
+              "hybridKeyBytes": 1216,
+              "kind": "large_early_sni",
+              "sniOffset": 135
+            },
+            {
+              "applicationOk": true,
+              "authenticatedTls": true,
+              "handshakeBytes": 1876,
+              "hybridKeyBytes": 1216,
+              "kind": "large_late_sni",
+              "sniOffset": 1425
+            }
+          ],
+          "transferBytes": 0,
+          "transferMs": null
+        },
+        {
+          "bytes": 2536,
+          "elapsedMs": 363,
+          "function": "cdn_large_tls",
+          "httpStatus": 200,
+          "ipFamily": "ipv4",
+          "label": "CDN · большой TLS, две формы SNI",
+          "outcome": "passed",
+          "proof": "large_tls_application",
+          "reason": null,
+          "remoteAddress": "162.159.129.233:443",
+          "required": true,
+          "stage": "complete",
+          "target": "https://cdn.discordapp.com/embed/avatars/0.png",
+          "tlsHandshakes": [
+            {
+              "applicationOk": true,
+              "authenticatedTls": true,
+              "handshakeBytes": 1883,
+              "hybridKeyBytes": 1216,
+              "kind": "large_early_sni",
+              "sniOffset": 132
+            },
+            {
+              "applicationOk": true,
+              "authenticatedTls": true,
+              "handshakeBytes": 1883,
+              "hybridKeyBytes": 1216,
+              "kind": "large_late_sni",
+              "sniOffset": 1451
+            }
+          ],
+          "transferBytes": 0,
+          "transferMs": null
+        },
+        {
+          "bytes": 35,
+          "elapsedMs": 226,
+          "function": "api",
+          "httpStatus": 200,
+          "ipFamily": "ipv4",
+          "label": "REST API",
+          "outcome": "passed",
+          "proof": "http_document",
+          "reason": null,
+          "remoteAddress": "162.159.128.233:443",
+          "required": true,
+          "stage": "complete",
+          "target": "https://discord.com/api/v10/gateway",
+          "transferBytes": 0,
+          "transferMs": null
+        },
+        {
+          "bytes": 128,
+          "elapsedMs": 401,
+          "function": "gateway",
+          "httpStatus": 101,
+          "ipFamily": "ipv4",
+          "label": "Gateway WSS Hello",
+          "outcome": "passed",
+          "proof": "gateway_hello",
+          "reason": null,
+          "remoteAddress": "162.159.130.234:443",
+          "required": true,
+          "stage": "complete",
+          "target": "wss://gateway.discord.gg/?v=10&encoding=json",
+          "transferBytes": 0,
+          "transferMs": null
+        },
+        {
+          "bytes": 0,
+          "elapsedMs": 2078,
+          "function": "cdn",
+          "httpStatus": null,
+          "ipFamily": "ipv4",
+          "label": "Картинка CDN",
+          "outcome": "failed",
+          "proof": "none",
+          "reason": "HTTPS-поток не установлен: error sending request",
+          "remoteAddress": "162.159.129.233:443",
+          "required": true,
+          "stage": "transport",
+          "target": "https://cdn.discordapp.com/embed/avatars/0.png",
+          "transferBytes": 0,
+          "transferMs": null
+        },
+        {
+          "bytes": 594976,
+          "elapsedMs": 620,
+          "function": "client_assets",
+          "httpStatus": 206,
+          "ipFamily": "ipv4",
+          "label": "Загрузка файлов Discord",
+          "outcome": "passed",
+          "proof": "http_transfer",
+          "reason": null,
+          "remoteAddress": "162.159.128.233:443",
+          "required": true,
+          "stage": "complete",
+          "target": "https://discord.com/assets/web.24a0dd4254453b09.js",
+          "transferBytes": 524288,
+          "transferMs": 334
+        },
+        {
+          "bytes": 10734,
+          "elapsedMs": 216,
+          "function": "updater",
+          "httpStatus": 200,
+          "ipFamily": "ipv4",
+          "label": "Манифест обновления",
+          "outcome": "passed",
+          "proof": "http_document",
+          "reason": null,
+          "remoteAddress": "162.159.128.233:443",
+          "required": false,
+          "stage": "complete",
+          "target": "https://updates.discord.com/distributions/app/manifests/latest?channel=stable&platform=win&arch=x64",
+          "transferBytes": 0,
+          "transferMs": null
+        },
+        {
+          "bytes": 32768,
+          "elapsedMs": 230,
+          "function": "site",
+          "httpStatus": 200,
+          "ipFamily": "ipv4",
+          "label": "Веб-страница",
+          "outcome": "passed",
+          "proof": "http_document",
+          "reason": null,
+          "remoteAddress": "162.159.128.233:443",
+          "required": false,
+          "stage": "complete",
+          "target": "https://discord.com/",
+          "transferBytes": 0,
+          "transferMs": null
+        }
+      ],
+      "generation": 1790869840864272,
+      "profile": "research_discord_tls_hostfake_md5"
+    }
+  ],
+  "settingsChange": {
+    "changedAtUtc": "2026-10-04T19:45:17.916016+00:00",
+    "applicationWasClosed": true,
+    "beforeDiscordTls": [
+      {
+        "category": "discord",
+        "transport": "tls",
+        "profileId": "research_discord_tls_window_disorder"
+      }
+    ],
+    "afterDiscordTls": {
+      "category": "discord",
+      "transport": "tls",
+      "profileId": "research_discord_tls_hostfake_md5"
+    },
+    "otherSettingsUnchanged": true,
+    "beforeSha256": "e34d695b16b7d3443c8ec27b55ce7ecbb768b50559316042902234b51f06f24e",
+    "afterSha256": "6ec4fadbb779067a1badda519189e5fced9bb1a7594a56cd8fd905f604ff101c",
+    "backupGitIgnored": true
+  },
+  "directNativeReadyObserved": true,
+  "v4Md5CompleteRounds": 2,
+  "v4Md5PartialRounds": 1,
+  "partialReason": "One short Ring CDN request to 162.159.129.233 timed out; both large authenticated CDN layouts passed in that round. Do not claim all repetitions were clean.",
+  "videoPlaybackVerified": false,
+  "voiceVerified": false,
+  "fullUiTournamentVerified": false,
+  "universalOrOvernightStabilityVerified": false,
+  "standaloneDriverVariantAttempt": "Refused by OS: driver could not open without elevated token. No raw variant ran; cleanup checked. All successful DPI trials used the authenticated service."
+}

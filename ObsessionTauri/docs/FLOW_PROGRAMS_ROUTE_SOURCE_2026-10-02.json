@@ -1,0 +1,30 @@
+{
+  "date": "2026-10-02",
+  "change": "bounded_system_answers_v2",
+  "tested_app_passed": 912,
+  "tested_app_ignored": 3,
+  "network_success_confirmed": false,
+  "installed_automatically": false,
+  "system_dns_modified": false,
+  "max_addresses_per_authority": 8,
+  "pack_version": "0.9.1",
+  "source_report": "measurement-20261002T191501.429699600Z-25724-0.jsonl",
+  "source_report_sha256": "3b61a057e35bb4a220acd5449f0b80338fe045431dd3839bbefe53401f6aca95",
+  "source_report_completed_candidates": 12,
+  "source_report_confirmed_candidates": 0,
+  "source_report_tcp_failed_api": 12,
+  "source_report_tls_timeout_gateway": 11,
+  "source_report_tls_rejected_gateway": 1,
+  "source_files_sha256": {
+    "src-tauri/src/adaptive_strategy/effect_check.rs": "106ea98a9d308dc689432e27213a7e96a361a329f76a1355410e12c6ffe9bbd5",
+    "src-tauri/src/adaptive_strategy/flow_evidence.rs": "ee18782e3cca1ac8c6974ad113fa8a87664b061977671ede7fbec042b60e224d",
+    "scripts/verify-effect-check-release.mjs": "c49a8641d14a31c691beddf32eb9a447af3b995e1777cc564f7f25369c66571b",
+    "src-tauri/src/adaptive_strategy/flow_model_tests.rs": "7a8fc91011661a694909b208a0faad6e2c6444e3652718cf02b4970eed84b6a8",
+    "src-tauri/src/adaptive_strategy/runtime.rs": "6ea91330bc2d8414e8765e8494a0c98b31c334b8eefee7197d24db3058231122",
+    "src-tauri/src/adaptive_strategy/owned_probe.rs": "653f304a6635cf5c282b2d1a220cfe6685948b7d1da88fb2bb7b0e158d487e4f",
+    "src-tauri/src/adaptive_strategy/flow_policy.rs": "4963db8133287b8edab04fec3fce5f04138606f8b1606781890b9d7e978a561f",
+    "src-tauri/src/adaptive_strategy/probe.rs": "dbdb85ff1c87a855986a9feadd0f78583369d8a601d1c506c71ee3dafc42bf3d",
+    "src-tauri/src/adaptive_strategy/flow_policy_tests.rs": "2330765326b6ccd47ba5a149c776a7f6b1749697e1d619c44dd751d3d3528d89",
+    "src-tauri/src/adaptive_strategy/diagnostic.rs": "28f5559cb290e5e7d28cf906e0f01060494c7ae115b2644c211ef7f8a2140240"
+  }
+}

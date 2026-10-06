@@ -1,0 +1,695 @@
+{
+  "schemaVersion": 1,
+  "recordedAtUtc": "2026-10-06T18:51:24.555Z",
+  "userReported": {
+    "vpnDisabledAtRequest": true,
+    "discordNewMessagesWork": true,
+    "youtubePreviouslyUnopenedVideoWorks": true,
+    "reenabledNekoBoxForChatDuringInvestigation": true
+  },
+  "localObservations": {
+    "obsessionRuntime": "Stopped",
+    "obsessionAndWinwsProcessesFound": false,
+    "defaultIpv4Route": {
+      "interface": "Wi-Fi",
+      "gateway": "192.168.0.1"
+    },
+    "defaultIpv6Route": {
+      "interface": "Wi-Fi",
+      "gateway": "fe80::4a29:e4ff:fe8d:75a9"
+    },
+    "wintunDriver": "Stopped",
+    "winDivertDriver": "Running",
+    "winDivertStartMode": "Disabled",
+    "winDivertOwners": {
+      "state": "not_verified",
+      "reason": "REFLECT-only diagnostic returned Windows access denied (5); no admin elevation attempted"
+    },
+    "proxyObservationSequence": [
+      {
+        "proxyEnable": 0,
+        "proxyServer": null
+      },
+      {
+        "proxyEnable": 1,
+        "proxyServer": "http://127.0.0.1:2080"
+      }
+    ],
+    "proxyChangeSource": "user_confirmed_reenabled_NekoBox_for_chat",
+    "nekoboxCore": {
+      "pid": 14488,
+      "startedAtClientTime": "2026-10-06T22:39:48.632173+04:00",
+      "listeningPort": 2080
+    },
+    "localProxyClients": [
+      "Discord.exe",
+      "zen.exe",
+      "codex.exe",
+      "ChatGPT.exe",
+      "Telegram.exe"
+    ],
+    "happService": "Running",
+    "scope": "This is not proof of a VPN-free network path; routing on the router and remaining background filter owners were not independently verified."
+  },
+  "curlDirectChecks": [
+    {
+      "test": {
+        "name": "discord-api",
+        "family": 4,
+        "url": "https://discord.com/api/v10/gateway"
+      },
+      "status": "fulfilled",
+      "value": {
+        "chunk_id": "df4d07",
+        "wall_time_seconds": 1.7888915,
+        "exit_code": 0,
+        "original_token_count": 24,
+        "output": "discord-api ipv4 http=200 ip=162.159.135.232 tcp=0.074693 tls=0.132559 total=0.187221 bytes=35\r\n"
+      }
+    },
+    {
+      "test": {
+        "name": "discord-api",
+        "family": 6,
+        "url": "https://discord.com/api/v10/gateway"
+      },
+      "status": "fulfilled",
+      "value": {
+        "chunk_id": "4582d2",
+        "wall_time_seconds": 0.8829208,
+        "exit_code": 1,
+        "original_token_count": 32,
+        "output": "curl: (6) Could not resolve host: discord.com\r\ndiscord-api ipv6 http=000 ip= tcp=0.000000 tls=0.000000 total=0.062639 bytes=0\r\n"
+      }
+    },
+    {
+      "test": {
+        "name": "discord-cdn",
+        "family": 4,
+        "url": "https://cdn.discordapp.com/embed/avatars/0.png"
+      },
+      "status": "fulfilled",
+      "value": {
+        "chunk_id": "d5f5a0",
+        "wall_time_seconds": 0.4769258,
+        "exit_code": 0,
+        "original_token_count": 25,
+        "output": "discord-cdn ipv4 http=200 ip=162.159.130.233 tcp=0.060305 tls=0.218456 total=0.282401 bytes=1268\r\n"
+      }
+    },
+    {
+      "test": {
+        "name": "discord-cdn",
+        "family": 6,
+        "url": "https://cdn.discordapp.com/embed/avatars/0.png"
+      },
+      "status": "fulfilled",
+      "value": {
+        "chunk_id": "b2e678",
+        "wall_time_seconds": 0.7667305,
+        "exit_code": 1,
+        "original_token_count": 34,
+        "output": "curl: (6) Could not resolve host: cdn.discordapp.com\r\ndiscord-cdn ipv6 http=000 ip= tcp=0.000000 tls=0.000000 total=0.006596 bytes=0\r\n"
+      }
+    },
+    {
+      "test": {
+        "name": "youtube-page",
+        "family": 4,
+        "url": "https://www.youtube.com/"
+      },
+      "status": "fulfilled",
+      "value": {
+        "chunk_id": "3d15f1",
+        "wall_time_seconds": 0.7229268,
+        "exit_code": 0,
+        "original_token_count": 25,
+        "output": "youtube-page ipv4 http=200 ip=142.251.154.4 tcp=0.057252 tls=0.115234 total=0.565640 bytes=898966\r\n"
+      }
+    },
+    {
+      "test": {
+        "name": "youtube-page",
+        "family": 6,
+        "url": "https://www.youtube.com/"
+      },
+      "status": "fulfilled",
+      "value": {
+        "chunk_id": "93fc68",
+        "wall_time_seconds": 3.1211214,
+        "exit_code": 1,
+        "original_token_count": 35,
+        "output": "curl: (28) Connection timed out after 2014 milliseconds\r\nyoutube-page ipv6 http=000 ip= tcp=0.000000 tls=0.000000 total=2.015141 bytes=0\r\n"
+      }
+    }
+  ],
+  "liveProbeLog": ".dev-logs/zapret2-direct-baseline-2026-10-06.log",
+  "mutations": {
+    "networkSettingsChanged": false,
+    "dpiStarted": false,
+    "processesStopped": false,
+    "driversInstalled": false,
+    "driverNetworkHandleOpened": false,
+    "userTrialArchiveModified": false
+  },
+  "findings": [
+    "Fresh owned HTTP/TLS sockets to public Discord and YouTube endpoints were tested while Obsession service was stopped and winws was absent.",
+    "The system proxy changed from disabled to enabled during investigation. Running applications have existing connections to NekoBox port 2080.",
+    "Do not equate two-parent engine execution with bypass necessity or benefit. A comparable no-Obsession control is needed.",
+    "The direct checks bypass explicit proxy settings but cannot exclude transparent third-party filtering or router-side tunneling."
+  ],
+  "liveProbeLogSha256": "a447a1e5286e89ccc3ac799f3de00bfd800ba03357b393465827537f22d0d479",
+  "liveProbeCompletedAtUtc": "2026-10-06T18:47:42.502Z",
+  "directOwnedProbes": [
+    {
+      "category": "discord",
+      "execution": "unverified",
+      "functions": [
+        {
+          "bytes": 70,
+          "connections": [
+            {
+              "expectedProfileId": "",
+              "host": "discord.com",
+              "localAddress": "192.168.0.11:62941",
+              "observedActions": [],
+              "observedProfiles": [],
+              "observedSends": [],
+              "purpose": "large_early_sni",
+              "remoteAddress": "162.159.128.233:443",
+              "status": "unverified"
+            },
+            {
+              "expectedProfileId": "",
+              "host": "discord.com",
+              "localAddress": "192.168.0.11:62946",
+              "observedActions": [],
+              "observedProfiles": [],
+              "observedSends": [],
+              "purpose": "large_late_sni",
+              "remoteAddress": "162.159.128.233:443",
+              "status": "unverified"
+            }
+          ],
+          "elapsedMs": 455,
+          "function": "api_large_tls",
+          "httpStatus": 200,
+          "ipFamily": "ipv4",
+          "label": "API · большой TLS, две формы SNI",
+          "outcome": "passed",
+          "proof": "large_tls_application",
+          "reason": null,
+          "remoteAddress": "162.159.128.233:443",
+          "required": true,
+          "stage": "complete",
+          "target": "https://discord.com/api/v10/gateway",
+          "tlsHandshakes": [
+            {
+              "applicationOk": true,
+              "authenticatedTls": true,
+              "handshakeBytes": 1876,
+              "hybridKeyBytes": 1216,
+              "kind": "large_early_sni",
+              "sniOffset": 148
+            },
+            {
+              "applicationOk": true,
+              "authenticatedTls": true,
+              "handshakeBytes": 1876,
+              "hybridKeyBytes": 1216,
+              "kind": "large_late_sni",
+              "sniOffset": 1425
+            }
+          ],
+          "transferBytes": 0,
+          "transferMs": null
+        },
+        {
+          "bytes": 2536,
+          "connections": [
+            {
+              "expectedProfileId": "",
+              "host": "cdn.discordapp.com",
+              "localAddress": "192.168.0.11:62942",
+              "observedActions": [],
+              "observedProfiles": [],
+              "observedSends": [],
+              "purpose": "large_early_sni",
+              "remoteAddress": "162.159.129.233:443",
+              "status": "unverified"
+            },
+            {
+              "expectedProfileId": "",
+              "host": "cdn.discordapp.com",
+              "localAddress": "192.168.0.11:62945",
+              "observedActions": [],
+              "observedProfiles": [],
+              "observedSends": [],
+              "purpose": "large_late_sni",
+              "remoteAddress": "162.159.129.233:443",
+              "status": "unverified"
+            }
+          ],
+          "elapsedMs": 424,
+          "function": "cdn_large_tls",
+          "httpStatus": 200,
+          "ipFamily": "ipv4",
+          "label": "CDN · большой TLS, две формы SNI",
+          "outcome": "passed",
+          "proof": "large_tls_application",
+          "reason": null,
+          "remoteAddress": "162.159.129.233:443",
+          "required": true,
+          "stage": "complete",
+          "target": "https://cdn.discordapp.com/embed/avatars/0.png",
+          "tlsHandshakes": [
+            {
+              "applicationOk": true,
+              "authenticatedTls": true,
+              "handshakeBytes": 1883,
+              "hybridKeyBytes": 1216,
+              "kind": "large_early_sni",
+              "sniOffset": 104
+            },
+            {
+              "applicationOk": true,
+              "authenticatedTls": true,
+              "handshakeBytes": 1883,
+              "hybridKeyBytes": 1216,
+              "kind": "large_late_sni",
+              "sniOffset": 1419
+            }
+          ],
+          "transferBytes": 0,
+          "transferMs": null
+        },
+        {
+          "bytes": 35,
+          "connections": [
+            {
+              "expectedProfileId": "",
+              "host": "discord.com",
+              "http": {
+                "bytes": 35,
+                "elapsedMs": 198,
+                "httpStatus": 200,
+                "stage": "complete",
+                "startedAfterMs": 203,
+                "tlsMs": 52
+              },
+              "localAddress": "192.168.0.11:62944",
+              "observedActions": [],
+              "observedProfiles": [],
+              "observedSends": [],
+              "purpose": "document",
+              "remoteAddress": "162.159.128.233:443",
+              "status": "unverified"
+            }
+          ],
+          "elapsedMs": 401,
+          "function": "api",
+          "httpStatus": 200,
+          "ipFamily": "ipv4",
+          "label": "REST API",
+          "outcome": "passed",
+          "proof": "http_document",
+          "reason": null,
+          "remoteAddress": "162.159.128.233:443",
+          "required": true,
+          "stage": "complete",
+          "target": "https://discord.com/api/v10/gateway",
+          "transferBytes": 0,
+          "transferMs": null
+        },
+        {
+          "bytes": 128,
+          "connections": [
+            {
+              "expectedProfileId": "",
+              "host": "gateway.discord.gg",
+              "localAddress": "192.168.0.11:62943",
+              "observedActions": [],
+              "observedProfiles": [],
+              "observedSends": [],
+              "purpose": "gateway",
+              "remoteAddress": "162.159.130.234:443",
+              "status": "unverified"
+            }
+          ],
+          "elapsedMs": 462,
+          "function": "gateway",
+          "httpStatus": 101,
+          "ipFamily": "ipv4",
+          "label": "Gateway WSS Hello",
+          "outcome": "passed",
+          "proof": "gateway_hello",
+          "reason": null,
+          "remoteAddress": "162.159.130.234:443",
+          "required": true,
+          "stage": "complete",
+          "target": "wss://gateway.discord.gg/?v=10&encoding=json",
+          "transferBytes": 0,
+          "transferMs": null
+        },
+        {
+          "bytes": 1268,
+          "connections": [
+            {
+              "expectedProfileId": "",
+              "host": "cdn.discordapp.com",
+              "http": {
+                "bytes": 1268,
+                "elapsedMs": 202,
+                "httpStatus": 200,
+                "stage": "complete",
+                "startedAfterMs": 44,
+                "tlsMs": 59
+              },
+              "localAddress": "192.168.0.11:62949",
+              "observedActions": [],
+              "observedProfiles": [],
+              "observedSends": [],
+              "purpose": "document",
+              "remoteAddress": "162.159.129.233:443",
+              "status": "unverified"
+            }
+          ],
+          "elapsedMs": 246,
+          "function": "cdn",
+          "httpStatus": 200,
+          "ipFamily": "ipv4",
+          "label": "Картинка CDN",
+          "outcome": "passed",
+          "proof": "http_document",
+          "reason": null,
+          "remoteAddress": "162.159.129.233:443",
+          "required": true,
+          "stage": "complete",
+          "target": "https://cdn.discordapp.com/embed/avatars/0.png",
+          "transferBytes": 0,
+          "transferMs": null
+        },
+        {
+          "bytes": 598828,
+          "connections": [
+            {
+              "expectedProfileId": "",
+              "host": "discord.com",
+              "http": {
+                "bytes": 74540,
+                "elapsedMs": 256,
+                "httpStatus": 200,
+                "stage": "complete",
+                "startedAfterMs": 63,
+                "tlsMs": 52
+              },
+              "localAddress": "192.168.0.11:62950",
+              "observedActions": [],
+              "observedProfiles": [],
+              "observedSends": [],
+              "purpose": "asset_page",
+              "remoteAddress": "162.159.128.233:443",
+              "status": "unverified"
+            },
+            {
+              "expectedProfileId": "",
+              "host": "discord.com",
+              "http": {
+                "bytes": 524288,
+                "elapsedMs": 390,
+                "httpStatus": 206,
+                "stage": "complete",
+                "startedAfterMs": 369,
+                "tlsMs": 53
+              },
+              "localAddress": "192.168.0.11:62953",
+              "observedActions": [],
+              "observedProfiles": [],
+              "observedSends": [],
+              "purpose": "asset",
+              "remoteAddress": "162.159.128.233:443",
+              "status": "unverified"
+            }
+          ],
+          "elapsedMs": 759,
+          "function": "client_assets",
+          "httpStatus": 206,
+          "ipFamily": "ipv4",
+          "label": "Загрузка файлов Discord",
+          "outcome": "passed",
+          "proof": "http_transfer",
+          "reason": null,
+          "remoteAddress": "162.159.128.233:443",
+          "required": true,
+          "stage": "complete",
+          "target": "https://discord.com/assets/web.90d3ab34abfe98da.js",
+          "transferBytes": 524288,
+          "transferMs": 437
+        },
+        {
+          "bytes": 0,
+          "connections": [
+            {
+              "expectedProfileId": "",
+              "host": "updates.discord.com",
+              "http": {
+                "bytes": 0,
+                "elapsedMs": 673,
+                "httpStatus": null,
+                "stage": "http_headers",
+                "startedAfterMs": 56,
+                "tlsMs": 54
+              },
+              "localAddress": "192.168.0.11:62951",
+              "observedActions": [],
+              "observedProfiles": [],
+              "observedSends": [],
+              "purpose": "document",
+              "remoteAddress": "162.159.128.233:443",
+              "status": "unverified"
+            }
+          ],
+          "elapsedMs": 729,
+          "function": "updater",
+          "httpStatus": null,
+          "ipFamily": "ipv4",
+          "label": "Манифест обновления",
+          "outcome": "inconclusive",
+          "proof": "none",
+          "reason": "Обязательные пробы завершены; ожидание вспомогательной пробы прекращено.",
+          "remoteAddress": "162.159.128.233:443",
+          "required": false,
+          "stage": "http_headers",
+          "target": "https://updates.discord.com/distributions/app/manifests/latest?channel=stable&platform=win&arch=x64",
+          "transferBytes": 0,
+          "transferMs": null
+        },
+        {
+          "bytes": 32768,
+          "connections": [
+            {
+              "expectedProfileId": "",
+              "host": "discord.com",
+              "http": {
+                "bytes": 32768,
+                "elapsedMs": 220,
+                "httpStatus": 200,
+                "stage": "complete",
+                "startedAfterMs": 57,
+                "tlsMs": 53
+              },
+              "localAddress": "192.168.0.11:62952",
+              "observedActions": [],
+              "observedProfiles": [],
+              "observedSends": [],
+              "purpose": "document",
+              "remoteAddress": "162.159.128.233:443",
+              "status": "unverified"
+            }
+          ],
+          "elapsedMs": 277,
+          "function": "site",
+          "httpStatus": 200,
+          "ipFamily": "ipv4",
+          "label": "Веб-страница",
+          "outcome": "passed",
+          "proof": "http_document",
+          "reason": null,
+          "remoteAddress": "162.159.128.233:443",
+          "required": false,
+          "stage": "complete",
+          "target": "https://discord.com/",
+          "transferBytes": 0,
+          "transferMs": null
+        }
+      ]
+    },
+    {
+      "category": "youtube_twitch",
+      "execution": "unverified",
+      "functions": [
+        {
+          "bytes": 131072,
+          "connections": [
+            {
+              "expectedProfileId": "",
+              "host": "www.youtube.com",
+              "http": {
+                "bytes": 131072,
+                "elapsedMs": 332,
+                "httpStatus": 200,
+                "stage": "complete",
+                "startedAfterMs": 53,
+                "tlsMs": 51
+              },
+              "localAddress": "192.168.0.11:62954",
+              "observedActions": [],
+              "observedProfiles": [],
+              "observedSends": [],
+              "purpose": "document",
+              "remoteAddress": "142.251.150.4:443",
+              "status": "unverified"
+            }
+          ],
+          "elapsedMs": 385,
+          "function": "site",
+          "httpStatus": 200,
+          "ipFamily": "ipv4",
+          "label": "Страница YouTube",
+          "outcome": "passed",
+          "proof": "http_document",
+          "reason": null,
+          "remoteAddress": "142.251.150.4:443",
+          "required": true,
+          "stage": "complete",
+          "target": "https://www.youtube.com/",
+          "transferBytes": 0,
+          "transferMs": null
+        },
+        {
+          "bytes": 15921,
+          "connections": [
+            {
+              "expectedProfileId": "",
+              "host": "i.ytimg.com",
+              "http": {
+                "bytes": 15921,
+                "elapsedMs": 1114,
+                "httpStatus": 200,
+                "stage": "complete",
+                "startedAfterMs": 349,
+                "tlsMs": 358
+              },
+              "localAddress": "192.168.0.11:62955",
+              "observedActions": [],
+              "observedProfiles": [],
+              "observedSends": [],
+              "purpose": "document",
+              "remoteAddress": "142.250.71.182:443",
+              "status": "unverified"
+            }
+          ],
+          "elapsedMs": 1463,
+          "function": "images",
+          "httpStatus": 200,
+          "ipFamily": "ipv4",
+          "label": "Картинка YouTube CDN",
+          "outcome": "passed",
+          "proof": "http_document",
+          "reason": null,
+          "remoteAddress": "142.250.71.182:443",
+          "required": true,
+          "stage": "complete",
+          "target": "https://i.ytimg.com/vi/jNQXAC9IVRw/hqdefault.jpg",
+          "transferBytes": 0,
+          "transferMs": null
+        },
+        {
+          "bytes": 786432,
+          "connections": [
+            {
+              "expectedProfileId": "",
+              "host": "www.youtube.com",
+              "http": {
+                "bytes": 262144,
+                "elapsedMs": 384,
+                "httpStatus": 200,
+                "stage": "complete",
+                "startedAfterMs": 54,
+                "tlsMs": 46
+              },
+              "localAddress": "192.168.0.11:62956",
+              "observedActions": [],
+              "observedProfiles": [],
+              "observedSends": [],
+              "purpose": "asset_page",
+              "remoteAddress": "142.251.150.4:443",
+              "status": "unverified"
+            },
+            {
+              "expectedProfileId": "",
+              "host": "www.youtube.com",
+              "http": {
+                "bytes": 524288,
+                "elapsedMs": 622,
+                "httpStatus": 206,
+                "stage": "complete",
+                "startedAfterMs": 486,
+                "tlsMs": 49
+              },
+              "localAddress": "192.168.0.11:62963",
+              "observedActions": [],
+              "observedProfiles": [],
+              "observedSends": [],
+              "purpose": "asset",
+              "remoteAddress": "142.251.150.4:443",
+              "status": "unverified"
+            }
+          ],
+          "elapsedMs": 1108,
+          "function": "player_assets",
+          "httpStatus": 206,
+          "ipFamily": "ipv4",
+          "label": "Загрузка кода плеера",
+          "outcome": "passed",
+          "proof": "http_transfer",
+          "reason": null,
+          "remoteAddress": "142.251.150.4:443",
+          "required": true,
+          "stage": "complete",
+          "target": "https://www.youtube.com/s/player/1b3be681/player_ias.vflset/ru_RU/base.js",
+          "transferBytes": 524288,
+          "transferMs": 666
+        }
+      ]
+    }
+  ],
+  "directOwnedProbesSummary": [
+    {
+      "category": "discord",
+      "required": 6,
+      "requiredPassed": 6,
+      "missingRoutingExpectedWithoutEngine": true
+    },
+    {
+      "category": "youtube_twitch",
+      "required": 3,
+      "requiredPassed": 3,
+      "missingRoutingExpectedWithoutEngine": true
+    }
+  ],
+  "probeSourceHashes": {
+    "src-tauri/src/protected_runtime/zapret2_measure.rs": "1e60e3f4af6f7b37ed84dc194d7d47e8f3e5c46c5c0df44726ac43fa782dae67",
+    "src-tauri/src/protected_runtime/zapret2_tls.rs": "083eab814d305b58df138ebe7f8aeef5ac0d960d8f355b6630696e885e690764"
+  },
+  "postProbeNetworkSnapshot": {
+    "atClientTime": "2026-10-06T22:51:21+04:00",
+    "defaultIpv4Route": {
+      "interface": "Wi-Fi",
+      "gateway": "192.168.0.1"
+    },
+    "splitDefaultRoutesFound": false,
+    "activeTunAdapterFound": false,
+    "wintunDriver": "Stopped"
+  }
+}

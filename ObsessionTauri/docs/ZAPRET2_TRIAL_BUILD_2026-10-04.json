@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "builtAtUtc": "2026-10-04T16:47:17.147Z",
+  "applicationVersion": "1.1.0",
+  "strategyPackVersion": "0.12.0",
+  "strategyPackSchema": 2,
+  "setupPath": "dist-release/experimental/zapret2-trials-2026-10-04/Obsession-Setup_1.1.0_x64.exe",
+  "setupSize": 30561792,
+  "setupSha256": "0fab09a98f168129ce70a4440c4267da4d840ca6f1f4b7db984cdf450f6c30da",
+  "updateManifestSignatureVerified": true,
+  "updateSignatureType": "Ed25519 pinned application public key",
+  "payloadFiles": 94,
+  "payloadFileHashesVerified": true,
+  "importantPayloadHashes": {
+    "obsession.exe": "e819093ed9b3d098b1f904a8897e7e55ee6601a98d72dcf4bdb0c6b56683740b",
+    "runtime/Obsession.Runtime.exe": "a276d7fa053f9e62321c05e3f8ca2117d0604d422eebde49485fd914070d6a0f",
+    "runtime/runtime-manifest.json": "9088dae0050da0db7fad7312d0501b6218a4f7c9489e2ce6b447df39b49cbd11",
+    "strategy-packs/builtin/manifest.json": "69c9f6e26b968236f9486e64d1448617a47518260037711b4c31d813d9c097d7"
+  },
+  "embeddedFrontendAsset": "app-DYeQtPEV.js",
+  "tests": {
+    "protectedRuntimePassed": 58,
+    "ignoredLive": 2,
+    "frontendPassed": 42
+  },
+  "materializerVerification": {
+    "explicitZapret2Selections": 62,
+    "combinedLegacyPlans": 224
+  },
+  "installed": false,
+  "candidateLiveAcceptance": "not_performed",
+  "baselineDiagnostics": "ZAPRET2_BASELINE_DIAGNOSTICS_2026-10-04.json"
+}

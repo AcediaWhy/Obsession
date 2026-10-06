@@ -1,0 +1,415 @@
+{
+  "schemaVersion": 1,
+  "analyzedAtUtc": "2026-10-06T17:29:06.327Z",
+  "source": "installed_application_trial",
+  "archivePath": "C:/Users/Usogui/AppData/Local/vlarpsu/Obsession/zapret2-trials.json",
+  "archiveSha256AtAnalysis": "aeebacf7acbc327ddac8e73caa159ac4b7dc890e16e4277ecf654b666f8fa64a",
+  "runId": "c6fd24846fdd8386de92fbe33142b42c",
+  "recordedAtUtc": "2026-10-06T17:02:52.536Z",
+  "vpnDisabled": "reported_by_user",
+  "networkPathIndependentlyVerified": false,
+  "candidate": {
+    "bytes": 1414044,
+    "completeRounds": 2,
+    "composition": {
+      "apiProfileId": "research_discord_tls_hostfake_md5",
+      "cdnProfileId": "classic_discord_tls_split_sni"
+    },
+    "family": "discord_composition",
+    "fingerprint": "692ebbffc5aa49f0546e3bfd5de753e8ea05afe2953f36eb15e2123022520f64",
+    "functions": [
+      {
+        "cancelled": 0,
+        "failed": 0,
+        "function": "api",
+        "inconclusive": 0,
+        "label": "REST API",
+        "notTested": 0,
+        "passed": 3,
+        "proof": "http_document",
+        "required": true
+      },
+      {
+        "cancelled": 0,
+        "failed": 0,
+        "function": "api_large_tls",
+        "inconclusive": 0,
+        "label": "API · большой TLS, две формы SNI",
+        "notTested": 0,
+        "passed": 3,
+        "proof": "large_tls_application",
+        "required": true
+      },
+      {
+        "cancelled": 0,
+        "failed": 0,
+        "function": "cdn",
+        "inconclusive": 0,
+        "label": "Картинка CDN",
+        "notTested": 0,
+        "passed": 3,
+        "proof": "http_document",
+        "required": true
+      },
+      {
+        "cancelled": 0,
+        "failed": 0,
+        "function": "cdn_large_tls",
+        "inconclusive": 0,
+        "label": "CDN · большой TLS, две формы SNI",
+        "notTested": 0,
+        "passed": 3,
+        "proof": "large_tls_application",
+        "required": true
+      },
+      {
+        "cancelled": 0,
+        "failed": 0,
+        "function": "client_assets",
+        "inconclusive": 1,
+        "label": "Загрузка файлов Discord",
+        "notTested": 0,
+        "passed": 2,
+        "proof": "http_transfer",
+        "required": true
+      },
+      {
+        "cancelled": 0,
+        "failed": 0,
+        "function": "gateway",
+        "inconclusive": 0,
+        "label": "Gateway WSS Hello",
+        "notTested": 0,
+        "passed": 3,
+        "proof": "gateway_hello",
+        "required": true
+      },
+      {
+        "cancelled": 0,
+        "failed": 0,
+        "function": "session",
+        "inconclusive": 0,
+        "label": "Вход и готовность клиента",
+        "notTested": 3,
+        "passed": 0,
+        "proof": "none",
+        "required": false
+      },
+      {
+        "cancelled": 0,
+        "failed": 0,
+        "function": "site",
+        "inconclusive": 0,
+        "label": "Веб-страница",
+        "notTested": 0,
+        "passed": 3,
+        "proof": "http_document",
+        "required": false
+      },
+      {
+        "cancelled": 0,
+        "failed": 0,
+        "function": "updater",
+        "inconclusive": 0,
+        "label": "Манифест обновления",
+        "notTested": 0,
+        "passed": 3,
+        "proof": "http_document",
+        "required": false
+      },
+      {
+        "cancelled": 0,
+        "failed": 0,
+        "function": "voice",
+        "inconclusive": 0,
+        "label": "Голосовой вызов",
+        "notTested": 3,
+        "passed": 0,
+        "proof": "none",
+        "required": false
+      }
+    ],
+    "label": "Сборка Discord · API/Gateway + CDN",
+    "medianMs": 836,
+    "profileId": "dc1_research_discord_tls_hostfake_md5--classic_discord_tls_split_sni",
+    "requiredConfirmations": 3,
+    "rounds": 3,
+    "routingVerifiedRounds": 3,
+    "status": "partial",
+    "transferBytesPerSec": 1361787
+  },
+  "outcome": "insufficient",
+  "elapsedMs": 16091,
+  "uniqueRuntimeGenerations": 3,
+  "requiredSocketRoutingVerified": 27,
+  "requiredSocketRoutingTotal": 27,
+  "assetTarget": "https://discord.com/assets/web.90d3ab34abfe98da.js",
+  "pinnedAssetEndpoint": "162.159.128.233:443",
+  "assetSamples": [
+    {
+      "bytes": 598828,
+      "connections": [
+        {
+          "expectedProfileId": "research_discord_tls_hostfake_md5",
+          "host": "discord.com",
+          "localAddress": "192.168.0.11:54528",
+          "observedActions": [
+            "hostfakesplit"
+          ],
+          "observedProfiles": [
+            "research_discord_tls_hostfake_md5"
+          ],
+          "observedSends": [
+            "hostfakesplit"
+          ],
+          "purpose": "asset_page",
+          "remoteAddress": "162.159.128.233:443",
+          "status": "verified"
+        },
+        {
+          "expectedProfileId": "research_discord_tls_hostfake_md5",
+          "host": "discord.com",
+          "localAddress": "192.168.0.11:54532",
+          "observedActions": [
+            "hostfakesplit"
+          ],
+          "observedProfiles": [
+            "research_discord_tls_hostfake_md5"
+          ],
+          "observedSends": [
+            "hostfakesplit"
+          ],
+          "purpose": "asset",
+          "remoteAddress": "162.159.128.233:443",
+          "status": "verified"
+        }
+      ],
+      "elapsedMs": 689,
+      "function": "client_assets",
+      "httpStatus": 206,
+      "ipFamily": "ipv4",
+      "label": "Загрузка файлов Discord",
+      "outcome": "passed",
+      "proof": "http_transfer",
+      "reason": null,
+      "remoteAddress": "162.159.128.233:443",
+      "required": true,
+      "stage": "complete",
+      "target": "https://discord.com/assets/web.90d3ab34abfe98da.js",
+      "transferBytes": 524288,
+      "transferMs": 385
+    },
+    {
+      "bytes": 598828,
+      "connections": [
+        {
+          "expectedProfileId": "research_discord_tls_hostfake_md5",
+          "host": "discord.com",
+          "localAddress": "192.168.0.11:54542",
+          "observedActions": [
+            "hostfakesplit"
+          ],
+          "observedProfiles": [
+            "research_discord_tls_hostfake_md5"
+          ],
+          "observedSends": [
+            "hostfakesplit"
+          ],
+          "purpose": "asset_page",
+          "remoteAddress": "162.159.128.233:443",
+          "status": "verified"
+        },
+        {
+          "expectedProfileId": "research_discord_tls_hostfake_md5",
+          "host": "discord.com",
+          "localAddress": "192.168.0.11:54547",
+          "observedActions": [
+            "hostfakesplit"
+          ],
+          "observedProfiles": [
+            "research_discord_tls_hostfake_md5"
+          ],
+          "observedSends": [
+            "hostfakesplit"
+          ],
+          "purpose": "asset",
+          "remoteAddress": "162.159.128.233:443",
+          "status": "verified"
+        }
+      ],
+      "elapsedMs": 836,
+      "function": "client_assets",
+      "httpStatus": 206,
+      "ipFamily": "ipv4",
+      "label": "Загрузка файлов Discord",
+      "outcome": "passed",
+      "proof": "http_transfer",
+      "reason": null,
+      "remoteAddress": "162.159.128.233:443",
+      "required": true,
+      "stage": "complete",
+      "target": "https://discord.com/assets/web.90d3ab34abfe98da.js",
+      "transferBytes": 524288,
+      "transferMs": 550
+    },
+    {
+      "bytes": 74512,
+      "connections": [
+        {
+          "expectedProfileId": "research_discord_tls_hostfake_md5",
+          "host": "discord.com",
+          "localAddress": "192.168.0.11:54584",
+          "observedActions": [
+            "hostfakesplit"
+          ],
+          "observedProfiles": [
+            "research_discord_tls_hostfake_md5"
+          ],
+          "observedSends": [
+            "hostfakesplit"
+          ],
+          "purpose": "asset_page",
+          "remoteAddress": "162.159.128.233:443",
+          "status": "verified"
+        },
+        {
+          "expectedProfileId": "research_discord_tls_hostfake_md5",
+          "host": "discord.com",
+          "localAddress": "192.168.0.11:54586",
+          "observedActions": [
+            "hostfakesplit"
+          ],
+          "observedProfiles": [
+            "research_discord_tls_hostfake_md5"
+          ],
+          "observedSends": [
+            "hostfakesplit"
+          ],
+          "purpose": "asset",
+          "remoteAddress": "162.159.128.233:443",
+          "status": "verified"
+        }
+      ],
+      "elapsedMs": 7690,
+      "function": "client_assets",
+      "httpStatus": 200,
+      "ipFamily": "ipv4",
+      "label": "Загрузка файлов Discord",
+      "outcome": "inconclusive",
+      "proof": "none",
+      "reason": "Проба не завершилась в пределах срока раунда; сохранён последний наблюдаемый этап.",
+      "remoteAddress": "162.159.128.233:443",
+      "required": true,
+      "stage": "tls",
+      "target": "https://discord.com/assets/web.90d3ab34abfe98da.js",
+      "transferBytes": 0,
+      "transferMs": null
+    }
+  ],
+  "otherRequiredFunctions": [
+    {
+      "ordinal": 1,
+      "functions": [
+        {
+          "function": "api_large_tls",
+          "outcome": "passed",
+          "elapsedMs": 351
+        },
+        {
+          "function": "cdn_large_tls",
+          "outcome": "passed",
+          "elapsedMs": 361
+        },
+        {
+          "function": "api",
+          "outcome": "passed",
+          "elapsedMs": 245
+        },
+        {
+          "function": "gateway",
+          "outcome": "passed",
+          "elapsedMs": 420
+        },
+        {
+          "function": "cdn",
+          "outcome": "passed",
+          "elapsedMs": 229
+        }
+      ]
+    },
+    {
+      "ordinal": 2,
+      "functions": [
+        {
+          "function": "api_large_tls",
+          "outcome": "passed",
+          "elapsedMs": 362
+        },
+        {
+          "function": "cdn_large_tls",
+          "outcome": "passed",
+          "elapsedMs": 312
+        },
+        {
+          "function": "api",
+          "outcome": "passed",
+          "elapsedMs": 238
+        },
+        {
+          "function": "gateway",
+          "outcome": "passed",
+          "elapsedMs": 367
+        },
+        {
+          "function": "cdn",
+          "outcome": "passed",
+          "elapsedMs": 325
+        }
+      ]
+    },
+    {
+      "ordinal": 3,
+      "functions": [
+        {
+          "function": "api_large_tls",
+          "outcome": "passed",
+          "elapsedMs": 370
+        },
+        {
+          "function": "cdn_large_tls",
+          "outcome": "passed",
+          "elapsedMs": 325
+        },
+        {
+          "function": "api",
+          "outcome": "passed",
+          "elapsedMs": 249
+        },
+        {
+          "function": "gateway",
+          "outcome": "passed",
+          "elapsedMs": 383
+        },
+        {
+          "function": "cdn",
+          "outcome": "passed",
+          "elapsedMs": 239
+        }
+      ]
+    }
+  ],
+  "findings": [
+    "Same public JS URL and remote endpoint in all three rounds.",
+    "Round 3 downloaded discovery HTML, opened its own asset TCP socket, entered TLS and timed out before authenticated TLS or any asset bytes.",
+    "Both page and asset sockets used the expected API parent, with successful native sends recorded.",
+    "The old function-level HTTP 200 belongs to discovery HTML, not the asset request.",
+    "Receive-side capture was not retained in this v5 report, so ACK/ServerHello/reset evidence cannot be recovered from it."
+  ],
+  "unresolved": [
+    "Cannot distinguish dropped/unacknowledged segments, rejected TLS or remote/path failure from this archive alone.",
+    "This run does not establish whether the same failure occurs with a control profile."
+  ],
+  "archiveModified": false,
+  "originalFailurePromoted": false,
+  "newProviderTestStarted": false
+}

@@ -1,0 +1,71 @@
+{
+  "schemaVersion": 1,
+  "recordedAtUtc": "2026-10-05T15:12:29.616Z",
+  "applicationVersion": "1.1.0",
+  "setupPath": "dist-release/experimental/zapret2-glass-helix-2026-10-05/Obsession-Setup_1.1.0_x64.exe",
+  "setupSize": 30974976,
+  "setupSha256": "3ec2ccabeb1331092465625d25b9e0feb736f707920a8553f3efba516690445c",
+  "payloadFiles": 94,
+  "payloadEnvelopeVerified": true,
+  "payloadFileHashesVerified": true,
+  "verifiedPayloadEmbeddedInSetup": true,
+  "updateManifestSignatureVerified": true,
+  "embeddedFrontendAsset": "app-PrY7OTGA.js",
+  "embeddedHelixAsset": "scene-CYEGf7C0.js",
+  "sourceHashes": {
+    "src/screens/Dpi.tsx": "c576adafac03fc49630e3cb6c0694baacc41a9e56ee64a98866b55b1c28914fd",
+    "src/design/components/Zapret2PickerAnimation.tsx": "86d9e8965514d14d2764992071544656c02f672a3cdff59829d12c5c8588a358",
+    "src/design/components/Zapret2StrategyPanel.tsx": "0857f7d8eba8fbfdf90850e9514865e35abec8e93c54111bb649bb35fc8ffe12",
+    "src/design/components/Zapret2StrategyPanel.test.tsx": "834adba26f409a85dc4bbe9700d9620ad9051db176dcb7f527040e8f2939580c",
+    "src/styles/zapret2-picker-animation.css": "32f23bb1c7881ad8ac81bfe5692fa42a965e839d6cfedc90ace84dba098d6ceb",
+    "src/design/components/glassHelix/scene.ts": "0b0ae15512f99afa3e90b657d3cc3a1f610b842479ceb632cb3feb8589dca059",
+    "src/design/components/glassHelix/shaders.ts": "18f50872c2bc85ff4858fbf39cd4f3ffdb0d71dbca9678ff52649dd57cb538b2",
+    "src/design/components/glassHelix/state.ts": "558c59472d170c27881748cc73a59ac8ebe7c5075d306210db18a0d8fb83a0c3",
+    "src/design/components/glassHelix/state.test.ts": "ae690c9956b76207d207e343961fb3d608cf4103f16decc349d1cb0e2d5d3247",
+    "src/design/components/glassHelix/scene.test.ts": "0f3bfc0ad233f43f1a38a81528ca747b57bc3e863bb2e7a8ee303e089b74c9f7",
+    "devtools/labs/zapret2-workspace.html": "295e0579a5bf79ac1922a5934fb3fdd543ac366b2faed847a373fb6a8e495c45",
+    "devtools/labs/zapret2-workspace/main.tsx": "df235566b16b86de65a3250b7f17665375a57137251a81ec3095aa5d765e6303"
+  },
+  "runtimeAndProfilesUnchangedFromTlsV4": true,
+  "testerVersion": "zapret2-functions-v4",
+  "tests": {
+    "frontendPassed": 49,
+    "frontendProductionBuildPassed": true,
+    "nativeReleaseBuildPassed": true
+  },
+  "browserFixtureQA": {
+    "desktop": "1280x720",
+    "minimumWindow": "800x600",
+    "helixObserved": true,
+    "pointerWakeObserved": true,
+    "candidateChangeObserved": true,
+    "confirmedSuccessOutro": true,
+    "cancelledOutro": true,
+    "cancellationLockedDuringRestoration": true,
+    "sceneAbsentAfterCompletion": true,
+    "sceneDisposedWhenHiddenOrOffscreen": true,
+    "reducedMotionSingleFrame": true,
+    "drawCalls": 2,
+    "bars": 36,
+    "maxBackingStore": [
+      720,
+      240
+    ],
+    "previewFpsObserved": [
+      54,
+      60
+    ],
+    "cpuSubmissionMeanMsObserved": [
+      0.04,
+      0.08
+    ],
+    "hardwareGpuUtilizationMeasured": false
+  },
+  "installed": false,
+  "activeDpiChanged": false,
+  "systemNetworkConfigurationChanged": false,
+  "limitations": [
+    "Visual checks used a development fixture; no live tournament was triggered for UI QA.",
+    "Native WebView rendering and low-end GPU performance were not measured."
+  ]
+}

@@ -1,0 +1,308 @@
+{
+  "client_date": "2026-10-03",
+  "timezone": "Europe/Samara",
+  "user_clarification": "Morning failure was inferred from the second test; no separate client outage was verified.",
+  "reports": [
+    {
+      "file": "measurement-20261002T194931.931605600Z-23788-0.jsonl",
+      "sha256": "6843857c977f18566c12a5130a73973bc9af7254759fe4449ab39d20f52d313a",
+      "policy": "adaptive_owned_flow_programs_v9",
+      "cold_search": true,
+      "phase": "benchmark_complete",
+      "elapsed_ms": 13352,
+      "candidate": {
+        "category": "discord",
+        "out_range": "-d10",
+        "payload": [
+          "tls_client_hello"
+        ],
+        "schema_version": 1,
+        "steps": [
+          {
+            "args": {
+              "pos": "1,midsld"
+            },
+            "function": "multidisorder"
+          }
+        ],
+        "transport": "tls"
+      },
+      "restored_discord_position": "1,2,midsld,sniext",
+      "original_healthy_before": true,
+      "original_restored": true,
+      "original_healthy_after": true,
+      "effect_verdict": null,
+      "all_effect_blocks_runtime_healthy": false,
+      "all_effect_routes_unchanged": false,
+      "pinned_addresses": null,
+      "arms": null,
+      "scope_fingerprint": "7c1db2041b2ea7f3e00b7d9cd11ee054d11c537ec450c4f815659c2d8cdbce00",
+      "resources_fingerprint": null
+    },
+    {
+      "file": "measurement-20261002T195019.906478800Z-23788-1.jsonl",
+      "sha256": "9836c575646ebcbc8a298fd52d93253cb067c272b121dde0922cece648c08a7d",
+      "policy": "adaptive_owned_flow_programs_v9",
+      "cold_search": true,
+      "phase": "cancelled",
+      "elapsed_ms": 2372,
+      "candidate": null,
+      "restored_discord_position": "1,2,midsld,sniext",
+      "original_healthy_before": true,
+      "original_restored": true,
+      "original_healthy_after": true,
+      "effect_verdict": null,
+      "all_effect_blocks_runtime_healthy": false,
+      "all_effect_routes_unchanged": false,
+      "pinned_addresses": null,
+      "arms": null,
+      "scope_fingerprint": "7c1db2041b2ea7f3e00b7d9cd11ee054d11c537ec450c4f815659c2d8cdbce00",
+      "resources_fingerprint": null
+    },
+    {
+      "file": "measurement-20261002T195027.197517000Z-23788-2.jsonl",
+      "sha256": "e82b46cad435413d0cbef56fc12a1bfbcf035efa374bddc37c7c7c37f5ba333e",
+      "policy": "fixed_cross_session_comparison_v1",
+      "cold_search": true,
+      "phase": "effect_confirmed",
+      "elapsed_ms": 37364,
+      "candidate": {
+        "category": "discord",
+        "out_range": "-d10",
+        "payload": [
+          "tls_client_hello"
+        ],
+        "schema_version": 1,
+        "steps": [
+          {
+            "args": {
+              "pos": "1,midsld"
+            },
+            "function": "multidisorder"
+          }
+        ],
+        "transport": "tls"
+      },
+      "restored_discord_position": "1,2,midsld,sniext",
+      "original_healthy_before": true,
+      "original_restored": true,
+      "original_healthy_after": true,
+      "effect_verdict": "confirmed_effect",
+      "all_effect_blocks_runtime_healthy": true,
+      "all_effect_routes_unchanged": true,
+      "pinned_addresses": {
+        "discord.com:443": [
+          "162.159.128.233:443"
+        ],
+        "gateway.discord.gg:443": [
+          "162.159.135.234:443"
+        ]
+      },
+      "arms": [
+        {
+          "arm": "candidate",
+          "targets": 18,
+          "successful": 18,
+          "latency": [
+            {
+              "endpoint": "discord.com, /api/v10/gateway",
+              "count": 6,
+              "min_ms": 145.0,
+              "max_ms": 155.0
+            },
+            {
+              "endpoint": "discord.com, /app",
+              "count": 6,
+              "min_ms": 256.0,
+              "max_ms": 271.0
+            },
+            {
+              "endpoint": "gateway.discord.gg, /",
+              "count": 6,
+              "min_ms": 258.0,
+              "max_ms": 280.0
+            }
+          ]
+        },
+        {
+          "arm": "passthrough",
+          "targets": 18,
+          "successful": 0,
+          "latency": [
+            {
+              "endpoint": "discord.com, /api/v10/gateway",
+              "count": 6,
+              "min_ms": 3007.0,
+              "max_ms": 3015.0
+            },
+            {
+              "endpoint": "discord.com, /app",
+              "count": 6,
+              "min_ms": 3007.0,
+              "max_ms": 3015.0
+            },
+            {
+              "endpoint": "gateway.discord.gg, /",
+              "count": 6,
+              "min_ms": 3007.0,
+              "max_ms": 3015.0
+            }
+          ]
+        }
+      ],
+      "scope_fingerprint": "7c1db2041b2ea7f3e00b7d9cd11ee054d11c537ec450c4f815659c2d8cdbce00",
+      "resources_fingerprint": "7d1acabcd0ebc8a58f0a3c87ff69419314c88377c7c1c6cafd951770a906c448"
+    },
+    {
+      "file": "measurement-20261003T062536.358435500Z-15948-0.jsonl",
+      "sha256": "2197a75b4bbb34ab5f18e75fab5780d732076e13d834ca81c00825d2f14da443",
+      "policy": "adaptive_owned_flow_programs_v9",
+      "cold_search": true,
+      "phase": "benchmark_complete",
+      "elapsed_ms": 13322,
+      "candidate": {
+        "category": "discord",
+        "out_range": "-d10",
+        "payload": [
+          "tls_client_hello"
+        ],
+        "schema_version": 1,
+        "steps": [
+          {
+            "args": {
+              "pos": "1,midsld"
+            },
+            "function": "multidisorder"
+          }
+        ],
+        "transport": "tls"
+      },
+      "restored_discord_position": "1,2,midsld,sniext",
+      "original_healthy_before": true,
+      "original_restored": true,
+      "original_healthy_after": true,
+      "effect_verdict": null,
+      "all_effect_blocks_runtime_healthy": false,
+      "all_effect_routes_unchanged": false,
+      "pinned_addresses": null,
+      "arms": null,
+      "scope_fingerprint": "7c1db2041b2ea7f3e00b7d9cd11ee054d11c537ec450c4f815659c2d8cdbce00",
+      "resources_fingerprint": null
+    },
+    {
+      "file": "measurement-20261003T065534.064603700Z-15948-1.jsonl",
+      "sha256": "e1cba020425d962ff9a2cee20ce5c8b440add163a75b82742f0fed97c2de23a4",
+      "policy": "fixed_cross_session_comparison_v1",
+      "cold_search": true,
+      "phase": "effect_confirmed",
+      "elapsed_ms": 37139,
+      "candidate": {
+        "category": "discord",
+        "out_range": "-d10",
+        "payload": [
+          "tls_client_hello"
+        ],
+        "schema_version": 1,
+        "steps": [
+          {
+            "args": {
+              "pos": "1,midsld"
+            },
+            "function": "multidisorder"
+          }
+        ],
+        "transport": "tls"
+      },
+      "restored_discord_position": "1,2,midsld,sniext",
+      "original_healthy_before": true,
+      "original_restored": true,
+      "original_healthy_after": true,
+      "effect_verdict": "confirmed_effect",
+      "all_effect_blocks_runtime_healthy": true,
+      "all_effect_routes_unchanged": true,
+      "pinned_addresses": {
+        "discord.com:443": [
+          "162.159.128.233:443"
+        ],
+        "gateway.discord.gg:443": [
+          "162.159.135.234:443"
+        ]
+      },
+      "arms": [
+        {
+          "arm": "candidate",
+          "targets": 18,
+          "successful": 18,
+          "latency": [
+            {
+              "endpoint": "discord.com, /api/v10/gateway",
+              "count": 6,
+              "min_ms": 138.0,
+              "max_ms": 149.0
+            },
+            {
+              "endpoint": "discord.com, /app",
+              "count": 6,
+              "min_ms": 241.0,
+              "max_ms": 281.0
+            },
+            {
+              "endpoint": "gateway.discord.gg, /",
+              "count": 6,
+              "min_ms": 250.0,
+              "max_ms": 280.0
+            }
+          ]
+        },
+        {
+          "arm": "passthrough",
+          "targets": 18,
+          "successful": 0,
+          "latency": [
+            {
+              "endpoint": "discord.com, /api/v10/gateway",
+              "count": 6,
+              "min_ms": 3002.0,
+              "max_ms": 3016.0
+            },
+            {
+              "endpoint": "discord.com, /app",
+              "count": 6,
+              "min_ms": 3002.0,
+              "max_ms": 3016.0
+            },
+            {
+              "endpoint": "gateway.discord.gg, /",
+              "count": 6,
+              "min_ms": 3002.0,
+              "max_ms": 3016.0
+            }
+          ]
+        }
+      ],
+      "scope_fingerprint": "7c1db2041b2ea7f3e00b7d9cd11ee054d11c537ec450c4f815659c2d8cdbce00",
+      "resources_fingerprint": "7d1acabcd0ebc8a58f0a3c87ff69419314c88377c7c1c6cafd951770a906c448"
+    }
+  ],
+  "client_gateway": {
+    "source": "C:/Users/Usogui/AppData/Roaming/discord/logs/renderer_js.log",
+    "connect_local": "2026-10-03 10:26:33.209",
+    "connected_local": "2026-10-03 10:26:50.947",
+    "connect_elapsed_ms": 17738,
+    "ready_elapsed_ms": 18328,
+    "supplemental_elapsed_ms": 18752,
+    "resume_host": "gateway-us-east1-b.discord.gg",
+    "resume_connect_local": "2026-10-03 10:58:25.376",
+    "resume_elapsed_ms": 18945,
+    "resume_connected_ms": 18639,
+    "resume_condition": "DPI stopped at 10:56:27, so this reconnect does not validate the original active-bypass conditions."
+  },
+  "conclusions": {
+    "https_effect_repeated": true,
+    "overnight_config_expiry_proven": false,
+    "full_client_latency_measured_by_probe": false,
+    "dns_tcp_tls_upgrade_cause_identified": false,
+    "settings_modified": false,
+    "code_modified": false
+  }
+}

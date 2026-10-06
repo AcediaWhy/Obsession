@@ -1,0 +1,1680 @@
+{
+  "recorded_utc": "2026-10-03T14:13:18.559Z",
+  "timezone": "Europe/Samara UTC+4",
+  "installed_application": {
+    "path": "C:/Program Files/Obsession/obsession.exe",
+    "sha256": "50341a2c52d01697b521678753758084599c7385103ebbb39ca5c808448442ed",
+    "clienthello_release_matches": true
+  },
+  "reports": [
+    {
+      "file": "C:/Users/Usogui/AppData/Local/vlarpsu/Obsession/diagnostics/measurement-20261003T135922.081102000Z-27748-0.jsonl",
+      "sha256": "19111e351bfcb415dce990181d8c04f94f43c7cfee0a4eea593846f180232aa7",
+      "first_utc": "2026-10-03T13:59:22.081942200+00:00",
+      "last_utc": "2026-10-03T14:00:54.114189800+00:00",
+      "elapsed_recorded_ms": 92033,
+      "mode": "cold_benchmark",
+      "policy": "adaptive_owned_flow_programs_v9",
+      "client_hello_policy": "discord_large_clienthello_early_late_sni_cdn_v1",
+      "search_budget_ms": 90000,
+      "finished": true,
+      "finished_elapsed_ms": 92034,
+      "final_status": "budget_expired",
+      "last_status": "budget_expired",
+      "benchmark_result": {
+        "baseline_became_healthy_after_restart": false,
+        "candidate_origin": "none",
+        "confirmed_candidate": null,
+        "control_was_healthy": false,
+        "effect_validation": null,
+        "fixed_comparison_id": null,
+        "initial_recovery_demonstrated": false,
+        "original_probe_healthy": false,
+        "original_restored": true,
+        "recovery_demonstrated": false,
+        "restored_probe_healthy": false,
+        "search_performed": true,
+        "search_status": "budget_expired",
+        "time_to_recovery_ms": null,
+        "time_to_working_ms": null
+      },
+      "admission_rejections": [
+        {
+          "admitted": false,
+          "candidate_id": "adaptive-24b1a8049d06db007835a56d",
+          "minimum_screen_ms": 5500,
+          "remaining_ms": 1829
+        }
+      ],
+      "runtime_error_count": 0,
+      "primary_measurement_count": 39,
+      "primary_measurement_stages": {
+        "tls_timeout": 36,
+        "tls_rejected": 3
+      },
+      "primary_tcp_ms_range": [
+        40,
+        62
+      ],
+      "flow_decisions": {
+        "compare_packetization": 11,
+        "compare_tls_framing": 1
+      },
+      "candidates": [
+        {
+          "attempt": 1,
+          "id": "adaptive-53008cbceee5524144003781",
+          "origin": "synthesized",
+          "steps": [
+            {
+              "args": {
+                "pos": "1,midsld"
+              },
+              "function": "multidisorder"
+            }
+          ],
+          "rank": 0.5,
+          "feedback": {
+            "ackProgressSockets": 0,
+            "decision": "compare_packetization",
+            "nativeExecutedSockets": 3,
+            "nativeExecutionErrors": 0,
+            "nativeSendFailures": 0,
+            "noAckSockets": 2,
+            "packetCaptureComplete": true,
+            "primarySockets": 6,
+            "serverHelloSockets": 0,
+            "tcpUnavailableAuthorities": [],
+            "tlsStrategyLearningAllowed": true
+          },
+          "generation_matches": true,
+          "primary_flows": [
+            {
+              "host": "cdn.discordapp.com",
+              "stage": "tls_timeout",
+              "observation": "exact_flow_not_observed",
+              "gaps": [
+                "exact_flow_not_observed"
+              ],
+              "native_function_calls": 0,
+              "reassembly_lengths": [],
+              "native_trace_incomplete": true
+            },
+            {
+              "host": "discord.com",
+              "stage": "tls_timeout",
+              "observation": "client_hello_no_ack_progress",
+              "gaps": [],
+              "acked_client_bytes": 0,
+              "client_hello_bytes": 1881,
+              "server_hello": false,
+              "reset": false,
+              "native_function_calls": 0,
+              "reassembly_lengths": [],
+              "native_trace_incomplete": true
+            },
+            {
+              "host": "gateway.discord.gg",
+              "stage": "tls_timeout",
+              "observation": "client_hello_no_ack_progress",
+              "gaps": [],
+              "acked_client_bytes": 0,
+              "client_hello_bytes": 1888,
+              "server_hello": false,
+              "reset": false,
+              "native_function_calls": 0,
+              "reassembly_lengths": [],
+              "native_trace_incomplete": true
+            },
+            {
+              "host": "cdn.discordapp.com",
+              "stage": "tls_timeout",
+              "observation": "exact_flow_not_observed",
+              "gaps": [
+                "exact_flow_not_observed"
+              ],
+              "native_function_calls": 4,
+              "reassembly_lengths": [
+                1888,
+                1400
+              ],
+              "native_trace_incomplete": true
+            },
+            {
+              "host": "discord.com",
+              "stage": "tls_timeout",
+              "observation": "client_hello_no_ack_progress",
+              "gaps": [],
+              "acked_client_bytes": 0,
+              "client_hello_bytes": 1881,
+              "server_hello": false,
+              "reset": false,
+              "native_function_calls": 4,
+              "reassembly_lengths": [
+                1881,
+                1400
+              ],
+              "native_trace_incomplete": true
+            },
+            {
+              "host": "gateway.discord.gg",
+              "stage": "tls_timeout",
+              "observation": "client_hello_no_ack_progress",
+              "gaps": [],
+              "acked_client_bytes": 0,
+              "client_hello_bytes": 1888,
+              "server_hello": false,
+              "reset": false,
+              "native_function_calls": 4,
+              "reassembly_lengths": [
+                1888,
+                1400
+              ],
+              "native_trace_incomplete": true
+            }
+          ]
+        },
+        {
+          "attempt": 2,
+          "id": "adaptive-7cd30f3f80ee6d85bf900252",
+          "origin": "synthesized",
+          "steps": [
+            {
+              "args": {
+                "pos": "1,midsld"
+              },
+              "function": "multisplit"
+            }
+          ],
+          "rank": 0.5,
+          "feedback": {
+            "ackProgressSockets": 0,
+            "decision": "compare_packetization",
+            "nativeExecutedSockets": 3,
+            "nativeExecutionErrors": 0,
+            "nativeSendFailures": 0,
+            "noAckSockets": 2,
+            "packetCaptureComplete": true,
+            "primarySockets": 3,
+            "serverHelloSockets": 0,
+            "tcpUnavailableAuthorities": [],
+            "tlsStrategyLearningAllowed": true
+          },
+          "generation_matches": true,
+          "primary_flows": [
+            {
+              "host": "cdn.discordapp.com",
+              "stage": "tls_timeout",
+              "observation": "exact_flow_not_observed",
+              "gaps": [
+                "exact_flow_not_observed"
+              ],
+              "native_function_calls": 4,
+              "reassembly_lengths": [
+                1888,
+                1400
+              ],
+              "native_trace_incomplete": true
+            },
+            {
+              "host": "discord.com",
+              "stage": "tls_timeout",
+              "observation": "client_hello_no_ack_progress",
+              "gaps": [],
+              "acked_client_bytes": 0,
+              "client_hello_bytes": 1881,
+              "server_hello": false,
+              "reset": false,
+              "native_function_calls": 4,
+              "reassembly_lengths": [
+                1881,
+                1400
+              ],
+              "native_trace_incomplete": true
+            },
+            {
+              "host": "gateway.discord.gg",
+              "stage": "tls_timeout",
+              "observation": "client_hello_no_ack_progress",
+              "gaps": [],
+              "acked_client_bytes": 0,
+              "client_hello_bytes": 1888,
+              "server_hello": false,
+              "reset": false,
+              "native_function_calls": 2,
+              "reassembly_lengths": [
+                1400
+              ],
+              "native_trace_incomplete": true
+            }
+          ]
+        },
+        {
+          "attempt": 3,
+          "id": "adaptive-005c142ad95adbd482b3ee52",
+          "origin": "catalog",
+          "steps": [
+            {
+              "args": {
+                "blob": "tls_google",
+                "repeats": 2,
+                "tcp_seq": -10000
+              },
+              "function": "fake"
+            }
+          ],
+          "rank": 0.5,
+          "feedback": {
+            "ackProgressSockets": 0,
+            "decision": "compare_packetization",
+            "nativeExecutedSockets": 3,
+            "nativeExecutionErrors": 0,
+            "nativeSendFailures": 0,
+            "noAckSockets": 2,
+            "packetCaptureComplete": true,
+            "primarySockets": 3,
+            "serverHelloSockets": 0,
+            "tcpUnavailableAuthorities": [],
+            "tlsStrategyLearningAllowed": true
+          },
+          "generation_matches": true,
+          "primary_flows": [
+            {
+              "host": "cdn.discordapp.com",
+              "stage": "tls_timeout",
+              "observation": "exact_flow_not_observed",
+              "gaps": [
+                "exact_flow_not_observed"
+              ],
+              "native_function_calls": 2,
+              "reassembly_lengths": [
+                1400
+              ],
+              "native_trace_incomplete": true
+            },
+            {
+              "host": "discord.com",
+              "stage": "tls_timeout",
+              "observation": "client_hello_no_ack_progress",
+              "gaps": [],
+              "acked_client_bytes": 0,
+              "client_hello_bytes": 1881,
+              "server_hello": false,
+              "reset": false,
+              "native_function_calls": 2,
+              "reassembly_lengths": [
+                1400
+              ],
+              "native_trace_incomplete": true
+            },
+            {
+              "host": "gateway.discord.gg",
+              "stage": "tls_timeout",
+              "observation": "client_hello_no_ack_progress",
+              "gaps": [],
+              "acked_client_bytes": 0,
+              "client_hello_bytes": 1888,
+              "server_hello": false,
+              "reset": false,
+              "native_function_calls": 4,
+              "reassembly_lengths": [
+                1888,
+                1400
+              ],
+              "native_trace_incomplete": true
+            }
+          ]
+        },
+        {
+          "attempt": 4,
+          "id": "adaptive-4b53aa71416452905e92355e",
+          "origin": "synthesized",
+          "steps": [
+            {
+              "args": {
+                "disorder_after": "endhost+1",
+                "host": "www.google.com",
+                "midhost": "midsld",
+                "repeats": 2,
+                "tcp_seq": -3000
+              },
+              "function": "hostfakesplit"
+            }
+          ],
+          "rank": 0.5,
+          "feedback": {
+            "ackProgressSockets": 0,
+            "decision": "compare_packetization",
+            "nativeExecutedSockets": 3,
+            "nativeExecutionErrors": 0,
+            "nativeSendFailures": 0,
+            "noAckSockets": 2,
+            "packetCaptureComplete": true,
+            "primarySockets": 3,
+            "serverHelloSockets": 0,
+            "tcpUnavailableAuthorities": [],
+            "tlsStrategyLearningAllowed": true
+          },
+          "generation_matches": true,
+          "primary_flows": [
+            {
+              "host": "cdn.discordapp.com",
+              "stage": "tls_timeout",
+              "observation": "exact_flow_not_observed",
+              "gaps": [
+                "exact_flow_not_observed"
+              ],
+              "native_function_calls": 4,
+              "reassembly_lengths": [
+                1888,
+                1400
+              ],
+              "native_trace_incomplete": true
+            },
+            {
+              "host": "discord.com",
+              "stage": "tls_timeout",
+              "observation": "client_hello_no_ack_progress",
+              "gaps": [],
+              "acked_client_bytes": 0,
+              "client_hello_bytes": 1881,
+              "server_hello": false,
+              "reset": false,
+              "native_function_calls": 2,
+              "reassembly_lengths": [
+                1400
+              ],
+              "native_trace_incomplete": true
+            },
+            {
+              "host": "gateway.discord.gg",
+              "stage": "tls_timeout",
+              "observation": "client_hello_no_ack_progress",
+              "gaps": [],
+              "acked_client_bytes": 0,
+              "client_hello_bytes": 1888,
+              "server_hello": false,
+              "reset": false,
+              "native_function_calls": 4,
+              "reassembly_lengths": [
+                1888,
+                1400
+              ],
+              "native_trace_incomplete": true
+            }
+          ]
+        },
+        {
+          "attempt": 5,
+          "id": "adaptive-49381cc555941c610d6bd1ba",
+          "origin": "catalog",
+          "steps": [
+            {
+              "args": {
+                "host": "www.google.com",
+                "midhost": "midsld",
+                "repeats": 2,
+                "tcp_seq": -10000
+              },
+              "function": "hostfakesplit"
+            }
+          ],
+          "rank": 0.5,
+          "feedback": {
+            "ackProgressSockets": 0,
+            "decision": "compare_packetization",
+            "nativeExecutedSockets": 3,
+            "nativeExecutionErrors": 0,
+            "nativeSendFailures": 0,
+            "noAckSockets": 2,
+            "packetCaptureComplete": true,
+            "primarySockets": 3,
+            "serverHelloSockets": 0,
+            "tcpUnavailableAuthorities": [],
+            "tlsStrategyLearningAllowed": true
+          },
+          "generation_matches": true,
+          "primary_flows": [
+            {
+              "host": "cdn.discordapp.com",
+              "stage": "tls_timeout",
+              "observation": "exact_flow_not_observed",
+              "gaps": [
+                "exact_flow_not_observed"
+              ],
+              "native_function_calls": 4,
+              "reassembly_lengths": [
+                1888,
+                1400
+              ],
+              "native_trace_incomplete": true
+            },
+            {
+              "host": "discord.com",
+              "stage": "tls_timeout",
+              "observation": "client_hello_no_ack_progress",
+              "gaps": [],
+              "acked_client_bytes": 0,
+              "client_hello_bytes": 1881,
+              "server_hello": false,
+              "reset": false,
+              "native_function_calls": 4,
+              "reassembly_lengths": [
+                1881,
+                1400
+              ],
+              "native_trace_incomplete": true
+            },
+            {
+              "host": "gateway.discord.gg",
+              "stage": "tls_timeout",
+              "observation": "client_hello_no_ack_progress",
+              "gaps": [],
+              "acked_client_bytes": 0,
+              "client_hello_bytes": 1888,
+              "server_hello": false,
+              "reset": false,
+              "native_function_calls": 4,
+              "reassembly_lengths": [
+                1888,
+                1400
+              ],
+              "native_trace_incomplete": true
+            }
+          ]
+        },
+        {
+          "attempt": 6,
+          "id": "adaptive-d30fffc9b3f5a717b9ce2994",
+          "origin": "synthesized",
+          "steps": [
+            {
+              "args": {
+                "blob": "adaptive_tls_clone",
+                "fallback": "tls_google",
+                "sni_del": true,
+                "sni_first": "www.google.com"
+              },
+              "function": "tls_client_hello_clone"
+            },
+            {
+              "args": {
+                "blob": "adaptive_tls_clone",
+                "repeats": 2,
+                "tcp_ack": -66000,
+                "tcp_ts_up": true
+              },
+              "function": "fake"
+            },
+            {
+              "args": {
+                "pattern": "tls_google",
+                "pos": "midsld",
+                "repeats": 2,
+                "seqovl": 16,
+                "seqovl_pattern": "tls_google",
+                "tcp_md5": true
+              },
+              "function": "fakedsplit"
+            }
+          ],
+          "rank": 0.5,
+          "feedback": {
+            "ackProgressSockets": 0,
+            "decision": "compare_packetization",
+            "nativeExecutedSockets": 3,
+            "nativeExecutionErrors": 0,
+            "nativeSendFailures": 0,
+            "noAckSockets": 2,
+            "packetCaptureComplete": true,
+            "primarySockets": 3,
+            "serverHelloSockets": 0,
+            "tcpUnavailableAuthorities": [],
+            "tlsStrategyLearningAllowed": true
+          },
+          "generation_matches": true,
+          "primary_flows": [
+            {
+              "host": "cdn.discordapp.com",
+              "stage": "tls_timeout",
+              "observation": "exact_flow_not_observed",
+              "gaps": [
+                "exact_flow_not_observed"
+              ],
+              "native_function_calls": 12,
+              "reassembly_lengths": [
+                1888,
+                1400
+              ],
+              "native_trace_incomplete": true
+            },
+            {
+              "host": "discord.com",
+              "stage": "tls_timeout",
+              "observation": "client_hello_no_ack_progress",
+              "gaps": [],
+              "acked_client_bytes": 0,
+              "client_hello_bytes": 1881,
+              "server_hello": false,
+              "reset": false,
+              "native_function_calls": 6,
+              "reassembly_lengths": [
+                1400
+              ],
+              "native_trace_incomplete": true
+            },
+            {
+              "host": "gateway.discord.gg",
+              "stage": "tls_timeout",
+              "observation": "client_hello_no_ack_progress",
+              "gaps": [],
+              "acked_client_bytes": 0,
+              "client_hello_bytes": 1888,
+              "server_hello": false,
+              "reset": false,
+              "native_function_calls": 6,
+              "reassembly_lengths": [
+                1400
+              ],
+              "native_trace_incomplete": true
+            }
+          ]
+        },
+        {
+          "attempt": 7,
+          "id": "adaptive-c9738bc10c1685896f4ca9a2",
+          "origin": "synthesized",
+          "steps": [
+            {
+              "args": {
+                "blob": "adaptive_tls_clone",
+                "fallback": "tls_google",
+                "sni_del": true,
+                "sni_first": "www.google.com"
+              },
+              "function": "tls_client_hello_clone"
+            },
+            {
+              "args": {
+                "blob": "adaptive_tls_clone",
+                "repeats": 2,
+                "tcp_ack": -66000,
+                "tcp_ts_up": true
+              },
+              "function": "fake"
+            },
+            {
+              "args": {
+                "pattern": "tls_google",
+                "pos": "midsld",
+                "repeats": 2,
+                "seqovl": 16,
+                "seqovl_pattern": "tls_google",
+                "tcp_md5": true
+              },
+              "function": "fakeddisorder"
+            }
+          ],
+          "rank": 0.5,
+          "feedback": {
+            "ackProgressSockets": 0,
+            "decision": "compare_packetization",
+            "nativeExecutedSockets": 3,
+            "nativeExecutionErrors": 0,
+            "nativeSendFailures": 0,
+            "noAckSockets": 2,
+            "packetCaptureComplete": true,
+            "primarySockets": 3,
+            "serverHelloSockets": 0,
+            "tcpUnavailableAuthorities": [],
+            "tlsStrategyLearningAllowed": true
+          },
+          "generation_matches": true,
+          "primary_flows": [
+            {
+              "host": "cdn.discordapp.com",
+              "stage": "tls_timeout",
+              "observation": "exact_flow_not_observed",
+              "gaps": [
+                "exact_flow_not_observed"
+              ],
+              "native_function_calls": 6,
+              "reassembly_lengths": [
+                1400
+              ],
+              "native_trace_incomplete": true
+            },
+            {
+              "host": "discord.com",
+              "stage": "tls_timeout",
+              "observation": "client_hello_no_ack_progress",
+              "gaps": [],
+              "acked_client_bytes": 0,
+              "client_hello_bytes": 1881,
+              "server_hello": false,
+              "reset": false,
+              "native_function_calls": 12,
+              "reassembly_lengths": [
+                1881,
+                1400
+              ],
+              "native_trace_incomplete": true
+            },
+            {
+              "host": "gateway.discord.gg",
+              "stage": "tls_timeout",
+              "observation": "client_hello_no_ack_progress",
+              "gaps": [],
+              "acked_client_bytes": 0,
+              "client_hello_bytes": 1888,
+              "server_hello": false,
+              "reset": false,
+              "native_function_calls": 12,
+              "reassembly_lengths": [
+                1888,
+                1400
+              ],
+              "native_trace_incomplete": true
+            }
+          ]
+        },
+        {
+          "attempt": 8,
+          "id": "adaptive-fee90423ba8ba995a9fef0f3",
+          "origin": "synthesized",
+          "steps": [
+            {
+              "args": {
+                "pattern": "tls_google",
+                "pos": "midsld",
+                "repeats": 2,
+                "seqovl": 16,
+                "seqovl_pattern": "tls_google",
+                "tcp_md5": true
+              },
+              "function": "fakeddisorder"
+            }
+          ],
+          "rank": 0.5,
+          "feedback": {
+            "ackProgressSockets": 0,
+            "decision": "compare_packetization",
+            "nativeExecutedSockets": 3,
+            "nativeExecutionErrors": 0,
+            "nativeSendFailures": 0,
+            "noAckSockets": 2,
+            "packetCaptureComplete": true,
+            "primarySockets": 3,
+            "serverHelloSockets": 0,
+            "tcpUnavailableAuthorities": [],
+            "tlsStrategyLearningAllowed": true
+          },
+          "generation_matches": true,
+          "primary_flows": [
+            {
+              "host": "cdn.discordapp.com",
+              "stage": "tls_timeout",
+              "observation": "exact_flow_not_observed",
+              "gaps": [
+                "exact_flow_not_observed"
+              ],
+              "native_function_calls": 2,
+              "reassembly_lengths": [
+                1400
+              ],
+              "native_trace_incomplete": true
+            },
+            {
+              "host": "discord.com",
+              "stage": "tls_timeout",
+              "observation": "client_hello_no_ack_progress",
+              "gaps": [],
+              "acked_client_bytes": 0,
+              "client_hello_bytes": 1881,
+              "server_hello": false,
+              "reset": false,
+              "native_function_calls": 2,
+              "reassembly_lengths": [
+                1400
+              ],
+              "native_trace_incomplete": true
+            },
+            {
+              "host": "gateway.discord.gg",
+              "stage": "tls_timeout",
+              "observation": "client_hello_no_ack_progress",
+              "gaps": [],
+              "acked_client_bytes": 0,
+              "client_hello_bytes": 1888,
+              "server_hello": false,
+              "reset": false,
+              "native_function_calls": 4,
+              "reassembly_lengths": [
+                1888,
+                1400
+              ],
+              "native_trace_incomplete": true
+            }
+          ]
+        },
+        {
+          "attempt": 9,
+          "id": "adaptive-7a5271c92aa7d83fe18cb130",
+          "origin": "synthesized",
+          "steps": [
+            {
+              "args": {
+                "pattern": "tls_google",
+                "pos": "midsld",
+                "repeats": 2,
+                "seqovl": 16,
+                "seqovl_pattern": "tls_google",
+                "tcp_md5": true
+              },
+              "function": "fakedsplit"
+            }
+          ],
+          "rank": 0.5,
+          "feedback": {
+            "ackProgressSockets": 0,
+            "decision": "compare_packetization",
+            "nativeExecutedSockets": 3,
+            "nativeExecutionErrors": 0,
+            "nativeSendFailures": 0,
+            "noAckSockets": 2,
+            "packetCaptureComplete": true,
+            "primarySockets": 3,
+            "serverHelloSockets": 0,
+            "tcpUnavailableAuthorities": [],
+            "tlsStrategyLearningAllowed": true
+          },
+          "generation_matches": true,
+          "primary_flows": [
+            {
+              "host": "cdn.discordapp.com",
+              "stage": "tls_timeout",
+              "observation": "exact_flow_not_observed",
+              "gaps": [
+                "exact_flow_not_observed"
+              ],
+              "native_function_calls": 2,
+              "reassembly_lengths": [
+                1400
+              ],
+              "native_trace_incomplete": true
+            },
+            {
+              "host": "discord.com",
+              "stage": "tls_timeout",
+              "observation": "client_hello_no_ack_progress",
+              "gaps": [],
+              "acked_client_bytes": 0,
+              "client_hello_bytes": 1881,
+              "server_hello": false,
+              "reset": false,
+              "native_function_calls": 2,
+              "reassembly_lengths": [
+                1400
+              ],
+              "native_trace_incomplete": true
+            },
+            {
+              "host": "gateway.discord.gg",
+              "stage": "tls_timeout",
+              "observation": "client_hello_no_ack_progress",
+              "gaps": [],
+              "acked_client_bytes": 0,
+              "client_hello_bytes": 1888,
+              "server_hello": false,
+              "reset": false,
+              "native_function_calls": 4,
+              "reassembly_lengths": [
+                1888,
+                1400
+              ],
+              "native_trace_incomplete": true
+            }
+          ]
+        },
+        {
+          "attempt": 10,
+          "id": "adaptive-607c1a4696c5586978089903",
+          "origin": "catalog",
+          "steps": [
+            {
+              "args": {
+                "blob": "fake_default_tls",
+                "repeats": 2,
+                "tcp_md5": true,
+                "tcp_seq": -10000
+              },
+              "function": "fake"
+            },
+            {
+              "args": {
+                "pos": "1,midsld"
+              },
+              "function": "multidisorder"
+            }
+          ],
+          "rank": 0.5,
+          "feedback": {
+            "ackProgressSockets": 0,
+            "decision": "compare_packetization",
+            "nativeExecutedSockets": 3,
+            "nativeExecutionErrors": 0,
+            "nativeSendFailures": 0,
+            "noAckSockets": 2,
+            "packetCaptureComplete": true,
+            "primarySockets": 3,
+            "serverHelloSockets": 0,
+            "tcpUnavailableAuthorities": [],
+            "tlsStrategyLearningAllowed": true
+          },
+          "generation_matches": true,
+          "primary_flows": [
+            {
+              "host": "cdn.discordapp.com",
+              "stage": "tls_timeout",
+              "observation": "exact_flow_not_observed",
+              "gaps": [
+                "exact_flow_not_observed"
+              ],
+              "native_function_calls": 8,
+              "reassembly_lengths": [
+                1888,
+                1400
+              ],
+              "native_trace_incomplete": true
+            },
+            {
+              "host": "discord.com",
+              "stage": "tls_timeout",
+              "observation": "client_hello_no_ack_progress",
+              "gaps": [],
+              "acked_client_bytes": 0,
+              "client_hello_bytes": 1881,
+              "server_hello": false,
+              "reset": false,
+              "native_function_calls": 8,
+              "reassembly_lengths": [
+                1881,
+                1400
+              ],
+              "native_trace_incomplete": true
+            },
+            {
+              "host": "gateway.discord.gg",
+              "stage": "tls_timeout",
+              "observation": "client_hello_no_ack_progress",
+              "gaps": [],
+              "acked_client_bytes": 0,
+              "client_hello_bytes": 1888,
+              "server_hello": false,
+              "reset": false,
+              "native_function_calls": 8,
+              "reassembly_lengths": [
+                1888,
+                1400
+              ],
+              "native_trace_incomplete": true
+            }
+          ]
+        },
+        {
+          "attempt": 11,
+          "id": "adaptive-44ce9a4c4a74354c0fc54a6f",
+          "origin": "synthesized",
+          "steps": [
+            {
+              "args": {
+                "blob": "fake_default_tls",
+                "repeats": 2,
+                "tcp_md5": true,
+                "tcp_seq": -10000
+              },
+              "function": "fake"
+            },
+            {
+              "args": {
+                "pos": "1,midsld"
+              },
+              "function": "multisplit"
+            }
+          ],
+          "rank": 0.5,
+          "feedback": {
+            "ackProgressSockets": 0,
+            "decision": "compare_packetization",
+            "nativeExecutedSockets": 3,
+            "nativeExecutionErrors": 0,
+            "nativeSendFailures": 0,
+            "noAckSockets": 2,
+            "packetCaptureComplete": true,
+            "primarySockets": 3,
+            "serverHelloSockets": 0,
+            "tcpUnavailableAuthorities": [],
+            "tlsStrategyLearningAllowed": true
+          },
+          "generation_matches": true,
+          "primary_flows": [
+            {
+              "host": "cdn.discordapp.com",
+              "stage": "tls_timeout",
+              "observation": "exact_flow_not_observed",
+              "gaps": [
+                "exact_flow_not_observed"
+              ],
+              "native_function_calls": 4,
+              "reassembly_lengths": [
+                1400
+              ],
+              "native_trace_incomplete": true
+            },
+            {
+              "host": "discord.com",
+              "stage": "tls_timeout",
+              "observation": "client_hello_no_ack_progress",
+              "gaps": [],
+              "acked_client_bytes": 0,
+              "client_hello_bytes": 1881,
+              "server_hello": false,
+              "reset": false,
+              "native_function_calls": 8,
+              "reassembly_lengths": [
+                1881,
+                1400
+              ],
+              "native_trace_incomplete": true
+            },
+            {
+              "host": "gateway.discord.gg",
+              "stage": "tls_timeout",
+              "observation": "client_hello_no_ack_progress",
+              "gaps": [],
+              "acked_client_bytes": 0,
+              "client_hello_bytes": 1888,
+              "server_hello": false,
+              "reset": false,
+              "native_function_calls": 4,
+              "reassembly_lengths": [
+                1400
+              ],
+              "native_trace_incomplete": true
+            }
+          ]
+        },
+        {
+          "attempt": 12,
+          "id": "adaptive-4ef68e8c4a7040dfc8189b06",
+          "origin": "catalog",
+          "steps": [
+            {
+              "args": {
+                "blob": "fake_default_tls",
+                "tcp_ts": -1000
+              },
+              "function": "fake"
+            }
+          ],
+          "rank": 0.5,
+          "feedback": {
+            "ackProgressSockets": 2,
+            "decision": "compare_tls_framing",
+            "nativeExecutedSockets": 3,
+            "nativeExecutionErrors": 0,
+            "nativeSendFailures": 0,
+            "noAckSockets": 0,
+            "packetCaptureComplete": true,
+            "primarySockets": 3,
+            "serverHelloSockets": 0,
+            "tcpUnavailableAuthorities": [],
+            "tlsStrategyLearningAllowed": true
+          },
+          "generation_matches": true,
+          "primary_flows": [
+            {
+              "host": "cdn.discordapp.com",
+              "stage": "tls_rejected",
+              "observation": "exact_flow_not_observed",
+              "gaps": [
+                "exact_flow_not_observed"
+              ],
+              "native_function_calls": 2,
+              "reassembly_lengths": [
+                1888
+              ],
+              "native_trace_incomplete": true
+            },
+            {
+              "host": "discord.com",
+              "stage": "tls_rejected",
+              "observation": "inbound_reset_observed",
+              "gaps": [],
+              "acked_client_bytes": 1881,
+              "client_hello_bytes": 1881,
+              "server_hello": false,
+              "reset": true,
+              "native_function_calls": 2,
+              "reassembly_lengths": [
+                1881
+              ],
+              "native_trace_incomplete": true
+            },
+            {
+              "host": "gateway.discord.gg",
+              "stage": "tls_rejected",
+              "observation": "inbound_reset_observed",
+              "gaps": [],
+              "acked_client_bytes": 1888,
+              "client_hello_bytes": 1888,
+              "server_hello": false,
+              "reset": true,
+              "native_function_calls": 2,
+              "reassembly_lengths": [
+                1888
+              ],
+              "native_trace_incomplete": true
+            }
+          ]
+        }
+      ],
+      "baseline_summaries": [
+        {
+          "utc": "2026-10-03T13:59:25.110144100+00:00",
+          "label": "original_before_control",
+          "decision": {
+            "blackholeCount": 0,
+            "dnsOk": true,
+            "eyesWorkingCount": 0,
+            "eyesWorkingHosts": 0,
+            "eyesWorkingOk": false,
+            "failureStage": "tls",
+            "httpsOk": false,
+            "requiredSuccesses": 1,
+            "resetCount": 0,
+            "successfulRounds": 0,
+            "tcpOk": true,
+            "tlsOrQuicOk": false,
+            "totalRounds": 1,
+            "transport": "tls"
+          },
+          "targets": [
+            {
+              "host": "cdn.discordapp.com",
+              "path": "/embed/avatars/0.png",
+              "core": true,
+              "dns_ok": true,
+              "tcp_ok": true,
+              "tls_ok": false,
+              "https_ok": false,
+              "latency_ms": 3013,
+              "failure_stage": "tls"
+            },
+            {
+              "host": "discord.com",
+              "path": "/api/v10/gateway",
+              "core": true,
+              "dns_ok": true,
+              "tcp_ok": true,
+              "tls_ok": false,
+              "https_ok": false,
+              "latency_ms": 3013,
+              "failure_stage": "tls"
+            },
+            {
+              "host": "discord.com",
+              "path": "/app",
+              "core": true,
+              "dns_ok": true,
+              "tcp_ok": true,
+              "tls_ok": true,
+              "https_ok": true,
+              "latency_ms": 261,
+              "failure_stage": "none"
+            },
+            {
+              "host": "gateway.discord.gg",
+              "path": "/?v=10&encoding=json",
+              "core": true,
+              "dns_ok": true,
+              "tcp_ok": true,
+              "tls_ok": false,
+              "https_ok": false,
+              "latency_ms": 3013,
+              "failure_stage": "tls"
+            }
+          ]
+        },
+        {
+          "utc": "2026-10-03T13:59:32.085229700+00:00",
+          "label": "baseline_screen",
+          "decision": {
+            "blackholeCount": 0,
+            "dnsOk": true,
+            "eyesWorkingCount": 0,
+            "eyesWorkingHosts": 0,
+            "eyesWorkingOk": false,
+            "failureStage": "request_timeout",
+            "httpsOk": false,
+            "requiredSuccesses": 2,
+            "resetCount": 0,
+            "successfulRounds": 0,
+            "tcpOk": false,
+            "tlsOrQuicOk": false,
+            "totalRounds": 2,
+            "transport": "tls"
+          },
+          "targets": [
+            {
+              "host": "cdn.discordapp.com",
+              "path": "/embed/avatars/0.png",
+              "core": true,
+              "dns_ok": true,
+              "tcp_ok": true,
+              "tls_ok": false,
+              "https_ok": false,
+              "latency_ms": 3009,
+              "failure_stage": "tls"
+            },
+            {
+              "host": "discord.com",
+              "path": "/api/v10/gateway",
+              "core": true,
+              "dns_ok": true,
+              "tcp_ok": true,
+              "tls_ok": false,
+              "https_ok": false,
+              "latency_ms": 3009,
+              "failure_stage": "tls"
+            },
+            {
+              "host": "discord.com",
+              "path": "/app",
+              "core": true,
+              "dns_ok": true,
+              "tcp_ok": false,
+              "tls_ok": false,
+              "https_ok": false,
+              "latency_ms": 3009,
+              "failure_stage": "request_timeout"
+            },
+            {
+              "host": "gateway.discord.gg",
+              "path": "/?v=10&encoding=json",
+              "core": true,
+              "dns_ok": true,
+              "tcp_ok": true,
+              "tls_ok": false,
+              "https_ok": false,
+              "latency_ms": 3009,
+              "failure_stage": "tls"
+            },
+            {
+              "host": "cdn.discordapp.com",
+              "path": "/embed/avatars/0.png",
+              "core": true,
+              "dns_ok": true,
+              "tcp_ok": true,
+              "tls_ok": false,
+              "https_ok": false,
+              "latency_ms": 3008,
+              "failure_stage": "tls"
+            },
+            {
+              "host": "discord.com",
+              "path": "/api/v10/gateway",
+              "core": true,
+              "dns_ok": true,
+              "tcp_ok": true,
+              "tls_ok": false,
+              "https_ok": false,
+              "latency_ms": 3008,
+              "failure_stage": "tls"
+            },
+            {
+              "host": "discord.com",
+              "path": "/app",
+              "core": true,
+              "dns_ok": true,
+              "tcp_ok": false,
+              "tls_ok": false,
+              "https_ok": false,
+              "latency_ms": 3008,
+              "failure_stage": "request_timeout"
+            },
+            {
+              "host": "gateway.discord.gg",
+              "path": "/?v=10&encoding=json",
+              "core": true,
+              "dns_ok": true,
+              "tcp_ok": true,
+              "tls_ok": false,
+              "https_ok": false,
+              "latency_ms": 3008,
+              "failure_stage": "tls"
+            }
+          ]
+        },
+        {
+          "utc": "2026-10-03T14:00:54.113759300+00:00",
+          "label": "original_after_restore",
+          "decision": {
+            "blackholeCount": 0,
+            "dnsOk": true,
+            "eyesWorkingCount": 0,
+            "eyesWorkingHosts": 0,
+            "eyesWorkingOk": false,
+            "failureStage": "tls",
+            "httpsOk": false,
+            "requiredSuccesses": 1,
+            "resetCount": 0,
+            "successfulRounds": 0,
+            "tcpOk": true,
+            "tlsOrQuicOk": false,
+            "totalRounds": 1,
+            "transport": "tls"
+          },
+          "targets": [
+            {
+              "host": "cdn.discordapp.com",
+              "path": "/embed/avatars/0.png",
+              "core": true,
+              "dns_ok": true,
+              "tcp_ok": true,
+              "tls_ok": false,
+              "https_ok": false,
+              "latency_ms": 3001,
+              "failure_stage": "tls"
+            },
+            {
+              "host": "discord.com",
+              "path": "/api/v10/gateway",
+              "core": true,
+              "dns_ok": true,
+              "tcp_ok": true,
+              "tls_ok": false,
+              "https_ok": false,
+              "latency_ms": 3001,
+              "failure_stage": "tls"
+            },
+            {
+              "host": "discord.com",
+              "path": "/app",
+              "core": true,
+              "dns_ok": true,
+              "tcp_ok": true,
+              "tls_ok": true,
+              "https_ok": true,
+              "latency_ms": 281,
+              "failure_stage": "none"
+            },
+            {
+              "host": "gateway.discord.gg",
+              "path": "/?v=10&encoding=json",
+              "core": true,
+              "dns_ok": true,
+              "tcp_ok": true,
+              "tls_ok": false,
+              "https_ok": false,
+              "latency_ms": 3001,
+              "failure_stage": "tls"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "file": "C:/Users/Usogui/AppData/Local/vlarpsu/Obsession/diagnostics/measurement-20261003T140105.521189600Z-27748-1.jsonl",
+      "sha256": "eb4503cf08c353c67709c414af349da6ed03de17f080156ffc7a1df12e8066de",
+      "first_utc": "2026-10-03T14:01:05.521537200+00:00",
+      "last_utc": "2026-10-03T14:01:28.730923+00:00",
+      "elapsed_recorded_ms": 23209,
+      "mode": "ordinary",
+      "policy": "adaptive_owned_flow_programs_v9",
+      "client_hello_policy": "discord_large_clienthello_early_late_sni_cdn_v1",
+      "search_budget_ms": 90000,
+      "finished": false,
+      "last_status": "rolling_back",
+      "admission_rejections": [],
+      "runtime_error_count": 0,
+      "primary_measurement_count": 9,
+      "primary_measurement_stages": {
+        "tls_timeout": 9
+      },
+      "primary_tcp_ms_range": [
+        44,
+        58
+      ],
+      "flow_decisions": {
+        "compare_packetization": 3
+      },
+      "candidates": [
+        {
+          "attempt": 1,
+          "id": "adaptive-53008cbceee5524144003781",
+          "origin": "synthesized",
+          "steps": [
+            {
+              "args": {
+                "pos": "1,midsld"
+              },
+              "function": "multidisorder"
+            }
+          ],
+          "rank": 0.5,
+          "feedback": {
+            "ackProgressSockets": 0,
+            "decision": "compare_packetization",
+            "nativeExecutedSockets": 3,
+            "nativeExecutionErrors": 0,
+            "nativeSendFailures": 0,
+            "noAckSockets": 2,
+            "packetCaptureComplete": true,
+            "primarySockets": 3,
+            "serverHelloSockets": 0,
+            "tcpUnavailableAuthorities": [],
+            "tlsStrategyLearningAllowed": true
+          },
+          "generation_matches": true,
+          "primary_flows": [
+            {
+              "host": "cdn.discordapp.com",
+              "stage": "tls_timeout",
+              "observation": "exact_flow_not_observed",
+              "gaps": [
+                "exact_flow_not_observed"
+              ],
+              "native_function_calls": 4,
+              "reassembly_lengths": [
+                1888,
+                1400
+              ],
+              "native_trace_incomplete": true
+            },
+            {
+              "host": "discord.com",
+              "stage": "tls_timeout",
+              "observation": "client_hello_no_ack_progress",
+              "gaps": [],
+              "acked_client_bytes": 0,
+              "client_hello_bytes": 1881,
+              "server_hello": false,
+              "reset": false,
+              "native_function_calls": 4,
+              "reassembly_lengths": [
+                1881,
+                1400
+              ],
+              "native_trace_incomplete": true
+            },
+            {
+              "host": "gateway.discord.gg",
+              "stage": "tls_timeout",
+              "observation": "client_hello_no_ack_progress",
+              "gaps": [],
+              "acked_client_bytes": 0,
+              "client_hello_bytes": 1888,
+              "server_hello": false,
+              "reset": false,
+              "native_function_calls": 2,
+              "reassembly_lengths": [
+                1400
+              ],
+              "native_trace_incomplete": true
+            }
+          ]
+        },
+        {
+          "attempt": 2,
+          "id": "adaptive-7cd30f3f80ee6d85bf900252",
+          "origin": "synthesized",
+          "steps": [
+            {
+              "args": {
+                "pos": "1,midsld"
+              },
+              "function": "multisplit"
+            }
+          ],
+          "rank": 0.5,
+          "feedback": {
+            "ackProgressSockets": 0,
+            "decision": "compare_packetization",
+            "nativeExecutedSockets": 3,
+            "nativeExecutionErrors": 0,
+            "nativeSendFailures": 0,
+            "noAckSockets": 2,
+            "packetCaptureComplete": true,
+            "primarySockets": 3,
+            "serverHelloSockets": 0,
+            "tcpUnavailableAuthorities": [],
+            "tlsStrategyLearningAllowed": true
+          },
+          "generation_matches": true,
+          "primary_flows": [
+            {
+              "host": "cdn.discordapp.com",
+              "stage": "tls_timeout",
+              "observation": "exact_flow_not_observed",
+              "gaps": [
+                "exact_flow_not_observed"
+              ],
+              "native_function_calls": 4,
+              "reassembly_lengths": [
+                1888,
+                1400
+              ],
+              "native_trace_incomplete": true
+            },
+            {
+              "host": "discord.com",
+              "stage": "tls_timeout",
+              "observation": "client_hello_no_ack_progress",
+              "gaps": [],
+              "acked_client_bytes": 0,
+              "client_hello_bytes": 1881,
+              "server_hello": false,
+              "reset": false,
+              "native_function_calls": 2,
+              "reassembly_lengths": [
+                1400
+              ],
+              "native_trace_incomplete": true
+            },
+            {
+              "host": "gateway.discord.gg",
+              "stage": "tls_timeout",
+              "observation": "client_hello_no_ack_progress",
+              "gaps": [],
+              "acked_client_bytes": 0,
+              "client_hello_bytes": 1888,
+              "server_hello": false,
+              "reset": false,
+              "native_function_calls": 4,
+              "reassembly_lengths": [
+                1888,
+                1400
+              ],
+              "native_trace_incomplete": true
+            }
+          ]
+        },
+        {
+          "attempt": 3,
+          "id": "adaptive-005c142ad95adbd482b3ee52",
+          "origin": "catalog",
+          "steps": [
+            {
+              "args": {
+                "blob": "tls_google",
+                "repeats": 2,
+                "tcp_seq": -10000
+              },
+              "function": "fake"
+            }
+          ],
+          "rank": 0.5,
+          "feedback": {
+            "ackProgressSockets": 0,
+            "decision": "compare_packetization",
+            "nativeExecutedSockets": 3,
+            "nativeExecutionErrors": 0,
+            "nativeSendFailures": 0,
+            "noAckSockets": 2,
+            "packetCaptureComplete": true,
+            "primarySockets": 3,
+            "serverHelloSockets": 0,
+            "tcpUnavailableAuthorities": [],
+            "tlsStrategyLearningAllowed": true
+          },
+          "generation_matches": true,
+          "primary_flows": [
+            {
+              "host": "cdn.discordapp.com",
+              "stage": "tls_timeout",
+              "observation": "exact_flow_not_observed",
+              "gaps": [
+                "exact_flow_not_observed"
+              ],
+              "native_function_calls": 2,
+              "reassembly_lengths": [
+                1400
+              ],
+              "native_trace_incomplete": true
+            },
+            {
+              "host": "discord.com",
+              "stage": "tls_timeout",
+              "observation": "client_hello_no_ack_progress",
+              "gaps": [],
+              "acked_client_bytes": 0,
+              "client_hello_bytes": 1881,
+              "server_hello": false,
+              "reset": false,
+              "native_function_calls": 2,
+              "reassembly_lengths": [
+                1400
+              ],
+              "native_trace_incomplete": true
+            },
+            {
+              "host": "gateway.discord.gg",
+              "stage": "tls_timeout",
+              "observation": "client_hello_no_ack_progress",
+              "gaps": [],
+              "acked_client_bytes": 0,
+              "client_hello_bytes": 1888,
+              "server_hello": false,
+              "reset": false,
+              "native_function_calls": 2,
+              "reassembly_lengths": [
+                1400
+              ],
+              "native_trace_incomplete": true
+            }
+          ]
+        }
+      ],
+      "baseline_summaries": [
+        {
+          "utc": "2026-10-03T14:01:11.716501+00:00",
+          "label": "baseline_screen",
+          "decision": {
+            "blackholeCount": 0,
+            "dnsOk": true,
+            "eyesWorkingCount": 0,
+            "eyesWorkingHosts": 0,
+            "eyesWorkingOk": false,
+            "failureStage": "tls",
+            "httpsOk": false,
+            "requiredSuccesses": 2,
+            "resetCount": 0,
+            "successfulRounds": 0,
+            "tcpOk": true,
+            "tlsOrQuicOk": false,
+            "totalRounds": 2,
+            "transport": "tls"
+          },
+          "targets": [
+            {
+              "host": "cdn.discordapp.com",
+              "path": "/embed/avatars/0.png",
+              "core": true,
+              "dns_ok": true,
+              "tcp_ok": true,
+              "tls_ok": false,
+              "https_ok": false,
+              "latency_ms": 3010,
+              "failure_stage": "tls"
+            },
+            {
+              "host": "discord.com",
+              "path": "/api/v10/gateway",
+              "core": true,
+              "dns_ok": true,
+              "tcp_ok": true,
+              "tls_ok": false,
+              "https_ok": false,
+              "latency_ms": 3010,
+              "failure_stage": "tls"
+            },
+            {
+              "host": "gateway.discord.gg",
+              "path": "/?v=10&encoding=json",
+              "core": true,
+              "dns_ok": true,
+              "tcp_ok": true,
+              "tls_ok": false,
+              "https_ok": false,
+              "latency_ms": 3010,
+              "failure_stage": "tls"
+            },
+            {
+              "host": "cdn.discordapp.com",
+              "path": "/embed/avatars/0.png",
+              "core": true,
+              "dns_ok": true,
+              "tcp_ok": true,
+              "tls_ok": false,
+              "https_ok": false,
+              "latency_ms": 3013,
+              "failure_stage": "tls"
+            },
+            {
+              "host": "discord.com",
+              "path": "/api/v10/gateway",
+              "core": true,
+              "dns_ok": true,
+              "tcp_ok": true,
+              "tls_ok": false,
+              "https_ok": false,
+              "latency_ms": 3013,
+              "failure_stage": "tls"
+            },
+            {
+              "host": "gateway.discord.gg",
+              "path": "/?v=10&encoding=json",
+              "core": true,
+              "dns_ok": true,
+              "tcp_ok": true,
+              "tls_ok": false,
+              "https_ok": false,
+              "latency_ms": 3012,
+              "failure_stage": "tls"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "limits": [
+    "No new network experiments, replay, installation, runtime or product source changes in this analysis.",
+    "Second report lacks finished; the termination cause and completed rollback cannot be inferred.",
+    "Native send success and packet observer do not prove physical wire delivery.",
+    "All primary native traces are marked incomplete; missing full reassembly is not proof that only 1400 bytes were processed.",
+    "Full-reassembly receipts also coexist with failed connections; truncation is not established as the root cause.",
+    "Actual authenticated Discord startup was not captured in these new reports.",
+    "No attribution of the failure to a specific TSPU device or guaranteed universal workaround."
+  ]
+}

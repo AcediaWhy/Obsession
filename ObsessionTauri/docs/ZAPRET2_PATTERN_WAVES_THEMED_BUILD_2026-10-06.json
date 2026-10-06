@@ -1,0 +1,134 @@
+{
+  "schemaVersion": 1,
+  "recordedAtUtc": "2026-10-05T20:07:03.397Z",
+  "applicationVersion": "1.1.0",
+  "setupPath": "dist-release/experimental/zapret2-pattern-waves-themed-2026-10-06/Obsession-Setup_1.1.0_x64.exe",
+  "setupSize": 30994944,
+  "setupSha256": "de1ea157f6f9dad3a63c8c6c4f6566939ddd01100a75843e9bc39fc4918ae705",
+  "payloadFiles": 95,
+  "payloadEnvelopeVerified": true,
+  "payloadFileHashesVerified": true,
+  "verifiedPayloadEmbeddedInSetup": true,
+  "updateManifestSignatureVerified": true,
+  "embeddedFrontendAsset": "app-DlIQjuit.js",
+  "embeddedPatternAsset": "scene-DPx-tLnN.js",
+  "embeddedThemeCssAsset": "app-BpQl_IB5.css",
+  "sourceHashes": {
+    "src/screens/Dpi.tsx": "c576adafac03fc49630e3cb6c0694baacc41a9e56ee64a98866b55b1c28914fd",
+    "src/design/components/Zapret2PickerAnimation.tsx": "c995d26a137259b8f3f82514086fba3b2949e4bfdfc22b89090634e78c6e5838",
+    "src/design/components/Zapret2StrategyPanel.tsx": "cfe93bfcf403f30ce75bd3bfc48625fd974b6dd287353afb4b0218c3e3be8ecc",
+    "src/design/components/Zapret2StrategyPanel.test.tsx": "2be261fe491e0c460188a74b523a895246ed202e2221848924f4998abaa94597",
+    "src/styles/zapret2-picker-animation.css": "771fbb8c50571e08784b7cbaa319eb9241f05d975338f83bc9c87c0517061b89",
+    "src/design/components/patternWaves/scene.js": "a35977eea545ea2ccee2826ac96fce3c5a1605ed8aea4984a945110e2c8786e5",
+    "src/design/components/patternWaves/Surface.tsx": "8bd6a5125798df25024872cc50879259d754b7548b2b4dc1606f422764e97365",
+    "src/design/components/patternWaves/state.ts": "f3738f732c907025a2b3940b21289a4227c80e39e7120fbd0c62bb28c1832d6f",
+    "src/design/components/patternWaves/state.test.ts": "b1cdfd3907f4eb199b6d809f1cecc70358abb50d7529f5ca909d179ca95aaf44",
+    "src/design/components/patternWaves/scene.test.ts": "32461eb61588677b0a73dc257df872e7afeaa2faf936515d0ddf06bf9a3f7541",
+    "devtools/labs/zapret2-workspace.html": "295e0579a5bf79ac1922a5934fb3fdd543ac366b2faed847a373fb6a8e495c45",
+    "devtools/labs/zapret2-workspace/main.tsx": "c9b6e07f05790e6816c30cb181fac7f20c7aaf6ecedab4bb5fd78f6004dae1e6",
+    "src/design/components/Zapret2CardBackground.tsx": "daf54cf26f70c5013f264076c306c6991470a2eae7a13c59b47a2b546dd62020",
+    "src/design/components/patternWaves/scene.d.ts": "67cbce7f102312c8e03e6f22d9f9afb58f0781c6cc51e1383d737775e8e6746f",
+    "package.json": "cc0c7fcfd71ded66298568f1b999e30840ce6caade4201701413ad8ada269297",
+    "package-lock.json": "272a489e6f4a2c1ceb8ae0b3a3a307022d7aecf24f486e7930a20fce5d71574b",
+    "src-tauri/resources/licenses/ReactBits-PatternWaves.txt": "d96fec56c0674cace3819569e288f413b851561569df564682562e11bab48d4d",
+    "src/styles/globals.css": "9eb7b20b7480bd1da78234a12c674aebbc1892b061133b9b4b73d0614716acb6",
+    "src/styles/goldenMeadow.css": "53578e479b6bd8a97d4dcd0907f1e1ff9d5505c5f39999d44810e4321d41796f",
+    "src/design/components/patternWaves/theme.ts": "99ff8c5c512953166e22fc88a78b2591da37c049e28887ada5eef62b8ab87093",
+    "src/design/components/patternWaves/theme.test.ts": "b253c4397da4b4bb014e9e2a23108548e164c8564e0f1643cda5c6c3315e6dee"
+  },
+  "runtimeAndProfilesUnchangedFromTlsV4": true,
+  "testerVersion": "zapret2-functions-v4",
+  "tests": {
+    "frontendPassed": 73,
+    "frontendProductionBuildPassed": true,
+    "nativeReleaseBuildPassed": true
+  },
+  "baseUiQaReceipt": "docs/ZAPRET2_PATTERN_WAVES_BUILD_2026-10-05.json",
+  "browserFixtureQA": {
+    "desktop": "1280x720",
+    "minimumWindow": "800x600",
+    "themePalettes": [
+      {
+        "theme": "catnap",
+        "color": "244 150 88",
+        "frames": "3285",
+        "morph": "0.550"
+      },
+      {
+        "theme": "japan",
+        "color": "122 152 190",
+        "frames": "3291",
+        "morph": "0.550"
+      },
+      {
+        "theme": "goldenmeadow",
+        "color": "220 177 103",
+        "frames": "3297",
+        "morph": "0.550"
+      },
+      {
+        "theme": "aurora",
+        "color": "99 102 241",
+        "frames": "3303",
+        "morph": "0.550"
+      },
+      {
+        "theme": "ophanim",
+        "color": "185 216 155",
+        "frames": "3311",
+        "morph": "0.550"
+      },
+      {
+        "theme": "midnight",
+        "color": "202 214 226",
+        "frames": "3318",
+        "morph": "0.550"
+      },
+      {
+        "theme": "fallendown",
+        "color": "206 74 82",
+        "frames": "3325",
+        "morph": "0.550"
+      },
+      {
+        "theme": "yanineko",
+        "color": "232 137 46",
+        "frames": "3331",
+        "morph": "0.550"
+      }
+    ],
+    "liveMorphContinuity": {
+      "before": {
+        "color": "244 150 88",
+        "frames": "1130",
+        "morph": "0.550"
+      },
+      "afterColor": "122 152 190",
+      "afterMorph": "0.550",
+      "afterFrames": "1137"
+    },
+    "themedCardsAndControls": true,
+    "themedApplyButtons": true,
+    "reducedMotionRecolor": true,
+    "reducedMotionFramesStopped": true,
+    "reducedMotionFramesAfterRecolor": [
+      4,
+      4
+    ],
+    "browserErrors": [],
+    "maxBackingStore": [
+      720,
+      320
+    ],
+    "maxDpr": 1.25,
+    "maxFps": 60,
+    "hardwareGpuUtilizationMeasured": false
+  },
+  "installed": false,
+  "activeDpiChanged": false,
+  "systemNetworkConfigurationChanged": false,
+  "limitations": [
+    "Theme checks used a development fixture; no live tournament was triggered for UI QA.",
+    "Native WebView rendering and low-end GPU performance were not measured."
+  ]
+}

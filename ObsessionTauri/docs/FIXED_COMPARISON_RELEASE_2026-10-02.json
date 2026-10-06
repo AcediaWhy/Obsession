@@ -1,0 +1,25 @@
+{
+  "verified": true,
+  "files": 93,
+  "setup": "Obsession-Setup_1.1.0_x64-fixed-comparison.exe",
+  "size": 30813184,
+  "sha256": "12a70b4986ff3222dd3f855b42d342ccc7caa0dcdcee7d8aef77cd049eb65014",
+  "app_sha256": "2b59e6002f80dbbdb6dac06176a6055c7802fb40016ce4b612cf4ddfcc7503d8",
+  "effect_mode_and_engine_guard": true,
+  "passive_packet_mode": true,
+  "full_block_sampling": true,
+  "fixed_cross_session_comparison": true,
+  "exact_payload_embedded": true,
+  "all_payload_files_match_sources": true,
+  "update_signature_valid": true,
+  "signed_setup_asset": "Obsession-Setup_1.1.0_x64.exe",
+  "service_sha256": "eb2b59428311e4565287bac60d31e38dcf80c9c7088f5158cf23657ba08f6536",
+  "verified_by": "node scripts/verify-effect-check-release.mjs --packet-observer --full-sampling --fixed-comparison",
+  "tests": {
+    "adaptive_passed": 225,
+    "adaptive_external_ignored": 2,
+    "frontend_passed": 35
+  },
+  "installed_automatically": false,
+  "fixed_mode_live_network_tested": false
+}

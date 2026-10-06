@@ -1,0 +1,25 @@
+{
+  "verified": true,
+  "verified_by": "scripts/verify-effect-check-release.mjs --packet-observer",
+  "setup": "Obsession-Setup_1.1.0_x64-packet-diagnostics.exe",
+  "size": 30779904,
+  "sha256": "76e46b104f3701aee329e0ce6b8ec127b28232190dcd7f5ee08b432857dfdb97",
+  "app_sha256": "17c354a799db839b1904b747bda2a7d8e36587442c2f0efb7057c20cb6167574",
+  "service_sha256": "eb2b59428311e4565287bac60d31e38dcf80c9c7088f5158cf23657ba08f6536",
+  "files": 93,
+  "all_payload_files_match_sources": true,
+  "exact_payload_embedded": true,
+  "update_signature_valid": true,
+  "effect_mode_and_engine_guard": true,
+  "passive_packet_mode": true,
+  "tests": {
+    "adaptive_passed": 216,
+    "adaptive_external_ignored": 2,
+    "eyes_passed": 82,
+    "service_passed": 203,
+    "service_external_ignored": 3,
+    "protocol_passed": 32
+  },
+  "live_user_network_packet_capture_tested": false,
+  "discord_access_fixed_claimed": false
+}

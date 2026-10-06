@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 1,
+  "recordedAtUtc": "2026-10-06T14:48:06.510Z",
+  "applicationVersion": "1.1.0",
+  "setupPath": "dist-release/experimental/zapret2-ui-performance-2026-10-06/Obsession-Setup_1.1.0_x64.exe",
+  "setupSha256": "3f6f313df7add2859a9801f033329ffaba1d3a09149d4282ff6ddb3bcfe2be33",
+  "setupSize": 31023616,
+  "payloadFiles": 95,
+  "payloadEnvelopeVerified": true,
+  "payloadFileHashesVerified": true,
+  "verifiedPayloadEmbeddedInSetup": true,
+  "updateManifestSignatureVerified": true,
+  "embeddedFrontendAsset": "app-DPWp5cZF.js",
+  "embeddedStylesheet": "app-DqgtBjUh.css",
+  "backendUnchangedFrom": "ZAPRET2_DISCORD_COMPOSER_BUILD_2026-10-06.json",
+  "importantPayloadHashes": {
+    "obsession.exe": "47f2ed361d0c8c19f13fd2a6e5067b5a9f30819974d2b81bf9f1cd4e87283a18",
+    "runtime/Obsession.Runtime.exe": "5d43e2258c5969d5f6868f098269125ae61cd216d8dfb9ec3468324efa1b4288",
+    "strategy-packs/builtin/manifest.json": "69c9f6e26b968236f9486e64d1448617a47518260037711b4c31d813d9c097d7",
+    "bin/zapret2/winws2.exe": "d2a3dc3f6bb11f343e6ff74fa083a03e973ddb36d1901632d5ccfc07ccc2912e"
+  },
+  "sourceHashes": {
+    "src/styles/zapret2-picker-animation.css": "63af5098a3e156906cb3f77e359b679f4582c9edcd1ff7c5b08ac30aeea2d89f",
+    "src/design/components/Zapret2StrategyPanel.tsx": "887f99c2c06c11df88286ea0aa9e5dbb4825cfc6399d02624a992baa12b3c851",
+    "src/design/components/Zapret2CardBackground.tsx": "63aa39100cfa2068051b33c59d2a4669d8d2333912287d2fcba6490dc93766f6",
+    "src/design/components/Zapret2PickerAnimation.tsx": "f61956ef67b115471285398a6154511690128d2be05bb1f3b844729081b492be",
+    "src/design/components/patternWaves/dotVeil.ts": "2b5de487ceb29832903ccc106e2d4a1e9dd666e4ae1cde4cd356ef8d814edb11",
+    "src/design/components/patternWaves/dotVeil.test.ts": "0af44deb505ec8d4719b58b2e3d429366770685944e035f4ca4454336e93a79f",
+    "src/design/components/patternWaves/theme.ts": "3f0a3456f48a420131a5e36baad20ceadec123628943d35dc743a81b663237ea",
+    "src/design/components/patternWaves/theme.test.ts": "e97ced5839e43471c2e723a77227019d110160a92f740d23beea972c0c77e750",
+    "src/design/components/patternWaves/scene.js": "68b57806dde8bc6a885f0b72550cbbaa2614c46cf879bb04ba3b360a56579dd9",
+    "src/design/components/patternWaves/scene.test.ts": "b96b47b425efec46e5f867490d95b277517ab2b7f057b3a6c4c30b96cdfa0c24"
+  },
+  "tests": {
+    "frontendPassed": 509,
+    "frontendProductionBuildPassed": true,
+    "nativeReleaseBuildPassed": true
+  },
+  "browserQA": {
+    "themesVerified": 8,
+    "cardWidth": 294,
+    "fontFamily": "IBM Plex Sans",
+    "titleActionsOverlap": false,
+    "restingCardWebglContexts": 0,
+    "pickingCardWebglContexts": 1,
+    "idleAdditionalFrames": 0,
+    "pointerReturnedToRest": true,
+    "cpuCardPaintAverageMs": 1.267924528301886,
+    "cpuCardPaintMaxMs": 1.6,
+    "measurementScope": "card 2D CPU paint; not whole-app GPU utilization",
+    "consoleErrors": [],
+    "screenshot": "artifacts/zapret2-ui-performance/yani-picking.jpg"
+  },
+  "installed": false,
+  "activeDpiChanged": false,
+  "nativeWebViewPerformanceMeasured": false,
+  "limitations": [
+    "Paint timings describe the local browser fixture and one 2D card, not whole-app GPU usage or installed WebView2 performance."
+  ]
+}

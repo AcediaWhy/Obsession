@@ -1,0 +1,16 @@
+{
+  "verified": true,
+  "setup": "Obsession-Setup_1.1.0_x64.exe",
+  "delivery_alias": "Obsession-Setup_1.1.0_x64-repeatability.exe",
+  "size": 30673920,
+  "sha256": "78fcb8b039b78f43b40de0f8f727431140501fa650e8f90893669c66b92c9eb4",
+  "app_sha256": "6f2fe2f982648f28cdce0a9c123f23e26ba1ff3a719c88ec9133bcd13af5e2cf",
+  "payload_files_verified": 93,
+  "exact_payload_embedded": true,
+  "update_signature_valid": true,
+  "compiled_engine_guard_verified": true,
+  "adaptive_tests_passed": 215,
+  "ui_tests_passed": 34,
+  "windows_route_read_only_integration_passed": true,
+  "live_repeatability_test": "not_run_user_VPN_state_required"
+}
