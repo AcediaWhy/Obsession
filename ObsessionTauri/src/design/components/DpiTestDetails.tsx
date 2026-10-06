@@ -14,19 +14,22 @@ function endpointName(url: string): string {
   return new URL(url).hostname;
 }
 
-export function DpiTestDetails({ report }: { report: DpiTestReport }) {
+export function DpiTestDetails({ report, transport }: { report: DpiTestReport; transport?: string }) {
+  const quic = transport === "quic";
   return <details className="text-xs text-ink-soft">
     <summary className="cursor-pointer py-1">Подробности проверки</summary>
     <div className="mt-2 flex flex-col gap-2">
       {report.checks.map((check) => <div key={check.url} className="break-words">
         <div className={check.passed ? "text-ok" : "text-ink-soft"}>
-          {endpointName(check.url)}: {check.passed ? "загружено" : "не подтверждено"}
+          {quic ? new URL(check.url).hostname : endpointName(check.url)}: {check.passed ? quic ? "подключение подтверждено" : "загружено" : "не подтверждено"}
         </div>
         <div>{(check.elapsed_ms / 1000).toFixed(2)} с · {check.bytes} байт · попыток: {check.attempts}
           {check.http_status != null ? ` · HTTP ${check.http_status}` : ""}</div>
         {check.error && <div className="mt-1 break-all">{check.error}</div>}
       </div>)}
-      <p className="text-3xs">Время включает подключение и повторы, это не замер скорости канала. Голос, видеопоток и все вложения этим тестом не проверяются.</p>
+      <p className="text-3xs">{quic
+        ? "Проверено защищённое QUIC-подключение. HTTP/3-запросы и видеопоток не проверяются."
+        : "Время включает подключение и повторы, это не замер скорости канала. Голос, видеопоток и все вложения этим тестом не проверяются."}</p>
     </div>
   </details>;
 }

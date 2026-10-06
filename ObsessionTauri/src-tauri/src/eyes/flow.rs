@@ -362,7 +362,7 @@ fn compatibility_working_evidence(payload: &[u8]) -> Option<&'static str> {
     is_alive.then_some("server_hello")
 }
 
-fn strict_tls_working_evidence(stream: &[u8]) -> Option<&'static str> {
+pub(crate) fn strict_tls_working_evidence(stream: &[u8]) -> Option<&'static str> {
     let mut record_at = 0usize;
     let mut handshake = Vec::new();
     let mut handshake_at = 0usize;
@@ -1054,6 +1054,8 @@ mod tests {
 
     fn syn(seq: u32) -> ParsedPacket {
         ParsedPacket {
+            local_ip: "127.0.0.1".parse().unwrap(),
+            ack_number: 0,
             outbound: true,
             key: key(),
             ttl: 128,
@@ -1068,6 +1070,8 @@ mod tests {
 
     fn synack() -> ParsedPacket {
         ParsedPacket {
+            local_ip: "127.0.0.1".parse().unwrap(),
+            ack_number: 0,
             outbound: false,
             key: key(),
             ttl: 64,
@@ -1083,6 +1087,8 @@ mod tests {
 
     fn out_data(seq: u32, payload: Vec<u8>) -> ParsedPacket {
         ParsedPacket {
+            local_ip: "127.0.0.1".parse().unwrap(),
+            ack_number: 0,
             outbound: true,
             key: key(),
             ttl: 128,
@@ -1098,6 +1104,8 @@ mod tests {
 
     fn in_rst() -> ParsedPacket {
         ParsedPacket {
+            local_ip: "127.0.0.1".parse().unwrap(),
+            ack_number: 0,
             outbound: false,
             key: key(),
             ttl: 64,
@@ -1112,6 +1120,8 @@ mod tests {
 
     fn in_data_at(seq: u32, payload: Vec<u8>) -> ParsedPacket {
         ParsedPacket {
+            local_ip: "127.0.0.1".parse().unwrap(),
+            ack_number: 0,
             outbound: false,
             key: key(),
             ttl: 64,
@@ -1131,6 +1141,8 @@ mod tests {
 
     fn out_fin() -> ParsedPacket {
         ParsedPacket {
+            local_ip: "127.0.0.1".parse().unwrap(),
+            ack_number: 0,
             outbound: true,
             key: key(),
             ttl: 128,
@@ -1146,6 +1158,8 @@ mod tests {
 
     fn out_rst(port: u16) -> ParsedPacket {
         ParsedPacket {
+            local_ip: "127.0.0.1".parse().unwrap(),
+            ack_number: 0,
             outbound: true,
             key: FlowKey {
                 local_port: port,
@@ -1501,6 +1515,8 @@ mod tests {
             remote_port: 443,
         };
         let mk_syn = |seq, port| ParsedPacket {
+            local_ip: "127.0.0.1".parse().unwrap(),
+            ack_number: 0,
             outbound: true,
             key: FlowKey {
                 local_port: port,
@@ -1546,6 +1562,8 @@ mod tests {
 
         let mut mk_syn = |seq, now| {
             let packet = ParsedPacket {
+                local_ip: "127.0.0.1".parse().unwrap(),
+                ack_number: 0,
                 outbound: true,
                 key: flow_key,
                 ttl: 128,
@@ -1628,6 +1646,8 @@ mod tests {
 
         for now in [0, 1_000, 2_000, 3_000] {
             let packet = ParsedPacket {
+                local_ip: "127.0.0.1".parse().unwrap(),
+                ack_number: 0,
                 outbound: true,
                 key: flow_key,
                 ttl: 128,
@@ -1796,6 +1816,8 @@ mod tests {
         t.on_packet(&in_data(server_hello()), 40);
         // Второе соединение (порт 51001): SYN + 3 ретрансмита, затем клиентский RST.
         let mk_syn = |seq, port| ParsedPacket {
+            local_ip: "127.0.0.1".parse().unwrap(),
+            ack_number: 0,
             outbound: true,
             key: FlowKey {
                 local_port: port,

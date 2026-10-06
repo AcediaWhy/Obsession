@@ -51,7 +51,6 @@ pub enum DpiLaunchSpec {
     },
     Zapret2 {
         selections: Vec<(String, String)>,
-        adaptive_overrides: BTreeMap<String, crate::adaptive_strategy::dsl::StrategyCandidate>,
     },
 }
 
@@ -675,18 +674,13 @@ pub struct AppState {
     /// Задача «Мозга» (L3), пока включено авто-восстановление.
     pub brain: Mutex<Option<crate::brain::runtime::BrainHandle>>,
     pub brain_revision: RevisionClock,
-    /// Отдельный coordinator Safe Strategy DSL для Zapret2. Не разделяет
-    /// очереди или state machine с Legacy Brain.
-    pub adaptive: Mutex<Option<crate::adaptive_strategy::runtime::AdaptiveHandle>>,
-    pub adaptive_revision: RevisionClock,
     /// Последний снимок сетевой идентичности (Менеджер сети, L2).
     pub netid: Mutex<Option<crate::netid::NetIdentity>>,
     /// Сериализует резолв сетевой идентичности: без него два конкурентных
     /// вызова оба видят пустой кэш и дважды дёргают ipinfo (лишний внешний
     /// round-trip + дребезг значения). Держится через `.await` резолва.
     pub netid_gate: tokio::sync::Mutex<()>,
-    /// Observe-only Legacy Reliability Manager. Не пересекается с Brain и
-    /// adaptive Zapret2 coordinator; хранит только текущую session ingress.
+    /// Observe-only Legacy Reliability Manager. Изолирован от Brain.
     pub legacy_manager: Mutex<Option<crate::legacy_reliability::runtime::LegacyReliabilityHandle>>,
     /// Последняя публичная lifecycle/health проекция observe-only Manager.
     pub legacy_reliability_status:
@@ -778,8 +772,6 @@ impl AppState {
             eyes_teardowns: Mutex::new(Vec::new()),
             brain: Mutex::new(None),
             brain_revision: RevisionClock::default(),
-            adaptive: Mutex::new(None),
-            adaptive_revision: RevisionClock::default(),
             netid: Mutex::new(None),
             netid_gate: tokio::sync::Mutex::new(()),
             legacy_manager: Mutex::new(None),
@@ -824,17 +816,13 @@ mod tests {
         let settings = RevisionClock::default();
         let hosts = RevisionClock::default();
         let brain = RevisionClock::default();
-        let adaptive = RevisionClock::default();
         let legacy_reliability = RevisionClock::default();
 
         assert_eq!(brain.bump(), 1);
-        assert_eq!(adaptive.bump(), 1);
-        assert_eq!(adaptive.bump(), 2);
         assert_eq!(legacy_reliability.bump(), 1);
         assert_eq!(settings.current(), 0);
         assert_eq!(hosts.current(), 0);
         assert_eq!(brain.current(), 1);
-        assert_eq!(adaptive.current(), 2);
         assert_eq!(legacy_reliability.current(), 1);
     }
 

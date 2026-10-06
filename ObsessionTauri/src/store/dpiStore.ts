@@ -223,7 +223,7 @@ export const useDpiStore = create<DpiState>((set, get) => ({
   },
 
   toggleCategory: (cat) => {
-    if (get().active) return;
+    if (get().active || get().transitioning || get().testing) return;
     const engine = currentEngine(get().engines);
     if (engine === "zapret2" && !ZAPRET2_CATEGORIES.has(cat)) return;
     const sel = new Set(get().selectedCategories);
@@ -245,14 +245,14 @@ export const useDpiStore = create<DpiState>((set, get) => ({
   },
 
   setConfig: (cat, file) => {
-    if (get().active) return;
+    if (get().active || get().transitioning || get().testing) return;
     set({ selectedConfigs: { ...get().selectedConfigs, [cat]: file } });
     persist();
   },
 
   start: async () => {
     const { selectedConfigs, transitioning } = get();
-    if (transitioning) return;
+    if (transitioning || get().testing) return;
     set({ transitioning: true, error: "" });
     const engine = currentEngine(get().engines);
     const selectedCategories =
@@ -285,7 +285,7 @@ export const useDpiStore = create<DpiState>((set, get) => ({
   },
 
   stop: async () => {
-    if (get().transitioning) return;
+    if (get().transitioning || get().testing) return;
     set({ transitioning: true });
     try {
       await withDeadline(

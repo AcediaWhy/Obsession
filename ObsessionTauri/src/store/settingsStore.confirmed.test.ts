@@ -36,8 +36,9 @@ const initialSettings: Settings = {
   lan_publish_secs: 0,
   dpi_engine: "legacy",
   zapret2_level: 0,
-  adaptive_strategy_enabled: false,
-  adaptive_search_mode: "balanced",
+  zapret2_clienthello: false,
+  zapret2_profiles: [],
+  zapret2_pick_mode: "balanced",
 };
 
 function deferred<T>() {

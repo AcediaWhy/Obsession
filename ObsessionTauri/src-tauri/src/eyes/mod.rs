@@ -11,6 +11,7 @@
 #[cfg(windows)]
 pub mod capture;
 pub mod fake_filter;
+pub mod diagnostic;
 pub mod flow;
 pub mod parse;
 pub mod quic;

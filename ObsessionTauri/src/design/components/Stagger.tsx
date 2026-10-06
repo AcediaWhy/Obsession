@@ -2,6 +2,7 @@ import { motion, type Variants } from "framer-motion";
 import type { ReactNode } from "react";
 
 import { cascade, dur, ease, spring } from "../tokens";
+import { useMotionOff } from "../render";
 
 // Контейнер запускает появление дочерних элементов с заданным интервалом.
 // В Chromium/WebView2 filter или opacity < 1 на предке ограничивают область
@@ -39,6 +40,8 @@ export function Stagger({
   children: ReactNode;
   className?: string;
 }) {
+  const motionOff = useMotionOff();
+  if (motionOff) return <div className={className}>{children}</div>;
   return (
     <motion.div variants={container} initial="hidden" animate="show" className={className}>
       {children}
@@ -59,6 +62,8 @@ export function StaggerItem({
   /** Вне контейнера Stagger: элемент запускает свой вход сам (шапки экранов). */
   standalone?: boolean;
 }) {
+  const motionOff = useMotionOff();
+  if (motionOff) return <div className={className}>{children}</div>;
   return (
     <motion.div
       variants={standalone ? itemStandalone : glass ? itemGlass : item}

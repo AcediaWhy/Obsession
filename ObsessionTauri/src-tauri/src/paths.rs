@@ -29,7 +29,7 @@ pub struct Paths {
 }
 
 impl Paths {
-    /// Инициализирует папки в `%APPDATA%\Obsession` и распаковывает ресурсы.
+    /// Инициализирует папки в `%LOCALAPPDATA%\vlarpsu\Obsession` и распаковывает ресурсы.
     pub fn init(resource_dir: &Path) -> std::io::Result<Self> {
         let local_appdata = std::env::var("LOCALAPPDATA")
             .map(PathBuf::from)
@@ -112,9 +112,6 @@ impl Paths {
     }
     /// Подтверждённые Safe Strategy DSL-кандидаты Zapret2 по отпечатку сети.
     /// Хранится отдельно от Legacy `netcache.json`, где `conf` означает `.conf`.
-    pub fn adaptive_strategy_cache_path(&self) -> PathBuf {
-        self.base_dir.join("adaptive-strategies.json")
-    }
     /// Кэш сетевой идентичности: MAC шлюза → ASN_region (мемоизация ipinfo).
     pub fn netid_cache_path(&self) -> PathBuf {
         self.base_dir.join("netid_cache.json")
@@ -445,10 +442,6 @@ mod tests {
         assert_eq!(
             paths.legacy_reliability_cache_path(),
             user.join("legacy-reliability-cache.json")
-        );
-        assert_eq!(
-            paths.adaptive_strategy_cache_path(),
-            user.join("adaptive-strategies.json")
         );
     }
 }

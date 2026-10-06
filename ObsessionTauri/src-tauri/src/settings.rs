@@ -56,13 +56,15 @@ pub struct Settings {
     /// Выбранный DPI-движок: "legacy" (Zapret1, default) или "zapret2" (Beta).
     /// Мозг никогда не выставляет zapret2 автоматически.
     pub dpi_engine: String,
-    /// Уровень агрессивности стратегии Zapret2 (1=мягко … 3=жёстко). Выбирает
-    /// стратегию из лестницы пака по aggressiveness. 0 = авто (максимальная).
+    /// Номер встроенного набора Zapret2 (1–4). Выбирает
+    /// стратегию из лестницы пака по aggressiveness. 0 = максимальный набор.
     pub zapret2_level: u8,
-    /// Локальный подбор Safe Strategy DSL для Zapret2. Отдельный feature flag.
-    pub adaptive_strategy_enabled: bool,
-    /// Adaptive search budget: balanced (default), fast or deep.
-    pub adaptive_search_mode: String,
+    /// Explicit experimental replacement of Discord TLS only. Never enabled by migration.
+    pub zapret2_clienthello: bool,
+    pub zapret2_profiles: Vec<crate::dpi_engine::Zapret2ProfileSelection>,
+    pub zapret2_pick_mode: String,
+    #[serde(default)]
+    pub zapret2_profile_migration_version: u8,
 }
 
 /// Частичное обновление настроек. `Option` отличает «поле не меняется» от false,
@@ -89,8 +91,9 @@ pub struct SettingsPatch {
     pub lan_publish_secs: Option<u16>,
     pub dpi_engine: Option<String>,
     pub zapret2_level: Option<u8>,
-    pub adaptive_strategy_enabled: Option<bool>,
-    pub adaptive_search_mode: Option<String>,
+    pub zapret2_clienthello: Option<bool>,
+    pub zapret2_profiles: Option<Vec<crate::dpi_engine::Zapret2ProfileSelection>>,
+    pub zapret2_pick_mode: Option<String>,
 }
 
 impl Default for Settings {
@@ -116,8 +119,10 @@ impl Default for Settings {
             lan_publish_secs: 0,
             dpi_engine: "legacy".to_string(),
             zapret2_level: 0, // 0 = авто (максимальная агрессивность)
-            adaptive_strategy_enabled: false,
-            adaptive_search_mode: "balanced".to_string(),
+            zapret2_clienthello: false,
+            zapret2_profiles: Vec::new(),
+            zapret2_pick_mode: "balanced".into(),
+            zapret2_profile_migration_version: 0,
         }
     }
 }
@@ -210,12 +215,11 @@ impl Settings {
         apply!(lan_publish_secs);
         apply!(dpi_engine);
         apply!(zapret2_level);
-        apply!(adaptive_strategy_enabled);
-        if let Some(mode) = patch.adaptive_search_mode {
-            self.adaptive_search_mode = match mode.as_str() {
-                "fast" | "deep" => mode,
-                _ => "balanced".to_string(),
-            };
+        apply!(zapret2_clienthello);
+        apply!(zapret2_profiles);
+        apply!(zapret2_pick_mode);
+        if !matches!(self.zapret2_pick_mode.as_str(), "fast" | "balanced" | "deep") {
+            self.zapret2_pick_mode = "balanced".into();
         }
         self.remove_retired_dpi_categories();
     }
@@ -361,6 +365,38 @@ fn atomic_replace(source: &Path, destination: &Path) -> io::Result<()> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn old_search_settings_do_not_change_manual_dpi_configuration() {
+        let settings: Settings = serde_json::from_value(serde_json::json!({
+            "adaptive_strategy_enabled": true,
+            "adaptive_search_mode": "deep",
+            "dpi_engine": "zapret2",
+            "zapret2_level": 2,
+            "selected_configs": {"discord": "discord_12.conf"}
+        })).unwrap();
+        assert_eq!(settings.dpi_engine, "zapret2");
+        assert_eq!(settings.zapret2_level, 2);
+        assert!(!settings.zapret2_clienthello);
+        assert_eq!(settings.selected_configs["discord"], "discord_12.conf");
+        let saved = serde_json::to_value(settings).unwrap();
+        assert!(saved.get("adaptive_strategy_enabled").is_none());
+        assert!(saved.get("adaptive_search_mode").is_none());
+    }
+
+    #[test]
+    fn clienthello_requires_explicit_patch_and_preserves_selected_set() {
+        let mut settings: Settings = serde_json::from_str(r#"{"dpi_engine":"zapret2","zapret2_level":3}"#).unwrap();
+        assert!(!settings.zapret2_clienthello);
+        settings.apply_patch(SettingsPatch { zapret2_clienthello: Some(true), ..Default::default() });
+        assert!(settings.zapret2_clienthello);
+        assert_eq!(settings.zapret2_level, 3);
+        settings.apply_patch(SettingsPatch { zapret2_level: Some(1), ..Default::default() });
+        assert!(settings.zapret2_clienthello);
+        settings.apply_patch(SettingsPatch { zapret2_clienthello: Some(false), ..Default::default() });
+        assert!(!settings.zapret2_clienthello);
+        assert_eq!(settings.zapret2_level, 1);
+    }
+
     fn test_dir(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
             "obsession-settings-{name}-{}-{}",
@@ -423,21 +459,6 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
-    #[test]
-    fn adaptive_search_mode_defaults_and_normalizes() {
-        let mut settings = Settings::default();
-        assert_eq!(settings.adaptive_search_mode, "balanced");
-        settings.apply_patch(SettingsPatch {
-            adaptive_search_mode: Some("fast".into()),
-            ..Default::default()
-        });
-        assert_eq!(settings.adaptive_search_mode, "fast");
-        settings.apply_patch(SettingsPatch {
-            adaptive_search_mode: Some("unsupported".into()),
-            ..Default::default()
-        });
-        assert_eq!(settings.adaptive_search_mode, "balanced");
-    }
 
     #[test]
     fn legacy_automatic_mode_is_explicit_and_old_flag_migrates_safe() {

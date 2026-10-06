@@ -4,9 +4,6 @@ import {
   api,
   on,
   runtime,
-  type AdaptiveProbeBatch,
-  type AdaptiveStatus,
-  type AdaptiveSuggestion,
   type AppConfig,
   type BootstrapSnapshot,
   type BrainStatus,
@@ -16,7 +13,6 @@ import {
   type Settings,
   type VersionedSection,
 } from "../lib/tauri";
-import { useAdaptiveStrategyStore } from "./adaptiveStrategyStore";
 import { useBrainStore } from "./brainStore";
 import { useDpiStore } from "./dpiStore";
 import { subscribeHostsToSettings, useHostsStore } from "./hostsStore";
@@ -24,7 +20,7 @@ import { useLegacyReliabilityStore } from "./legacyReliabilityStore";
 import { useProxyStore } from "./proxyStore";
 import { useSettingsStore } from "./settingsStore";
 
-const BOOTSTRAP_SCHEMA_VERSION = 8;
+const BOOTSTRAP_SCHEMA_VERSION = 9;
 
 type BootstrapErrorScope = "listeners" | "snapshot" | "dpi" | "proxy";
 
@@ -38,17 +34,8 @@ export interface LauncherBootstrapPorts {
   listenBrain: (
     cb: (section: VersionedSection<BrainStatus>) => void,
   ) => Promise<UnlistenFn>;
-  listenAdaptive: (
-    cb: (section: VersionedSection<AdaptiveStatus>) => void,
-  ) => Promise<UnlistenFn>;
   listenLegacyReliability: (
     cb: (section: VersionedSection<LegacyReliabilityStatus>) => void,
-  ) => Promise<UnlistenFn>;
-  listenSuggestion: (
-    cb: (suggestion: AdaptiveSuggestion) => void,
-  ) => Promise<UnlistenFn>;
-  listenProbe: (
-    cb: (probe: AdaptiveProbeBatch) => void,
   ) => Promise<UnlistenFn>;
   subscribeSettings: () => UnlistenFn;
   getSnapshot: () => Promise<BootstrapSnapshot>;
@@ -60,15 +47,10 @@ export interface LauncherBootstrapPorts {
   applyDpi: (section: BootstrapSnapshot["dpi"]) => boolean;
   applyProxy: (section: BootstrapSnapshot["proxy"]) => boolean;
   applyBrain: (section: BootstrapSnapshot["brain"]) => boolean;
-  applyAdaptive: (
-    section: BootstrapSnapshot["adaptive"],
-  ) => boolean;
   applyLegacyReliability: (
     section: BootstrapSnapshot["legacyReliability"],
   ) => boolean;
   applyHosts: (section: BootstrapSnapshot["hosts"]) => boolean;
-  applySuggestion: (suggestion: AdaptiveSuggestion) => void;
-  applyProbe: (probe: AdaptiveProbeBatch) => void;
   initializeDpi: (config: AppConfig, settings: Settings) => void;
   initializeProxy: (settings: Settings, available: boolean) => void;
   loadDpiMetadata: () => Promise<void>;
@@ -118,14 +100,13 @@ function applySnapshot(
     );
   }
 
-  // Each reducer owns its revision. An adaptive event cannot suppress a DPI
+  // Each reducer owns its revision. A brain event cannot suppress a DPI
   // section from the same snapshot, and one bad/stale section does not gate the rest.
   ports.applyHosts(snapshot.hosts);
   ports.applySettings(snapshot.settings);
   ports.applyDpi(snapshot.dpi);
   ports.applyProxy(snapshot.proxy);
   ports.applyBrain(snapshot.brain);
-  ports.applyAdaptive(snapshot.adaptive);
   ports.applyLegacyReliability(snapshot.legacyReliability);
 }
 
@@ -184,12 +165,9 @@ async function startSession(
     }),
     ports.listenProxy(ports.applyProxy),
     ports.listenBrain((section) => ports.applyBrain(section)),
-    ports.listenAdaptive((section) => ports.applyAdaptive(section)),
     ports.listenLegacyReliability((section) =>
       ports.applyLegacyReliability(section),
     ),
-    ports.listenSuggestion(ports.applySuggestion),
-    ports.listenProbe(ports.applyProbe),
   ]);
 
   const failed = registrations.find(
@@ -266,10 +244,7 @@ const realPorts: LauncherBootstrapPorts = {
   listenDpi: on.dpiStatusVersioned,
   listenProxy: on.proxyStatusVersioned,
   listenBrain: on.brainStatusVersioned,
-  listenAdaptive: on.adaptiveStatusVersioned,
   listenLegacyReliability: on.legacyReliabilityStatusVersioned,
-  listenSuggestion: on.adaptiveSuggestion,
-  listenProbe: on.adaptiveProbe,
   subscribeSettings: subscribeHostsToSettings,
   getSnapshot: runtime.bootstrap,
   getConfig: api.getConfig,
@@ -282,8 +257,6 @@ const realPorts: LauncherBootstrapPorts = {
     useProxyStore.getState().applyVersionedStatus(section),
   applyBrain: (section) =>
     useBrainStore.getState().applyVersionedStatus(section),
-  applyAdaptive: (section) =>
-    useAdaptiveStrategyStore.getState().applyVersionedStatus(section),
   applyLegacyReliability: (section) => {
     const applied = useLegacyReliabilityStore
       .getState()
@@ -306,9 +279,6 @@ const realPorts: LauncherBootstrapPorts = {
   },
   applyHosts: (section) =>
     useHostsStore.getState().applyVersionedStatus(section),
-  applySuggestion: (suggestion) =>
-    useAdaptiveStrategyStore.setState({ suggestion }),
-  applyProbe: (probe) => useAdaptiveStrategyStore.setState({ probe }),
   initializeDpi: (config, settings) =>
     useDpiStore.getState().initialize(config, settings),
   initializeProxy: (settings, available) =>

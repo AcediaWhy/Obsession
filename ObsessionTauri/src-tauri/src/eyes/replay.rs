@@ -48,6 +48,8 @@ fn fk(port: u16) -> FlowKey {
 
 fn p_syn(port: u16, ttl: u8, seq: u32) -> ParsedPacket {
     ParsedPacket {
+        local_ip: "127.0.0.1".parse().unwrap(),
+        ack_number: 0,
         outbound: true,
         key: fk(port),
         ttl,
@@ -62,6 +64,8 @@ fn p_syn(port: u16, ttl: u8, seq: u32) -> ParsedPacket {
 
 fn p_synack(port: u16) -> ParsedPacket {
     ParsedPacket {
+        local_ip: "127.0.0.1".parse().unwrap(),
+        ack_number: 0,
         outbound: false,
         key: fk(port),
         ttl: 54,
@@ -77,6 +81,8 @@ fn p_synack(port: u16) -> ParsedPacket {
 
 fn p_out(port: u16, ttl: u8, seq: u32, payload: Vec<u8>) -> ParsedPacket {
     ParsedPacket {
+        local_ip: "127.0.0.1".parse().unwrap(),
+        ack_number: 0,
         outbound: true,
         key: fk(port),
         ttl,
@@ -92,6 +98,8 @@ fn p_out(port: u16, ttl: u8, seq: u32, payload: Vec<u8>) -> ParsedPacket {
 
 fn p_in_rst(port: u16) -> ParsedPacket {
     ParsedPacket {
+        local_ip: "127.0.0.1".parse().unwrap(),
+        ack_number: 0,
         outbound: false,
         key: fk(port),
         ttl: 54,
@@ -106,6 +114,8 @@ fn p_in_rst(port: u16) -> ParsedPacket {
 
 fn p_in(port: u16, payload: Vec<u8>) -> ParsedPacket {
     ParsedPacket {
+        local_ip: "127.0.0.1".parse().unwrap(),
+        ack_number: 0,
         outbound: false,
         key: fk(port),
         ttl: 54,

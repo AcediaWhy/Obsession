@@ -173,7 +173,17 @@ function writeSha256File(file) {
 // Версия — единственный источник: корневой tauri.conf.json.
 const conf = JSON.parse(fs.readFileSync(path.join(root, "src-tauri", "tauri.conf.json"), "utf8"));
 const version = conf.version;
+const packageVersion = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")).version;
+const cargoVersion = fs.readFileSync(path.join(root, "src-tauri", "Cargo.toml"), "utf8")
+  .match(/^version\s*=\s*"([^"]+)"/m)?.[1];
+if (version !== packageVersion || version !== cargoVersion) {
+  throw new Error(`Release versions disagree: tauri.conf=${version}, package.json=${packageVersion}, Cargo.toml=${cargoVersion}`);
+}
 const appExe = path.join(root, "src-tauri", "target", "release", "obsession.exe");
+const signingKey = process.env.OBSESSION_UPDATE_SIGNING_KEY || path.join(root, ".secrets", "update-private.pem");
+if (!fs.existsSync(signingKey)) {
+  throw new Error("Update signing key is missing. Set OBSESSION_UPDATE_SIGNING_KEY or create .secrets/update-private.pem before building Setup.");
+}
 
 // 1. Main application and its exact release resource layout, without a
 // current-user NSIS bundle.
@@ -219,5 +229,13 @@ fs.mkdirSync(outDir, { recursive: true });
 const out = path.join(outDir, `Obsession-Setup_${version}_x64.exe`);
 fs.copyFileSync(built, out);
 const checksum = writeSha256File(out);
+const signed = spawnSync(process.execPath, [path.join(root, "scripts", "sign-update.mjs"), out, version], {
+  cwd: root,
+  stdio: "inherit",
+  env: process.env,
+});
+if (signed.status !== 0) {
+  throw new Error(`Failed to sign update manifest (exit ${signed.status ?? "unknown"})`);
+}
 console.log(`\n✔ Готово: ${path.relative(root, out)} (${mb(fs.statSync(out).size)})`);
 console.log(`✔ SHA-256: ${path.relative(root, checksum)}`);

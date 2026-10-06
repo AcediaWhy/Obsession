@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use obsession_runtime_protocol::{DpiEngine, DpiRuntimeSnapshot, DpiSelection, RuntimeStarted};
+use obsession_runtime_protocol::{DpiDiagnostics, DpiProcessDiagnostics, DpiEngine, DpiRuntimeSnapshot, DpiSelection, RuntimeStarted};
 use windows::core::{Error as WindowsError, PCWSTR, PWSTR};
 use windows::Win32::Foundation::{
     CloseHandle, FILETIME, HANDLE, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
@@ -25,7 +25,7 @@ use windows::Win32::System::JobObjects::{
 };
 use windows::Win32::System::Threading::{
     CreateProcessW, GetExitCodeProcess, GetProcessTimes, ResumeThread, TerminateProcess,
-    WaitForSingleObject, CREATE_NO_WINDOW, CREATE_SUSPENDED, PROCESS_INFORMATION, STARTUPINFOW,
+    WaitForSingleObject, CREATE_NO_WINDOW, CREATE_SUSPENDED, EXTENDED_STARTUPINFO_PRESENT, PROCESS_INFORMATION, STARTUPINFOW,
 };
 
 use crate::dpi_materializer::{
@@ -47,6 +47,8 @@ pub struct ProcessIdentity {
 
 pub trait RuntimeProcessGroup: Send {
     fn identities(&self) -> &[ProcessIdentity];
+    fn initialization_retries(&self) -> u8 { 0 }
+    fn diagnostics(&self) -> Vec<DpiProcessDiagnostics> { Vec::new() }
     fn stop(&mut self, timeout: Duration) -> Result<(), ProcessError>;
 }
 
@@ -81,8 +83,17 @@ impl<L: RuntimeProcessLauncher> DpiExecutor<L> {
         if self.active.is_some() {
             return Err(ExecutorError::Busy);
         }
-        let generation = self.allocate_generation();
-        let materialized = self.state_layout.materialize(plan, generation)?;
+        let materialized = loop {
+            let generation = self.allocate_generation()?;
+            match self.state_layout.materialize(plan, generation) {
+                Ok(materialized) => break materialized,
+                // Another writer may reserve the number after our scan.
+                // Never clean up or adopt a generation we did not create.
+                Err(MaterializationError::GenerationAlreadyExists(_)) => continue,
+                Err(error) => return Err(error.into()),
+            }
+        };
+        let generation = materialized.generation();
 
         // This is deliberately repeated after materialization and immediately
         // before CreateProcessW. A catalog loaded at service startup is not an
@@ -120,6 +131,7 @@ impl<L: RuntimeProcessLauncher> DpiExecutor<L> {
                 strategy_id: strategy.strategy_id().to_owned(),
             })
             .collect();
+        let initialization_retries = group.initialization_retries();
         self.active = Some(ActiveRuntime {
             generation,
             engine: plan.engine(),
@@ -128,7 +140,7 @@ impl<L: RuntimeProcessLauncher> DpiExecutor<L> {
             materialized,
             group,
         });
-        Ok(RuntimeStarted { generation })
+        Ok(RuntimeStarted { generation, materialized_fingerprint: self.active_fingerprint().map(str::to_owned), initialization_retries })
     }
 
     pub fn stop(&mut self, generation: u64) -> Result<(), ExecutorError> {
@@ -164,6 +176,12 @@ impl<L: RuntimeProcessLauncher> DpiExecutor<L> {
             .map(|active| active.fingerprint.as_str())
     }
 
+    pub fn diagnostics(&self, generation: u64) -> Result<DpiDiagnostics, ExecutorError> {
+        let active = self.active.as_ref().filter(|active| generation != 0 && active.generation == generation)
+            .ok_or(ExecutorError::Conflict)?;
+        Ok(DpiDiagnostics { packet_capture: None, generation, processes: active.group.diagnostics() })
+    }
+
     pub fn active_processes(&self) -> &[ProcessIdentity] {
         self.active
             .as_ref()
@@ -171,13 +189,15 @@ impl<L: RuntimeProcessLauncher> DpiExecutor<L> {
             .unwrap_or(&[])
     }
 
-    fn allocate_generation(&self) -> u64 {
-        loop {
-            let generation = self.next_generation.fetch_add(1, Ordering::Relaxed);
-            if generation != 0 {
-                return generation;
-            }
-        }
+    fn allocate_generation(&self) -> Result<u64, MaterializationError> {
+        let generation = self.state_layout.reserve_generation_at_least(
+            self.next_generation.load(Ordering::Relaxed),
+        )?;
+        self.next_generation.store(
+            generation.checked_add(1).unwrap_or(0),
+            Ordering::Relaxed,
+        );
+        Ok(generation)
     }
 }
 
@@ -258,6 +278,7 @@ pub enum ProcessError {
     NoLaunches,
     ResumeFailed,
     ExitedBeforeReady { pid: u32, exit_code: u32 },
+    StartupFailed { pid: u32, exit_code: u32, diagnostics: DpiProcessDiagnostics },
     StopTimedOut,
     UnexpectedWaitResult(u32),
 }
@@ -269,7 +290,7 @@ impl std::fmt::Display for ProcessError {
             Self::InvalidLaunchPath => formatter.write_str("launch path contains invalid data"),
             Self::NoLaunches => formatter.write_str("process group contains no launches"),
             Self::ResumeFailed => formatter.write_str("could not resume assigned DPI process"),
-            Self::ExitedBeforeReady { pid, exit_code } => {
+            Self::ExitedBeforeReady { pid, exit_code } | Self::StartupFailed { pid, exit_code, .. } => {
                 write!(
                     formatter,
                     "DPI process {pid} exited before readiness with code {exit_code}"
@@ -328,6 +349,7 @@ impl RuntimeProcessLauncher for WindowsJobLauncher {
         if launches.is_empty() {
             return Err(ProcessError::NoLaunches);
         }
+        let (mut group, retries) = retry_process_initialization(|| {
         // Declared before the job: on launch failure the kill-on-close job is
         // destroyed before the lease restores the global setting.
         let timestamps = self.timestamps.acquire(launches).map_err(timestamp_process_error)?;
@@ -347,7 +369,24 @@ impl RuntimeProcessLauncher for WindowsJobLauncher {
             identities,
             terminated: false,
             timestamps,
+            initialization_retries: 0,
         })
+        })?;
+        group.initialization_retries = retries;
+        Ok(group)
+    }
+}
+
+// Retry only a loader initialization failure, after the failed attempt's job
+// and processes have been dropped. Never retry a running or unresponsive group.
+fn retry_process_initialization<T>(mut launch: impl FnMut() -> Result<T, ProcessError>) -> Result<(T, u8), ProcessError> {
+    match launch() {
+        Ok(group) => Ok((group, 0)),
+        Err(ProcessError::ExitedBeforeReady { exit_code: 0xC0000142, .. } | ProcessError::StartupFailed { exit_code: 0xC0000142, .. }) => {
+            std::thread::sleep(Duration::from_millis(150));
+            launch().map(|group| (group, 1))
+        }
+        Err(error) => Err(error),
     }
 }
 
@@ -357,9 +396,23 @@ pub struct WindowsJobGroup {
     identities: Vec<ProcessIdentity>,
     terminated: bool,
     timestamps: crate::tcp_timestamps::TimestampLease,
+    initialization_retries: u8,
 }
 
 impl RuntimeProcessGroup for WindowsJobGroup {
+    fn diagnostics(&self) -> Vec<DpiProcessDiagnostics> {
+        self.processes.iter().map(|process| {
+            let mut code = 0;
+            let exit_code = if unsafe { WaitForSingleObject(process.handle.raw(), 0) } == WAIT_OBJECT_0
+                && unsafe { GetExitCodeProcess(process.handle.raw(), &mut code) }.is_ok() { Some(code) } else { None };
+            match &process.output {
+                Some(output) => output.snapshot(process.identity.pid, exit_code),
+                None => DpiProcessDiagnostics { pid: process.identity.pid, exit_code, trace_enabled: false,
+                    stream_closed: false, observed_bytes: 0, discarded_lines: 0, truncated: false, lines: Vec::new() },
+            }
+        }).collect()
+    }
+    fn initialization_retries(&self) -> u8 { self.initialization_retries }
     fn identities(&self) -> &[ProcessIdentity] {
         &self.identities
     }
@@ -388,14 +441,15 @@ impl Drop for WindowsJobGroup {
 struct OwnedProcess {
     handle: OwnedHandle,
     identity: ProcessIdentity,
+    output: Option<crate::dpi_output::OutputCapture>,
 }
 
-struct OwnedHandle(HANDLE);
+pub(crate) struct OwnedHandle(HANDLE);
 
 unsafe impl Send for OwnedHandle {}
 
 impl OwnedHandle {
-    fn new(handle: HANDLE) -> Result<Self, ProcessError> {
+    pub(crate) fn new(handle: HANDLE) -> Result<Self, ProcessError> {
         if handle.is_invalid() {
             Err(ProcessError::Windows(WindowsError::from_win32()))
         } else {
@@ -403,7 +457,7 @@ impl OwnedHandle {
         }
     }
 
-    fn raw(&self) -> HANDLE {
+    pub(crate) fn raw(&self) -> HANDLE {
         self.0
     }
 }
@@ -449,6 +503,13 @@ fn spawn_assigned_suspended(
         cb: size_of::<STARTUPINFOW>() as u32,
         ..Default::default()
     };
+    let diagnostics_enabled = launch.engine() == DpiEngine::Zapret2
+        && launch.arguments().iter().any(|arg| arg.starts_with("--lua-init=@") && arg.ends_with("obsession-diagnostic.lua"));
+    let mut diagnostic_startup = if diagnostics_enabled { Some(crate::dpi_output::DiagnosticStartup::new()?) } else { None };
+    let (startup, flags) = match &diagnostic_startup {
+        Some(diagnostic) => (&diagnostic.startup.StartupInfo, CREATE_SUSPENDED | CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT),
+        None => (&startup, CREATE_SUSPENDED | CREATE_NO_WINDOW),
+    };
     let mut information = PROCESS_INFORMATION::default();
     unsafe {
         CreateProcessW(
@@ -456,11 +517,11 @@ fn spawn_assigned_suspended(
             PWSTR(command_line.as_mut_ptr()),
             None,
             None,
-            false,
-            CREATE_SUSPENDED | CREATE_NO_WINDOW,
+            diagnostics_enabled,
+            flags,
             None,
             PCWSTR(current_directory.as_ptr()),
-            &startup,
+            startup,
             &mut information,
         )?;
     }
@@ -494,6 +555,7 @@ fn spawn_assigned_suspended(
     drop(thread_handle);
     Ok(OwnedProcess {
         handle: process,
+        output: diagnostic_startup.as_mut().and_then(|startup| startup.capture.take()),
         identity: ProcessIdentity {
             pid: information.dwProcessId,
             creation_time_100ns,
@@ -530,6 +592,12 @@ fn wait_for_bounded_readiness(
                 WAIT_OBJECT_0 => {
                     let mut exit_code = 0;
                     unsafe { GetExitCodeProcess(process.handle.raw(), &mut exit_code)? };
+                    if let Some(output) = &process.output {
+                        return Err(ProcessError::StartupFailed {
+                            pid: process.identity.pid, exit_code,
+                            diagnostics: output.completed_snapshot(process.identity.pid, exit_code),
+                        });
+                    }
                     return Err(ProcessError::ExitedBeforeReady {
                         pid: process.identity.pid,
                         exit_code,
@@ -729,9 +797,10 @@ mod tests {
                     strategy_id: "discord_1.conf".into(),
                 }],
                 options: DpiRuntimeOptions {
-                    zapret2_level: 0,
+                    zapret2_level: 0, zapret2_clienthello: false, zapret2_profiles: Vec::new(),
                     legacy_reliability: true,
                     zapret2_overrides: Vec::new(),
+                    zapret2_diagnostics: false,
                 },
             })
             .unwrap();
@@ -829,6 +898,29 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "bundled parser-only engine; run with process-scoped RunAsInvoker"]
+    fn diagnostic_child_inherits_only_its_output_and_closes_the_stream() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let engine = root.join("src-tauri/resources/bin/zapret2/winws2.exe");
+        let observer = root.join("src-tauri/resources/strategy-packs/builtin/lua/obsession-diagnostic.lua");
+        let launch = MaterializedLaunch::parser_only_diagnostic_fixture(engine, &observer);
+        let job = create_kill_on_close_job(1).unwrap();
+        let process = spawn_assigned_suspended(&job, &launch).unwrap();
+        assert_eq!(unsafe { WaitForSingleObject(process.handle.raw(), 5000) }, WAIT_OBJECT_0);
+        let mut code = 1;
+        unsafe { GetExitCodeProcess(process.handle.raw(), &mut code).unwrap(); }
+        assert_eq!(code, 0);
+        // Even an exit code of zero fails readiness. Its output must be copied
+        // before the process/generation drops, just like a Lua init error.
+        let error = wait_for_bounded_readiness(&[process], Duration::from_millis(100)).unwrap_err();
+        let ProcessError::StartupFailed { exit_code, diagnostics, .. } = error else { panic!("lost startup evidence") };
+        assert_eq!(exit_code, 0);
+        assert!(diagnostics.stream_closed);
+        assert!(diagnostics.observed_bytes > 0);
+        assert_eq!(diagnostics.exit_code, Some(0));
+    }
+
+    #[test]
     fn executor_owns_exact_generation_fingerprint_and_process_identity() {
         let (_test, plan, state_layout) = setup_plan();
         let fake_state = Arc::new(Mutex::new(FakeState::default()));
@@ -836,8 +928,12 @@ mod tests {
 
         let started = executor.start(&plan).unwrap();
         assert_ne!(started.generation, 0);
+        assert_eq!(executor.diagnostics(started.generation).unwrap().generation, started.generation);
+        assert!(matches!(executor.diagnostics(0), Err(ExecutorError::Conflict)));
+        assert!(matches!(executor.diagnostics(started.generation + 1), Err(ExecutorError::Conflict)));
         assert_eq!(executor.snapshot().unwrap().generation, started.generation);
         assert_eq!(executor.active_fingerprint().unwrap().len(), 64);
+        assert_eq!(started.materialized_fingerprint.as_deref(), executor.active_fingerprint());
         assert_eq!(executor.active_processes().len(), 1);
         assert!(matches!(executor.start(&plan), Err(ExecutorError::Busy)));
         assert!(matches!(
@@ -893,6 +989,41 @@ mod tests {
     }
 
     #[test]
+    fn clean_service_restart_never_reuses_an_old_generation_fence() {
+        let (_test, plan, layout) = setup_plan();
+        let state = Arc::new(Mutex::new(FakeState::default()));
+        let mut first = DpiExecutor::new(layout.clone(), FakeLauncher(state.clone()));
+        let old = first.start(&plan).unwrap().generation;
+        first.stop(old).unwrap();
+        drop(first);
+        assert_eq!(fs::read_dir(layout.root().join("dpi/generations")).unwrap().count(), 0);
+
+        let mut restarted = DpiExecutor::new(layout, FakeLauncher(state.clone()));
+        let current = restarted.start(&plan).unwrap().generation;
+        assert!(current > old);
+        assert!(matches!(restarted.stop(old), Err(ExecutorError::Conflict)));
+        assert_eq!(restarted.snapshot().unwrap().generation, current);
+        assert_eq!(state.lock().unwrap().stopped, 1);
+    }
+
+    #[test]
+    fn corrupt_or_exhausted_generation_sequence_prevents_launch() {
+        for (bytes, exhausted) in [(b"corrupt\n".as_slice(), false), (b"18446744073709551615\n".as_slice(), true)] {
+            let (_test, plan, layout) = setup_plan();
+            fs::create_dir_all(layout.root().join("dpi")).unwrap();
+            fs::write(layout.root().join("dpi/generation.sequence"), bytes).unwrap();
+            let state = Arc::new(Mutex::new(FakeState::default()));
+            let mut executor = DpiExecutor::new(layout, FakeLauncher(state.clone()));
+            match executor.start(&plan).unwrap_err() {
+                ExecutorError::Materialization(MaterializationError::GenerationExhausted) if exhausted => {}
+                ExecutorError::Materialization(MaterializationError::InvalidGenerationState) if !exhausted => {}
+                other => panic!("unexpected reservation failure: {other}"),
+            }
+            assert_eq!(state.lock().unwrap().launches, 0);
+        }
+    }
+
+    #[test]
     fn stop_timeout_is_reported_but_stale_generation_is_not_retained() {
         let (_test, plan, state_layout) = setup_plan();
         let fake_state = Arc::new(Mutex::new(FakeState {
@@ -912,4 +1043,25 @@ mod tests {
             .join(generation.to_string())
             .exists());
     }
+    #[test]
+    fn loader_initialization_retry_is_specific_and_bounded() {
+        let mut attempts = 0;
+        let result = retry_process_initialization(|| {
+            attempts += 1;
+            if attempts == 1 { Err(ProcessError::ExitedBeforeReady { pid: 1, exit_code: 0xC0000142 }) }
+            else { Ok(42) }
+        }).unwrap();
+        assert_eq!(result, (42, 1));
+        assert_eq!(attempts, 2);
+        for (code, expected_attempts) in [(0xC0000142, 2), (87, 1)] {
+            let mut attempts = 0;
+            let result = retry_process_initialization::<()>(|| {
+                attempts += 1;
+                Err(ProcessError::ExitedBeforeReady { pid: 1, exit_code: code })
+            });
+            assert!(result.is_err());
+            assert_eq!(attempts, expected_attempts);
+        }
+    }
+
 }

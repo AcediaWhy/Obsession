@@ -1,4 +1,4 @@
-import { useEffect, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 
 import { useDpiStore } from "../store/dpiStore";
@@ -17,6 +17,7 @@ import { Uptime } from "../design/components/Uptime";
 import { Icon } from "../design/components/icons";
 import { cascade, dur, ease } from "../design/tokens";
 import { useMotionOff, useRenderActive } from "../design/render";
+import { subscribePointerFrame } from "../design/pointerBus";
 
 const CATEGORY_LABELS: Record<string, string> = {
   discord: "Discord",
@@ -311,26 +312,51 @@ function StatusCard({
   // полноценная смена состояния для подписи, точки и мягкой волны.
   const stateKey = `${on}:${warn}:${neutral}:${on ? onLabel : offLabel}`;
   const materialEnabled = !still;
+  const materialCard = useRef<HTMLDivElement | null>(null);
+  const materialBounds = useRef<DOMRect | null>(null);
+  const pointerInside = useRef(false);
+  const positionMaterial = (clientX: number, clientY: number) => {
+    const card = materialCard.current;
+    const bounds = materialBounds.current;
+    if (!card || !bounds) return;
+    const width = Math.max(1, bounds.width);
+    const height = Math.max(1, bounds.height);
+    const px = Math.max(0, Math.min(width, clientX - bounds.left));
+    const py = Math.max(0, Math.min(height, clientY - bounds.top));
+    card.style.setProperty("--overview-pointer-x", `${(px / width) * 100}%`);
+    card.style.setProperty("--overview-pointer-y", `${(py / height) * 100}%`);
+    card.style.setProperty("--overview-pointer-px", `${px}px`);
+    card.style.setProperty("--overview-pointer-py", `${py}px`);
+  };
+  useEffect(() => {
+    if (!materialEnabled) return;
+    const unsubscribe = subscribePointerFrame((pointer) => {
+      if (!pointerInside.current || !materialCard.current) return;
+      if (pointer.layoutChanged) materialBounds.current = materialCard.current.getBoundingClientRect();
+      positionMaterial(pointer.clientX, pointer.clientY);
+    });
+    return () => {
+      unsubscribe();
+      pointerInside.current = false;
+      materialCard.current = null;
+      materialBounds.current = null;
+    };
+  }, [materialEnabled]);
   const moveMaterial = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (!materialEnabled || event.pointerType === "touch") return;
     const card = event.currentTarget;
-    const bounds = card.getBoundingClientRect();
-    const x = Math.max(0, Math.min(100, ((event.clientX - bounds.left) / bounds.width) * 100));
-    const y = Math.max(0, Math.min(100, ((event.clientY - bounds.top) / bounds.height) * 100));
-    card.style.setProperty("--overview-pointer-x", `${x}%`);
-    card.style.setProperty("--overview-pointer-y", `${y}%`);
-    if (theme === "ophanim" || theme === "fallendown") {
-      // Готовые слои с узором перемещаются через transform без перерисовки градиента.
-      card.style.setProperty("--overview-pointer-px", `${(x / 100) * bounds.width}px`);
-      card.style.setProperty("--overview-pointer-py", `${(y / 100) * bounds.height}px`);
-    }
+    materialCard.current = card;
+    materialBounds.current = card.getBoundingClientRect();
+    pointerInside.current = true;
+    positionMaterial(event.clientX, event.clientY);
     card.style.setProperty("--overview-surface-energy", "1");
   };
   const settleMaterial = (event: ReactPointerEvent<HTMLDivElement>) => {
+    pointerInside.current = false;
+    materialCard.current = null;
+    materialBounds.current = null;
     const card = event.currentTarget;
     card.style.setProperty("--overview-surface-energy", "0");
-    card.style.setProperty("--overview-pointer-x", "50%");
-    card.style.setProperty("--overview-pointer-y", "50%");
   };
 
   return (
@@ -357,11 +383,10 @@ function StatusCard({
         data-tone={warn ? "warn" : on ? neutral ? "neutral" : "ok" : "off"}
         data-material={materialEnabled}
         onPointerEnter={moveMaterial}
-        onPointerMove={moveMaterial}
         onPointerLeave={settleMaterial}
         transition={
           motionOff
-            ? { duration: dur.fast, ease: ease.enter }
+            ? { duration: 0 }
             : {
                 duration: dur.slow,
                 ease: ease.enter,

@@ -4,8 +4,16 @@
 //! the UI cannot provide an executable path, a config path or raw arguments.
 
 pub(crate) mod legacy_test;
+pub(crate) mod zapret2_picker;
+pub(crate) mod zapret2_quic;
+pub(crate) mod zapret2_measure;
+mod zapret2_tls;
+mod zapret2_routing;
+pub(crate) mod zapret2_tournament;
+mod zapret2_composition;
+pub(crate) mod zapret2_scenario;
+pub(crate) mod zapret2_history;
 
-use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
@@ -13,7 +21,7 @@ use std::time::Duration;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::state::{AppState, DpiLaunchSpec, DpiRuntimeSnapshot};
+use crate::state::AppState;
 use crate::util::{self, DpiStatusPayload, LockExt, VersionedSection};
 use obsession_runtime_protocol::{
     DpiEngine, HostsCheckRequest, HostsHealthSnapshot, HostsMutationRequest, Request,
@@ -23,15 +31,13 @@ use obsession_runtime_protocol::{
 use obsession_runtime_client::RuntimeClient;
 #[cfg(windows)]
 use obsession_runtime_protocol::{
-    Capabilities, DpiCategory, DpiReplaceRequest, DpiRuntimeOptions, DpiSelection, DpiStartRequest,
+    Capabilities, DpiCategory, DpiRuntimeOptions, DpiSelection, DpiStartRequest,
     DpiStopRequest, Feature, LegacyAssessmentClassification as ProtocolClassification,
     LegacyAssessmentConfidence as ProtocolConfidence, LegacyLanePhase as ProtocolLanePhase,
     LegacyObserverHealth, LegacyRecoveryApprovalRequest, LegacyRecoveryAttemptPhase,
     LegacyRecoveryCompletionDisposition, LegacyRecoveryControlsRequest,
     LegacyRecoveryMode as ProtocolRecoveryMode, LegacyRecoveryOrigin as ProtocolRecoveryOrigin,
-    Response, RuntimeSnapshot, ServiceErrorCode, Zapret2AdaptiveFunction, Zapret2AdaptiveOverride,
-    Zapret2AdaptivePayload, Zapret2AdaptiveRange, Zapret2AdaptiveStep, Zapret2AdaptiveTransport,
-    Zapret2AdaptiveValue, ZAPRET2_ADAPTIVE_SCHEMA_VERSION,
+    Response, RuntimeSnapshot, ServiceErrorCode,
 };
 
 const DISCOVERY_TIMEOUT: Duration = Duration::from_millis(750);
@@ -42,6 +48,9 @@ const PROXY_LAN_OPERATION_TIMEOUT: Duration = Duration::from_secs(5);
 static REQUEST_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static LEGACY_MONITOR_EPOCH: AtomicU64 = AtomicU64::new(0);
 static DPI_PROJECTION: OnceLock<Mutex<DpiProjection>> = OnceLock::new();
+// Odd while this UI owns a mutation. A read started under an older epoch must
+// never replace a projection committed by that mutation.
+static DPI_PROJECTION_EPOCH: AtomicU64 = AtomicU64::new(0);
 
 const LEGACY_MONITOR_INTERVAL: Duration = Duration::from_secs(1);
 const LEGACY_MONITOR_FAILURES_BEFORE_INACTIVE: u8 = 4;
@@ -56,12 +65,12 @@ pub struct ProtectedRuntimeCapabilities {
     pub service_version: Option<String>,
     pub dpi: bool,
     pub zapret2: bool,
-    pub adaptive_zapret2: bool,
     pub eyes_events: bool,
     pub legacy_reliability_controls: bool,
     pub legacy_reliability: bool,
     pub hosts: bool,
     pub proxy_lan_firewall: bool,
+    pub system_dns_recovery: bool,
 }
 
 #[cfg(windows)]
@@ -72,7 +81,6 @@ fn project_capabilities(capabilities: Capabilities) -> ProtectedRuntimeCapabilit
         service_version: Some(capabilities.service_version),
         dpi: has(Feature::Dpi),
         zapret2: has(Feature::DpiZapret2),
-        adaptive_zapret2: has(Feature::DpiZapret2) && has(Feature::DpiZapret2Adaptive),
         eyes_events: has(Feature::EyesEvents),
         legacy_reliability_controls: has(Feature::LegacyReliabilityControls),
         legacy_reliability: has(Feature::Dpi)
@@ -80,6 +88,7 @@ fn project_capabilities(capabilities: Capabilities) -> ProtectedRuntimeCapabilit
             && has(Feature::LegacyReliability),
         hosts: has(Feature::Hosts),
         proxy_lan_firewall: has(Feature::ProxyLanFirewall),
+        system_dns_recovery: has(Feature::SystemDnsRestore) || has(Feature::SystemDnsRecovery),
     }
 }
 
@@ -89,8 +98,9 @@ struct DpiProjection {
     engine: Option<DpiEngine>,
     selections: Vec<(String, String)>,
     zapret2_level: Option<u8>,
-    adaptive_overrides: BTreeMap<String, crate::adaptive_strategy::dsl::StrategyCandidate>,
     started_at_unix: Option<u64>,
+    #[cfg(windows)]
+    launch_request: Option<DpiStartRequest>,
 }
 
 fn projection() -> &'static Mutex<DpiProjection> {
@@ -103,6 +113,34 @@ fn lock_projection() -> std::sync::MutexGuard<'static, DpiProjection> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+#[cfg(windows)]
+struct ProjectionMutation {
+    epoch: u64,
+}
+
+#[cfg(windows)]
+impl Drop for ProjectionMutation {
+    fn drop(&mut self) {
+        let _ = DPI_PROJECTION_EPOCH.compare_exchange(
+            self.epoch, self.epoch.wrapping_add(1), Ordering::AcqRel, Ordering::Acquire,
+        );
+    }
+}
+
+#[cfg(windows)]
+fn begin_projection_mutation() -> Result<std::sync::Arc<ProjectionMutation>, String> {
+    // Serialize the epoch change with read-side snapshot application. Keep an
+    // Arc in the blocking RPC too, so cancellation cannot unfreeze polls early.
+    let _projection = lock_projection();
+    let epoch = DPI_PROJECTION_EPOCH.load(Ordering::Acquire);
+    if epoch % 2 != 0 {
+        return Err("Операция с DPI уже выполняется".into());
+    }
+    DPI_PROJECTION_EPOCH.compare_exchange(epoch, epoch.wrapping_add(1), Ordering::AcqRel, Ordering::Acquire)
+        .map_err(|_| "Операция с DPI уже выполняется".to_string())?;
+    Ok(std::sync::Arc::new(ProjectionMutation { epoch: epoch.wrapping_add(1) }))
+}
+
 fn next_request_id(operation: &str) -> String {
     let sequence = REQUEST_SEQUENCE
         .fetch_add(1, Ordering::Relaxed)
@@ -112,6 +150,19 @@ fn next_request_id(operation: &str) -> String {
 
 #[cfg(windows)]
 fn service_error_message(operation: &str, code: ServiceErrorCode) -> &'static str {
+    if operation.starts_with("system-dns-") {
+        return match code {
+            ServiceErrorCode::Conflict => "активен VPN, изменился интерфейс или настройки DNS; восстановление остановлено",
+            ServiceErrorCode::RuntimeFailed => "не удалось проверить или применить резервный DNS; исходные настройки сохраняются для отката",
+            ServiceErrorCode::ServiceUnavailable => "восстановление DNS недоступно: требуется обновлённая служба и Windows с поддержкой системного DoH",
+            ServiceErrorCode::ProtectedResourceInvalid => "журнал исходных настроек DNS не прошёл проверку",
+            ServiceErrorCode::AccessDenied => "служба отклонила удостоверение приложения",
+            ServiceErrorCode::Busy => "служба занята другой операцией",
+            ServiceErrorCode::InvalidRequest => "служба отклонила параметры восстановления DNS",
+            ServiceErrorCode::IncompatibleProtocol => "версия защищённой службы несовместима",
+            ServiceErrorCode::Internal => "внутренняя ошибка службы при восстановлении DNS",
+        };
+    }
     let hosts_operation = operation.starts_with("hosts-");
     let proxy_operation = operation.starts_with("proxy-lan-");
     match (hosts_operation, proxy_operation, code) {
@@ -151,59 +202,53 @@ fn service_error_message(operation: &str, code: ServiceErrorCode) -> &'static st
 }
 
 #[cfg(windows)]
+fn format_service_error(operation: &str, error: &obsession_runtime_protocol::ServiceError) -> String {
+    use obsession_runtime_protocol::{RuntimeFailureDetail, RuntimeMaterializationStage};
+    if let Some(detail @ RuntimeFailureDetail::Materialization { materialization_stage, windows_error }) = &error.runtime_detail {
+        let stage_label = match materialization_stage {
+            RuntimeMaterializationStage::StateLayout => "подготовка защищённого хранилища",
+            RuntimeMaterializationStage::GenerationReservation => "выделение номера запуска",
+            RuntimeMaterializationStage::ResourceVerification => "проверка ресурсов движка",
+            RuntimeMaterializationStage::ConfigCompilation => "сборка конфигурации",
+            RuntimeMaterializationStage::ConfigWrite => "запись конфигурации",
+            RuntimeMaterializationStage::ConfigVerification => "проверка конфигурации",
+            RuntimeMaterializationStage::Cleanup => "очистка файлов запуска",
+        };
+        let native_error = windows_error.map(|code| format!("; код Windows {code}")).unwrap_or_default();
+        return format!("не удалось подготовить DPI: {stage_label}{native_error}; runtime_detail={detail:?}");
+    }
+    let base = service_error_message(operation, error.code);
+    match &error.runtime_detail {
+        Some(RuntimeFailureDetail::StartupFailed { exit_code, diagnostics }) => {
+            let first_error = diagnostics.lines.iter().find(|line| !line.starts_with("OBS_DIAG|"));
+            let reason = first_error.map(|line| format!("; {}", line.chars().take(240).collect::<String>())).unwrap_or_default();
+            format!("{base}; код завершения {exit_code}{reason}")
+        },
+        Some(detail) => format!("{base}; runtime_detail={detail:?}"),
+        None => base.to_string(),
+    }
+}
+
+#[cfg(windows)]
 fn call_service(operation: &str, request: Request, timeout: Duration) -> Result<Response, String> {
-    let client = RuntimeClient::new(timeout)
-        .map_err(|error| format!("не удалось создать runtime-client: {error}"))?;
-    let response = client
-        .call(next_request_id(operation), request)
-        .map_err(|error| format!("защищённая служба Obsession недоступна: {error}"))?;
-    match response.response {
+    match call_service_raw(operation, request, timeout)? {
         Response::Error(error) => Err(format!(
             "защищённая служба отклонила операцию: {}",
-            service_error_message(operation, error.code)
+            format_service_error(operation, &error)
         )),
         response => Ok(response),
     }
 }
 
+/// Retains rollback-generation receipts for exact transaction cleanup.
 #[cfg(windows)]
-#[derive(Debug)]
-struct ReplaceCallError {
-    code: Option<ServiceErrorCode>,
-    message: String,
-}
-
-#[cfg(windows)]
-fn call_service_for_replace(
-    operation: &str,
-    request: Request,
-    timeout: Duration,
-) -> Result<Response, ReplaceCallError> {
-    let client = RuntimeClient::new(timeout).map_err(|error| ReplaceCallError {
-        code: None,
-        message: format!("не удалось создать runtime-client: {error}"),
-    })?;
+fn call_service_raw(operation: &str, request: Request, timeout: Duration) -> Result<Response, String> {
+    let client = RuntimeClient::new(timeout)
+        .map_err(|error| format!("не удалось создать runtime-client: {error}"))?;
     let response = client
         .call(next_request_id(operation), request)
-        .map_err(|error| ReplaceCallError {
-            code: None,
-            message: format!("защищённая служба Obsession недоступна: {error}"),
-        })?;
-    match response.response {
-        Response::Error(error) => Err(ReplaceCallError {
-            code: Some(error.code),
-            message: format!(
-                "защищённая служба отклонила операцию: {}",
-                service_error_message(operation, error.code)
-            ),
-        }),
-        response => Ok(response),
-    }
-}
-
-#[cfg(not(windows))]
-fn unavailable() -> String {
-    "защищённая служба Obsession поддерживается только в Windows".to_string()
+        .map_err(|error| format!("защищённая служба Obsession недоступна: {error}"))?;
+    Ok(response.response)
 }
 
 #[cfg(windows)]
@@ -223,6 +268,36 @@ pub fn capability_snapshot() -> ProtectedRuntimeCapabilities {
     {
         ProtectedRuntimeCapabilities::default()
     }
+}
+
+async fn system_dns_call(operation: &'static str, request: Request) -> Result<obsession_runtime_protocol::SystemDnsStatus, String> {
+    #[cfg(windows)]
+    {
+        static DNS_GATE: OnceLock<std::sync::Arc<tokio::sync::Mutex<()>>> = OnceLock::new();
+        let gate = DNS_GATE.get_or_init(|| std::sync::Arc::new(tokio::sync::Mutex::new(()))).clone();
+        // The blocking RPC owns the guard even if the UI future is cancelled.
+        let guard = gate.lock_owned().await;
+        tauri::async_runtime::spawn_blocking(move || {
+            let _guard = guard;
+            if !capabilities()?.features.iter().any(|feature| matches!(feature, Feature::SystemDnsRestore | Feature::SystemDnsRecovery)) {
+                return Err("Восстановление DNS недоступно в установленной службе. Обновите Obsession новым установщиком.".into());
+            }
+            match call_service(operation, request, Duration::from_secs(8))? {
+                Response::SystemDns(status) => Ok(status),
+                _ => Err("служба вернула неожиданный ответ DNS".into()),
+            }
+        }).await.map_err(|error| format!("операция DNS прервана: {error}"))?
+    }
+    #[cfg(not(windows))]
+    { let _ = (operation, request); Err(unavailable()) }
+}
+
+pub async fn system_dns_status() -> Result<obsession_runtime_protocol::SystemDnsStatus, String> {
+    system_dns_call("system-dns-status", Request::GetSystemDns).await
+}
+
+pub async fn system_dns_restore() -> Result<obsession_runtime_protocol::SystemDnsStatus, String> {
+    system_dns_call("system-dns-restore", Request::RestoreSystemDns).await
 }
 
 pub fn hosts_runtime_snapshot(
@@ -275,19 +350,29 @@ pub async fn hosts_uninstall() -> Result<(), String> {
     hosts_mutation("hosts-uninstall", Request::HostsUninstall).await
 }
 
-pub async fn hosts_refresh_gemini(preference: obsession_runtime_protocol::GeminiRoutePreference) -> Result<(), String> {
+pub async fn hosts_refresh_gemini(
+    preference: obsession_runtime_protocol::GeminiRoutePreference,
+) -> Result<(), String> {
     #[cfg(windows)]
     {
         let response = tauri::async_runtime::spawn_blocking(move || {
-            call_service("hosts-refresh-gemini", Request::HostsRefreshGemini(preference), Duration::from_secs(240))
-        }).await.map_err(|e| e.to_string())??;
+            call_service(
+                "hosts-refresh-gemini",
+                Request::HostsRefreshGemini(preference),
+                Duration::from_secs(240),
+            )
+        })
+        .await
+        .map_err(|e| e.to_string())??;
         match response {
             Response::Accepted(_) => Ok(()),
             _ => Err("Обновление Gemini не подтверждено службой. Проверьте версию runtime.".into()),
         }
     }
     #[cfg(not(windows))]
-    { Err(unavailable()) }
+    {
+        Err(unavailable())
+    }
 }
 
 pub async fn hosts_restore(
@@ -408,21 +493,6 @@ pub fn zapret2_available() -> bool {
     }
 }
 
-pub fn adaptive_zapret2_available() -> bool {
-    #[cfg(windows)]
-    {
-        capabilities()
-            .map(|capabilities| {
-                capabilities.features.contains(&Feature::DpiZapret2)
-                    && capabilities.features.contains(&Feature::DpiZapret2Adaptive)
-            })
-            .unwrap_or(false)
-    }
-    #[cfg(not(windows))]
-    {
-        false
-    }
-}
 
 /// Recovery requires more than packet observations: the service must own the
 /// exact generation-fenced mutation/rollback protocol as well.
@@ -605,13 +675,16 @@ fn inactive_status() -> DpiStatusPayload {
 }
 
 #[cfg(windows)]
-fn project_snapshot(snapshot: RuntimeSnapshot) -> DpiStatusPayload {
+fn reconcile_observed_snapshot(projection: &mut DpiProjection, snapshot: RuntimeSnapshot,
+    observed_epoch: u64, current_epoch: u64) -> DpiStatusPayload {
+    if observed_epoch != current_epoch || current_epoch % 2 != 0 {
+        return projection_status(projection);
+    }
     let Some(runtime) = snapshot.dpi else {
-        *lock_projection() = DpiProjection::default();
+        *projection = DpiProjection::default();
         return inactive_status();
     };
 
-    let mut projection = lock_projection();
     if projection.generation != Some(runtime.generation) {
         projection.generation = Some(runtime.generation);
         projection.engine = Some(runtime.engine);
@@ -625,11 +698,9 @@ fn project_snapshot(snapshot: RuntimeSnapshot) -> DpiStatusPayload {
                 )
             })
             .collect();
-        // The public service snapshot intentionally omits adaptive DSL and
-        // aggression level. A UI attaching to somebody else's generation may
-        // observe/stop it, but cannot replace it without an exact local spec.
+        // Launch options are not included in the sanitized service snapshot.
         projection.zapret2_level = None;
-        projection.adaptive_overrides.clear();
+        projection.launch_request = None;
         // The service protocol currently exposes no wall-clock start time.
         // When attaching to a pre-existing generation, start the UI uptime at
         // the moment this authenticated snapshot was first observed.
@@ -644,11 +715,18 @@ fn project_snapshot(snapshot: RuntimeSnapshot) -> DpiStatusPayload {
     }
 }
 
+
 pub fn dpi_status() -> DpiStatusPayload {
     #[cfg(windows)]
     {
+        let observed_epoch = DPI_PROJECTION_EPOCH.load(Ordering::Acquire);
+        if observed_epoch % 2 != 0 { return projection_status(&lock_projection()); }
         runtime_snapshot_blocking(DISCOVERY_TIMEOUT)
-            .map(project_snapshot)
+            .map(|snapshot| {
+                let mut projection = lock_projection();
+                reconcile_observed_snapshot(&mut projection, snapshot, observed_epoch,
+                    DPI_PROJECTION_EPOCH.load(Ordering::Acquire))
+            })
             // A busy/unreachable pipe is NOT a confirmed stop. Keep the last
             // authenticated generation so the user can still press Stop.
             .unwrap_or_else(|_| projection_status(&lock_projection()))
@@ -1104,100 +1182,8 @@ fn category_name(value: DpiCategory) -> &'static str {
     }
 }
 
-#[cfg(windows)]
-fn wire_override(
-    candidate: &crate::adaptive_strategy::dsl::StrategyCandidate,
-) -> Result<Zapret2AdaptiveOverride, String> {
-    use crate::adaptive_strategy::dsl::{
-        AllowedPayload, AllowedRange, StrategyFunction, StrategyTransport, StrategyValue,
-    };
-    let validation = crate::adaptive_strategy::validator::validate(candidate);
-    if !validation.is_valid() {
-        return Err(format!(
-            "Adaptive candidate не прошёл локальную валидацию: {}",
-            validation
-                .errors
-                .iter()
-                .map(|issue| issue.message.as_str())
-                .collect::<Vec<_>>()
-                .join("; ")
-        ));
-    }
-    let payload = match candidate.payload.as_slice() {
-        [AllowedPayload::TlsClientHello] => Zapret2AdaptivePayload::TlsClientHello,
-        [AllowedPayload::QuicInitial] => Zapret2AdaptivePayload::QuicInitial,
-        _ => return Err("Adaptive candidate содержит недопустимый payload".into()),
-    };
-    let transport = match candidate.transport {
-        StrategyTransport::Tls => Zapret2AdaptiveTransport::Tls,
-        StrategyTransport::Quic => Zapret2AdaptiveTransport::Quic,
-    };
-    let steps = candidate
-        .steps
-        .iter()
-        .map(|step| {
-            let function = match step.function {
-                StrategyFunction::Fake => Zapret2AdaptiveFunction::Fake,
-                StrategyFunction::MultiSplit => Zapret2AdaptiveFunction::MultiSplit,
-                StrategyFunction::MultiDisorder => Zapret2AdaptiveFunction::MultiDisorder,
-                StrategyFunction::MultiDisorderLegacy => {
-                    Zapret2AdaptiveFunction::MultiDisorderLegacy
-                }
-                StrategyFunction::FakeDSplit => Zapret2AdaptiveFunction::FakeDSplit,
-                StrategyFunction::FakeDDisorder => Zapret2AdaptiveFunction::FakeDDisorder,
-                StrategyFunction::SendIpFrag => Zapret2AdaptiveFunction::SendIpFrag,
-                StrategyFunction::Drop => Zapret2AdaptiveFunction::Drop,
-            };
-            let args = step
-                .args
-                .iter()
-                .map(|(key, value)| {
-                    let value = match value {
-                        StrategyValue::Bool(value) => Zapret2AdaptiveValue::Bool(*value),
-                        StrategyValue::Integer(value) => Zapret2AdaptiveValue::Integer(*value),
-                        StrategyValue::Text(value) => Zapret2AdaptiveValue::Text(value.clone()),
-                    };
-                    (key.clone(), value)
-                })
-                .collect();
-            Zapret2AdaptiveStep { function, args }
-        })
-        .collect();
-    let candidate = Zapret2AdaptiveOverride {
-        schema_version: ZAPRET2_ADAPTIVE_SCHEMA_VERSION,
-        category: category(candidate.category.as_key())?,
-        transport,
-        steps,
-        payload,
-        out_range: candidate.out_range.map(|value| match value {
-            AllowedRange::FirstTenDataPackets => Zapret2AdaptiveRange::FirstTenDataPackets,
-            AllowedRange::Always => Zapret2AdaptiveRange::Always,
-        }),
-    };
-    candidate
-        .validate()
-        .map_err(|error| format!("Adaptive IPC candidate отклонён: {error}"))?;
-    Ok(candidate)
-}
 
-#[cfg(windows)]
-fn wire_overrides(
-    overrides: &BTreeMap<String, crate::adaptive_strategy::dsl::StrategyCandidate>,
-) -> Result<Vec<Zapret2AdaptiveOverride>, String> {
-    overrides
-        .iter()
-        .map(|(key, candidate)| {
-            let expected = crate::adaptive_strategy::dsl::override_key(
-                candidate.category,
-                candidate.transport,
-            );
-            if key != &expected {
-                return Err("Adaptive override cache key не совпадает с candidate".into());
-            }
-            wire_override(candidate)
-        })
-        .collect()
-}
+
 
 #[cfg(windows)]
 fn start_request(
@@ -1205,11 +1191,9 @@ fn start_request(
     selections: &[(String, String)],
     zapret2_level: u8,
     legacy_reliability: bool,
-    adaptive_overrides: &BTreeMap<String, crate::adaptive_strategy::dsl::StrategyCandidate>,
+    zapret2_clienthello: bool,
+    zapret2_profiles: &[crate::dpi_engine::Zapret2ProfileSelection],
 ) -> Result<Request, String> {
-    if engine != DpiEngine::Zapret2 && !adaptive_overrides.is_empty() {
-        return Err("Adaptive overrides допустимы только для Zapret2".into());
-    }
     let selections = match engine {
         DpiEngine::Legacy => selections
             .iter()
@@ -1244,11 +1228,19 @@ fn start_request(
     };
     Ok(Request::DpiStart(DpiStartRequest {
         engine,
-        selections,
+        selections: selections.clone(),
         options: DpiRuntimeOptions {
             zapret2_level,
+            zapret2_clienthello,
+            zapret2_profiles: if engine == DpiEngine::Zapret2 {
+                zapret2_profiles.iter().filter(|profile| selections.iter().any(|selection| category_name(selection.category) == profile.category))
+                    .map(|profile| obsession_runtime_protocol::Zapret2ProfileSelection {
+                        category: profile.category.clone(), transport: profile.transport.clone(), profile_id: profile.profile_id.clone(),
+                    }).collect()
+            } else { Vec::new() },
             legacy_reliability,
-            zapret2_overrides: wire_overrides(adaptive_overrides)?,
+            zapret2_overrides: Vec::new(),
+            zapret2_diagnostics: false,
         },
     }))
 }
@@ -1258,18 +1250,12 @@ pub async fn dpi_start(
     engine: DpiEngine,
     selections: Vec<(String, String)>,
     zapret2_level: u8,
+    zapret2_clienthello: bool,
+    zapret2_profiles: Vec<crate::dpi_engine::Zapret2ProfileSelection>,
 ) -> Result<u64, String> {
     #[cfg(windows)]
     {
-        let adaptive_overrides = if engine == DpiEngine::Zapret2 {
-            crate::adaptive_strategy::runtime::confirmed_overrides_for_current_network(
-                app,
-                &selections,
-            )
-            .await
-        } else {
-            BTreeMap::new()
-        };
+        let clienthello_requested = engine == DpiEngine::Zapret2 && zapret2_clienthello;
         let reliability_requested = engine == DpiEngine::Legacy
             && app
                 .state::<AppState>()
@@ -1277,29 +1263,28 @@ pub async fn dpi_start(
                 .lock_recover()
                 .legacy_reliability_enabled;
         let request_selections = selections.clone();
-        let request_overrides = adaptive_overrides.clone();
-        let (response, reliability_enabled) = tauri::async_runtime::spawn_blocking(move || {
+        let _mutation = begin_projection_mutation()?;
+        let mutation_owner = _mutation.clone();
+        let (response, reliability_enabled, launch_request) = tauri::async_runtime::spawn_blocking(move || {
+            let _owner = mutation_owner;
             let service_capabilities = capabilities()?;
             let reliability_available = engine == DpiEngine::Legacy
                 && service_capabilities.features.contains(&Feature::EyesEvents);
             let reliability_enabled = reliability_requested && reliability_available;
-            if !request_overrides.is_empty()
-                && !service_capabilities
-                    .features
-                    .contains(&Feature::DpiZapret2Adaptive)
-            {
-                return Err("Защищённая служба не поддерживает Adaptive Zapret2".into());
-            }
             let request = start_request(
                 engine,
                 &request_selections,
                 zapret2_level,
                 reliability_enabled,
-                &request_overrides,
+                clienthello_requested,
+                &zapret2_profiles,
             )?;
+            let Request::DpiStart(ref launch) = request else { unreachable!() };
+            let launch_request = launch.clone();
             Ok::<_, String>((
                 call_service("dpi-start", request, OPERATION_TIMEOUT)?,
                 reliability_enabled,
+                launch_request,
             ))
         })
         .await
@@ -1314,8 +1299,8 @@ pub async fn dpi_start(
             projection.engine = Some(engine);
             projection.selections = selections;
             projection.zapret2_level = (engine == DpiEngine::Zapret2).then_some(zapret2_level);
-            projection.adaptive_overrides = adaptive_overrides;
             projection.started_at_unix = Some(util::unix_secs());
+            projection.launch_request = Some(launch_request);
         }
         emit_status(
             app,
@@ -1344,250 +1329,18 @@ pub async fn dpi_start(
     }
     #[cfg(not(windows))]
     {
-        let _ = (app, engine, selections, zapret2_level);
+        let _ = (app, engine, selections, zapret2_level, zapret2_clienthello, zapret2_profiles);
         Err(unavailable())
     }
 }
 
-/// Exact process-local spec for Adaptive generation fencing. A service-owned
-/// generation discovered after UI restart deliberately has no replaceable
-/// Zapret2 spec because the sanitized snapshot omits level and overrides.
-pub(crate) fn adaptive_runtime_snapshot() -> DpiRuntimeSnapshot {
-    let projection = lock_projection();
-    let generation = projection.generation.unwrap_or(0);
-    let launch = match projection.engine {
-        Some(DpiEngine::Legacy) if generation != 0 => Some(DpiLaunchSpec::Legacy {
-            selections: projection.selections.clone(),
-        }),
-        Some(DpiEngine::Zapret2) if generation != 0 && projection.zapret2_level.is_some() => {
-            Some(DpiLaunchSpec::Zapret2 {
-                selections: projection.selections.clone(),
-                adaptive_overrides: projection.adaptive_overrides.clone(),
-            })
-        }
-        _ => None,
-    };
-    DpiRuntimeSnapshot { generation, launch }
-}
 
-#[cfg(windows)]
-fn restored_zapret2_projection(
-    snapshot: &RuntimeSnapshot,
-    original: &DpiRuntimeSnapshot,
-    zapret2_level: u8,
-    started_at_unix: Option<u64>,
-) -> Option<DpiProjection> {
-    let runtime = snapshot.dpi.as_ref()?;
-    let DpiLaunchSpec::Zapret2 {
-        selections,
-        adaptive_overrides,
-    } = original.launch.as_ref()?
-    else {
-        return None;
-    };
-    if runtime.engine != DpiEngine::Zapret2
-        || runtime.selections.len() != selections.len()
-        || !runtime
-            .selections
-            .iter()
-            .zip(selections)
-            .all(|(observed, (category, _))| category_name(observed.category) == category)
-    {
-        return None;
-    }
-    Some(DpiProjection {
-        generation: Some(runtime.generation),
-        engine: Some(DpiEngine::Zapret2),
-        selections: selections.clone(),
-        zapret2_level: Some(zapret2_level),
-        adaptive_overrides: adaptive_overrides.clone(),
-        started_at_unix,
-    })
-}
 
-fn runtime_already_matches_snapshot(
-    current: &DpiRuntimeSnapshot,
-    original: &DpiRuntimeSnapshot,
-    expected_generation: u64,
-) -> bool {
-    current.generation == expected_generation && current.launch == original.launch
-}
 
-pub(crate) async fn replace_zapret2_overrides(
-    app: &AppHandle,
-    original: &DpiRuntimeSnapshot,
-    expected_generation: u64,
-    adaptive_overrides: &BTreeMap<String, crate::adaptive_strategy::dsl::StrategyCandidate>,
-) -> Result<u64, String> {
-    #[cfg(windows)]
-    {
-        let DpiLaunchSpec::Zapret2 { selections, .. } = original
-            .launch
-            .as_ref()
-            .ok_or_else(|| "Adaptive snapshot не содержит Zapret2".to_string())?
-        else {
-            return Err("Adaptive replace допустим только для Zapret2".into());
-        };
-        let zapret2_level = {
-            let projection = lock_projection();
-            if projection.generation != Some(expected_generation)
-                || projection.engine != Some(DpiEngine::Zapret2)
-                || projection.selections != *selections
-            {
-                return Err(format!(
-                    "DPI runtime изменён другой операцией: expected generation {expected_generation}"
-                ));
-            }
-            projection.zapret2_level.ok_or_else(|| {
-                "Adaptive replace недоступен для runtime, найденного после перезапуска UI"
-                    .to_string()
-            })?
-        };
-        let Request::DpiStart(runtime) = start_request(
-            DpiEngine::Zapret2,
-            selections,
-            zapret2_level,
-            false,
-            adaptive_overrides,
-        )?
-        else {
-            return Err("Не удалось построить защищённый Zapret2 request".into());
-        };
-        let request = Request::DpiReplace(DpiReplaceRequest {
-            expected_generation,
-            runtime,
-        });
-        let response = tauri::async_runtime::spawn_blocking(move || {
-            call_service_for_replace("dpi-replace", request, OPERATION_TIMEOUT)
-        })
-        .await
-        .map_err(|error| format!("runtime-client завершился с ошибкой: {error}"))?;
-        let response = match response {
-            Ok(response) => response,
-            Err(error) => {
-                // RuntimeFailed is returned after the service tried the new
-                // plan and then synchronously restored the previous one. The
-                // public snapshot omits its level and adaptive DSL, but the
-                // exact previous spec is still available in `original`.
-                if let Ok(snapshot) = tauri::async_runtime::spawn_blocking(|| {
-                    runtime_snapshot_blocking(OPERATION_TIMEOUT)
-                })
-                .await
-                .map_err(|join_error| join_error.to_string())?
-                {
-                    let started_at_unix = lock_projection().started_at_unix;
-                    let restored = (error.code == Some(ServiceErrorCode::RuntimeFailed))
-                        .then(|| {
-                            restored_zapret2_projection(
-                                &snapshot,
-                                original,
-                                zapret2_level,
-                                started_at_unix,
-                            )
-                        })
-                        .flatten();
-                    let status = if let Some(restored) = restored {
-                        let mut projection = lock_projection();
-                        if projection.generation == Some(expected_generation) {
-                            *projection = restored;
-                            DpiStatusPayload {
-                                active: true,
-                                processes: Vec::new(),
-                                started_at: projection.started_at_unix,
-                            }
-                        } else {
-                            drop(projection);
-                            project_snapshot(snapshot)
-                        }
-                    } else {
-                        project_snapshot(snapshot)
-                    };
-                    emit_status(app, status);
-                }
-                return Err(error.message);
-            }
-        };
-        let generation = match response {
-            Response::Started(started) => started.generation,
-            _ => return Err("Защищённая служба вернула неожиданный ответ DPI replace".to_string()),
-        };
-        {
-            let mut projection = lock_projection();
-            if projection.generation != Some(expected_generation) {
-                return Err("Локальная DPI generation изменилась во время replace".into());
-            }
-            projection.generation = Some(generation);
-            projection.adaptive_overrides = adaptive_overrides.clone();
-        }
-        emit_status(
-            app,
-            DpiStatusPayload {
-                active: true,
-                processes: Vec::new(),
-                started_at: lock_projection().started_at_unix,
-            },
-        );
-        Ok(generation)
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = (app, original, expected_generation, adaptive_overrides);
-        Err(unavailable())
-    }
-}
 
-pub(crate) async fn start_adaptive_candidate(
-    app: &AppHandle,
-    original: &DpiRuntimeSnapshot,
-    expected_generation: u64,
-    category_name: &str,
-    candidate: crate::adaptive_strategy::dsl::StrategyCandidate,
-) -> Result<u64, String> {
-    let DpiLaunchSpec::Zapret2 {
-        selections,
-        adaptive_overrides,
-    } = original
-        .launch
-        .as_ref()
-        .ok_or_else(|| "DPI runtime остановлен — adaptive search недоступен".to_string())?
-    else {
-        return Err("Adaptive search работает только поверх активного Zapret2".into());
-    };
-    if candidate.category.as_key() != category_name
-        || !selections
-            .iter()
-            .any(|(selected_category, _)| selected_category == category_name)
-    {
-        return Err("Категория adaptive candidate не совпадает с активным runtime".into());
-    }
-    let mut overrides = adaptive_overrides.clone();
-    overrides.insert(
-        crate::adaptive_strategy::dsl::override_key(candidate.category, candidate.transport),
-        candidate,
-    );
-    replace_zapret2_overrides(app, original, expected_generation, &overrides).await
-}
 
-pub(crate) async fn restore_adaptive_snapshot(
-    app: &AppHandle,
-    original: &DpiRuntimeSnapshot,
-    expected_generation: u64,
-) -> Result<u64, String> {
-    let DpiLaunchSpec::Zapret2 {
-        adaptive_overrides, ..
-    } = original
-        .launch
-        .as_ref()
-        .ok_or_else(|| "Adaptive rollback snapshot отсутствует".to_string())?
-    else {
-        return Err("Adaptive rollback поддерживает только Zapret2".into());
-    };
-    let current = adaptive_runtime_snapshot();
-    if runtime_already_matches_snapshot(&current, original, expected_generation) {
-        return Ok(current.generation);
-    }
-    replace_zapret2_overrides(app, original, expected_generation, adaptive_overrides).await
-}
+
+
 
 pub async fn dpi_active() -> Result<bool, String> {
     #[cfg(windows)]
@@ -1607,8 +1360,13 @@ pub async fn dpi_active() -> Result<bool, String> {
 pub async fn dpi_stop(app: &AppHandle) -> Result<(), String> {
     #[cfg(windows)]
     {
+        let _mutation = begin_projection_mutation()?;
+        let mutation_owner = _mutation.clone();
         let snapshot =
-            tauri::async_runtime::spawn_blocking(|| runtime_snapshot_blocking(OPERATION_TIMEOUT))
+            tauri::async_runtime::spawn_blocking(move || {
+                let _owner = mutation_owner;
+                runtime_snapshot_blocking(OPERATION_TIMEOUT)
+            })
                 .await
                 .map_err(|error| format!("runtime-client завершился с ошибкой: {error}"))??;
         let Some(runtime) = snapshot.dpi else {
@@ -1624,7 +1382,9 @@ pub async fn dpi_stop(app: &AppHandle) -> Result<(), String> {
         let request = Request::DpiStop(DpiStopRequest {
             generation: runtime.generation,
         });
+        let mutation_owner = _mutation.clone();
         let response = tauri::async_runtime::spawn_blocking(move || {
+            let _owner = mutation_owner;
             call_service("dpi-stop", request, OPERATION_TIMEOUT)
         })
         .await
@@ -1661,6 +1421,27 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    fn materialization_failure_reports_the_actual_stage_instead_of_claiming_corrupt_resources() {
+        use obsession_runtime_protocol::{RuntimeFailureDetail, RuntimeMaterializationStage, ServiceError};
+        let error = ServiceError {
+            code: ServiceErrorCode::ProtectedResourceInvalid,
+            runtime_detail: Some(RuntimeFailureDetail::Materialization {
+                materialization_stage: RuntimeMaterializationStage::GenerationReservation,
+                windows_error: Some(183),
+            }),
+            restored_generation: Some(5),
+        };
+        let message = format_service_error("dpi-replace", &error);
+        assert!(message.contains("выделение номера запуска"));
+        assert!(message.contains("код Windows 183"));
+        assert!(!message.contains("целостности"));
+        let legacy = ServiceError { runtime_detail: None, ..error };
+        assert_eq!(format_service_error("dpi-replace", &legacy),
+            service_error_message("dpi-replace", legacy.code));
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn unavailable_pipe_preserves_the_last_confirmed_generation() {
         let active = DpiProjection {
             generation: Some(7),
@@ -1671,6 +1452,24 @@ mod tests {
         assert!(status.active);
         assert_eq!(status.started_at, Some(123));
         assert!(!projection_status(&DpiProjection::default()).active);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn startup_error_message_is_short_while_the_ipc_keeps_the_full_trace() {
+        use obsession_runtime_protocol::{DpiProcessDiagnostics, RuntimeFailureDetail, ServiceError};
+        let error = ServiceError { code: ServiceErrorCode::RuntimeFailed, restored_generation: Some(12),
+            runtime_detail: Some(RuntimeFailureDetail::StartupFailed { exit_code: 87,
+                diagnostics: DpiProcessDiagnostics { pid: 42, exit_code: Some(87), trace_enabled: true,
+                    stream_closed: true, observed_bytes: 1000, discarded_lines: 0, truncated: false,
+                    lines: vec!["OBS_DIAG|ready|v1".into(), format!("LUA ERROR: {}", "x".repeat(400)),
+                        "LUA ERROR: second retained error".into()] } }) };
+        let message = format_service_error("dpi-replace", &error);
+        assert!(message.contains("87"));
+        assert!(message.contains("LUA ERROR:"));
+        assert!(message.chars().count() < 320);
+        assert!(!message.contains("second retained error"));
+        assert!(!message.contains("OBS_DIAG|"));
     }
 
     #[cfg(windows)]
@@ -1698,7 +1497,6 @@ mod tests {
             features: vec![
                 Feature::Dpi,
                 Feature::DpiZapret2,
-                Feature::DpiZapret2Adaptive,
                 Feature::EyesEvents,
                 Feature::LegacyReliabilityControls,
                 Feature::LegacyReliability,
@@ -1710,7 +1508,6 @@ mod tests {
         assert_eq!(projected.service_version.as_deref(), Some("1.2.3"));
         assert!(projected.dpi);
         assert!(projected.zapret2);
-        assert!(projected.adaptive_zapret2);
         assert!(projected.eyes_events);
         assert!(projected.legacy_reliability_controls);
         assert!(projected.legacy_reliability);
@@ -1719,9 +1516,8 @@ mod tests {
 
         let inconsistent = project_capabilities(Capabilities {
             service_version: "1.2.3".into(),
-            features: vec![Feature::DpiZapret2Adaptive, Feature::LegacyReliability],
+            features: vec![Feature::LegacyReliability],
         });
-        assert!(!inconsistent.adaptive_zapret2);
         assert!(!inconsistent.legacy_reliability);
     }
 
@@ -1733,7 +1529,8 @@ mod tests {
             &[("discord".into(), "discord_1.conf".into())],
             0,
             true,
-            &BTreeMap::new(),
+            false,
+            &[],
         )
         .expect("valid protected request");
         let Request::DpiStart(request) = request else {
@@ -1749,7 +1546,8 @@ mod tests {
             &[("unknown".into(), "x.conf".into())],
             0,
             false,
-            &BTreeMap::new(),
+            false,
+            &[],
         )
         .is_err());
         assert!(start_request(
@@ -1757,7 +1555,8 @@ mod tests {
             &[("discord".into(), String::new())],
             0,
             false,
-            &BTreeMap::new(),
+            false,
+            &[],
         )
         .is_err());
     }
@@ -1773,7 +1572,8 @@ mod tests {
             ],
             2,
             false,
-            &BTreeMap::new(),
+            true,
+            &[],
         )
         .expect("valid protected Zapret2 request");
         let Request::DpiStart(request) = request else {
@@ -1782,6 +1582,7 @@ mod tests {
         assert_eq!(request.engine, DpiEngine::Zapret2);
         assert_eq!(request.options.zapret2_level, 2);
         assert!(!request.options.legacy_reliability);
+        assert!(request.options.zapret2_clienthello);
         assert_eq!(
             request
                 .selections
@@ -1795,183 +1596,21 @@ mod tests {
             &[("universal".into(), String::new())],
             0,
             false,
-            &BTreeMap::new(),
+            false,
+            &[],
         )
         .is_err());
     }
 
-    #[cfg(windows)]
-    #[test]
-    fn adaptive_candidate_crosses_ipc_as_a_typed_allowlisted_override() {
-        use crate::adaptive_strategy::dsl::{
-            override_key, AdaptiveCategory, AllowedPayload, AllowedRange, StrategyCandidate,
-            StrategyFunction, StrategyStep, StrategyTransport, StrategyValue,
-        };
 
-        let candidate = StrategyCandidate::new(
-            AdaptiveCategory::Discord,
-            StrategyTransport::Tls,
-            vec![StrategyStep::new(StrategyFunction::MultiDisorderLegacy)
-                .with_arg("pos", StrategyValue::Text("1,midsld".into()))],
-            vec![AllowedPayload::TlsClientHello],
-            Some(AllowedRange::FirstTenDataPackets),
-        );
-        let key = override_key(candidate.category, candidate.transport);
-        let overrides = BTreeMap::from([(key.clone(), candidate.clone())]);
-        let Request::DpiStart(request) = start_request(
-            DpiEngine::Zapret2,
-            &[("discord".into(), String::new())],
-            1,
-            false,
-            &overrides,
-        )
-        .unwrap() else {
-            panic!("expected DPI start request");
-        };
 
-        let wire = request.options.zapret2_overrides.first().unwrap();
-        assert_eq!(wire.schema_version, ZAPRET2_ADAPTIVE_SCHEMA_VERSION);
-        assert_eq!(wire.category, DpiCategory::Discord);
-        assert_eq!(wire.transport, Zapret2AdaptiveTransport::Tls);
-        assert_eq!(wire.payload, Zapret2AdaptivePayload::TlsClientHello);
-        assert_eq!(
-            wire.out_range,
-            Some(Zapret2AdaptiveRange::FirstTenDataPackets)
-        );
-        assert_eq!(
-            wire.steps[0].function,
-            Zapret2AdaptiveFunction::MultiDisorderLegacy
-        );
-        assert_eq!(
-            wire.steps[0].args.get("pos"),
-            Some(&Zapret2AdaptiveValue::Text("1,midsld".into()))
-        );
 
-        let mismatched_key = BTreeMap::from([("discord:quic".into(), candidate)]);
-        assert!(start_request(
-            DpiEngine::Zapret2,
-            &[("discord".into(), String::new())],
-            1,
-            false,
-            &mismatched_key,
-        )
-        .is_err());
-        assert!(start_request(
-            DpiEngine::Legacy,
-            &[("discord".into(), "discord_1.conf".into())],
-            0,
-            false,
-            &overrides,
-        )
-        .is_err());
-        assert_eq!(key, "discord:tls");
-    }
 
-    #[cfg(windows)]
-    #[test]
-    fn attached_zapret2_projection_is_observable_but_adaptive_replace_fails_closed() {
-        *lock_projection() = DpiProjection::default();
-        let status = project_snapshot(RuntimeSnapshot {
-            dpi: Some(obsession_runtime_protocol::DpiRuntimeSnapshot {
-                generation: 41,
-                engine: DpiEngine::Zapret2,
-                selections: vec![DpiSelection {
-                    category: DpiCategory::Discord,
-                    strategy_id: "builtin-discord".into(),
-                }],
-            }),
-            legacy_reliability: None,
-            legacy_access_activity: None,
-            hosts: None,
-            hosts_provider: None,
-            proxy_lan: None,
-        });
 
-        assert!(status.active);
-        assert!(status.processes.is_empty());
-        let adaptive = adaptive_runtime_snapshot();
-        assert_eq!(adaptive.generation, 41);
-        assert!(adaptive.launch.is_none());
-        let projection = lock_projection();
-        assert_eq!(projection.engine, Some(DpiEngine::Zapret2));
-        assert_eq!(projection.zapret2_level, None);
-        assert!(projection.adaptive_overrides.is_empty());
-        drop(projection);
-        *lock_projection() = DpiProjection::default();
-    }
 
-    #[cfg(windows)]
-    #[test]
-    fn failed_replace_recovers_exact_projection_after_service_autorollback() {
-        let original = DpiRuntimeSnapshot {
-            generation: 40,
-            launch: Some(DpiLaunchSpec::Zapret2 {
-                selections: vec![("discord".into(), String::new())],
-                adaptive_overrides: BTreeMap::new(),
-            }),
-        };
-        let snapshot = RuntimeSnapshot {
-            dpi: Some(obsession_runtime_protocol::DpiRuntimeSnapshot {
-                generation: 42,
-                engine: DpiEngine::Zapret2,
-                selections: vec![DpiSelection {
-                    category: DpiCategory::Discord,
-                    strategy_id: "builtin-discord".into(),
-                }],
-            }),
-            legacy_reliability: None,
-            legacy_access_activity: None,
-            hosts: None,
-            hosts_provider: None,
-            proxy_lan: None,
-        };
 
-        let restored = restored_zapret2_projection(&snapshot, &original, 2, Some(123))
-            .expect("the service restored the exact selected Zapret2 categories");
-        assert_eq!(restored.generation, Some(42));
-        assert_eq!(restored.zapret2_level, Some(2));
-        assert_eq!(restored.selections, vec![("discord".into(), String::new())]);
-        assert_eq!(restored.started_at_unix, Some(123));
 
-        let current = DpiRuntimeSnapshot {
-            generation: restored.generation.unwrap(),
-            launch: Some(DpiLaunchSpec::Zapret2 {
-                selections: restored.selections,
-                adaptive_overrides: restored.adaptive_overrides,
-            }),
-        };
-        assert!(runtime_already_matches_snapshot(&current, &original, 42));
-        assert!(!runtime_already_matches_snapshot(&current, &original, 41));
-    }
 
-    #[cfg(windows)]
-    #[test]
-    fn failed_replace_does_not_trust_a_different_service_runtime() {
-        let original = DpiRuntimeSnapshot {
-            generation: 40,
-            launch: Some(DpiLaunchSpec::Zapret2 {
-                selections: vec![("discord".into(), String::new())],
-                adaptive_overrides: BTreeMap::new(),
-            }),
-        };
-        let snapshot = RuntimeSnapshot {
-            dpi: Some(obsession_runtime_protocol::DpiRuntimeSnapshot {
-                generation: 42,
-                engine: DpiEngine::Zapret2,
-                selections: vec![DpiSelection {
-                    category: DpiCategory::YoutubeTwitch,
-                    strategy_id: "builtin-youtube-twitch".into(),
-                }],
-            }),
-            legacy_reliability: None,
-            legacy_access_activity: None,
-            hosts: None,
-            hosts_provider: None,
-            proxy_lan: None,
-        };
-
-        assert!(restored_zapret2_projection(&snapshot, &original, 2, Some(123)).is_none());
-    }
 
     #[cfg(windows)]
     #[test]
@@ -2237,4 +1876,9 @@ mod tests {
             crate::legacy_reliability::status::LegacyReliabilityStatus::inactive()
         );
     }
+}
+
+pub(crate) fn zapret2_selections() -> Option<Vec<(String, String)>> {
+    let projection = lock_projection();
+    (projection.engine == Some(DpiEngine::Zapret2)).then(|| projection.selections.clone())
 }

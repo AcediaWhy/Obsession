@@ -1,7 +1,4 @@
 [data-theme="goldenmeadow"] {
-  --accent: 220 177 103;
-  --accent-cyan: 255 218 145;
-  --accent-violet: 161 107 45;
   --glass-bg: linear-gradient(145deg, rgba(49,36,24,.76), rgba(27,22,18,.8));
   --glass-border: rgba(255,240,200,.25);
   --glass-blur: 0px;

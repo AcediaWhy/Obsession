@@ -862,6 +862,8 @@ mod tests {
             response.response,
             Response::Error(obsession_runtime_protocol::ServiceError {
                 code: ServiceErrorCode::AccessDenied,
+                runtime_detail: None,
+                restored_generation: None,
             })
         );
         worker

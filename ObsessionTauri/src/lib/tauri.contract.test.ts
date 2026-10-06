@@ -9,7 +9,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { api, type BootstrapSnapshot, type DpiStatus } from "./tauri";
 
 const fixture = {
-  schemaVersion: 8,
+  schemaVersion: 9,
   settings: {
     revision: 2,
     value: {
@@ -34,8 +34,9 @@ const fixture = {
         lan_publish_secs: 0,
         dpi_engine: "zapret2",
         zapret2_level: 0,
-        adaptive_strategy_enabled: true,
-        adaptive_search_mode: "balanced",
+        zapret2_clienthello: false,
+        zapret2_profiles: [],
+        zapret2_pick_mode: "balanced",
       },
       elevated: true,
       autostart: false,
@@ -44,12 +45,12 @@ const fixture = {
         serviceVersion: "1.2.3",
         dpi: true,
         zapret2: true,
-        adaptiveZapret2: true,
         eyesEvents: true,
         legacyReliabilityControls: true,
         legacyReliability: true,
         hosts: false,
         proxyLanFirewall: false,
+        systemDnsRecovery: false,
       },
       protectedRuntimeAvailable: false,
       protectedDpiAvailable: true,
@@ -75,7 +76,6 @@ const fixture = {
     },
   },
   brain: { revision: 5, value: null },
-  adaptive: { revision: 6, value: null },
   legacyReliability: {
     revision: 7,
     value: {
@@ -157,16 +157,15 @@ describe("BootstrapSnapshot contract", () => {
   });
 
   it("keeps every subsystem revision independent", () => {
-    expect(fixture.schemaVersion).toBe(8);
+    expect(fixture.schemaVersion).toBe(9);
     expect([
       fixture.settings.revision,
       fixture.dpi.revision,
       fixture.proxy.revision,
       fixture.brain.revision,
-      fixture.adaptive.revision,
       fixture.legacyReliability.revision,
       fixture.hosts.revision,
-    ]).toEqual([2, 3, 4, 5, 6, 7, 8]);
+    ]).toEqual([2, 3, 4, 5, 7, 8]);
   });
 
   it("keeps settings metadata and runtime values in versioned sections", () => {
@@ -177,12 +176,12 @@ describe("BootstrapSnapshot contract", () => {
       serviceVersion: "1.2.3",
       dpi: true,
       zapret2: true,
-      adaptiveZapret2: true,
       eyesEvents: true,
       legacyReliabilityControls: true,
       legacyReliability: true,
       hosts: false,
       proxyLanFirewall: false,
+      systemDnsRecovery: false,
     });
     expect(fixture.settings.value.protectedRuntimeAvailable).toBe(false);
     expect(fixture.settings.value.protectedDpiAvailable).toBe(true);
@@ -284,4 +283,5 @@ describe("BootstrapSnapshot contract", () => {
       maxAgeSeconds: 900,
     });
   });
+
 });

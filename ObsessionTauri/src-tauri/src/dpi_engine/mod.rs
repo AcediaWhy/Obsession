@@ -114,6 +114,46 @@ pub struct LoadedPack {
     pub dir: std::path::PathBuf,
 }
 
+pub const CLIENTHELLO_EXPERIMENT_ID: &str = "discord_tls_clienthello_clone";
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Zapret2ProfileSelection {
+    pub category: String,
+    pub transport: String,
+    pub profile_id: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Zapret2ProfileOption {
+    pub category: String,
+    pub transport: String,
+    pub profile_id: String,
+    pub experimental: bool,
+}
+
+/// One selectable slot; Gaming's ipset TLS is deliberately outside control TLS.
+pub fn profile_transport(strategy: &manifest::StrategyDef) -> Option<&'static str> {
+    let has_l7 = |value: &str| strategy.filter_l7.iter().any(|entry| entry == value);
+    if strategy.ipset.is_none() && has_l7("tls") && strategy.filter_udp.is_none() { Some("tls") }
+    else if strategy.ipset.is_none() && has_l7("quic") && strategy.filter_tcp.is_none() { Some("quic") }
+    else if strategy.category == "discord" && strategy.filter_udp.is_some()
+        && strategy.filter_tcp.is_none() && (has_l7("discord") || has_l7("stun")) { Some("voice") }
+    else if has_l7("http") && strategy.filter_udp.is_none() { Some("http") }
+    else if strategy.filter_udp.is_some() && strategy.filter_tcp.is_none() && strategy.filter_l7.is_empty() { Some("udp") }
+    else { None }
+}
+
+/// Only TLS ClientHello profiles may be replaced by the fixed experiment.
+pub fn is_discord_tls_profile(strategy: &manifest::StrategyDef) -> bool {
+    strategy.category == "discord"
+        && strategy.filter_l7 == ["tls"]
+        && strategy.payload == ["tls_client_hello"]
+        && strategy.filter_udp.is_none()
+        && strategy.transports.iter().all(|value| matches!(value.as_str(), "tcp" | "tls"))
+}
+
 impl LoadedPack {
     /// Стратегии категории, отсортированные по возрастанию агрессивности
     /// (Мозг/пользователь идёт снизу вверх).
@@ -146,6 +186,92 @@ impl LoadedPack {
         all.into_iter()
             .filter(|s| s.aggressiveness == level)
             .collect()
+    }
+
+    pub fn profiles_for_options(
+        &self,
+        category: &str,
+        requested_level: u8,
+        clienthello: bool,
+    ) -> Result<Vec<manifest::StrategyDef>, String> {
+        let mut profiles = self.profiles_for(category, requested_level);
+        if !clienthello || category != "discord" { return Ok(profiles); }
+        let experiment = self.manifest.experiments.iter()
+            .find(|strategy| strategy.id == CLIENTHELLO_EXPERIMENT_ID && is_discord_tls_profile(strategy))
+            .ok_or_else(|| "Эксперимент ClientHello отсутствует в проверенном паке. Обновите Obsession.".to_string())?;
+        let index = profiles.iter().position(is_discord_tls_profile)
+            .ok_or_else(|| "В выбранном наборе отсутствует профиль Discord TLS.".to_string())?;
+        profiles.retain(|strategy| !is_discord_tls_profile(strategy));
+        profiles.insert(index.min(profiles.len()), experiment.clone());
+        Ok(profiles)
+    }
+
+    pub fn profiles_for_selections(
+        &self,
+        category: &str,
+        requested_level: u8,
+        clienthello: bool,
+        selections: &[Zapret2ProfileSelection],
+    ) -> Result<Vec<manifest::StrategyDef>, String> {
+        let explicit_tls = selections.iter().any(|selection| selection.category == category && selection.transport == "tls");
+        let mut profiles = self.profiles_for_options(category, requested_level, clienthello && !explicit_tls)?;
+        let mut selected_slots = std::collections::BTreeSet::new();
+        for selection in selections.iter().filter(|selection| selection.category == category) {
+            if !matches!(selection.transport.as_str(), "tls" | "quic" | "voice" | "http" | "udp")
+                || selection.profile_id.is_empty() || selection.profile_id.len() > 128
+                || !selection.profile_id.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+                || !selected_slots.insert(selection.transport.as_str()) {
+                return Err("Неверный или повторный выбор транспортного профиля Zapret2.".into());
+            }
+            if let Some(parts) = self.discord_composition(&selection.profile_id)? {
+                if category != "discord" || selection.transport != "tls" { return Err("Сборка доступна только для Discord TLS.".into()); }
+                let position = profiles.iter().position(|strategy| profile_transport(strategy) == Some("tls"))
+                    .ok_or("Для сборки нет исходного TLS-профиля.")?;
+                profiles.retain(|strategy| profile_transport(strategy) != Some("tls"));
+                profiles.splice(position.min(profiles.len())..position.min(profiles.len()), parts);
+                continue;
+            }
+            let replacement = self.manifest.strategies.iter().chain(&self.manifest.presets).chain(&self.manifest.experiments)
+                .find(|strategy| strategy.id == selection.profile_id)
+                .ok_or_else(|| "Выбранный профиль отсутствует во встроенном паке Zapret2.".to_string())?;
+            if replacement.category != category || profile_transport(replacement) != Some(selection.transport.as_str()) {
+                return Err("Профиль Zapret2 не соответствует сервису или транспорту.".into());
+            }
+            let position = profiles.iter().position(|strategy| profile_transport(strategy) == Some(selection.transport.as_str()))
+                .ok_or_else(|| "Для транспорта нет исходного профиля Zapret2.".to_string())?;
+            profiles.retain(|strategy| profile_transport(strategy) != Some(selection.transport.as_str()));
+            profiles.insert(position.min(profiles.len()), replacement.clone());
+        }
+        Ok(profiles)
+    }
+
+    pub fn discord_composition(&self, id: &str) -> Result<Option<Vec<manifest::StrategyDef>>, String> {
+        use obsession_runtime_protocol::zapret2_composition::{DiscordComposition, DiscordScope, compatible};
+        let Some(recipe) = DiscordComposition::parse(id).map_err(str::to_owned)? else { return Ok(None); };
+        let mut result = Vec::new();
+        for (parent,scope) in [(&recipe.api_profile_id,DiscordScope::Api),(&recipe.cdn_profile_id,DiscordScope::Cdn)] {
+            let strategy = self.manifest.strategies.iter().chain(&self.manifest.presets).find(|strategy| &strategy.id == parent)
+                .ok_or("Родитель сборки отсутствует в проверенном каталоге.")?;
+            if !compatible(&strategy.category,strategy.filter_tcp.as_deref(),strategy.filter_udp.as_deref(),
+                &strategy.filter_l7,strategy.hostlist.as_deref(),strategy.ipset.as_deref(),&strategy.transports) {
+                return Err("Родитель сборки имеет несовместимые фильтры.".into());
+            }
+            let mut strategy = strategy.clone();
+            strategy.composition_scope = Some(scope);
+            result.push(strategy);
+        }
+        Ok(Some(result))
+    }
+
+    pub fn profile_catalog(&self) -> Vec<Zapret2ProfileOption> {
+        let mut options = self.manifest.strategies.iter().chain(&self.manifest.presets).chain(&self.manifest.experiments)
+            .filter_map(|strategy| profile_transport(strategy).map(|transport| Zapret2ProfileOption {
+                category: strategy.category.clone(), transport: transport.to_owned(), profile_id: strategy.id.clone(),
+                experimental: strategy.candidate.is_some() || self.manifest.experiments.iter().any(|experiment| experiment.id == strategy.id),
+            })).collect::<Vec<_>>();
+        options.sort_by(|left, right| (&left.category, &left.transport, left.experimental, &left.profile_id)
+            .cmp(&(&right.category, &right.transport, right.experimental, &right.profile_id)));
+        options
     }
 }
 
@@ -251,7 +377,7 @@ mod tests {
         match load_pack(&pack_dir) {
             Ok(pack) => {
                 assert_eq!(pack.manifest.pack_id, "builtin.base");
-                assert_eq!(pack.manifest.pack_version, "0.7.0");
+                assert_eq!(pack.manifest.pack_version, "0.12.0");
                 // Уровень 4 поднимает TCP и QUIC вместе — как youtube на уровне 1.
                 let disc_alt = pack.profiles_for("discord", 4);
                 assert_eq!(disc_alt.len(), 3);
@@ -267,6 +393,20 @@ mod tests {
                         .iter()
                         .any(|p| p.transports.iter().any(|t| t == "quic")));
                 }
+                let voice_variants: std::collections::HashSet<_> = (1..=4)
+                    .map(|level| {
+                        pack.profiles_for("discord", level)
+                            .into_iter()
+                            .find(zapret2::is_voice_profile)
+                            .unwrap()
+                            .desync
+                    })
+                    .collect();
+                assert_eq!(
+                    voice_variants.len(),
+                    4,
+                    "voice levels must try different rules"
+                );
                 // Discord-стратегии отсортированы по агрессивности.
                 let disc = pack.strategies_for("discord");
                 assert!(!disc.is_empty(), "должны быть discord-стратегии");
@@ -312,6 +452,8 @@ mod tests {
     fn profiles_for_returns_all_profiles_at_selected_level() {
         let pack = LoadedPack {
             manifest: manifest::StrategyPackManifest {
+                experiments: vec![],
+                presets: vec![],
                 schema_version: manifest::PACK_SCHEMA_VERSION,
                 pack_id: "test".into(),
                 pack_version: "1".into(),
@@ -342,11 +484,14 @@ mod tests {
 
     fn strategy_for_test(id: &str, aggressiveness: u8) -> manifest::StrategyDef {
         manifest::StrategyDef {
+            composition_scope: None,
             id: id.into(),
             category: "youtube_twitch".into(),
             aggressiveness,
             lua: String::new(),
             desync: vec!["multisplit:pos=1".into()],
+            steps: vec![],
+            candidate: None,
             transports: vec!["tcp".into()],
             hostlist: None,
             ipset: None,
@@ -356,6 +501,56 @@ mod tests {
             payload: vec!["tls_client_hello".into()],
             out_range: None,
             in_range: None,
+        }
+    }
+
+    #[test]
+    fn clienthello_overlay_preserves_every_stable_level_and_other_transports() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/strategy-packs/builtin");
+        let pack = load_pack(&root).unwrap();
+        assert_eq!(pack.manifest.strategies.len(), 19);
+        let default = pack.profiles_for_options("discord", 0, false).unwrap();
+        assert!(default.iter().any(|profile| profile.id == "discord_tls_multidisorder_alt"));
+        for level in 0..=4 {
+            let original = pack.profiles_for("discord", level);
+            assert_eq!(pack.profiles_for_options("discord", level, false).unwrap(), original);
+            let experimental = pack.profiles_for_options("discord", level, true).unwrap();
+            assert_eq!(experimental.iter().filter(|profile| is_discord_tls_profile(profile)).count(), 1);
+            assert!(experimental.iter().any(|profile| profile.id == CLIENTHELLO_EXPERIMENT_ID));
+            assert_eq!(experimental.iter().filter(|profile| !is_discord_tls_profile(profile)).collect::<Vec<_>>(),
+                original.iter().filter(|profile| !is_discord_tls_profile(profile)).collect::<Vec<_>>());
+            for category in ["youtube_twitch", "gaming"] {
+                assert_eq!(pack.profiles_for_options(category, level, true).unwrap(), pack.profiles_for(category, level));
+            }
+        }
+        let mut absent = LoadedPack { manifest: pack.manifest.clone(), dir: pack.dir.clone() };
+        absent.manifest.experiments.clear();
+        assert!(absent.profiles_for_options("discord", 0, true).is_err());
+        assert_eq!(absent.profiles_for_options("discord", 0, false).unwrap(), default);
+    }
+
+    #[test]
+    fn named_profile_catalog_and_overlays_preserve_ordinary_transports() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/strategy-packs/builtin");
+        let pack = load_pack(&root).unwrap();
+        let catalog = pack.profile_catalog();
+        assert!(catalog.iter().any(|option| option.profile_id == "classic_gaming_tls_split_sni" && option.transport == "tls" && !option.experimental));
+        assert!(catalog.iter().any(|option| option.profile_id == CLIENTHELLO_EXPERIMENT_ID && option.experimental));
+        assert!(!catalog.iter().any(|option| option.profile_id == "gaming_ipset_tls"));
+        let selections = vec![Zapret2ProfileSelection { category: "discord".into(), transport: "tls".into(), profile_id: "discord_tls_text".into() },
+            Zapret2ProfileSelection { category: "gaming".into(), transport: "tls".into(), profile_id: "classic_gaming_tls_split_sni".into() }];
+        for category in ["discord", "gaming"] {
+            let ordinary = pack.profiles_for_options(category, 4, false).unwrap();
+            let result = pack.profiles_for_selections(category, 4, true, &selections).unwrap();
+            assert_eq!(result.iter().filter(|profile| profile_transport(profile) != Some("tls")).collect::<Vec<_>>(),
+                ordinary.iter().filter(|profile| profile_transport(profile) != Some("tls")).collect::<Vec<_>>());
+            assert!(!result.iter().any(|profile| profile.id == CLIENTHELLO_EXPERIMENT_ID));
+        }
+        for (category, transport, id) in [("discord", "tls", "youtube_tls"), ("discord", "tls", "discord_quic_level_1"),
+            ("gaming", "tls", "gaming_ipset_tls"), ("discord", "tls", "absent")] {
+            assert!(pack.profiles_for_selections(category, 0, false, &[Zapret2ProfileSelection {
+                category: category.into(), transport: transport.into(), profile_id: id.into(),
+            }]).is_err());
         }
     }
 }

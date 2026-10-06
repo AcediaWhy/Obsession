@@ -34,8 +34,11 @@ fn start(client: &RuntimeClient, selections: Vec<DpiSelection>, reliability: boo
         selections,
         options: DpiRuntimeOptions {
             zapret2_level: 0,
+            zapret2_clienthello: false,
+            zapret2_profiles: Vec::new(),
             legacy_reliability: reliability,
             zapret2_overrides: vec![],
+            zapret2_diagnostics: false,
         },
     };
     match client

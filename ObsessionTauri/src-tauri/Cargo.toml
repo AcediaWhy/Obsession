@@ -23,23 +23,24 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["process", "io-util", "rt-multi-thread", "macros", "time", "net", "sync"] }
 reqwest = { version = "0.12", features = ["rustls-tls"], default-features = false }
-quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
-h3 = "0.0.8"
-h3-quinn = { version = "0.0.10", default-features = false }
-http = "1"
-bytes = "1"
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
-webpki-roots = "1"
+tokio-tungstenite = { version = "0.28.0", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+futures-util = { version = "0.3", features = ["sink"] }
 regex = "1"
 rand = "0.8"
 chrono = "0.4"
 sha2 = "0.10"
+ring = "0.17"
+quinn = { version = "0.11.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
+rustls = { version = "0.23.41", default-features = false, features = ["std", "ring", "aws_lc_rs"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+webpki-roots = "1.0.8"
+semver = "1"
 # Перечисление сетевых адаптеров: выбрать LAN-адрес для QR телефона, отсекая
 # VPN/виртуальные интерфейсы (см. util::lan_ip_for_phone).
 if-addrs = "0.15"
-
-[dev-dependencies]
-rcgen = "0.13"
 
 [target.'cfg(windows)'.dependencies]
 libloading = "0.8"
@@ -60,6 +61,9 @@ windows = { version = "0.58", features = [
 # tauri 2.11 → webview2-com 0.38 (собран на windows 0.61 / windows-core 0.61).
 webview2-com = "0.38"
 windows-core = "0.61"
+
+[dev-dependencies]
+rcgen = "0.13.2"
 
 [profile.release]
 panic = "abort"

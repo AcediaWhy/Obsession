@@ -28,6 +28,7 @@ pub struct Zapret2Invocation {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Zapret2Profile {
+    pub composition_scope: Option<obsession_runtime_protocol::zapret2_composition::DiscordScope>,
     pub name: String,
     pub filter_tcp: Option<String>,
     pub filter_udp: Option<String>,
@@ -38,6 +39,7 @@ pub struct Zapret2Profile {
     pub out_range: Option<String>,
     pub in_range: Option<String>,
     pub lua_desync: Vec<String>,
+    pub steps: Vec<obsession_runtime_protocol::zapret2_recipe::DesyncStep>,
 }
 
 pub fn build_winws2_args(invocation: &Zapret2Invocation) -> Vec<String> {
@@ -74,6 +76,7 @@ pub fn build_winws2_args(invocation: &Zapret2Invocation) -> Vec<String> {
         if let Some(hostlist) = &profile.hostlist {
             args.push(format!("--hostlist={hostlist}"));
         }
+        if let Some(scope) = profile.composition_scope { args.extend(scope.arguments()); }
         if let Some(ipset) = &profile.ipset {
             args.push(format!("--ipset={ipset}"));
         }
@@ -83,12 +86,9 @@ pub fn build_winws2_args(invocation: &Zapret2Invocation) -> Vec<String> {
         if let Some(range) = &profile.in_range {
             args.push(format!("--in-range={range}"));
         }
-        if !profile.payload.is_empty() {
-            args.push(format!("--payload={}", profile.payload.join(",")));
-        }
-        for desync in &profile.lua_desync {
-            args.push(format!("--lua-desync={desync}"));
-        }
+        args.extend(obsession_runtime_protocol::zapret2_recipe::arguments(
+            &profile.payload, profile.out_range.as_deref(), profile.in_range.as_deref(),
+            &profile.lua_desync, &profile.steps));
 
         if index + 1 < invocation.profiles.len() {
             args.push("--new".to_string());
@@ -108,6 +108,7 @@ pub fn profile_from_strategy_def(
     let udp = has("udp") || has("quic");
 
     Zapret2Profile {
+        composition_scope: strategy.composition_scope,
         name: strategy.id.clone(),
         filter_tcp: strategy
             .filter_tcp
@@ -118,12 +119,13 @@ pub fn profile_from_strategy_def(
             .clone()
             .or_else(|| udp.then(|| "443".to_string())),
         filter_l7: strategy.filter_l7.clone(),
-        hostlist,
+        hostlist: if strategy.composition_scope == Some(obsession_runtime_protocol::zapret2_composition::DiscordScope::Cdn) { None } else { hostlist },
         ipset,
         payload: strategy.payload.clone(),
         out_range: strategy.out_range.clone(),
         in_range: strategy.in_range.clone(),
         lua_desync: strategy.desync.clone(),
+        steps: strategy.steps.clone(),
     }
 }
 
@@ -234,6 +236,7 @@ mod tests {
 
     fn profile(name: &str) -> Zapret2Profile {
         Zapret2Profile {
+            composition_scope: None,
             name: name.into(),
             filter_tcp: Some("443".into()),
             filter_udp: None,
@@ -244,6 +247,7 @@ mod tests {
             out_range: Some("-d10".into()),
             in_range: None,
             lua_desync: vec!["multisplit:pos=1,midsld".into()],
+            steps: vec![],
         }
     }
 
@@ -327,11 +331,14 @@ mod tests {
     #[test]
     fn profile_from_strategy_maps_tls_and_quic_fields() {
         let strategy = StrategyDef {
+            composition_scope: None,
             id: "youtube_quic".into(),
             category: "youtube_twitch".into(),
             aggressiveness: 1,
             lua: "lua/zapret-antidpi.lua".into(),
             desync: vec!["fake:blob=quic_google:repeats=11".into()],
+            steps: vec![],
+            candidate: None,
             transports: vec!["udp".into(), "quic".into()],
             hostlist: None,
             ipset: None,

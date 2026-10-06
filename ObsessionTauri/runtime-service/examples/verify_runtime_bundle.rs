@@ -3,14 +3,13 @@ use std::fs;
 use std::path::PathBuf;
 
 use obsession_runtime_protocol::{
-    DpiEngine, DpiRuntimeOptions, DpiSelection, DpiStartRequest, Zapret2AdaptiveFunction,
-    Zapret2AdaptiveOverride, Zapret2AdaptivePayload, Zapret2AdaptiveRange, Zapret2AdaptiveStep,
-    Zapret2AdaptiveTransport, Zapret2AdaptiveValue, ZAPRET2_ADAPTIVE_SCHEMA_VERSION,
+    DpiEngine, DpiRuntimeOptions, DpiSelection, DpiStartRequest,
 };
 use obsession_runtime_service::dpi_materializer::{
     MaterializedLaunch, ProtectedDataLayout, RUNTIME_STATE_RELATIVE,
 };
 use obsession_runtime_service::protected_layout::ProtectedLayout;
+
 
 /// Validate the shipped executable's parser without loading a packet driver.
 fn verify_engine_parser(launch: &MaterializedLaunch) -> Result<(), Box<dyn std::error::Error>> {
@@ -51,9 +50,23 @@ fn verify_engine_parser(launch: &MaterializedLaunch) -> Result<(), Box<dyn std::
             .creation_flags(0x08000000);
     }
     let mut child = command.spawn()?;
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut deadline = Instant::now() + Duration::from_secs(15);
+    let mut initialization_retries = 0;
     let status = loop {
         if let Some(status) = child.try_wait()? {
+            if status.code().map(|code| code as u32) == Some(0xC0000142)
+                && initialization_retries == 0
+            {
+                initialization_retries = 1;
+                eprintln!(
+                    "parser initialization failed with 0xC0000142; retrying ONCE: {}",
+                    launch.executable().display()
+                );
+                std::thread::sleep(Duration::from_millis(150));
+                child = command.spawn()?;
+                deadline = Instant::now() + Duration::from_secs(15);
+                continue;
+            }
             break status;
         }
         if Instant::now() >= deadline {
@@ -66,8 +79,10 @@ fn verify_engine_parser(launch: &MaterializedLaunch) -> Result<(), Box<dyn std::
     let output = fs::read_to_string(log_path)?;
     if !status.success() || !output.contains("command line parameters verified") {
         return Err(format!(
-            "parser verification failed for {} ({status}): {output}",
-            launch.executable().display()
+            "parser verification failed for {} ({status}), cwd={}, args={:?}: {output}",
+            launch.executable().display(),
+            launch.working_directory().display(),
+            launch.arguments()
         )
         .into());
     }
@@ -108,6 +123,134 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut generation = 1u64;
     let mut parser_checks = 0usize;
+    for strategy in zapret2.strategies() {
+        for level in 0..=4 {
+            for clienthello in [false, true].into_iter().take(
+                if strategy.category() == obsession_runtime_protocol::DpiCategory::Discord { 2 } else { 1 }
+            ) {
+            let plan = catalog.resolve_dpi_plan(&DpiStartRequest {
+                engine: DpiEngine::Zapret2,
+                selections: vec![DpiSelection {
+                    category: strategy.category(),
+                    strategy_id: strategy.strategy_id().to_owned(),
+                }],
+                options: DpiRuntimeOptions {
+                    zapret2_level: level, zapret2_clienthello: clienthello, zapret2_profiles: Vec::new(),
+                    legacy_reliability: false,
+                    zapret2_overrides: Vec::new(),
+                    zapret2_diagnostics: false,
+                },
+            })?;
+            plan.reverify()?;
+            let materialized = state.materialize(&plan, generation)?;
+            let [launch] = materialized.launches() else {
+                return Err(format!(
+                    "Zapret2 category group {} materialized an unexpected launch count",
+                    strategy.strategy_id()
+                )
+                .into());
+            };
+            if launch.response_file().is_some() || launch.arguments().is_empty() {
+                return Err("Zapret2 did not produce typed service-owned arguments".into());
+            }
+            if dry_run_engines {
+                verify_engine_parser(launch)?;
+                parser_checks += 1;
+            }
+            state.cleanup_generation(&materialized)?;
+            generation = generation.checked_add(1).ok_or("generation overflow")?;
+            }
+        }
+    }
+    let mut explicit_profile_checks = 0usize;
+    for strategy in zapret2.strategies() {
+        let category = match strategy.category() {
+            obsession_runtime_protocol::DpiCategory::Discord => "discord",
+            obsession_runtime_protocol::DpiCategory::YoutubeTwitch => "youtube_twitch",
+            obsession_runtime_protocol::DpiCategory::Gaming => "gaming",
+            _ => return Err("unsupported Zapret2 category group".into()),
+        };
+        let manifest: serde_json::Value = serde_json::from_slice(&fs::read(strategy.artifact_resource().path())?)?;
+        let choices = ["strategies", "presets", "experiments"].into_iter()
+            .flat_map(|key| manifest.get(key).and_then(serde_json::Value::as_array).into_iter().flatten())
+            .filter(|profile| profile.get("category").and_then(serde_json::Value::as_str) == Some(category));
+        for profile in choices {
+            let l7 = profile.get("filter_l7").and_then(serde_json::Value::as_array).map(Vec::as_slice).unwrap_or(&[]);
+            let has = |value: &str| l7.iter().any(|entry| entry.as_str() == Some(value));
+            let ipset = profile.get("ipset").and_then(serde_json::Value::as_str).is_some();
+            let tcp = profile.get("filter_tcp").and_then(serde_json::Value::as_str).is_some();
+            let udp = profile.get("filter_udp").and_then(serde_json::Value::as_str).is_some();
+            let transport = if !ipset && has("tls") && !udp { "tls" }
+                else if !ipset && has("quic") && !tcp { "quic" }
+                else if category == "discord" && udp && !tcp && (has("discord") || has("stun")) { "voice" }
+                else if has("http") && !udp { "http" }
+                else if udp && !tcp && l7.is_empty() { "udp" }
+                else { continue; };
+            let profile_id = profile.get("id").and_then(serde_json::Value::as_str).ok_or("invalid fixed profile ID")?;
+            let plan = catalog.resolve_dpi_plan(&DpiStartRequest {
+                engine: DpiEngine::Zapret2,
+                selections: vec![DpiSelection { category: strategy.category(), strategy_id: strategy.strategy_id().to_owned() }],
+                options: DpiRuntimeOptions {
+                    zapret2_level: 0, zapret2_clienthello: false, legacy_reliability: false,
+                    zapret2_overrides: Vec::new(), zapret2_diagnostics: false,
+                    zapret2_profiles: vec![obsession_runtime_protocol::Zapret2ProfileSelection {
+                        category: category.into(), transport: transport.into(), profile_id: profile_id.into(),
+                    }],
+                },
+            })?;
+            let materialized = state.materialize(&plan, generation)?;
+            let [launch] = materialized.launches() else { return Err("fixed profile produced an unexpected launch count".into()); };
+            materialized.reverify()?;
+            if dry_run_engines { verify_engine_parser(launch)?; parser_checks += 1; }
+            state.cleanup_generation(&materialized)?;
+            generation = generation.checked_add(1).ok_or("generation overflow")?;
+            explicit_profile_checks += 1;
+        }
+    }
+    println!("verified {explicit_profile_checks} explicit Zapret2 profile selections");
+    // Exercise the actual privileged compiler/materializer, not app-side argv.
+    // Parser checks use --dry-run exclusively: no WinDivert capture is started.
+    let discord = zapret2.strategies().iter().find(|entry| entry.category() == obsession_runtime_protocol::DpiCategory::Discord)
+        .ok_or("missing Discord strategy group")?;
+    let mut composition_receipts = Vec::new();
+    for (api, cdn) in [("research_discord_tls_hostfake_md5", "classic_discord_tls_split_sni"),
+        ("classic_discord_tls_split_sni", "research_discord_tls_hostfake_md5")] {
+        use obsession_runtime_protocol::zapret2_composition::{DiscordComposition, DiscordScope};
+        let pair = DiscordComposition::new(api, cdn)?;
+        for diagnostics in [false,true] {
+        let plan = catalog.resolve_dpi_plan(&DpiStartRequest {
+            engine:DpiEngine::Zapret2,
+            selections:vec![DpiSelection{category:discord.category(), strategy_id:discord.strategy_id().into()}],
+            options:DpiRuntimeOptions { zapret2_profiles:vec![obsession_runtime_protocol::Zapret2ProfileSelection {
+                category:"discord".into(),transport:"tls".into(),profile_id:pair.id()
+            }], zapret2_level:4, zapret2_clienthello:false, legacy_reliability:false,
+                zapret2_overrides:Vec::new(), zapret2_diagnostics:diagnostics }
+        })?;
+        let materialized=state.materialize(&plan,generation)?;
+        materialized.reverify()?;
+        let [launch]=materialized.launches() else { return Err("composition must use one process".into()); };
+        let blocks:Vec<_>=launch.arguments().split(|arg|arg=="--new").collect();
+        let api_block=blocks.iter().find(|block|block.contains(&format!("--name={api}"))).ok_or("missing API profile")?;
+        let cdn_block=blocks.iter().find(|block|block.contains(&format!("--name={cdn}"))).ok_or("missing CDN profile")?;
+        if !api_block.contains(&DiscordScope::Api.arguments()[0]) || !api_block.iter().any(|arg|arg.starts_with("--hostlist="))
+            || !cdn_block.contains(&DiscordScope::Cdn.arguments()[0]) || cdn_block.iter().any(|arg|arg.starts_with("--hostlist=")) {
+            return Err("composition host scopes overlap or lost their lists".into());
+        }
+        let parser = dry_run_engines || std::env::args().any(|arg|arg=="--dry-run-compositions");
+        if diagnostics && [api_block,cdn_block].iter().any(|block| !block.iter()
+            .any(|arg|arg.starts_with("--lua-desync=obsession_trace:profile=") && arg.ends_with(":routing"))) {
+            return Err("missing exact-flow routing observer".into());
+        }
+        if parser { verify_engine_parser(launch)?; parser_checks+=1; }
+        composition_receipts.push(serde_json::json!({"id":pair.id(),"composition":pair,"diagnostics":diagnostics,
+            "args":launch.arguments(),"parserVerified":parser,"packetCaptureStarted":false,"providerTested":false}));
+        state.cleanup_generation(&materialized)?; generation+=1;
+        }
+    }
+    if let Some(path)=std::env::args().find_map(|arg|arg.strip_prefix("--composition-receipt=").map(str::to_owned)) {
+        fs::write(path,serde_json::to_vec_pretty(&composition_receipts)?)?;
+    }
+    println!("verified {} Discord compositions with independent API/CDN profiles",composition_receipts.len());
     for strategy in legacy.strategies() {
         let plan = catalog.resolve_dpi_plan(&DpiStartRequest {
             engine: DpiEngine::Legacy,
@@ -116,9 +259,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 strategy_id: strategy.strategy_id().to_owned(),
             }],
             options: DpiRuntimeOptions {
-                zapret2_level: 0,
+                zapret2_level: 0, zapret2_clienthello: false, zapret2_profiles: Vec::new(),
                 legacy_reliability: true,
                 zapret2_overrides: Vec::new(),
+                zapret2_diagnostics: false,
             },
         })?;
         plan.reverify()?;
@@ -186,9 +330,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             engine: DpiEngine::Legacy,
             selections: selections.clone(),
             options: DpiRuntimeOptions {
-                zapret2_level: 0,
+                zapret2_level: 0, zapret2_clienthello: false, zapret2_profiles: Vec::new(),
                 legacy_reliability: true,
                 zapret2_overrides: vec![],
+                zapret2_diagnostics: false,
             },
         })?;
         let materialized = state.materialize(&plan, generation)?;
@@ -207,90 +352,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "verified {} combined Legacy plans (Discord/YouTube pairs and five-category packs)",
         combined_selections.len()
     );
-
-    for strategy in zapret2.strategies() {
-        for level in 0..=3 {
-            let plan = catalog.resolve_dpi_plan(&DpiStartRequest {
-                engine: DpiEngine::Zapret2,
-                selections: vec![DpiSelection {
-                    category: strategy.category(),
-                    strategy_id: strategy.strategy_id().to_owned(),
-                }],
-                options: DpiRuntimeOptions {
-                    zapret2_level: level,
-                    legacy_reliability: false,
-                    zapret2_overrides: Vec::new(),
-                },
-            })?;
-            plan.reverify()?;
-            let materialized = state.materialize(&plan, generation)?;
-            let [launch] = materialized.launches() else {
-                return Err(format!(
-                    "Zapret2 category group {} materialized an unexpected launch count",
-                    strategy.strategy_id()
-                )
-                .into());
-            };
-            if launch.response_file().is_some() || launch.arguments().is_empty() {
-                return Err("Zapret2 did not produce typed service-owned arguments".into());
-            }
-            if dry_run_engines {
-                verify_engine_parser(launch)?;
-                parser_checks += 1;
-            }
-            state.cleanup_generation(&materialized)?;
-            generation = generation.checked_add(1).ok_or("generation overflow")?;
-
-            let adaptive = Zapret2AdaptiveOverride {
-                schema_version: ZAPRET2_ADAPTIVE_SCHEMA_VERSION,
-                category: strategy.category(),
-                transport: Zapret2AdaptiveTransport::Tls,
-                steps: vec![Zapret2AdaptiveStep {
-                    function: Zapret2AdaptiveFunction::MultiDisorderLegacy,
-                    args: BTreeMap::from([(
-                        "pos".into(),
-                        Zapret2AdaptiveValue::Text("1,midsld".into()),
-                    )]),
-                }],
-                payload: Zapret2AdaptivePayload::TlsClientHello,
-                out_range: Some(Zapret2AdaptiveRange::FirstTenDataPackets),
-            };
-            let plan = catalog.resolve_dpi_plan(&DpiStartRequest {
-                engine: DpiEngine::Zapret2,
-                selections: vec![DpiSelection {
-                    category: strategy.category(),
-                    strategy_id: strategy.strategy_id().to_owned(),
-                }],
-                options: DpiRuntimeOptions {
-                    zapret2_level: level,
-                    legacy_reliability: false,
-                    zapret2_overrides: vec![adaptive],
-                },
-            })?;
-            plan.reverify()?;
-            let materialized = state.materialize(&plan, generation)?;
-            let [launch] = materialized.launches() else {
-                return Err("Adaptive Zapret2 materialized an unexpected launch count".into());
-            };
-            if !launch
-                .arguments()
-                .iter()
-                .any(|argument| argument.starts_with("--name=adaptive-"))
-                || !launch
-                    .arguments()
-                    .iter()
-                    .any(|argument| argument == "--lua-desync=multidisorder_legacy:pos=1,midsld")
-            {
-                return Err("Adaptive Zapret2 was not compiled by the protected service".into());
-            }
-            if dry_run_engines {
-                verify_engine_parser(launch)?;
-                parser_checks += 1;
-            }
-            state.cleanup_generation(&materialized)?;
-            generation = generation.checked_add(1).ok_or("generation overflow")?;
-        }
-    }
 
     println!(
         "verified {} protected Legacy strategies and {} Zapret2 category groups",

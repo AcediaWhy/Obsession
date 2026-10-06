@@ -1,4 +1,4 @@
-import { useAdaptiveStrategyStore } from "../store/adaptiveStrategyStore";
+
 import { useBrainStore } from "../store/brainStore";
 import { useDpiStore } from "../store/dpiStore";
 import { useLegacyReliabilityStore } from "../store/legacyReliabilityStore";
@@ -16,9 +16,6 @@ export function useObsessionVisualPhase(): ObsessionVisualPhase {
   const proxyRunning = useProxyStore((state) => state.running);
   const proxyTransitioning = useProxyStore((state) => state.transitioning);
   const proxyError = useProxyStore((state) => state.error);
-  const adaptiveBusy = useAdaptiveStrategyStore((state) => state.busy);
-  const adaptiveError = useAdaptiveStrategyStore((state) => state.error);
-  const adaptivePhase = useAdaptiveStrategyStore((state) => state.status?.phase ?? null);
   const brainPhase = useBrainStore((state) => state.status?.phase ?? null);
   const reliabilityPhase = useLegacyReliabilityStore((state) => state.status.phase);
   const recoveryPhase = useLegacyReliabilityStore(
@@ -39,11 +36,6 @@ export function useObsessionVisualPhase(): ObsessionVisualPhase {
       running: proxyRunning,
       transitioning: proxyTransitioning,
       error: proxyError,
-    },
-    adaptive: {
-      busy: adaptiveBusy,
-      error: adaptiveError,
-      phase: adaptivePhase,
     },
     brain: { phase: brainPhase },
     reliability: {

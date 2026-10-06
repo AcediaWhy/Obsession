@@ -1,7 +1,7 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "pack_id": "builtin.base",
-  "pack_version": "0.7.0",
+  "pack_version": "0.12.0",
   "engine": {
     "winws2_min": ">=1.0.5.2",
     "lua_api": 6
@@ -34,6 +34,14 @@
     {
       "path": "blobs/quic_initial_www_google_com.bin",
       "sha256": "f4589c57749f956bb30538197a521d7005f8b0a8723b4707e72405e51ddac50a"
+    },
+    {
+      "path": "lua/obsession-diagnostic.lua",
+      "sha256": "2d3d399b54fb422384ae7301ff485745bd488f068a8ad4922cc3bd8ca3d2e11f"
+    },
+    {
+      "path": "lua/obsession-clienthello.lua",
+      "sha256": "281d3b4e54b677a6d52b8c913050c1fe95b254fe056ee602560e4ae09b290c80"
     }
   ],
   "blobs": [
@@ -171,7 +179,8 @@
       ],
       "out_range": "-d5",
       "desync": [
-        "fake:blob=0x00000000000000000000000000000000:repeats=6"
+        "send:ipfrag:ipfrag_pos_udp=8",
+        "drop"
       ]
     },
     {
@@ -235,7 +244,9 @@
       ],
       "out_range": "-d5",
       "desync": [
-        "fake:blob=0x00000000000000000000000000000000:repeats=6"
+        "fake:blob=0x00000000000000000000000000000000:repeats=2",
+        "send:ipfrag:ipfrag_pos_udp=8",
+        "drop"
       ]
     },
     {
@@ -278,7 +289,7 @@
       ],
       "out_range": "-d5",
       "desync": [
-        "fake:blob=0x00000000000000000000000000000000:repeats=6"
+        "fake:blob=0x00000000000000000000000000000000:ip_ttl=5:ip6_ttl=5:repeats=2"
       ]
     },
     {
@@ -458,7 +469,1044 @@
   ],
   "fallback": "discord_tls_text",
   "notes": {
-    "scope": "Discord TLS, QUIC and recognized voice discovery/STUN at every level; YouTube/Twitch and Gaming + GitHub control/data profiles. Voice and game-session usability require separate live verification. Adaptive TLS/QUIC overrides preserve voice profiles.",
+    "scope": "Discord TLS, QUIC and recognized voice discovery/STUN at every level. Experimental voice variants: zero fake, IP fragmentation, fake plus fragmentation, TTL-limited fake. Voice usability requires separate live verification; TLS/QUIC availability does not confirm RTC. YouTube/Twitch and Gaming + GitHub control/data profiles.",
     "profile_grammar": "Profiles are serialized completely and separated by bare --new only between profiles."
-  }
+  },
+  "experiments": [
+    {
+      "id": "discord_tls_clienthello_clone",
+      "category": "discord",
+      "aggressiveness": 4,
+      "lua": "lua/obsession-clienthello.lua",
+      "transports": [
+        "tcp",
+        "tls"
+      ],
+      "filter_tcp": "443,2053,2083,2087,2096,8443",
+      "filter_l7": [
+        "tls"
+      ],
+      "payload": [
+        "tls_client_hello"
+      ],
+      "out_range": "-d10",
+      "desync": [
+        "obsession_clienthello:payload=tls_client_hello"
+      ]
+    }
+  ],
+  "presets": [
+    {
+      "id": "classic_discord_tls_split_sni",
+      "category": "discord",
+      "aggressiveness": 1,
+      "lua": "lua/zapret-antidpi.lua",
+      "transports": [
+        "tcp",
+        "tls"
+      ],
+      "filter_tcp": "443,2053,2083,2087,2096,8443",
+      "filter_l7": [
+        "tls"
+      ],
+      "payload": [
+        "tls_client_hello"
+      ],
+      "out_range": "-d10",
+      "desync": [
+        "multisplit:pos=midsld"
+      ]
+    },
+    {
+      "id": "classic_discord_tls_split_extension",
+      "category": "discord",
+      "aggressiveness": 1,
+      "lua": "lua/zapret-antidpi.lua",
+      "transports": [
+        "tcp",
+        "tls"
+      ],
+      "filter_tcp": "443,2053,2083,2087,2096,8443",
+      "filter_l7": [
+        "tls"
+      ],
+      "payload": [
+        "tls_client_hello"
+      ],
+      "out_range": "-d10",
+      "desync": [
+        "multisplit:pos=sniext"
+      ]
+    },
+    {
+      "id": "classic_discord_tls_disorder_sni",
+      "category": "discord",
+      "aggressiveness": 1,
+      "lua": "lua/zapret-antidpi.lua",
+      "transports": [
+        "tcp",
+        "tls"
+      ],
+      "filter_tcp": "443,2053,2083,2087,2096,8443",
+      "filter_l7": [
+        "tls"
+      ],
+      "payload": [
+        "tls_client_hello"
+      ],
+      "out_range": "-d10",
+      "desync": [
+        "multidisorder:pos=midsld"
+      ]
+    },
+    {
+      "id": "classic_discord_tls_disorder_extension",
+      "category": "discord",
+      "aggressiveness": 1,
+      "lua": "lua/zapret-antidpi.lua",
+      "transports": [
+        "tcp",
+        "tls"
+      ],
+      "filter_tcp": "443,2053,2083,2087,2096,8443",
+      "filter_l7": [
+        "tls"
+      ],
+      "payload": [
+        "tls_client_hello"
+      ],
+      "out_range": "-d10",
+      "desync": [
+        "multidisorder:pos=sniext"
+      ]
+    },
+    {
+      "id": "classic_discord_tls_legacy_sni",
+      "category": "discord",
+      "aggressiveness": 1,
+      "lua": "lua/zapret-antidpi.lua",
+      "transports": [
+        "tcp",
+        "tls"
+      ],
+      "filter_tcp": "443,2053,2083,2087,2096,8443",
+      "filter_l7": [
+        "tls"
+      ],
+      "payload": [
+        "tls_client_hello"
+      ],
+      "out_range": "-d10",
+      "desync": [
+        "multidisorder_legacy:pos=midsld"
+      ]
+    },
+    {
+      "id": "classic_discord_tls_legacy_sni_extension",
+      "category": "discord",
+      "aggressiveness": 1,
+      "lua": "lua/zapret-antidpi.lua",
+      "transports": [
+        "tcp",
+        "tls"
+      ],
+      "filter_tcp": "443,2053,2083,2087,2096,8443",
+      "filter_l7": [
+        "tls"
+      ],
+      "payload": [
+        "tls_client_hello"
+      ],
+      "out_range": "-d10",
+      "desync": [
+        "multidisorder_legacy:pos=midsld,sniext"
+      ]
+    },
+    {
+      "id": "classic_discord_tls_fake_md5_disorder",
+      "category": "discord",
+      "aggressiveness": 1,
+      "lua": "lua/zapret-antidpi.lua",
+      "transports": [
+        "tcp",
+        "tls"
+      ],
+      "filter_tcp": "443,2053,2083,2087,2096,8443",
+      "filter_l7": [
+        "tls"
+      ],
+      "payload": [
+        "tls_client_hello"
+      ],
+      "out_range": "-d10",
+      "desync": [
+        "fake:blob=fake_default_tls:tcp_md5:tcp_seq=-10000:repeats=2",
+        "multidisorder:pos=midsld"
+      ]
+    },
+    {
+      "id": "classic_discord_tls_fake_seq_split",
+      "category": "discord",
+      "aggressiveness": 1,
+      "lua": "lua/zapret-antidpi.lua",
+      "transports": [
+        "tcp",
+        "tls"
+      ],
+      "filter_tcp": "443,2053,2083,2087,2096,8443",
+      "filter_l7": [
+        "tls"
+      ],
+      "payload": [
+        "tls_client_hello"
+      ],
+      "out_range": "-d10",
+      "desync": [
+        "fake:blob=tls_google:tcp_seq=-10000:repeats=2",
+        "multisplit:pos=midsld"
+      ]
+    },
+    {
+      "id": "classic_discord_quic_fake_default_once",
+      "category": "discord",
+      "aggressiveness": 1,
+      "lua": "lua/zapret-antidpi.lua",
+      "transports": [
+        "udp",
+        "quic"
+      ],
+      "filter_l7": [
+        "quic"
+      ],
+      "payload": [
+        "quic_initial"
+      ],
+      "desync": [
+        "fake:blob=fake_default_quic:repeats=1"
+      ]
+    },
+    {
+      "id": "classic_discord_quic_fake_default_six",
+      "category": "discord",
+      "aggressiveness": 1,
+      "lua": "lua/zapret-antidpi.lua",
+      "transports": [
+        "udp",
+        "quic"
+      ],
+      "filter_l7": [
+        "quic"
+      ],
+      "payload": [
+        "quic_initial"
+      ],
+      "desync": [
+        "fake:blob=fake_default_quic:repeats=6"
+      ],
+      "out_range": "-d10"
+    },
+    {
+      "id": "classic_discord_quic_fake_google_twice",
+      "category": "discord",
+      "aggressiveness": 1,
+      "lua": "lua/zapret-antidpi.lua",
+      "transports": [
+        "udp",
+        "quic"
+      ],
+      "filter_l7": [
+        "quic"
+      ],
+      "payload": [
+        "quic_initial"
+      ],
+      "desync": [
+        "fake:blob=quic_google:repeats=2"
+      ],
+      "out_range": "-d10"
+    },
+    {
+      "id": "classic_youtube_twitch_tls_split_sni",
+      "category": "youtube_twitch",
+      "aggressiveness": 1,
+      "lua": "lua/zapret-antidpi.lua",
+      "transports": [
+        "tcp",
+        "tls"
+      ],
+      "filter_l7": [
+        "tls"
+      ],
+      "payload": [
+        "tls_client_hello"
+      ],
+      "out_range": "-d10",
+      "desync": [
+        "multisplit:pos=midsld"
+      ]
+    },
+    {
+      "id": "classic_youtube_twitch_tls_split_extension",
+      "category": "youtube_twitch",
+      "aggressiveness": 1,
+      "lua": "lua/zapret-antidpi.lua",
+      "transports": [
+        "tcp",
+        "tls"
+      ],
+      "filter_l7": [
+        "tls"
+      ],
+      "payload": [
+        "tls_client_hello"
+      ],
+      "out_range": "-d10",
+      "desync": [
+        "multisplit:pos=sniext"
+      ]
+    },
+    {
+      "id": "classic_youtube_twitch_tls_disorder_sni",
+      "category": "youtube_twitch",
+      "aggressiveness": 1,
+      "lua": "lua/zapret-antidpi.lua",
+      "transports": [
+        "tcp",
+        "tls"
+      ],
+      "filter_l7": [
+        "tls"
+      ],
+      "payload": [
+        "tls_client_hello"
+      ],
+      "out_range": "-d10",
+      "desync": [
+        "multidisorder:pos=midsld"
+      ]
+    },
+    {
+      "id": "classic_youtube_twitch_tls_saved_disorder",
+      "category": "youtube_twitch",
+      "aggressiveness": 1,
+      "lua": "lua/zapret-antidpi.lua",
+      "transports": [
+        "tcp",
+        "tls"
+      ],
+      "filter_l7": [
+        "tls"
+      ],
+      "payload": [
+        "tls_client_hello"
+      ],
+      "out_range": "-d10",
+      "desync": [
+        "multidisorder:pos=1,midsld"
+      ]
+    },
+    {
+      "id": "classic_youtube_twitch_tls_disorder_extension",
+      "category": "youtube_twitch",
+      "aggressiveness": 1,
+      "lua": "lua/zapret-antidpi.lua",
+      "transports": [
+        "tcp",
+        "tls"
+      ],
+      "filter_l7": [
+        "tls"
+      ],
+      "payload": [
+        "tls_client_hello"
+      ],
+      "out_range": "-d10",
+      "desync": [
+        "multidisorder:pos=sniext"
+      ]
+    },
+    {
+      "id": "classic_youtube_twitch_tls_legacy_sni_extension",
+      "category": "youtube_twitch",
+      "aggressiveness": 1,
+      "lua": "lua/zapret-antidpi.lua",
+      "transports": [
+        "tcp",
+        "tls"
+      ],
+      "filter_l7": [
+        "tls"
+      ],
+      "payload": [
+        "tls_client_hello"
+      ],
+      "out_range": "-d10",
+      "desync": [
+        "multidisorder_legacy:pos=midsld,sniext"
+      ]
+    },
+    {
+      "id": "classic_youtube_twitch_tls_fake_md5_disorder",
+      "category": "youtube_twitch",
+      "aggressiveness": 1,
+      "lua": "lua/zapret-antidpi.lua",
+      "transports": [
+        "tcp",
+        "tls"
+      ],
+      "filter_l7": [
+        "tls"
+      ],
+      "payload": [
+        "tls_client_hello"
+      ],
+      "out_range": "-d10",
+      "desync": [
+        "fake:blob=fake_default_tls:tcp_md5:tcp_seq=-10000:repeats=2",
+        "multidisorder:pos=midsld"
+      ]
+    },
+    {
+      "id": "classic_youtube_twitch_tls_fake_seq_split",
+      "category": "youtube_twitch",
+      "aggressiveness": 1,
+      "lua": "lua/zapret-antidpi.lua",
+      "transports": [
+        "tcp",
+        "tls"
+      ],
+      "filter_l7": [
+        "tls"
+      ],
+      "payload": [
+        "tls_client_hello"
+      ],
+      "out_range": "-d10",
+      "desync": [
+        "fake:blob=tls_google:tcp_seq=-10000:repeats=2",
+        "multisplit:pos=midsld"
+      ]
+    },
+    {
+      "id": "classic_youtube_twitch_quic_fake_default_once",
+      "category": "youtube_twitch",
+      "aggressiveness": 1,
+      "lua": "lua/zapret-antidpi.lua",
+      "transports": [
+        "udp",
+        "quic"
+      ],
+      "filter_l7": [
+        "quic"
+      ],
+      "payload": [
+        "quic_initial"
+      ],
+      "desync": [
+        "fake:blob=fake_default_quic:repeats=1"
+      ]
+    },
+    {
+      "id": "classic_youtube_twitch_quic_fake_default_six",
+      "category": "youtube_twitch",
+      "aggressiveness": 1,
+      "lua": "lua/zapret-antidpi.lua",
+      "transports": [
+        "udp",
+        "quic"
+      ],
+      "filter_l7": [
+        "quic"
+      ],
+      "payload": [
+        "quic_initial"
+      ],
+      "desync": [
+        "fake:blob=fake_default_quic:repeats=6"
+      ],
+      "out_range": "-d10"
+    },
+    {
+      "id": "classic_youtube_twitch_quic_fake_google_twice",
+      "category": "youtube_twitch",
+      "aggressiveness": 1,
+      "lua": "lua/zapret-antidpi.lua",
+      "transports": [
+        "udp",
+        "quic"
+      ],
+      "filter_l7": [
+        "quic"
+      ],
+      "payload": [
+        "quic_initial"
+      ],
+      "desync": [
+        "fake:blob=quic_google:repeats=2"
+      ],
+      "out_range": "-d10"
+    },
+    {
+      "id": "classic_gaming_tls_split_sni",
+      "category": "gaming",
+      "aggressiveness": 1,
+      "lua": "lua/zapret-antidpi.lua",
+      "transports": [
+        "tcp",
+        "tls"
+      ],
+      "hostlist": "gaming-github.txt",
+      "filter_tcp": "443",
+      "filter_l7": [
+        "tls"
+      ],
+      "payload": [
+        "tls_client_hello"
+      ],
+      "out_range": "-d10",
+      "desync": [
+        "multisplit:pos=midsld"
+      ]
+    },
+    {
+      "id": "classic_gaming_tls_split_extension",
+      "category": "gaming",
+      "aggressiveness": 1,
+      "lua": "lua/zapret-antidpi.lua",
+      "transports": [
+        "tcp",
+        "tls"
+      ],
+      "hostlist": "gaming-github.txt",
+      "filter_tcp": "443",
+      "filter_l7": [
+        "tls"
+      ],
+      "payload": [
+        "tls_client_hello"
+      ],
+      "out_range": "-d10",
+      "desync": [
+        "multisplit:pos=sniext"
+      ]
+    },
+    {
+      "id": "classic_gaming_tls_disorder_sni",
+      "category": "gaming",
+      "aggressiveness": 1,
+      "lua": "lua/zapret-antidpi.lua",
+      "transports": [
+        "tcp",
+        "tls"
+      ],
+      "hostlist": "gaming-github.txt",
+      "filter_tcp": "443",
+      "filter_l7": [
+        "tls"
+      ],
+      "payload": [
+        "tls_client_hello"
+      ],
+      "out_range": "-d10",
+      "desync": [
+        "multidisorder:pos=midsld"
+      ]
+    },
+    {
+      "id": "classic_gaming_tls_disorder_extension",
+      "category": "gaming",
+      "aggressiveness": 1,
+      "lua": "lua/zapret-antidpi.lua",
+      "transports": [
+        "tcp",
+        "tls"
+      ],
+      "hostlist": "gaming-github.txt",
+      "filter_tcp": "443",
+      "filter_l7": [
+        "tls"
+      ],
+      "payload": [
+        "tls_client_hello"
+      ],
+      "out_range": "-d10",
+      "desync": [
+        "multidisorder:pos=sniext"
+      ]
+    },
+    {
+      "id": "classic_gaming_tls_legacy_sni_extension",
+      "category": "gaming",
+      "aggressiveness": 1,
+      "lua": "lua/zapret-antidpi.lua",
+      "transports": [
+        "tcp",
+        "tls"
+      ],
+      "hostlist": "gaming-github.txt",
+      "filter_tcp": "443",
+      "filter_l7": [
+        "tls"
+      ],
+      "payload": [
+        "tls_client_hello"
+      ],
+      "out_range": "-d10",
+      "desync": [
+        "multidisorder_legacy:pos=midsld,sniext"
+      ]
+    },
+    {
+      "id": "classic_gaming_tls_fake_md5_disorder",
+      "category": "gaming",
+      "aggressiveness": 1,
+      "lua": "lua/zapret-antidpi.lua",
+      "transports": [
+        "tcp",
+        "tls"
+      ],
+      "hostlist": "gaming-github.txt",
+      "filter_tcp": "443",
+      "filter_l7": [
+        "tls"
+      ],
+      "payload": [
+        "tls_client_hello"
+      ],
+      "out_range": "-d10",
+      "desync": [
+        "fake:blob=fake_default_tls:tcp_md5:tcp_seq=-10000:repeats=2",
+        "multidisorder:pos=midsld"
+      ]
+    },
+    {
+      "id": "classic_gaming_tls_fake_seq_split",
+      "category": "gaming",
+      "aggressiveness": 1,
+      "lua": "lua/zapret-antidpi.lua",
+      "transports": [
+        "tcp",
+        "tls"
+      ],
+      "hostlist": "gaming-github.txt",
+      "filter_tcp": "443",
+      "filter_l7": [
+        "tls"
+      ],
+      "payload": [
+        "tls_client_hello"
+      ],
+      "out_range": "-d10",
+      "desync": [
+        "fake:blob=tls_google:tcp_seq=-10000:repeats=2",
+        "multisplit:pos=midsld"
+      ]
+    },
+    {
+      "id": "classic_gaming_quic_fake_default_once",
+      "category": "gaming",
+      "aggressiveness": 1,
+      "lua": "lua/zapret-antidpi.lua",
+      "transports": [
+        "udp",
+        "quic"
+      ],
+      "hostlist": "gaming-github.txt",
+      "filter_udp": "443",
+      "filter_l7": [
+        "quic"
+      ],
+      "payload": [
+        "quic_initial"
+      ],
+      "desync": [
+        "fake:blob=fake_default_quic:repeats=1"
+      ]
+    },
+    {
+      "id": "classic_gaming_quic_fake_default_six",
+      "category": "gaming",
+      "aggressiveness": 1,
+      "lua": "lua/zapret-antidpi.lua",
+      "transports": [
+        "udp",
+        "quic"
+      ],
+      "hostlist": "gaming-github.txt",
+      "filter_udp": "443",
+      "filter_l7": [
+        "quic"
+      ],
+      "payload": [
+        "quic_initial"
+      ],
+      "desync": [
+        "fake:blob=fake_default_quic:repeats=6"
+      ],
+      "out_range": "-d10"
+    },
+    {
+      "id": "classic_gaming_quic_fake_google_twice",
+      "category": "gaming",
+      "aggressiveness": 1,
+      "lua": "lua/zapret-antidpi.lua",
+      "transports": [
+        "udp",
+        "quic"
+      ],
+      "hostlist": "gaming-github.txt",
+      "filter_udp": "443",
+      "filter_l7": [
+        "quic"
+      ],
+      "payload": [
+        "quic_initial"
+      ],
+      "desync": [
+        "fake:blob=quic_google:repeats=2"
+      ],
+      "out_range": "-d10"
+    },
+    {
+      "id": "research_discord_tls_early_disorder",
+      "category": "discord",
+      "aggressiveness": 1,
+      "lua": "lua/zapret-antidpi.lua",
+      "transports": [
+        "tcp",
+        "tls"
+      ],
+      "filter_l7": [
+        "tls"
+      ],
+      "payload": [
+        "tls_client_hello"
+      ],
+      "candidate": {
+        "label": "Ранняя перестановка · 2",
+        "family": "reorder",
+        "urls": [
+          "https://github.com/bol-van/zapret2/discussions/208#discussioncomment-16808762"
+        ],
+        "evidence": "derived",
+        "notes": "Контроль: вариант без изменения TCP window. Успех исходного рецепта не переносится на эту производную."
+      },
+      "filter_tcp": "443,2053,2083,2087,2096,8443",
+      "desync": [
+        "multidisorder:pos=2"
+      ]
+    },
+    {
+      "id": "research_discord_tls_window_disorder",
+      "category": "discord",
+      "aggressiveness": 1,
+      "lua": "lua/zapret-antidpi.lua",
+      "transports": [
+        "tcp",
+        "tls"
+      ],
+      "filter_l7": [
+        "tls"
+      ],
+      "payload": [
+        "tls_client_hello"
+      ],
+      "candidate": {
+        "label": "TCP window + перестановка · 2",
+        "family": "window_reorder",
+        "urls": [
+          "https://github.com/bol-van/zapret2/discussions/208#discussioncomment-16808762"
+        ],
+        "evidence": "author_report",
+        "notes": "Автор сообщает успех YouTube в Windows. Фильтры сервиса и списки адаптированы; вклад изменения окна требует проверки."
+      },
+      "filter_tcp": "443,2053,2083,2087,2096,8443",
+      "steps": [
+        {
+          "action": "wssize:wsize=1:scale=6",
+          "payload": [
+            "all"
+          ]
+        },
+        {
+          "action": "multidisorder:pos=2",
+          "payload": [
+            "tls_client_hello"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "research_discord_tls_sni_ladder",
+      "category": "discord",
+      "aggressiveness": 1,
+      "lua": "lua/zapret-antidpi.lua",
+      "transports": [
+        "tcp",
+        "tls"
+      ],
+      "filter_l7": [
+        "tls"
+      ],
+      "payload": [
+        "tls_client_hello"
+      ],
+      "candidate": {
+        "label": "Перестановка вокруг SNI",
+        "family": "reorder",
+        "urls": [
+          "https://github.com/bol-van/zapret2/discussions/104"
+        ],
+        "evidence": "author_report",
+        "notes": "В исходной Linux-сборке заявлен успех YouTube и отказ Discord. Отдельный вклад TLS не установлен. Списки и фильтры адаптированы."
+      },
+      "filter_tcp": "443,2053,2083,2087,2096,8443",
+      "desync": [
+        "multidisorder:pos=1,sniext+1,host+1,midsld-2,midsld,midsld+2,endhost-1"
+      ]
+    },
+    {
+      "id": "research_discord_tls_hostfake_ack",
+      "category": "discord",
+      "aggressiveness": 1,
+      "lua": "lua/zapret-antidpi.lua",
+      "transports": [
+        "tcp",
+        "tls"
+      ],
+      "filter_l7": [
+        "tls"
+      ],
+      "payload": [
+        "tls_client_hello"
+      ],
+      "candidate": {
+        "label": "Hostfake + перестановка хвоста",
+        "family": "hostfake",
+        "urls": [
+          "https://github.com/bol-van/zapret2/discussions/208"
+        ],
+        "evidence": "blockcheck_report",
+        "notes": "Две успешные пробы rutracker TLS 1.2/IPv4. Работа Discord и YouTube не заявлена; списки и фильтры адаптированы."
+      },
+      "filter_tcp": "443,2053,2083,2087,2096,8443",
+      "desync": [
+        "hostfakesplit:disorder_after:nofake2:tcp_ack=-66000:tcp_ts_up:repeats=1"
+      ]
+    },
+    {
+      "id": "research_discord_tls_hostfake_md5",
+      "category": "discord",
+      "aggressiveness": 1,
+      "lua": "lua/zapret-antidpi.lua",
+      "transports": [
+        "tcp",
+        "tls"
+      ],
+      "filter_l7": [
+        "tls"
+      ],
+      "payload": [
+        "tls_client_hello"
+      ],
+      "candidate": {
+        "label": "Hostfake + MD5",
+        "family": "hostfake",
+        "urls": [
+          "https://github.com/bol-van/zapret2/discussions/154#discussioncomment-16273844"
+        ],
+        "evidence": "derived",
+        "notes": "Выделено из резервной ветки circular. Независимый успех не подтверждён; оркестратор удалён, фильтры адаптированы."
+      },
+      "filter_tcp": "443,2053,2083,2087,2096,8443",
+      "desync": [
+        "hostfakesplit:nofake2:tcp_md5"
+      ]
+    },
+    {
+      "id": "research_youtube_twitch_tls_early_disorder",
+      "category": "youtube_twitch",
+      "aggressiveness": 1,
+      "lua": "lua/zapret-antidpi.lua",
+      "transports": [
+        "tcp",
+        "tls"
+      ],
+      "filter_l7": [
+        "tls"
+      ],
+      "payload": [
+        "tls_client_hello"
+      ],
+      "candidate": {
+        "label": "Ранняя перестановка · 2",
+        "family": "reorder",
+        "urls": [
+          "https://github.com/bol-van/zapret2/discussions/208#discussioncomment-16808762"
+        ],
+        "evidence": "derived",
+        "notes": "Контроль: вариант без изменения TCP window. Успех исходного рецепта не переносится на эту производную."
+      },
+      "filter_tcp": "443",
+      "desync": [
+        "multidisorder:pos=2"
+      ]
+    },
+    {
+      "id": "research_youtube_twitch_tls_window_disorder",
+      "category": "youtube_twitch",
+      "aggressiveness": 1,
+      "lua": "lua/zapret-antidpi.lua",
+      "transports": [
+        "tcp",
+        "tls"
+      ],
+      "filter_l7": [
+        "tls"
+      ],
+      "payload": [
+        "tls_client_hello"
+      ],
+      "candidate": {
+        "label": "TCP window + перестановка · 2",
+        "family": "window_reorder",
+        "urls": [
+          "https://github.com/bol-van/zapret2/discussions/208#discussioncomment-16808762"
+        ],
+        "evidence": "author_report",
+        "notes": "Автор сообщает успех YouTube в Windows. Фильтры сервиса и списки адаптированы; вклад изменения окна требует проверки."
+      },
+      "filter_tcp": "443",
+      "steps": [
+        {
+          "action": "wssize:wsize=1:scale=6",
+          "payload": [
+            "all"
+          ]
+        },
+        {
+          "action": "multidisorder:pos=2",
+          "payload": [
+            "tls_client_hello"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "research_youtube_twitch_tls_sni_ladder",
+      "category": "youtube_twitch",
+      "aggressiveness": 1,
+      "lua": "lua/zapret-antidpi.lua",
+      "transports": [
+        "tcp",
+        "tls"
+      ],
+      "filter_l7": [
+        "tls"
+      ],
+      "payload": [
+        "tls_client_hello"
+      ],
+      "candidate": {
+        "label": "Перестановка вокруг SNI",
+        "family": "reorder",
+        "urls": [
+          "https://github.com/bol-van/zapret2/discussions/104"
+        ],
+        "evidence": "author_report",
+        "notes": "В исходной Linux-сборке заявлен успех YouTube и отказ Discord. Отдельный вклад TLS не установлен. Списки и фильтры адаптированы."
+      },
+      "filter_tcp": "443",
+      "desync": [
+        "multidisorder:pos=1,sniext+1,host+1,midsld-2,midsld,midsld+2,endhost-1"
+      ]
+    },
+    {
+      "id": "research_youtube_twitch_tls_hostfake_ack",
+      "category": "youtube_twitch",
+      "aggressiveness": 1,
+      "lua": "lua/zapret-antidpi.lua",
+      "transports": [
+        "tcp",
+        "tls"
+      ],
+      "filter_l7": [
+        "tls"
+      ],
+      "payload": [
+        "tls_client_hello"
+      ],
+      "candidate": {
+        "label": "Hostfake + перестановка хвоста",
+        "family": "hostfake",
+        "urls": [
+          "https://github.com/bol-van/zapret2/discussions/208"
+        ],
+        "evidence": "blockcheck_report",
+        "notes": "Две успешные пробы rutracker TLS 1.2/IPv4. Работа Discord и YouTube не заявлена; списки и фильтры адаптированы."
+      },
+      "filter_tcp": "443",
+      "desync": [
+        "hostfakesplit:disorder_after:nofake2:tcp_ack=-66000:tcp_ts_up:repeats=1"
+      ]
+    },
+    {
+      "id": "research_youtube_twitch_tls_hostfake_md5",
+      "category": "youtube_twitch",
+      "aggressiveness": 1,
+      "lua": "lua/zapret-antidpi.lua",
+      "transports": [
+        "tcp",
+        "tls"
+      ],
+      "filter_l7": [
+        "tls"
+      ],
+      "payload": [
+        "tls_client_hello"
+      ],
+      "candidate": {
+        "label": "Hostfake + MD5",
+        "family": "hostfake",
+        "urls": [
+          "https://github.com/bol-van/zapret2/discussions/154#discussioncomment-16273844"
+        ],
+        "evidence": "derived",
+        "notes": "Выделено из резервной ветки circular. Независимый успех не подтверждён; оркестратор удалён, фильтры адаптированы."
+      },
+      "filter_tcp": "443",
+      "desync": [
+        "hostfakesplit:nofake2:tcp_md5"
+      ]
+    },
+    {
+      "id": "research_youtube_twitch_quic_quic_four",
+      "category": "youtube_twitch",
+      "aggressiveness": 1,
+      "lua": "lua/zapret-antidpi.lua",
+      "transports": [
+        "udp",
+        "quic"
+      ],
+      "filter_l7": [
+        "quic"
+      ],
+      "payload": [
+        "quic_initial"
+      ],
+      "candidate": {
+        "label": "QUIC Google · 4 повтора",
+        "family": "quic_fake",
+        "urls": [
+          "https://github.com/bol-van/zapret2/discussions/104"
+        ],
+        "evidence": "author_report",
+        "notes": "Часть исходной сборки YouTube. Её успех нельзя приписать QUIC; используется наш Google blob, фильтры адаптированы."
+      },
+      "filter_udp": "443",
+      "desync": [
+        "fake:blob=quic_google:repeats=4"
+      ]
+    }
+  ]
 }

@@ -3,6 +3,7 @@ import { useEffect, useRef, type ReactNode } from "react";
 import { dur, ease, spring } from "../tokens";
 import { useParallaxOffset } from "../parallax";
 import { subscribePointerFrame } from "../pointerBus";
+import { useMotionOff } from "../render";
 
 type Props = Omit<HTMLMotionProps<"div">, "children"> & {
   padded?: boolean;
@@ -32,6 +33,7 @@ export function GlassPanel({
   onPointerLeave: onPointerLeaveProp,
   ...rest
 }: Props) {
+  const motionOff = useMotionOff();
   const { x, y } = useParallaxOffset(depth);
   const panelRef = useRef<HTMLDivElement>(null);
   const rectRef = useRef<DOMRect | null>(null);
@@ -101,12 +103,12 @@ export function GlassPanel({
       data-choir-lens
       // Анимируем прозрачность без scale, чтобы избежать дрожания размытого
       // фона при масштабировании. Движение при входе задаёт обёртка экрана.
-      initial={{ opacity: 0 }}
+      initial={motionOff ? false : { opacity: 0 }}
       animate={{ opacity: 1 }}
       // Прозрачность меняется на самой панели: opacity на предке ограничивает
       // область backdrop-filter. Состояние exit приходит от AnimatePresence в App.
-      exit={{ opacity: 0, transition: { duration: dur.fast, ease: ease.exit } }}
-      transition={spring.soft}
+      exit={{ opacity: 0, transition: motionOff ? { duration: 0 } : { duration: dur.fast, ease: ease.exit } }}
+      transition={motionOff ? { duration: 0 } : spring.soft}
       onPointerEnter={handlePointerEnter}
       onPointerLeave={handlePointerLeave}
       style={{ x, y, ...style }}

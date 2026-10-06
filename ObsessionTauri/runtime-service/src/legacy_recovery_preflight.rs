@@ -251,9 +251,10 @@ fn request(selections: Vec<DpiSelection>) -> DpiStartRequest {
         engine: DpiEngine::Legacy,
         selections,
         options: DpiRuntimeOptions {
-            zapret2_level: 0,
+            zapret2_level: 0, zapret2_clienthello: false, zapret2_profiles: Vec::new(),
             legacy_reliability: true,
             zapret2_overrides: Vec::new(),
+            zapret2_diagnostics: false,
         },
     }
 }

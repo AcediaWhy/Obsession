@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 /// Версия схемы манифеста, которую понимает этот код.
-pub const PACK_SCHEMA_VERSION: u32 = 1;
+pub const PACK_SCHEMA_VERSION: u32 = obsession_runtime_protocol::zapret2_recipe::PACK_SCHEMA_VERSION;
 
 /// Возможности хоста (движка), с которыми сверяется пак.
 #[derive(Clone, Copy, Debug)]
@@ -46,6 +46,9 @@ pub struct BlobDef {
 /// Определение одной стратегии (тройка engine+strategy+category для Мозга — WS5).
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StrategyDef {
+    /// Assigned only by the local resolver after verifying both named parents.
+    #[serde(skip)]
+    pub composition_scope: Option<obsession_runtime_protocol::zapret2_composition::DiscordScope>,
     pub id: String,
     pub category: String,
     /// Позиция на лестнице агрессивности (меньше = мягче). Мозг идёт снизу вверх.
@@ -57,6 +60,11 @@ pub struct StrategyDef {
     /// ["fake:blob=fake_default_tls:badsum", "multisplit:pos=1,midsld"].
     #[serde(default)]
     pub desync: Vec<String>,
+    /// Resource-only scoped actions, mutually exclusive with legacy desync.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub steps: Vec<obsession_runtime_protocol::zapret2_recipe::DesyncStep>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub candidate: Option<obsession_runtime_protocol::zapret2_recipe::CandidateSource>,
     /// Транспорт(ы) профиля: включает `--filter-tcp=443`/`--filter-udp=443`.
     /// По умолчанию только TCP (пусто → tcp).
     #[serde(default)]
@@ -96,6 +104,12 @@ pub struct StrategyPackManifest {
     #[serde(default)]
     pub blobs: Vec<BlobDef>,
     pub strategies: Vec<StrategyDef>,
+    /// Fixed, explicit alternatives. They do not extend the default level ladder.
+    #[serde(default)]
+    pub presets: Vec<StrategyDef>,
+    /// Explicit experiments are excluded from the ordinary level ladder.
+    #[serde(default)]
+    pub experiments: Vec<StrategyDef>,
     /// Хосты для probe-проверки стратегий (без пользовательских данных).
     #[serde(default)]
     pub probes: Vec<String>,
@@ -118,7 +132,7 @@ impl PackValidationReport {
 }
 
 /// SHA-256 в hex (нижний регистр).
-fn sha256_hex(bytes: &[u8]) -> String {
+pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
     let mut h = Sha256::new();
     h.update(bytes);
     h.finalize().iter().map(|b| format!("{b:02x}")).collect()
@@ -258,7 +272,7 @@ where
     let mut err = |m: String| report.errors.push(m);
 
     // 1. Версия схемы.
-    if manifest.schema_version != PACK_SCHEMA_VERSION {
+    if !matches!(manifest.schema_version, 1 | PACK_SCHEMA_VERSION) {
         err(format!(
             "несовместимая версия схемы пака: {} (ожидалась {PACK_SCHEMA_VERSION})",
             manifest.schema_version
@@ -320,6 +334,18 @@ where
 
     // 5. Стратегии: id/category/files + типизированные L7/payload/ranges/desync.
     let mut seen_ids: BTreeSet<&str> = BTreeSet::new();
+    if manifest.presets.len() > 96 { err("слишком много встроенных вариантов профилей".into()); }
+    for preset in &manifest.presets {
+        if super::profile_transport(preset).is_none() { err(format!("вариант {} не соответствует транспортному слоту", preset.id)); }
+    }
+    if manifest.experiments.len() > 8 {
+        err("слишком много экспериментальных профилей".into());
+    }
+    for experiment in &manifest.experiments {
+        if experiment.id != super::CLIENTHELLO_EXPERIMENT_ID || !super::is_discord_tls_profile(experiment) {
+            err(format!("неподдерживаемый экспериментальный профиль: {}", experiment.id));
+        }
+    }
     let known_cats: BTreeSet<&str> = manifest.categories.iter().map(String::as_str).collect();
     let allowed_l7 = ["http", "tls", "quic", "discord", "stun", "wireguard"];
     let allowed_payload = [
@@ -331,7 +357,19 @@ where
         "wireguard_initiation",
         "wireguard_cookie",
     ];
-    for st in &manifest.strategies {
+    for st in manifest.strategies.iter().chain(&manifest.presets).chain(&manifest.experiments) {
+        if manifest.schema_version == 1 && (!st.steps.is_empty() || st.candidate.is_some()) {
+            err(format!("стратегия {} требует схему пака 2", st.id));
+        }
+        if let Err(reason) = obsession_runtime_protocol::zapret2_recipe::validate_steps(&st.desync, &st.steps) {
+            err(format!("стратегия {}: {reason}", st.id));
+        }
+        if st.candidate.as_ref().is_some_and(|source| !source.valid()) {
+            err(format!("стратегия {} содержит неверный источник кандидата", st.id));
+        }
+        if !is_safe_identifier(&st.id) || st.id.len() > 128 {
+            err(format!("небезопасный id профиля: {}", st.id));
+        }
         if !seen_ids.insert(st.id.as_str()) {
             err(format!("дублирующийся id стратегии: {}", st.id));
         }
@@ -418,10 +456,10 @@ where
                 }
             }
         }
-        if st.desync.is_empty() {
+        if st.desync.is_empty() && st.steps.is_empty() {
             err(format!("стратегия {} не содержит lua-desync", st.id));
         }
-        for desync in &st.desync {
+        for desync in st.desync.iter().chain(st.steps.iter().map(|step| &step.action)) {
             if !is_safe_cli_value(desync) {
                 err(format!(
                     "стратегия {} содержит небезопасный lua-desync",
@@ -430,7 +468,7 @@ where
                 continue;
             }
             for part in desync.split(':') {
-                let Some(name) = part.strip_prefix("blob=") else {
+                let Some(name) = part.strip_prefix("blob=").or_else(|| part.strip_prefix("seqovl_pattern=")) else {
                     continue;
                 };
                 if !name.starts_with("fake_default_")
@@ -523,7 +561,10 @@ mod tests {
             protocols: vec!["tcp".into(), "tls".into()],
             files: vec![file_with("lua/discord_tls_split.lua", &lua_bytes)],
             blobs: vec![],
+            experiments: vec![],
+            presets: vec![],
             strategies: vec![StrategyDef {
+                composition_scope: None,
                 id: "discord_tls_split".into(),
                 category: "discord".into(),
                 aggressiveness: 1,
@@ -541,6 +582,8 @@ mod tests {
                 payload: vec!["tls_client_hello".into()],
                 out_range: Some("-d10".into()),
                 in_range: None,
+                steps: vec![],
+                candidate: None,
             }],
             probes: vec!["discord.com".into()],
             fallback: Some("discord_tls_split".into()),
@@ -563,6 +606,25 @@ mod tests {
         let (m, files) = valid_manifest();
         let r = validate_pack(&m, caps(), resolver(&files));
         assert!(r.is_valid(), "errors: {:?}", r.errors);
+    }
+
+    #[test]
+    fn scoped_recipes_require_v2_and_validate_every_stage() {
+        use obsession_runtime_protocol::zapret2_recipe::DesyncStep;
+        let (mut m, files) = valid_manifest();
+        m.schema_version = 1;
+        assert!(validate_pack(&m, caps(), resolver(&files)).is_valid());
+        m.strategies[0].desync.clear();
+        m.strategies[0].steps = vec![DesyncStep { action: "multidisorder:pos=2".into(),
+            payload: vec!["tls_client_hello".into()], out_range: None, in_range: None }];
+        assert!(!validate_pack(&m, caps(), resolver(&files)).is_valid());
+        m.schema_version = 2;
+        assert!(validate_pack(&m, caps(), resolver(&files)).is_valid());
+        m.strategies[0].steps[0].action = "fake:blob=undeclared".into();
+        assert!(validate_pack(&m, caps(), resolver(&files)).errors.iter().any(|e| e.contains("необъявленный blob")));
+        m.strategies[0].steps[0].action = "multidisorder:pos=2".into();
+        m.strategies[0].steps[0].payload = vec!["all".into(), "tls_client_hello".into()];
+        assert!(!validate_pack(&m, caps(), resolver(&files)).is_valid());
     }
 
     #[test]

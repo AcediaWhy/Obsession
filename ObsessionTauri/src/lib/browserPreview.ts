@@ -9,12 +9,12 @@ const previewCapabilities = {
   serviceVersion: null,
   dpi: false,
   zapret2: false,
-  adaptiveZapret2: false,
   eyesEvents: false,
   legacyReliabilityControls: false,
   legacyReliability: false,
   hosts: false,
   proxyLanFirewall: false,
+  systemDnsRecovery: false,
 };
 
 let previewSettings: Settings = {
@@ -38,13 +38,14 @@ let previewSettings: Settings = {
   lan_publish_secs: 0,
   dpi_engine: "legacy",
   zapret2_level: 0,
-  adaptive_strategy_enabled: false,
-  adaptive_search_mode: "balanced",
+  zapret2_clienthello: false,
+  zapret2_profiles: [],
+  zapret2_pick_mode: "balanced",
 };
 
 function bootstrapSnapshot(): BootstrapSnapshot {
   return {
-    schemaVersion: 8,
+    schemaVersion: 9,
     settings: {
       revision: 0,
       value: {
@@ -72,7 +73,6 @@ function bootstrapSnapshot(): BootstrapSnapshot {
       },
     },
     brain: { revision: 0, value: null },
-    adaptive: { revision: 0, value: null },
     legacyReliability: {
       revision: 0,
       value: {
@@ -127,6 +127,15 @@ export function invokeBrowserPreview<T>(
 ): Promise<T> {
   let value: unknown;
   switch (command) {
+    case "update_check":
+      value = {
+        current_version: "1.1.0",
+        latest_version: "1.1.0",
+        available: false,
+        notes: "",
+        release_url: "https://github.com/AcediaWhy/Obsession/releases/latest",
+      };
+      break;
     case "bootstrap_get_snapshot":
       value = bootstrapSnapshot();
       break;
@@ -164,6 +173,8 @@ export function invokeBrowserPreview<T>(
       break;
     case "dpi_engine_list":
     case "dpi_zapret2_profiles":
+    case "dpi_zapret2_catalog":
+    case "dpi_zapret2_history":
     case "dpi_detect_orphaned":
     case "lists_all":
     case "get_profiles":
@@ -171,6 +182,9 @@ export function invokeBrowserPreview<T>(
       break;
     case "hosts_check":
       value = previewHostsHealth;
+      break;
+    case "system_dns_status":
+      value = { active: false, restoreAvailable: false, provider: null, interfaceName: null };
       break;
     default:
       return Promise.reject(

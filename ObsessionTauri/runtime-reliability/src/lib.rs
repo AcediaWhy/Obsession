@@ -67,6 +67,12 @@ pub struct EyesTeardownStatus {
 
 #[cfg(windows)]
 impl EyesTeardownTicket {
+    /// Preserve ownership of partially started workers until bounded teardown
+    /// finishes; a diagnostic startup failure must not leak a sniff handle.
+    pub fn from_start_error(error: eyes::EyesStartError) -> Option<Self> {
+        let (_, _, pending) = error.into_parts();
+        pending.map(|inner| Self { inner })
+    }
     pub fn begin(handle: eyes::EyesHandle) -> Self {
         Self {
             inner: handle.begin_stop(),

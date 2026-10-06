@@ -63,7 +63,7 @@ pub fn unix_secs() -> u64 {
 }
 
 /// Отправляет строку лога во фронтенд (событие `log`) И дублирует её на диск
-/// в `%APPDATA%\Obsession\logs\app.log` — чтобы логи можно было прочитать
+/// в `%LOCALAPPDATA%\vlarpsu\Obsession\logs\app.log` — чтобы логи можно было прочитать
 /// после закрытия окна (боковая панель UI не копируется).
 pub fn emit_log(app: &AppHandle, level: &str, source: &str, message: &str) {
     let ts = now_hms();

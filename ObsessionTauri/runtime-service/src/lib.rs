@@ -6,6 +6,8 @@
 //! backend with no privileged capabilities.
 
 pub mod dpi_materializer;
+#[cfg(windows)]
+mod dpi_output;
 mod legacy_pack;
 #[cfg(windows)]
 mod hosts_controller;
@@ -19,6 +21,8 @@ mod legacy_recovery_preflight;
 mod legacy_recovery_transaction;
 #[cfg(windows)]
 mod legacy_reliability;
+#[cfg(windows)]
+mod packet_observer;
 #[cfg(windows)]
 mod network_identity;
 pub mod protected_backend;
@@ -38,6 +42,8 @@ pub mod dpi_executor;
 
 #[cfg(windows)]
 mod tcp_timestamps;
+#[cfg(windows)]
+mod dns_recovery;
 
 #[cfg(windows)]
 pub mod named_pipe;
@@ -46,11 +52,11 @@ pub mod named_pipe;
 pub mod scm;
 
 use obsession_runtime_protocol::{
-    Capabilities, DpiReplaceRequest, DpiStartRequest, DpiStopRequest, FirewallOpenProxyLanRequest,
+    Capabilities, DpiDiagnostics, DpiReplaceRequest, DpiStartRequest, DpiStopRequest, FirewallOpenProxyLanRequest,
     HostsCheckRequest, HostsHealthSnapshot, HostsMutationRequest, LegacyRecoveryApprovalRequest,
     LegacyRecoveryControlsRequest, OperationAccepted, Request, RequestEnvelope, Response,
     ResponseEnvelope, RuntimeSnapshot, RuntimeStarted, ServiceError, ServiceErrorCode,
-    PROTOCOL_VERSION,
+    SystemDnsRequest, SystemDnsStatus, PROTOCOL_VERSION,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -97,25 +103,33 @@ fn valid_user_sid_text(value: &str) -> bool {
             .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BackendError {
     Busy,
     Conflict,
     InvalidRequest,
     ProtectedResourceInvalid,
+    ProtectedMaterializationFailed(obsession_runtime_protocol::RuntimeFailureDetail),
     RuntimeFailed,
+    RuntimeProcessFailed(obsession_runtime_protocol::RuntimeFailureDetail),
+    ReplacementRolledBack {
+        code: ServiceErrorCode,
+        detail: Option<obsession_runtime_protocol::RuntimeFailureDetail>,
+        generation: u64,
+    },
     ServiceUnavailable,
     Internal,
 }
 
 impl BackendError {
-    fn wire_code(self) -> ServiceErrorCode {
+    fn wire_code(&self) -> ServiceErrorCode {
         match self {
             Self::Busy => ServiceErrorCode::Busy,
             Self::Conflict => ServiceErrorCode::Conflict,
             Self::InvalidRequest => ServiceErrorCode::InvalidRequest,
-            Self::ProtectedResourceInvalid => ServiceErrorCode::ProtectedResourceInvalid,
-            Self::RuntimeFailed => ServiceErrorCode::RuntimeFailed,
+            Self::ProtectedResourceInvalid | Self::ProtectedMaterializationFailed(_) => ServiceErrorCode::ProtectedResourceInvalid,
+            Self::RuntimeFailed | Self::RuntimeProcessFailed(_) => ServiceErrorCode::RuntimeFailed,
+            Self::ReplacementRolledBack { code, .. } => *code,
             Self::ServiceUnavailable => ServiceErrorCode::ServiceUnavailable,
             Self::Internal => ServiceErrorCode::Internal,
         }
@@ -149,6 +163,21 @@ pub trait RuntimeBackend {
         Err(BackendError::ServiceUnavailable)
     }
     fn dpi_stop(&mut self, request: DpiStopRequest) -> Result<(), BackendError>;
+    fn dpi_diagnostics(&self, _request: DpiStopRequest) -> Result<DpiDiagnostics, BackendError> {
+        Err(BackendError::ServiceUnavailable)
+    }
+    fn flush_system_dns(&mut self, _request: SystemDnsRequest) -> Result<SystemDnsStatus, BackendError> {
+        Err(BackendError::ServiceUnavailable)
+    }
+    fn repair_system_dns(&mut self, _request: SystemDnsRequest) -> Result<SystemDnsStatus, BackendError> {
+        Err(BackendError::ServiceUnavailable)
+    }
+    fn restore_system_dns(&mut self) -> Result<SystemDnsStatus, BackendError> {
+        Err(BackendError::ServiceUnavailable)
+    }
+    fn system_dns_status(&self) -> Result<SystemDnsStatus, BackendError> {
+        Err(BackendError::ServiceUnavailable)
+    }
     fn hosts_install(
         &mut self,
         request: HostsMutationRequest,
@@ -323,6 +352,12 @@ impl<B: RuntimeBackend> ServiceCore<B> {
                 self.backend.dpi_replace(request).map(Response::Started)
             }
             Request::DpiStop(request) => self.backend.dpi_stop(request).map(|()| Response::Stopped),
+            Request::GetDpiDiagnostics(request) => self.backend.dpi_diagnostics(request).map(Response::DpiDiagnostics),
+            // Keep old wire variants parseable, but deny even authenticated old
+            // clients. Automatic DNS mutations are no longer supported.
+            Request::FlushSystemDns(_) | Request::RepairSystemDns(_) => Err(BackendError::ServiceUnavailable),
+            Request::RestoreSystemDns => self.backend.restore_system_dns().map(Response::SystemDns),
+            Request::GetSystemDns => self.backend.system_dns_status().map(Response::SystemDns),
             Request::HostsInstall(request) => {
                 self.backend.hosts_install(request).map(Response::Accepted)
             }
@@ -344,12 +379,20 @@ impl<B: RuntimeBackend> ServiceCore<B> {
                 .map(|()| Response::Stopped),
             Request::SubscribeEvents => self.backend.subscribe_events().map(Response::Accepted),
         };
-        result.unwrap_or_else(|error| error_response(error.wire_code()))
+        result.unwrap_or_else(|error| Response::Error(ServiceError {
+            code: error.wire_code(),
+            runtime_detail: match &error {
+                BackendError::RuntimeProcessFailed(detail) | BackendError::ProtectedMaterializationFailed(detail) => Some(detail.clone()),
+                BackendError::ReplacementRolledBack { detail, .. } => detail.clone(),
+                _ => None,
+            },
+            restored_generation: match error { BackendError::ReplacementRolledBack { generation, .. } => Some(generation), _ => None },
+        }))
     }
 }
 
 fn error_response(code: ServiceErrorCode) -> Response {
-    Response::Error(ServiceError { code })
+    Response::Error(ServiceError { code, runtime_detail: None, restored_generation: None })
 }
 
 #[cfg(test)]
@@ -378,9 +421,10 @@ mod tests {
                     strategy_id: "discord_1".into(),
                 }],
                 options: DpiRuntimeOptions {
-                    zapret2_level: 0,
+                    zapret2_level: 0, zapret2_clienthello: false, zapret2_profiles: Vec::new(),
                     legacy_reliability: true,
                     zapret2_overrides: Vec::new(),
+                    zapret2_diagnostics: false,
                 },
             }),
         )
@@ -406,6 +450,8 @@ mod tests {
             response.response,
             Response::Error(ServiceError {
                 code: ServiceErrorCode::ServiceUnavailable,
+                runtime_detail: None,
+                restored_generation: None,
             })
         );
     }
@@ -440,6 +486,8 @@ mod tests {
                 response.response,
                 Response::Error(ServiceError {
                     code: ServiceErrorCode::AccessDenied,
+                    runtime_detail: None,
+                    restored_generation: None,
                 })
             );
         }
@@ -448,13 +496,19 @@ mod tests {
     #[derive(Default)]
     struct RecordingBackend {
         starts: Vec<DpiStartRequest>,
+        replace_error: Option<BackendError>,
         controls: Vec<LegacyRecoveryControlsRequest>,
         approvals: Vec<LegacyRecoveryApprovalRequest>,
         hosts: Vec<HostsMutationRequest>,
         cleanup_sids: Vec<String>,
+        dns_generations: Vec<u64>,
     }
 
     impl RuntimeBackend for RecordingBackend {
+        fn repair_system_dns(&mut self, request: SystemDnsRequest) -> Result<SystemDnsStatus, BackendError> {
+            self.dns_generations.push(request.generation);
+            Ok(SystemDnsStatus::default())
+        }
         fn capabilities(&self) -> Result<Capabilities, BackendError> {
             Ok(Capabilities {
                 service_version: "1.0.0".into(),
@@ -491,11 +545,15 @@ mod tests {
 
         fn dpi_start(&mut self, request: DpiStartRequest) -> Result<RuntimeStarted, BackendError> {
             self.starts.push(request);
-            Ok(RuntimeStarted { generation: 1 })
+            Ok(RuntimeStarted { generation: 1, materialized_fingerprint: None, initialization_retries: 0 })
         }
 
         fn dpi_stop(&mut self, _request: DpiStopRequest) -> Result<(), BackendError> {
             Ok(())
+        }
+
+        fn dpi_replace(&mut self, _request: DpiReplaceRequest) -> Result<RuntimeStarted, BackendError> {
+            Err(self.replace_error.clone().unwrap_or(BackendError::ServiceUnavailable))
         }
 
         fn hosts_install(
@@ -540,12 +598,39 @@ mod tests {
     }
 
     #[test]
+    fn dispatcher_preserves_the_failed_replace_receipt_and_native_detail() {
+        let detail = obsession_runtime_protocol::RuntimeFailureDetail::StartupFailed { exit_code: 87,
+            diagnostics: obsession_runtime_protocol::DpiProcessDiagnostics {
+                pid: 42, exit_code: Some(87), trace_enabled: true, stream_closed: true,
+                observed_bytes: 40, discarded_lines: 0, truncated: false,
+                lines: vec!["LUA ERROR: startup fixture".into()],
+            } };
+        let mut service = ServiceCore::new(RecordingBackend {
+            replace_error: Some(BackendError::ReplacementRolledBack {
+                code: ServiceErrorCode::RuntimeFailed, detail: Some(detail.clone()), generation: 5,
+            }),
+            ..Default::default()
+        });
+        let Request::DpiStart(mut runtime) = start_request().request else { unreachable!() };
+        runtime.engine = DpiEngine::Zapret2;
+        runtime.options.legacy_reliability = false;
+        runtime.selections[0].strategy_id = "builtin-discord".into();
+        let response = service.handle(&allowed_client(), RequestEnvelope::new(
+            "replace-1", Request::DpiReplace(DpiReplaceRequest { expected_generation: 3, runtime }),
+        ));
+        assert_eq!(response.response, Response::Error(ServiceError {
+            code: ServiceErrorCode::RuntimeFailed, runtime_detail: Some(detail), restored_generation: Some(5),
+        }));
+        response.validate().unwrap();
+    }
+
+    #[test]
     fn dispatcher_can_only_forward_typed_allowlisted_operations() {
         let mut service = ServiceCore::new(RecordingBackend::default());
         let response = service.handle(&allowed_client(), start_request());
         assert_eq!(
             response.response,
-            Response::Started(RuntimeStarted { generation: 1 })
+            Response::Started(RuntimeStarted { generation: 1, materialized_fingerprint: None, initialization_retries: 0 })
         );
         assert_eq!(service.backend.starts.len(), 1);
         assert_eq!(
@@ -623,5 +708,23 @@ mod tests {
             assert!(!valid_user_sid_text(sid), "must reject {sid:?}");
         }
         assert!(valid_user_sid_text("S-1-5-21-1000"));
+    }
+
+    #[test]
+    fn old_dns_mutations_are_denied_without_reaching_the_backend() {
+        let mut service = ServiceCore::new(RecordingBackend::default());
+        for (client, generation, expected) in [
+            (ClientIdentity { is_local: false, ..allowed_client() }, 7, ServiceErrorCode::AccessDenied),
+            (allowed_client(), 0, ServiceErrorCode::InvalidRequest),
+        ] {
+            let response = service.handle(&client, RequestEnvelope::new("dns-auth", Request::RepairSystemDns(SystemDnsRequest { generation })));
+            assert!(matches!(response.response, Response::Error(ref error) if error.code == expected));
+            assert!(service.backend.dns_generations.is_empty());
+        }
+        for request in [Request::RepairSystemDns(SystemDnsRequest { generation: 7 }), Request::FlushSystemDns(SystemDnsRequest { generation: 7 })] {
+            let response = service.handle(&allowed_client(), RequestEnvelope::new("dns-valid", request));
+            assert!(matches!(response.response, Response::Error(ref error) if error.code == ServiceErrorCode::ServiceUnavailable));
+            assert!(service.backend.dns_generations.is_empty());
+        }
     }
 }

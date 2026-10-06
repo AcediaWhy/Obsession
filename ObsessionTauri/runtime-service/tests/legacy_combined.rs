@@ -131,9 +131,12 @@ fn combined_plan_preserves_selections_integrity_and_exact_stop_restart() {
         engine: DpiEngine::Legacy,
         selections: selections.clone(),
         options: DpiRuntimeOptions {
+            zapret2_clienthello: false,
+            zapret2_profiles: Vec::new(),
             zapret2_level: 0,
             legacy_reliability: true,
             zapret2_overrides: vec![],
+            zapret2_diagnostics: false,
         },
     };
     let plan = catalog.resolve_dpi_plan(&request).unwrap();

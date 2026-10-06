@@ -29,9 +29,11 @@ pub struct TcpFlags {
 #[derive(Clone, Debug)]
 pub struct ParsedPacket {
     pub outbound: bool,
+    pub local_ip: IpAddr,
     pub key: FlowKey,
     pub ttl: u8,
     pub seq: u32,
+    pub ack_number: u32,
     pub flags: TcpFlags,
     /// TCP-payload (без заголовков). Пустой для чистых SYN/ACK/RST.
     pub payload: Vec<u8>,
@@ -272,6 +274,7 @@ fn decode_tcp(
     let src_port = u16::from_be_bytes([tcp[0], tcp[1]]);
     let dst_port = u16::from_be_bytes([tcp[2], tcp[3]]);
     let seq = u32::from_be_bytes([tcp[4], tcp[5], tcp[6], tcp[7]]);
+    let ack_number = u32::from_be_bytes([tcp[8], tcp[9], tcp[10], tcp[11]]);
     let data_off = (tcp[12] >> 4) as usize * 4;
     if data_off < 20 || tcp.len() < data_off {
         return None;
@@ -296,6 +299,8 @@ fn decode_tcp(
 
     Some(ParsedPacket {
         outbound,
+        local_ip: if outbound { src_ip } else { dst_ip },
+        ack_number,
         key: FlowKey {
             local_port,
             remote_ip,
@@ -469,7 +474,7 @@ mod tests {
 
     #[test]
     fn decode_outbound_normalizes_local_remote() {
-        let pkt = ipv4_tcp(
+        let mut pkt = ipv4_tcp(
             ([192, 168, 0, 5], [203, 0, 113, 9]),
             (51000, 443),
             128,
@@ -477,6 +482,7 @@ mod tests {
             false,
             b"hello",
         );
+        pkt[28..32].copy_from_slice(&123456u32.to_be_bytes());
         let d = decode_ip_tcp(&pkt, true).unwrap();
         assert!(d.outbound);
         assert_eq!(d.key.local_port, 51000);
@@ -484,6 +490,8 @@ mod tests {
         assert_eq!(d.key.remote_ip, IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9)));
         assert_eq!(d.ttl, 128);
         assert_eq!(d.seq, 1000);
+        assert_eq!(d.ack_number, 123456);
+        assert_eq!(d.local_ip, IpAddr::V4(Ipv4Addr::new(192,168,0,5)));
         assert_eq!(d.payload, b"hello");
         assert!(d.flags.psh && d.flags.ack);
     }

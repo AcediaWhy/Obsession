@@ -57,7 +57,7 @@ pub fn service_url(mut url: reqwest::Url) -> reqwest::Url {
     url
 }
 
-fn validate_discord_body(host: &str, status: u16, body: &[u8]) -> Result<(), String> {
+pub(crate) fn validate_discord_body(host: &str, status: u16, body: &[u8]) -> Result<(), String> {
     if status != 200 {
         return Err(format!("service returned HTTP {status}"));
     }

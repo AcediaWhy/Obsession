@@ -10,6 +10,7 @@ import { dur, ease, spring } from "../tokens";
 import { useThemeStore } from "../../store/themeStore";
 import { useDpiStore } from "../../store/dpiStore";
 import { useProxyStore } from "../../store/proxyStore";
+import { useUpdateStore } from "../../store/updateStore";
 
 export type Tab = "overview" | "dpi" | "ai" | "telegram" | "lists" | "profiles" | "settings";
 
@@ -45,6 +46,7 @@ export function NavRail({
   // Оба хука вызываются без короткого замыкания, чтобы сохранять их порядок.
   const dpiActive = useDpiStore((s) => s.active);
   const proxyRunning = useProxyStore((s) => s.running);
+  const updateAvailable = useUpdateStore((s) => s.result?.available ?? false);
   const burning = dpiActive || proxyRunning;
 
   useLayoutEffect(() => {
@@ -158,6 +160,9 @@ export function NavRail({
                 <span className="relative z-10 ml-auto rounded-md bg-white/8 px-1.5 py-0.5 text-3xs font-semibold uppercase text-ink-muted">
                   soon
                 </span>
+              )}
+              {it.id === "settings" && updateAvailable && (
+                <span className="relative z-10 ml-auto h-2 w-2 rounded-full bg-accent shadow-glow" aria-label="Доступно обновление" />
               )}
             </button>
           );

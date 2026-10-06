@@ -20,7 +20,7 @@ vi.mock("@tauri-apps/api/webview", () => ({
   getCurrentWebview: mocks.getCurrentWebview,
 }));
 
-import { api, on, win, type LogEvent } from "./tauri";
+import { api, on, runtime, win, type LogEvent } from "./tauri";
 
 describe("Tauri bridge outside the native runtime", () => {
   beforeEach(() => {
@@ -61,6 +61,16 @@ describe("Tauri bridge outside the native runtime", () => {
     expect(snapshot.dpi.value.active).toBe(false);
     expect(mocks.invoke).not.toHaveBeenCalled();
   });
+
+  it("keeps the Zapret2 catalog read-only in preview", async () => {
+    await expect(api.dpiZapret2Catalog(["youtube_twitch"])).resolves.toEqual([]);
+    await expect(api.dpiZapret2Select("youtube_twitch", "tls", "youtube-other")).rejects.toThrow();
+    await expect(api.dpiZapret2ApplyResult("run", "youtube_twitch", "tls", "youtube-other")).rejects.toThrow();
+    await expect(api.dpiZapret2History()).resolves.toEqual([]);
+    await expect(api.dpiZapret2TestScenario("request", "run", "youtube_twitch", "tls", "youtube-other", "youtube_video")).rejects.toThrow();
+    await expect(api.dpiZapret2ScenarioObserve("trial", "playback", "passed")).rejects.toThrow();
+    expect(mocks.invoke).not.toHaveBeenCalled();
+  });
 });
 
 describe("Tauri bridge inside the native runtime", () => {
@@ -99,5 +109,30 @@ describe("Tauri bridge inside the native runtime", () => {
     handler({ payload: true });
 
     expect(callback).toHaveBeenCalledWith(true);
+  });
+
+  it("passes independent profile and picker arguments to the backend", async () => {
+    await api.dpiZapret2Catalog(["discord", "youtube_twitch"]);
+    await api.dpiZapret2Select("youtube_twitch", "quic", "youtube-quic");
+    await api.dpiZapret2Pick("discord", "tls", "deep");
+    await api.dpiZapret2ApplyResult("tournament-1", "discord", "tls", "discord-profile");
+    await api.dpiZapret2TestScenario("request", "tournament-1", "discord", "tls", "discord-profile", "discord_startup");
+    await api.dpiZapret2ScenarioObserve("trial", "channels", "inconclusive");
+    expect(mocks.invoke.mock.calls).toEqual([
+      ["dpi_zapret2_catalog", { categories: ["discord", "youtube_twitch"] }],
+      ["dpi_zapret2_select", { category: "youtube_twitch", transport: "quic", profileId: "youtube-quic" }],
+      ["dpi_zapret2_pick", { category: "discord", transport: "tls", mode: "deep" }],
+      ["dpi_zapret2_apply_result", { runId: "tournament-1", category: "discord", transport: "tls", profileId: "discord-profile" }],
+      ["dpi_zapret2_test_scenario", { requestId: "request", runId: "tournament-1", category: "discord", transport: "tls", profileId: "discord-profile", scenario: "discord_startup" }],
+      ["dpi_zapret2_scenario_observe", { trialId: "trial", stepId: "channels", observation: "inconclusive" }],
+    ]);
+  });
+
+  it("subscribes to picker progress with a disposable native listener", async () => {
+    const cleanup = vi.fn();
+    const callback = vi.fn();
+    mocks.listen.mockResolvedValue(cleanup);
+    await expect(runtime.listen("zapret2-picker-progress", callback)).resolves.toBe(cleanup);
+    expect(mocks.listen).toHaveBeenCalledWith("zapret2-picker-progress", callback);
   });
 });

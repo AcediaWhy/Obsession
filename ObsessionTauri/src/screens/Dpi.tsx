@@ -3,8 +3,8 @@ import { AnimatePresence, motion } from "framer-motion";
 import { useShallow } from "zustand/react/shallow";
 
 import { TRANSITION_WATCHDOG_MS, useDpiStore } from "../store/dpiStore";
-import { useAdaptiveStrategyStore } from "../store/adaptiveStrategyStore";
 import { useSettingsStore } from "../store/settingsStore";
+import { useZapret2StrategyStore } from "../store/zapret2StrategyStore";
 import { GlassPanel } from "../design/components/GlassPanel";
 import { HeroCore } from "../design/components/HeroCore";
 import { Parallax } from "../design/parallax";
@@ -25,6 +25,7 @@ import { Icon } from "../design/components/icons";
 import { spring } from "../design/tokens";
 import { dpiTestBlockedReason } from "../lib/dpiTestAvailability";
 import { DpiTestDetails, testSummary } from "../design/components/DpiTestDetails";
+import { useMotionOff } from "../design/render";
 
 const LEGACY_CATEGORY_LABELS: Record<string, string> = {
   discord: "Discord",
@@ -42,6 +43,7 @@ const ZAPRET2_CATEGORY_LABELS: Record<string, string> = {
 const CATEGORY_ORDER = ["discord", "youtube_twitch", "gaming", "universal"];
 
 export function DpiScreen() {
+  const motionOff = useMotionOff();
   const protectedDpiAvailable = useSettingsStore(
     (state) => state.protectedDpiAvailable,
   );
@@ -60,7 +62,6 @@ export function DpiScreen() {
     config: state.config,
     selectedCategories: state.selectedCategories,
     selectedConfigs: state.selectedConfigs,
-    zapret2Profiles: state.zapret2Profiles,
     testing: state.testing,
     testingLabel: state.testingLabel,
     testCancel: state.testCancel,
@@ -78,37 +79,28 @@ export function DpiScreen() {
     testAll: state.testAll,
     cancelTest: state.cancelTest,
   })));
-  const adaptivePhase = useAdaptiveStrategyStore((state) => state.status?.phase ?? "idle");
-  const adaptiveBusy = ![
-    "idle",
-    "suggested",
-    "applied",
-    "exhausted",
-    "cancelled",
-  ].includes(adaptivePhase);
-  const busy = s.transitioning || s.testing || adaptiveBusy;
+  const strategyBusy = useZapret2StrategyStore((state) => state.busy);
+  const busy = s.transitioning || s.testing || strategyBusy;
   const testBlockedReason = dpiTestBlockedReason({
-    available: legacyToolsAvailable, transitioning: s.transitioning, adaptiveBusy,
+    available: legacyToolsAvailable, transitioning: s.transitioning,
     active: s.active, testing: s.testing, categories: s.selectedCategories.length,
   });
   const zapret2Selected = s.engines.some(
     (engine) => engine.kind === "zapret2" && engine.selected,
   );
-  const categoryLabels = zapret2Selected
-    ? ZAPRET2_CATEGORY_LABELS
-    : LEGACY_CATEGORY_LABELS;
+  const categoryLabels = zapret2Selected ? ZAPRET2_CATEGORY_LABELS : LEGACY_CATEGORY_LABELS;
   const categories = (s.config?.categories ?? [])
     .filter((category) => category in categoryLabels)
     .sort((a, b) => CATEGORY_ORDER.indexOf(a) - CATEGORY_ORDER.indexOf(b));
 
   useEffect(() => {
-    if (!s.transitioning) return;
+    if (!s.transitioning || strategyBusy) return;
     const timer = window.setTimeout(
       () => void s.reconcileTransition(),
       TRANSITION_WATCHDOG_MS,
     );
     return () => window.clearTimeout(timer);
-  }, [s.reconcileTransition, s.transitioning]);
+  }, [s.reconcileTransition, s.transitioning, strategyBusy]);
 
   return (
     <div className="flex h-full flex-col gap-4">
@@ -134,10 +126,11 @@ export function DpiScreen() {
               <Parallax depth={18}>
                 <HeroCore
                   active={s.active}
-                  busy={s.transitioning || !protectedDpiAvailable}
+                  busy={busy || !protectedDpiAvailable}
                   scanning={s.testing}
                   alarm={s.testing && Object.values(s.testResults).some((v) => !v)}
                   onClick={() => {
+                    if (busy) return;
                     if (s.active) void s.stop();
                     else if (protectedDpiAvailable) void s.start();
                   }}
@@ -186,7 +179,7 @@ export function DpiScreen() {
                         (e.available ? "" : " (пока недоступен)")
                       }
                       active={e.selected}
-                      disabled={s.active || !e.available}
+                      disabled={s.active || busy || !e.available}
                       onClick={() => s.setEngine(e.kind)}
                     />
                   ))}
@@ -203,7 +196,7 @@ export function DpiScreen() {
                     key={cat}
                     label={categoryLabels[cat] ?? cat}
                     active={s.selectedCategories.includes(cat)}
-                    disabled={s.active}
+                    disabled={s.active || busy}
                     onClick={() => s.toggleCategory(cat)}
                   />
                 ))}
@@ -211,12 +204,9 @@ export function DpiScreen() {
             </StaggerItem>
 
             <StaggerItem className="w-full">
-              {zapret2Selected ? (
-                <Zapret2StrategyPanel profiles={s.zapret2Profiles} />
-              ) : (
-                <>
+              {zapret2Selected ? <Zapret2StrategyPanel /> : <>
                 <SectionLabel>Конфигурации Legacy</SectionLabel>
-                <motion.div layout className="flex w-full flex-col gap-3">
+                <motion.div layout={!motionOff} className="flex w-full flex-col gap-3">
                   <AnimatePresence initial={false}>
                     {s.selectedCategories.map((cat) => {
                       const files = s.config?.configs[cat] ?? [];
@@ -226,11 +216,11 @@ export function DpiScreen() {
                       return (
                         <motion.div
                           key={cat}
-                          layout
-                          initial={{ opacity: 0, height: 0, y: -6 }}
+                          layout={!motionOff}
+                          initial={motionOff ? false : { opacity: 0, height: 0, y: -6 }}
                           animate={{ opacity: 1, height: "auto", y: 0 }}
-                          exit={{ opacity: 0, height: 0, y: -6 }}
-                          transition={spring.expand}
+                          exit={motionOff ? { opacity: 0, transition: { duration: 0 } } : { opacity: 0, height: 0, y: -6 }}
+                          transition={motionOff ? { duration: 0 } : spring.expand}
                           className="flex flex-col gap-1.5 overflow-hidden"
                         >
                           <div className="flex items-center justify-between">
@@ -250,7 +240,7 @@ export function DpiScreen() {
                           <Select
                             value={current}
                             options={files}
-                            disabled={s.active}
+                            disabled={s.active || busy}
                             onChange={(value) => s.setConfig(cat, value)}
                           />
                           {s.netStats[cat]?.conf === current && current ? (
@@ -264,14 +254,12 @@ export function DpiScreen() {
                     })}
                   </AnimatePresence>
                 </motion.div>
-                </>
-              )}
+              </>}
             </StaggerItem>
 
-            {!zapret2Selected ? (
-              <>
             {/* Тестирование / авто-подбор. Во время теста кнопки превращаются в
                 «Отмена» — тест можно прервать и сразу пользоваться обходом. */}
+            {!zapret2Selected && <>
             <StaggerItem className="flex w-full gap-2">
               {s.testing ? (
                 <Button
@@ -309,10 +297,9 @@ export function DpiScreen() {
               )}
             </StaggerItem>
             <p className="text-xs text-ink-muted" role="status">
-              {testBlockedReason || "Проверка веб-доступа. Голос Discord и скорость видео требуют отдельной проверки."}
+              {testBlockedReason || "Автоподбор берёт первый конфиг, прошедший все веб-проверки; задержку он не сравнивает. Голос Discord и скорость видео проверяются отдельно."}
             </p>
-              </>
-            ) : null}
+            </>}
 
             {/* Диагностика доступности (работает ли обход). */}
             <StaggerItem className="w-full">

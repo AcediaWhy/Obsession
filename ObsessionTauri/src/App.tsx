@@ -26,12 +26,14 @@ import { useOnboardingStore } from "./store/onboardingStore";
 import { Onboarding } from "./design/components/Onboarding";
 import { Toaster } from "./design/components/Toaster";
 import { on } from "./lib/tauri";
+import { backendErrorNotification } from "./lib/backendNotifications";
 import { setWindowShown, useMotionOff, useRenderHidden } from "./design/render";
 import { screenVariants } from "./design/screenTransition";
 import { initTrayStageRelease } from "./design/gl/trayStageRelease";
 import { initTraySleep } from "./design/traySleep";
 import { dur, ease, spring } from "./design/tokens";
 import { toast } from "./store/toastStore";
+import { startUpdateChecks } from "./store/updateStore";
 import { useObsessionVisualPhase } from "./design/useObsessionVisualPhase";
 import type { ObsessionVisualPhase } from "./design/obsessionVisualState";
 
@@ -141,6 +143,7 @@ export default function App() {
     // из памяти, возврат пересобирает сцену один раз.
     const releaseTrayStages = initTrayStageRelease();
     const releaseTraySleep = initTraySleep();
+    const stopUpdateChecks = startUpdateChecks();
     let disposed = false;
     let bootstrapRefreshQueue = Promise.resolve();
     const scheduleBootstrapRefresh = (refreshSnapshot: boolean) => {
@@ -168,10 +171,10 @@ export default function App() {
       }
     });
 
-    // Значимые ошибки бэкенда (падение winws, сбой Глаз/прокси) — всплывают
-    // тостом, чтобы пользователь заметил их, не открывая боковой лог.
+    // Остальные ошибки (падение winws, сбой Глаз/прокси) показываем сразу.
     const unlistenErr = on.log((e) => {
-      if (e.level === "error") toast.error(e.message, 6000);
+      const message = backendErrorNotification(e);
+      if (message) toast.error(message, 6000);
     });
 
     return () => {
@@ -179,6 +182,7 @@ export default function App() {
       releaseBootstrap();
       releaseTrayStages();
       releaseTraySleep();
+      stopUpdateChecks();
       unlisten.then((fn) => fn()).catch(() => {});
       unlistenVis.then((fn) => fn()).catch(() => {});
       unlistenErr.then((fn) => fn()).catch(() => {});
@@ -193,6 +197,13 @@ export default function App() {
   if (hidden && hiddenCache.current) {
     return hiddenCache.current;
   }
+  const screenContent = tab === "overview" ? <OverviewScreen />
+    : tab === "dpi" ? <DpiScreen />
+    : tab === "ai" ? <AiScreen />
+    : tab === "telegram" ? <TelegramScreen />
+    : tab === "lists" ? <ListsScreen />
+    : tab === "profiles" ? <ProfilesScreen />
+    : <SettingsScreen />;
   const tree = (
     <MotionConfig reducedMotion={reduceMotion ? "always" : "user"}>
       {/* Единый effective-флаг: настройка приложения ИЛИ системный
@@ -242,7 +253,11 @@ export default function App() {
               <main className="flex min-w-0 flex-1 flex-col gap-3 overflow-hidden px-6 pb-6 pt-2">
                 <Onboarding onDestination={() => void launcherBootstrap.refresh()} />
                 <div className="relative min-h-0 flex-1">
-                  <AnimatePresence mode="sync" custom={tabDir.current}>
+                  {motionOff ? (
+                    <div key={tab} className="absolute inset-0 h-full">
+                      {screenContent}
+                    </div>
+                  ) : <AnimatePresence mode="sync" custom={tabDir.current}>
                     {/* Обёртка экрана — transform-only: opacity у предка стекла
                         образует backdrop root (Chromium), и панели теряли матовость
                         на время перехода. Фейд делают сами панели/элементы через
@@ -259,15 +274,9 @@ export default function App() {
                       transition={spring.rise}
                       className="absolute inset-0 h-full"
                     >
-                      {tab === "overview" && <OverviewScreen />}
-                      {tab === "dpi" && <DpiScreen />}
-                      {tab === "ai" && <AiScreen />}
-                      {tab === "telegram" && <TelegramScreen />}
-                      {tab === "lists" && <ListsScreen />}
-                      {tab === "profiles" && <ProfilesScreen />}
-                      {tab === "settings" && <SettingsScreen />}
+                      {screenContent}
                     </motion.div>
-                  </AnimatePresence>
+                  </AnimatePresence>}
                 </div>
               </main>
             </div>

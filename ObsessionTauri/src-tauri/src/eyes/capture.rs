@@ -24,6 +24,7 @@ use crate::eyes::flow::{
 };
 use crate::eyes::parse::{decode_ip_tcp, ParsedPacket};
 use crate::eyes::signal::Observation;
+use crate::eyes::diagnostic::PacketTracker;
 use crate::legacy_reliability::health::AtomicHealthCounters;
 use crate::legacy_reliability::target_registry::PortPlan;
 
@@ -119,8 +120,13 @@ fn drain_available<T>(
 fn process_captured_packet(
     table: &mut FlowTable,
     captured: CapturedPacket,
+    diagnostic: Option<&Arc<Mutex<PacketTracker>>>,
     mut emit_observation: impl FnMut(Observation) -> bool,
 ) -> bool {
+    if let Some(diagnostic) = diagnostic {
+        diagnostic.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+            .observe(&captured.packet, captured.captured_at_ms);
+    }
     table
         .on_captured_packet(
             &captured.packet,
@@ -504,7 +510,7 @@ pub fn start<F>(
 where
     F: Fn(Observation) + Send + 'static,
 {
-    start_inner(dll_path, cfg, FILTER, None, on_observation)
+    start_inner(dll_path, cfg, FILTER, None, None, on_observation)
 }
 
 /// Legacy-only entry point with a registry-derived TCP capture plan and
@@ -528,7 +534,18 @@ where
     let filter = port_plan
         .to_windivert_filter()
         .ok_or_else(|| EyesStartError::clean("Legacy Eyes capture plan is empty"))?;
-    start_inner(dll_path, cfg, &filter, Some(health), on_observation)
+    start_inner(dll_path, cfg, &filter, Some(health), None, on_observation)
+}
+
+/// Protected-service diagnostic sensor. Includes pure TCP ACKs independently
+/// of winws2's interception filter; SNIFF/RECV_ONLY cannot change any packet.
+pub fn start_packet_diagnostics(
+    dll_path: &Path,
+    diagnostic: Arc<Mutex<PacketTracker>>,
+    health: Arc<AtomicHealthCounters>,
+) -> Result<EyesHandle, EyesStartError> {
+    let cfg = Config { max_flows: 128, working_signal_mode: WorkingSignalMode::StrictTls, ..Default::default() };
+    start_inner(dll_path, cfg, FILTER, Some(health), Some(diagnostic), |_| {})
 }
 
 fn start_inner<F>(
@@ -536,6 +553,7 @@ fn start_inner<F>(
     cfg: Config,
     filter: &str,
     health: Option<Arc<AtomicHealthCounters>>,
+    diagnostic: Option<Arc<Mutex<PacketTracker>>>,
     on_observation: F,
 ) -> Result<EyesHandle, EyesStartError>
 where
@@ -715,7 +733,7 @@ where
                         },
                     };
                     if let Some(captured) = captured {
-                        if !process_captured_packet(&mut table, captured, &mut emit_observation) {
+                        if !process_captured_packet(&mut table, captured, diagnostic.as_ref(), &mut emit_observation) {
                             break;
                         }
                     }
@@ -730,7 +748,7 @@ where
                     let wall_now = Instant::now();
                     if tick.is_due(wall_now) {
                         let drain = drain_available(&rx, TRACKER_DRAIN_BUDGET, |captured| {
-                            process_captured_packet(&mut table, captured, &mut emit_observation)
+                            process_captured_packet(&mut table, captured, diagnostic.as_ref(), &mut emit_observation)
                         });
                         match drain {
                             QueueDrain::Empty => {
@@ -890,6 +908,8 @@ mod tests {
     fn captured_packet_keeps_the_capture_time_while_queued() {
         let captured = CapturedPacket {
             packet: ParsedPacket {
+                local_ip: "127.0.0.1".parse().unwrap(),
+                ack_number: 0,
                 outbound: true,
                 key: FlowKey {
                     local_port: 50_000,

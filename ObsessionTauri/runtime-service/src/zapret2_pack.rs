@@ -11,18 +11,18 @@ use std::fs;
 use std::path::{Component, Path};
 
 use obsession_runtime_protocol::{
-    DpiCategory, DpiEngine, Zapret2AdaptiveFunction, Zapret2AdaptiveOverride,
-    Zapret2AdaptivePayload, Zapret2AdaptiveRange, Zapret2AdaptiveTransport, Zapret2AdaptiveValue,
+    DpiCategory, DpiEngine, Zapret2ProfileSelection,
 };
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
 
 use crate::protected_layout::{VerifiedDpiPlan, VerifiedResource};
 
-const PACK_SCHEMA_VERSION: u32 = 1;
+const PACK_SCHEMA_VERSION: u32 = obsession_runtime_protocol::zapret2_recipe::PACK_SCHEMA_VERSION;
 const WINWS2_VERSION: (u32, u32, u32, u32) = (1, 0, 5, 2);
 const LUA_API: u32 = 6;
 const LUA_LIB: &str = "lua/zapret-lib.lua";
+const LUA_DIAGNOSTIC: &str = "lua/obsession-diagnostic.lua";
+const CLIENTHELLO_EXPERIMENT_ID: &str = "discord_tls_clienthello_clone";
 const MAX_PACK_BYTES: u64 = 1024 * 1024;
 const MAX_PACK_FILES: usize = 256;
 const MAX_PACK_BLOBS: usize = 64;
@@ -59,6 +59,10 @@ struct StrategyPackManifest {
     blobs: Vec<BlobDef>,
     strategies: Vec<StrategyDef>,
     #[serde(default)]
+    presets: Vec<StrategyDef>,
+    #[serde(default)]
+    experiments: Vec<StrategyDef>,
+    #[serde(default)]
     probes: Vec<String>,
     #[serde(default)]
     fallback: Option<String>,
@@ -90,12 +94,18 @@ struct BlobDef {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StrategyDef {
+    #[serde(skip)]
+    composition_scope: Option<obsession_runtime_protocol::zapret2_composition::DiscordScope>,
     id: String,
     category: String,
     aggressiveness: u8,
     lua: String,
     #[serde(default)]
     desync: Vec<String>,
+    #[serde(default)]
+    steps: Vec<obsession_runtime_protocol::zapret2_recipe::DesyncStep>,
+    #[serde(default)]
+    candidate: Option<obsession_runtime_protocol::zapret2_recipe::CandidateSource>,
     #[serde(default)]
     transports: Vec<String>,
     #[serde(default)]
@@ -125,6 +135,7 @@ struct PackNotes {
 
 #[derive(Clone, Debug)]
 struct Profile {
+    composition_scope: Option<obsession_runtime_protocol::zapret2_composition::DiscordScope>,
     name: String,
     filter_tcp: Option<String>,
     filter_udp: Option<String>,
@@ -135,6 +146,7 @@ struct Profile {
     out_range: Option<String>,
     in_range: Option<String>,
     desync: Vec<String>,
+    steps: Vec<obsession_runtime_protocol::zapret2_recipe::DesyncStep>,
 }
 
 pub(crate) fn compile(plan: &VerifiedDpiPlan) -> Result<Vec<String>, Zapret2CompileError> {
@@ -177,71 +189,26 @@ pub(crate) fn compile(plan: &VerifiedDpiPlan) -> Result<Vec<String>, Zapret2Comp
     let mut lua_files = vec![LUA_LIB.to_owned()];
     for selected in plan.strategies() {
         let category = category_name(selected.category());
-        let available = manifest
-            .strategies
-            .iter()
-            .filter(|strategy| strategy.category == category)
-            .collect::<Vec<_>>();
-        let maximum = available
-            .iter()
-            .map(|strategy| strategy.aggressiveness)
-            .max()
-            .ok_or(Zapret2CompileError("selected category has no profiles"))?;
-        let level = if plan.zapret2_level() > 0
-            && available
-                .iter()
-                .any(|strategy| strategy.aggressiveness == plan.zapret2_level())
-        {
-            plan.zapret2_level()
-        } else {
-            maximum
-        };
-        let selected_profiles = available
-            .into_iter()
-            .filter(|strategy| strategy.aggressiveness == level)
-            .collect::<Vec<_>>();
+        let selected_profiles = select_profiles_with_selections(&manifest, category, plan.zapret2_level(), plan.zapret2_clienthello(), plan.zapret2_profiles())?;
         for strategy in &selected_profiles {
             if !lua_files.contains(&strategy.lua) {
                 lua_files.push(strategy.lua.clone());
             }
         }
 
-        let overrides = plan
-            .zapret2_overrides()
-            .iter()
-            .filter(|candidate| candidate.category == selected.category())
-            .collect::<Vec<_>>();
-        for candidate in &overrides {
-            let control = selected_profiles
-                .iter()
-                .copied()
-                .find(|strategy| {
-                    strategy.ipset.is_none()
-                        && strategy_supports_transport(strategy, candidate.transport)
-                })
-                .ok_or(Zapret2CompileError(
-                    "adaptive override has no protected control profile",
-                ))?;
-            let control_profile = profile_from_strategy(control, selected.category(), &resources)?;
-            profiles.push(adaptive_profile(candidate, &control_profile)?);
-        }
-
         for strategy in selected_profiles {
-            let replaced = strategy.ipset.is_none()
-                && overrides
-                    .iter()
-                    .any(|candidate| strategy_supports_transport(strategy, candidate.transport));
-            if !replaced {
-                profiles.push(profile_from_strategy(
-                    strategy,
-                    selected.category(),
-                    &resources,
-                )?);
-            }
+            profiles.push(profile_from_strategy(&strategy, selected.category(), &resources)?);
         }
     }
     if profiles.is_empty() {
         return Err(Zapret2CompileError("Strategy Pack produced no profiles"));
+    }
+
+    if plan.zapret2_diagnostics() {
+        // The observer is a fixed, hash-verified resource, loaded after all
+        // native strategy functions. A final PASS profile exposes captured
+        // traffic that did not match any selected host/protocol profile.
+        lua_files.push(LUA_DIAGNOSTIC.to_owned());
     }
 
     let mut arguments = Vec::new();
@@ -283,142 +250,42 @@ pub(crate) fn compile(plan: &VerifiedDpiPlan) -> Result<Vec<String>, Zapret2Comp
         )?;
         push_joined(&mut arguments, "--filter-l7", &profile.filter_l7)?;
         push_option(&mut arguments, "--hostlist", profile.hostlist.as_deref())?;
+        if let Some(scope) = profile.composition_scope {
+            for argument in scope.arguments() { push_argument(&mut arguments, argument)?; }
+        }
         push_option(&mut arguments, "--ipset", profile.ipset.as_deref())?;
         push_option(&mut arguments, "--out-range", profile.out_range.as_deref())?;
         push_option(&mut arguments, "--in-range", profile.in_range.as_deref())?;
-        push_joined(&mut arguments, "--payload", &profile.payload)?;
-        for desync in &profile.desync {
-            push_argument(&mut arguments, format!("--lua-desync={desync}"))?;
+        if plan.zapret2_diagnostics() {
+            push_joined(&mut arguments, "--payload", &profile.payload)?;
+            push_argument(&mut arguments, format!("--lua-desync=obsession_trace:profile={}:routing", profile.name))?;
+        }
+        for argument in obsession_runtime_protocol::zapret2_recipe::arguments(
+            &profile.payload, profile.out_range.as_deref(), profile.in_range.as_deref(),
+            &profile.desync, &profile.steps).into_iter().skip(usize::from(
+                plan.zapret2_diagnostics() && profile.steps.is_empty() && !profile.payload.is_empty())) {
+            push_argument(&mut arguments, argument)?;
         }
         if index + 1 < profiles.len() {
             push_argument(&mut arguments, "--new".into())?;
         }
     }
+    if plan.zapret2_diagnostics() {
+        push_argument(&mut arguments, "--new".into())?;
+        push_argument(&mut arguments, "--name=obsession_unmatched".into())?;
+        push_argument(&mut arguments, "--lua-desync=obsession_trace:profile=unmatched:routing".into())?;
+    }
     Ok(arguments)
 }
 
-fn strategy_supports_transport(
-    strategy: &StrategyDef,
-    transport: Zapret2AdaptiveTransport,
-) -> bool {
-    match transport {
-        Zapret2AdaptiveTransport::Tls => {
-            strategy.transports.is_empty() || strategy.transports.iter().any(|value| value == "tcp")
-        }
-        Zapret2AdaptiveTransport::Quic => strategy.transports.iter().any(|value| value == "quic"),
-    }
-}
 
-fn adaptive_profile(
-    candidate: &Zapret2AdaptiveOverride,
-    control: &Profile,
-) -> Result<Profile, Zapret2CompileError> {
-    let bytes = serde_json::to_vec(candidate)
-        .map_err(|_| Zapret2CompileError("could not fingerprint adaptive override"))?;
-    let digest = Sha256::digest(bytes);
-    let short = digest[..12]
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-    let desync = candidate
-        .steps
-        .iter()
-        .map(|step| {
-            let mut rendered = match step.function {
-                Zapret2AdaptiveFunction::Fake => "fake",
-                Zapret2AdaptiveFunction::MultiSplit => "multisplit",
-                Zapret2AdaptiveFunction::MultiDisorder => "multidisorder",
-                Zapret2AdaptiveFunction::MultiDisorderLegacy => "multidisorder_legacy",
-                Zapret2AdaptiveFunction::FakeDSplit => "fakedsplit",
-                Zapret2AdaptiveFunction::FakeDDisorder => "fakeddisorder",
-                Zapret2AdaptiveFunction::SendIpFrag => "send:ipfrag",
-                Zapret2AdaptiveFunction::Drop => "drop",
-            }
-            .to_owned();
-            for (key, value) in &step.args {
-                match value {
-                    Zapret2AdaptiveValue::Bool(true) => {
-                        rendered.push(':');
-                        rendered.push_str(key);
-                    }
-                    Zapret2AdaptiveValue::Bool(false) => {
-                        return Err(Zapret2CompileError("invalid adaptive false flag"));
-                    }
-                    Zapret2AdaptiveValue::Integer(value) => {
-                        rendered.push(':');
-                        rendered.push_str(key);
-                        rendered.push('=');
-                        rendered.push_str(&value.to_string());
-                    }
-                    Zapret2AdaptiveValue::Text(value) => {
-                        rendered.push(':');
-                        rendered.push_str(key);
-                        rendered.push('=');
-                        rendered.push_str(value);
-                    }
-                }
-            }
-            if !valid_cli_value(&rendered) {
-                return Err(Zapret2CompileError("invalid compiled adaptive step"));
-            }
-            Ok(rendered)
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    // Порты наследуются у контрольного профиля пака. Схема кандидата их не
-    // описывает, а зашитый «443» отбирал у профиля покрытие альтернативных
-    // портов Cloudflare: подтверждённый кандидат молча сужал обход до 443.
-    // Контрольный профиль high-port правило уже прошёл, поэтому унаследованные
-    // порты допустимы по построению.
-    let (filter_tcp, filter_udp, filter_l7) = match candidate.transport {
-        Zapret2AdaptiveTransport::Tls => (
-            control.filter_tcp.clone().or_else(|| Some("443".into())),
-            None,
-            vec!["tls".into()],
-        ),
-        Zapret2AdaptiveTransport::Quic => (
-            None,
-            control.filter_udp.clone().or_else(|| Some("443".into())),
-            vec!["quic".into()],
-        ),
-    };
-    let hostlist = control.hostlist.clone().ok_or(Zapret2CompileError(
-        "adaptive override has no protected hostlist",
-    ))?;
-    let expected_payload = match candidate.transport {
-        Zapret2AdaptiveTransport::Tls => Zapret2AdaptivePayload::TlsClientHello,
-        Zapret2AdaptiveTransport::Quic => Zapret2AdaptivePayload::QuicInitial,
-    };
-    if candidate.payload != expected_payload {
-        return Err(Zapret2CompileError(
-            "adaptive payload does not match transport",
-        ));
-    }
-    Ok(Profile {
-        name: format!("adaptive-{short}"),
-        filter_tcp,
-        filter_udp,
-        filter_l7,
-        hostlist: Some(hostlist),
-        ipset: None,
-        payload: vec![match candidate.payload {
-            Zapret2AdaptivePayload::TlsClientHello => "tls_client_hello".into(),
-            Zapret2AdaptivePayload::QuicInitial => "quic_initial".into(),
-        }],
-        out_range: match candidate.out_range {
-            Some(Zapret2AdaptiveRange::FirstTenDataPackets) => Some("-d10".into()),
-            Some(Zapret2AdaptiveRange::Always) | None => None,
-        },
-        in_range: None,
-        desync,
-    })
-}
 
 fn validate_manifest(
     manifest: &StrategyPackManifest,
     pack_root: &Path,
     resources: &BTreeMap<String, &VerifiedResource>,
 ) -> Result<(), Zapret2CompileError> {
-    if manifest.schema_version != PACK_SCHEMA_VERSION
+    if !matches!(manifest.schema_version, 1 | PACK_SCHEMA_VERSION)
         || !valid_pack_id(&manifest.pack_id)
         || !valid_text(&manifest.pack_version, 64)
         || !minimum_version_satisfied(&manifest.engine.winws2_min)
@@ -428,6 +295,8 @@ fn validate_manifest(
         || manifest.blobs.len() > MAX_PACK_BLOBS
         || manifest.strategies.is_empty()
         || manifest.strategies.len() > MAX_PACK_STRATEGIES
+        || manifest.presets.len() > 96
+        || manifest.experiments.len() > 8
         || manifest.categories.is_empty()
         || manifest.categories.len() > 16
         || manifest.protocols.len() > 16
@@ -483,19 +352,146 @@ fn validate_manifest(
     }
 
     let mut strategy_ids = BTreeSet::new();
-    for strategy in &manifest.strategies {
+    if manifest.schema_version == 1 && manifest.strategies.iter().chain(&manifest.presets).chain(&manifest.experiments)
+        .any(|strategy| !strategy.steps.is_empty() || strategy.candidate.is_some()) {
+        return Err(Zapret2CompileError("scoped recipes require pack schema 2"));
+    }
+    for strategy in manifest.strategies.iter().chain(&manifest.presets) {
         validate_strategy(strategy, &categories, &protocols, &files)?;
+        validate_action_blobs(strategy, &blob_names)?;
         if !strategy_ids.insert(strategy.id.as_str()) {
             return Err(Zapret2CompileError("duplicate Strategy Pack profile"));
         }
     }
+    if manifest.presets.iter().any(|strategy| profile_transport(strategy).is_none()) {
+        return Err(Zapret2CompileError("fixed preset has no supported transport slot"));
+    }
+    for experiment in &manifest.experiments {
+        validate_strategy(experiment, &categories, &protocols, &files)?;
+        validate_action_blobs(experiment, &blob_names)?;
+        if experiment.id != CLIENTHELLO_EXPERIMENT_ID
+            || !is_discord_tls_profile(experiment)
+            || !strategy_ids.insert(experiment.id.as_str()) {
+            return Err(Zapret2CompileError("invalid Strategy Pack experiment"));
+        }
+    }
     if let Some(fallback) = &manifest.fallback {
-        if !strategy_ids.contains(fallback.as_str()) {
+        if !manifest.strategies.iter().any(|strategy| &strategy.id == fallback) {
             return Err(Zapret2CompileError("invalid Strategy Pack fallback"));
         }
     }
     if manifest.probes.iter().any(|probe| !valid_domain(probe)) {
         return Err(Zapret2CompileError("invalid Strategy Pack probe"));
+    }
+    Ok(())
+}
+
+fn is_discord_tls_profile(strategy: &StrategyDef) -> bool {
+    strategy.category == "discord"
+        && strategy.filter_l7 == ["tls"]
+        && strategy.payload == ["tls_client_hello"]
+        && strategy.filter_udp.is_none()
+        && strategy.transports.iter().all(|value| matches!(value.as_str(), "tcp" | "tls"))
+}
+
+#[cfg(test)]
+fn select_profiles(
+    manifest: &StrategyPackManifest,
+    category: &str,
+    requested_level: u8,
+    clienthello: bool,
+) -> Result<Vec<StrategyDef>, Zapret2CompileError> {
+    select_profiles_with_selections(manifest, category, requested_level, clienthello, &[])
+}
+
+/// Control TLS/QUIC are separate from Gaming's ipset-scoped data plane.
+fn profile_transport(strategy: &StrategyDef) -> Option<&'static str> {
+    let has_l7 = |value: &str| strategy.filter_l7.iter().any(|entry| entry == value);
+    if strategy.ipset.is_none() && has_l7("tls") && strategy.filter_udp.is_none() { Some("tls") }
+    else if strategy.ipset.is_none() && has_l7("quic") && strategy.filter_tcp.is_none() { Some("quic") }
+    else if strategy.category == "discord" && strategy.filter_udp.is_some()
+        && strategy.filter_tcp.is_none() && (has_l7("discord") || has_l7("stun")) { Some("voice") }
+    else if has_l7("http") && strategy.filter_udp.is_none() { Some("http") }
+    else if strategy.filter_udp.is_some() && strategy.filter_tcp.is_none() && strategy.filter_l7.is_empty() { Some("udp") }
+    else { None }
+}
+
+fn select_profiles_with_selections(
+    manifest: &StrategyPackManifest,
+    category: &str,
+    requested_level: u8,
+    clienthello: bool,
+    selections: &[Zapret2ProfileSelection],
+) -> Result<Vec<StrategyDef>, Zapret2CompileError> {
+    let available = manifest.strategies.iter().filter(|strategy| strategy.category == category).collect::<Vec<_>>();
+    let maximum = available.iter().map(|strategy| strategy.aggressiveness).max()
+        .ok_or(Zapret2CompileError("selected category has no profiles"))?;
+    let level = if requested_level > 0 && available.iter().any(|strategy| strategy.aggressiveness == requested_level) {
+        requested_level
+    } else { maximum };
+    let mut profiles = available.into_iter().filter(|strategy| strategy.aggressiveness == level).cloned().collect::<Vec<_>>();
+    let explicit_tls = selections.iter().any(|selection| selection.category == category && selection.transport == "tls");
+    if clienthello && category == "discord" && !explicit_tls {
+        let experiment = manifest.experiments.iter()
+            .find(|strategy| strategy.id == CLIENTHELLO_EXPERIMENT_ID && is_discord_tls_profile(strategy))
+            .ok_or(Zapret2CompileError("ClientHello experiment is missing from the verified pack; update Obsession"))?;
+        let index = profiles.iter().position(|strategy| is_discord_tls_profile(strategy))
+            .ok_or(Zapret2CompileError("selected Discord set has no TLS profile"))?;
+        profiles.retain(|strategy| !is_discord_tls_profile(strategy));
+        profiles.insert(index.min(profiles.len()), experiment.clone());
+    }
+    let mut selected_slots = BTreeSet::new();
+    for selection in selections.iter().filter(|selection| selection.category == category) {
+        if selection.validate().is_err() || !selected_slots.insert(selection.transport.as_str()) {
+            return Err(Zapret2CompileError("invalid or duplicate fixed profile selection"));
+        }
+        use obsession_runtime_protocol::zapret2_composition::{DiscordComposition, DiscordScope, compatible};
+        if let Some(composition) = DiscordComposition::parse(&selection.profile_id).map_err(Zapret2CompileError)? {
+            if category != "discord" || selection.transport != "tls" {
+                return Err(Zapret2CompileError("composition requires Discord TLS"));
+            }
+            let mut parts = Vec::new();
+            for (id, scope) in [(&composition.api_profile_id, DiscordScope::Api), (&composition.cdn_profile_id, DiscordScope::Cdn)] {
+                let parent = manifest.strategies.iter().chain(&manifest.presets).find(|entry| &entry.id == id)
+                    .ok_or(Zapret2CompileError("composition parent is absent from the verified pack"))?;
+                if !compatible(&parent.category, parent.filter_tcp.as_deref(), parent.filter_udp.as_deref(),
+                    &parent.filter_l7, parent.hostlist.as_deref(), parent.ipset.as_deref(), &parent.transports) {
+                    return Err(Zapret2CompileError("incompatible composition parent"));
+                }
+                let mut part = parent.clone();
+                part.composition_scope = Some(scope);
+                parts.push(part);
+            }
+            let position = profiles.iter().position(|entry| profile_transport(entry) == Some("tls"))
+                .ok_or(Zapret2CompileError("selected transport has no native profile slot"))?;
+            profiles.retain(|entry| profile_transport(entry) != Some("tls"));
+            let position = position.min(profiles.len());
+            profiles.splice(position..position, parts);
+            continue;
+        }
+        let replacement = manifest.strategies.iter().chain(&manifest.presets).chain(&manifest.experiments)
+            .find(|strategy| strategy.id == selection.profile_id)
+            .ok_or(Zapret2CompileError("selected profile is absent from the verified pack"))?;
+        if replacement.category != category || profile_transport(replacement) != Some(selection.transport.as_str()) {
+            return Err(Zapret2CompileError("selected profile does not match category and transport"));
+        }
+        let position = profiles.iter().position(|strategy| profile_transport(strategy) == Some(selection.transport.as_str()))
+            .ok_or(Zapret2CompileError("selected transport has no native profile slot"))?;
+        profiles.retain(|strategy| profile_transport(strategy) != Some(selection.transport.as_str()));
+        profiles.insert(position.min(profiles.len()), replacement.clone());
+    }
+    Ok(profiles)
+}
+
+fn validate_action_blobs(strategy: &StrategyDef, blobs: &BTreeSet<&str>) -> Result<(), Zapret2CompileError> {
+    for action in strategy.desync.iter().chain(strategy.steps.iter().map(|step| &step.action)) {
+        for field in action.split(':') {
+            if let Some(name) = field.strip_prefix("blob=").or_else(|| field.strip_prefix("seqovl_pattern=")) {
+                if !name.starts_with("fake_default_") && !name.starts_with("0x") && !blobs.contains(name) {
+                    return Err(Zapret2CompileError("undeclared Strategy Pack action blob"));
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -511,13 +507,18 @@ fn validate_strategy<'a>(
         || strategy.aggressiveness == 0
         || strategy.aggressiveness > MAX_AGGRESSIVENESS
         || !files.contains(strategy.lua.as_str())
-        || strategy.desync.is_empty()
+        || (strategy.desync.is_empty() && strategy.steps.is_empty())
         || strategy.desync.len() > MAX_PROFILE_VALUES
         || strategy.transports.len() > 8
         || strategy.filter_l7.len() > MAX_PROFILE_VALUES
         || strategy.payload.len() > MAX_PROFILE_VALUES
     {
         return Err(Zapret2CompileError("invalid Strategy Pack profile"));
+    }
+    obsession_runtime_protocol::zapret2_recipe::validate_steps(&strategy.desync, &strategy.steps)
+        .map_err(Zapret2CompileError)?;
+    if strategy.candidate.as_ref().is_some_and(|candidate| !candidate.valid()) {
+        return Err(Zapret2CompileError("invalid candidate provenance"));
     }
     if strategy
         .transports
@@ -605,6 +606,7 @@ fn profile_from_strategy(
             let voice = !tcp && udp && recognized_udp_scope(&strategy.filter_l7, &strategy.payload);
             (strategy.ipset.is_none() && !voice).then(|| format!("{}.txt", category_name(category)))
         })
+        .filter(|_| strategy.composition_scope != Some(obsession_runtime_protocol::zapret2_composition::DiscordScope::Cdn))
         .map(|name| list_resource(&name, resources).map(|resource| argv_path(resource.path())))
         .transpose()?;
     let ipset = strategy
@@ -613,6 +615,7 @@ fn profile_from_strategy(
         .map(|name| list_resource(name, resources).map(|resource| argv_path(resource.path())))
         .transpose()?;
     Ok(Profile {
+        composition_scope: strategy.composition_scope,
         name: strategy.id.clone(),
         filter_tcp: strategy
             .filter_tcp
@@ -629,6 +632,7 @@ fn profile_from_strategy(
         out_range: strategy.out_range.clone(),
         in_range: strategy.in_range.clone(),
         desync: strategy.desync.clone(),
+        steps: strategy.steps.clone(),
     })
 }
 
@@ -939,8 +943,124 @@ fn protocol_category(value: &str) -> Option<DpiCategory> {
 }
 
 #[cfg(test)]
-mod adaptive_profile_tests {
+mod builtin_profile_tests {
     use super::*;
+
+    fn selected(category: &str, transport: &str, profile_id: &str) -> Zapret2ProfileSelection {
+        Zapret2ProfileSelection { category: category.into(), transport: transport.into(), profile_id: profile_id.into() }
+    }
+
+    #[test]
+    fn composition_preserves_parent_actions_and_other_transports_with_disjoint_scopes() {
+        use obsession_runtime_protocol::zapret2_composition::{DiscordComposition, DiscordScope};
+        let manifest: StrategyPackManifest = serde_json::from_str(include_str!("../../src-tauri/resources/strategy-packs/builtin/manifest.json")).unwrap();
+        let pair = DiscordComposition::new("research_discord_tls_hostfake_md5", "classic_discord_tls_split_sni").unwrap();
+        let profiles=select_profiles_with_selections(&manifest,"discord",4,false,&[selected("discord","tls",&pair.id())]).unwrap();
+        let scoped: Vec<_>=profiles.iter().filter(|profile| profile.composition_scope.is_some()).collect();
+        assert_eq!(scoped.len(),2);
+        for (profile,scope,id) in [(scoped[0],DiscordScope::Api,&pair.api_profile_id),(scoped[1],DiscordScope::Cdn,&pair.cdn_profile_id)] {
+            let parent=manifest.presets.iter().find(|parent| &parent.id==id).unwrap();
+            assert_eq!(profile.composition_scope,Some(scope)); assert_eq!(profile.steps,parent.steps); assert_eq!(profile.desync,parent.desync);
+        }
+        assert_eq!(profiles.iter().filter(|profile|profile_transport(profile)!=Some("tls")).map(|p|&p.id).collect::<Vec<_>>(),
+            select_profiles(&manifest,"discord",4,false).unwrap().iter().filter(|profile|profile_transport(profile)!=Some("tls")).map(|p|&p.id).collect::<Vec<_>>());
+        for (category,transport) in [("discord","quic"),("youtube_twitch","tls")] {
+            assert!(select_profiles_with_selections(&manifest,category,4,false,&[selected(category,transport,&pair.id())]).is_err());
+        }
+        for parent in ["discord_quic_level_1",CLIENTHELLO_EXPERIMENT_ID,"missing"] {
+            let wrong=DiscordComposition::new(&pair.api_profile_id,parent).unwrap();
+            assert!(select_profiles_with_selections(&manifest,"discord",4,false,&[selected("discord","tls",&wrong.id())]).is_err());
+        }
+        let mut value=serde_json::to_value(serde_json::json!({"id":"a","category":"discord","aggressiveness":1,"lua":LUA_LIB})).unwrap();
+        value["composition_scope"]=serde_json::json!("Cdn");
+        assert!(serde_json::from_value::<StrategyDef>(value).is_err());
+    }
+
+    #[test]
+    fn named_profiles_overlay_only_matching_slots_and_preserve_gaming_data_plane() {
+        let manifest: StrategyPackManifest = serde_json::from_str(include_str!("../../src-tauri/resources/strategy-packs/builtin/manifest.json")).unwrap();
+        let selections = vec![selected("discord", "tls", "discord_tls_text"),
+            selected("youtube_twitch", "tls", "classic_youtube_twitch_tls_split_sni"),
+            selected("gaming", "tls", "classic_gaming_tls_disorder_sni")];
+        for category in ["discord", "youtube_twitch", "gaming"] {
+            let original = select_profiles(&manifest, category, 4, false).unwrap();
+            let result = select_profiles_with_selections(&manifest, category, 4, true, &selections).unwrap();
+            let expected = selections.iter().find(|selection| selection.category == category).unwrap();
+            assert!(result.iter().any(|profile| profile.id == expected.profile_id));
+            assert_eq!(result.iter().filter(|profile| profile_transport(profile) != Some("tls")).map(|profile| &profile.id).collect::<Vec<_>>(),
+                original.iter().filter(|profile| profile_transport(profile) != Some("tls")).map(|profile| &profile.id).collect::<Vec<_>>());
+            if category == "gaming" {
+                assert!(result.iter().any(|profile| profile.id == "gaming_ipset_tls"));
+                assert_eq!(result.len(), original.len());
+            }
+        }
+        let clone = select_profiles_with_selections(&manifest, "discord", 4, false, &[selected("discord", "tls", CLIENTHELLO_EXPERIMENT_ID)]).unwrap();
+        assert_eq!(clone.iter().filter(|profile| profile.id == CLIENTHELLO_EXPERIMENT_ID).count(), 1);
+        assert!(clone.iter().any(|profile| profile.id == "discord_voice_level_4"));
+    }
+
+    #[test]
+    fn named_profile_mismatch_and_unknown_ids_never_fall_back() {
+        let manifest: StrategyPackManifest = serde_json::from_str(include_str!("../../src-tauri/resources/strategy-packs/builtin/manifest.json")).unwrap();
+        for profile in [selected("discord", "tls", "youtube_tls"), selected("discord", "tls", "discord_quic_level_1"),
+            selected("discord", "tls", "absent_profile"), selected("gaming", "tls", "gaming_ipset_tls")] {
+            assert!(select_profiles_with_selections(&manifest, &profile.category, 0, false, &[profile.clone()]).is_err());
+        }
+        let profile = selected("discord", "tls", "discord_tls_text");
+        assert!(select_profiles_with_selections(&manifest, "discord", 0, false, &[profile.clone(), profile]).is_err());
+    }
+
+    #[test]
+    fn research_recipes_validate_and_overlay_only_the_selected_slot() {
+        let manifest: StrategyPackManifest = serde_json::from_str(include_str!("../../src-tauri/resources/strategy-packs/builtin/manifest.json")).unwrap();
+        let categories = manifest.categories.iter().map(String::as_str).collect();
+        let protocols = manifest.protocols.iter().map(String::as_str).collect();
+        let files = manifest.files.iter().map(|file| file.path.as_str()).collect();
+        let blobs = manifest.blobs.iter().map(|blob| blob.name.as_str()).collect();
+        let research: Vec<_> = manifest.presets.iter().filter(|profile| profile.candidate.is_some()).collect();
+        assert_eq!(research.len(), 11);
+        for profile in research {
+            validate_strategy(profile, &categories, &protocols, &files).unwrap();
+            validate_action_blobs(profile, &blobs).unwrap();
+            let transport = profile_transport(profile).unwrap();
+            let original = select_profiles(&manifest, &profile.category, 4, false).unwrap();
+            assert!(original.iter().all(|entry| entry.candidate.is_none()));
+            let result = select_profiles_with_selections(&manifest, &profile.category, 4, false,
+                &[selected(&profile.category, transport, &profile.id)]).unwrap();
+            assert!(result.iter().any(|entry| entry.id == profile.id));
+            assert_eq!(original.iter().filter(|entry| profile_transport(entry) != Some(transport)).map(|entry| &entry.id).collect::<Vec<_>>(),
+                result.iter().filter(|entry| profile_transport(entry) != Some(transport)).map(|entry| &entry.id).collect::<Vec<_>>());
+        }
+        let mut profile = manifest.presets.iter().find(|profile| !profile.steps.is_empty()).unwrap().clone();
+        profile.steps[0].action = "fake:blob=missing".into();
+        assert!(validate_action_blobs(&profile, &blobs).is_err());
+        profile.desync.push("multisplit:pos=2".into());
+        assert!(validate_strategy(&profile, &categories, &protocols, &files).is_err());
+    }
+
+    #[test]
+    fn experiment_overlays_tls_only_and_is_excluded_from_default_ladder() {
+        let mut manifest: StrategyPackManifest = serde_json::from_str(include_str!(
+            "../../src-tauri/resources/strategy-packs/builtin/manifest.json"
+        )).unwrap();
+        assert_eq!(manifest.strategies.len(), 19);
+        let ids = |profiles: Vec<StrategyDef>| profiles.into_iter().map(|strategy| strategy.id).collect::<Vec<_>>();
+        assert!(ids(select_profiles(&manifest, "discord", 0, false).unwrap()).contains(&"discord_tls_multidisorder_alt".to_string()));
+        for level in 0..=4 {
+            let stable = select_profiles(&manifest, "discord", level, false).unwrap();
+            let experimental = select_profiles(&manifest, "discord", level, true).unwrap();
+            assert_eq!(experimental.iter().filter(|strategy| is_discord_tls_profile(strategy)).count(), 1);
+            assert!(experimental.iter().any(|strategy| strategy.id == CLIENTHELLO_EXPERIMENT_ID));
+            assert_eq!(ids(experimental.into_iter().filter(|strategy| !is_discord_tls_profile(strategy)).collect()),
+                ids(stable.into_iter().filter(|strategy| !is_discord_tls_profile(strategy)).collect()));
+            for category in ["youtube_twitch", "gaming"] {
+                assert_eq!(ids(select_profiles(&manifest, category, level, true).unwrap()), ids(select_profiles(&manifest, category, level, false).unwrap()));
+            }
+        }
+        manifest.experiments.clear();
+        assert!(select_profiles(&manifest, "discord", 0, true).is_err());
+        assert!(select_profiles(&manifest, "discord", 0, false).is_ok());
+    }
 
     #[test]
     fn compares_all_four_engine_version_components() {
@@ -960,10 +1080,9 @@ mod adaptive_profile_tests {
             assert!(!minimum_version_satisfied(requirement), "{requirement}");
         }
     }
-    use obsession_runtime_protocol::{Zapret2AdaptiveStep, ZAPRET2_ADAPTIVE_SCHEMA_VERSION};
 
     #[test]
-    fn builtin_voice_profiles_are_hostname_free_and_survive_quic_overrides() {
+    fn builtin_voice_profiles_are_hostname_free() {
         let manifest: StrategyPackManifest = serde_json::from_str(include_str!(
             "../../src-tauri/resources/strategy-packs/builtin/manifest.json"
         ))
@@ -982,87 +1101,15 @@ mod adaptive_profile_tests {
             let built =
                 profile_from_strategy(voice, DpiCategory::Discord, &BTreeMap::new()).unwrap();
             assert!(built.hostlist.is_none());
-            assert!(!strategy_supports_transport(
-                voice,
-                Zapret2AdaptiveTransport::Quic
-            ));
-            assert!(!strategy_supports_transport(
-                voice,
-                Zapret2AdaptiveTransport::Tls
-            ));
-            assert!(profiles
-                .iter()
-                .any(|s| strategy_supports_transport(s, Zapret2AdaptiveTransport::Quic)));
-            assert!(profiles
-                .iter()
-                .any(|s| strategy_supports_transport(s, Zapret2AdaptiveTransport::Tls)));
         }
     }
 
-    fn control(filter_tcp: Option<&str>, filter_udp: Option<&str>) -> Profile {
-        Profile {
-            name: "control".into(),
-            filter_tcp: filter_tcp.map(str::to_owned),
-            filter_udp: filter_udp.map(str::to_owned),
-            filter_l7: vec!["tls".into()],
-            hostlist: Some("C:\\lists\\discord.txt".into()),
-            ipset: None,
-            payload: vec!["tls_client_hello".into()],
-            out_range: Some("-d10".into()),
-            in_range: None,
-            desync: vec!["multidisorder:pos=1,2,midsld,sniext".into()],
-        }
-    }
 
-    fn candidate(transport: Zapret2AdaptiveTransport) -> Zapret2AdaptiveOverride {
-        Zapret2AdaptiveOverride {
-            schema_version: ZAPRET2_ADAPTIVE_SCHEMA_VERSION,
-            category: DpiCategory::Discord,
-            transport,
-            steps: vec![Zapret2AdaptiveStep {
-                function: Zapret2AdaptiveFunction::MultiDisorder,
-                args: BTreeMap::from([(
-                    "pos".to_owned(),
-                    Zapret2AdaptiveValue::Text("1,midsld".into()),
-                )]),
-            }],
-            payload: match transport {
-                Zapret2AdaptiveTransport::Tls => Zapret2AdaptivePayload::TlsClientHello,
-                Zapret2AdaptiveTransport::Quic => Zapret2AdaptivePayload::QuicInitial,
-            },
-            out_range: Some(Zapret2AdaptiveRange::FirstTenDataPackets),
-        }
-    }
 
-    #[test]
-    fn inherits_alt_ports_from_the_control_profile() {
-        let control = control(Some("443,2053,2083,2087,2096,8443"), None);
-        let built = adaptive_profile(&candidate(Zapret2AdaptiveTransport::Tls), &control).unwrap();
-        assert_eq!(
-            built.filter_tcp.as_deref(),
-            Some("443,2053,2083,2087,2096,8443")
-        );
-        assert_eq!(built.filter_udp, None);
-        assert_eq!(built.hostlist, control.hostlist);
-    }
 
-    #[test]
-    fn falls_back_to_443_when_the_control_profile_has_no_filter() {
-        let built = adaptive_profile(
-            &candidate(Zapret2AdaptiveTransport::Tls),
-            &control(None, None),
-        )
-        .unwrap();
-        assert_eq!(built.filter_tcp.as_deref(), Some("443"));
-    }
 
-    #[test]
-    fn quic_candidate_inherits_the_udp_filter() {
-        let control = control(None, Some("443,19294-19344"));
-        let built = adaptive_profile(&candidate(Zapret2AdaptiveTransport::Quic), &control).unwrap();
-        assert_eq!(built.filter_udp.as_deref(), Some("443,19294-19344"));
-        assert_eq!(built.filter_tcp, None);
-    }
+
+
 }
 
 #[cfg(test)]

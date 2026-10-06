@@ -12,7 +12,6 @@ function signals(
   return {
     dpi: { active: false, transitioning: false, testing: false, error: "" },
     proxy: { running: false, transitioning: false, error: "" },
-    adaptive: { busy: false, error: "", phase: null },
     brain: { phase: null },
     reliability: {
       phase: "inactive",
@@ -38,7 +37,7 @@ describe("deriveObsessionVisualPhase", () => {
     ).toBe("engaging");
     expect(
       deriveObsessionVisualPhase(
-        signals({ adaptive: { busy: false, error: "", phase: "candidate_probe" } }),
+        signals({ dpi: { active: false, transitioning: false, testing: true, error: "" } }),
       ),
     ).toBe("scanning");
   });

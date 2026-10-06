@@ -7,42 +7,69 @@ const DISCORD_IMAGE: &str = "https://cdn.discordapp.com/embed/avatars/0.png";
 const YOUTUBE_IMAGE: &str = "https://i.ytimg.com/vi/jNQXAC9IVRw/hqdefault.jpg";
 const PROBE_ROUND_TIMEOUT: Duration = Duration::from_secs(15);
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct ProbeResult {
-    url: String,
-    passed: bool,
-    elapsed_ms: u64,
-    bytes: usize,
-    attempts: u8,
-    http_status: Option<u16>,
-    error: Option<String>,
+    pub(super) url: String,
+    pub(super) passed: bool,
+    pub(super) elapsed_ms: u64,
+    pub(super) bytes: usize,
+    pub(super) attempts: u8,
+    pub(super) http_status: Option<u16>,
+    pub(super) error: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct TestReport {
     pub passed: bool,
     pub status: &'static str,
-    checks: Vec<ProbeResult>,
+    pub(super) checks: Vec<ProbeResult>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) measurement: Option<super::zapret2_measure::RoundMeasurement>,
 }
 
-fn report(checks: Vec<ProbeResult>, cancelled: bool) -> TestReport {
+pub(super) fn report(checks: Vec<ProbeResult>, cancelled: bool) -> TestReport {
     let passed = !cancelled && !checks.is_empty() && checks.iter().all(|c| c.passed);
-    let status = if cancelled { "cancelled" } else if passed { "passed" }
-        else if checks.iter().any(|c| c.passed) { "partial" } else { "failed" };
-    TestReport { passed, status, checks }
+    let status = if cancelled {
+        "cancelled"
+    } else if passed {
+        "passed"
+    } else if checks.iter().any(|c| c.passed) {
+        "partial"
+    } else {
+        "failed"
+    };
+    TestReport {
+        passed,
+        status,
+        checks,
+        measurement: None,
+    }
 }
 
-fn targets(category: &str) -> Result<&'static [&'static str], String> {
+pub(super) fn targets(category: &str) -> Result<&'static [&'static str], String> {
     match category {
-        "discord" => Ok(&["https://discord.com/api/v10/gateway", DISCORD_UPDATER, "https://discord.com/", DISCORD_IMAGE]),
-        "youtube_twitch" => Ok(&["https://www.youtube.com/", "https://i.ytimg.com/vi/jNQXAC9IVRw/hqdefault.jpg", "https://www.twitch.tv/"]),
+        "discord" => Ok(&[
+            "https://discord.com/api/v10/gateway",
+            DISCORD_UPDATER,
+            "https://discord.com/",
+            DISCORD_IMAGE,
+        ]),
+        "youtube_twitch" => Ok(&[
+            "https://www.youtube.com/",
+            "https://i.ytimg.com/vi/jNQXAC9IVRw/hqdefault.jpg",
+            "https://www.twitch.tv/",
+        ]),
         "gaming" => Ok(&["https://www.epicgames.com/", "https://signin.ea.com/"]),
-        "universal" | "atrisk" => Ok(&["https://www.google.com/", "https://www.youtube.com/", "https://discord.com/"]),
+        "universal" | "atrisk" => Ok(&[
+            "https://www.google.com/",
+            "https://www.youtube.com/",
+            "https://discord.com/",
+        ]),
         _ => Err("Неизвестная категория проверки DPI.".into()),
     }
 }
 
-fn cancelled(app: &AppHandle, epoch: u64) -> bool {
+pub(super) fn cancelled(app: &AppHandle, epoch: u64) -> bool {
     let state = app.state::<AppState>();
     state.shutting_down.load(Ordering::SeqCst)
         || state.test_generation.load(Ordering::SeqCst) != epoch
@@ -100,40 +127,73 @@ where
     tasks.abort_all();
     while tasks.join_next().await.is_some() {}
     let elapsed_ms = started.elapsed().as_millis() as u64;
-    let checks = results.into_iter().zip(urls).map(|(result, url)| {
-        result.unwrap_or_else(|| ProbeResult {
-            url: (*url).to_owned(), passed: false, elapsed_ms, bytes: 0,
-            attempts: 0, http_status: None, error: Some(stopped_reason.into()),
+    let checks = results
+        .into_iter()
+        .zip(urls)
+        .map(|(result, url)| {
+            result.unwrap_or_else(|| ProbeResult {
+                url: (*url).to_owned(),
+                passed: false,
+                elapsed_ms,
+                bytes: 0,
+                attempts: 0,
+                http_status: None,
+                error: Some(stopped_reason.into()),
+            })
         })
-    }).collect();
+        .collect();
     (checks, was_cancelled)
 }
 
 async fn probe(url: &str) -> ProbeResult {
     let started = std::time::Instant::now();
-    let mut result = ProbeResult { url: url.into(), passed: false, elapsed_ms: 0,
-        bytes: 0, attempts: 0, http_status: None, error: None };
+    let mut result = ProbeResult {
+        url: url.into(),
+        passed: false,
+        elapsed_ms: 0,
+        bytes: 0,
+        attempts: 0,
+        http_status: None,
+        error: None,
+    };
     for attempt in 1..=2 {
         result.attempts = attempt;
         result.http_status = None;
         let check = async {
-        let client = reqwest::Client::builder()
-        .no_proxy()
-        .user_agent("Obsession-Diagnostics/1.1")
-        .connect_timeout(Duration::from_secs(4))
-        .timeout(Duration::from_secs(7))
-        .redirect(reqwest::redirect::Policy::limited(3))
-        .build().map_err(|e| format!("HTTP client: {e}"))?;
-        let response = client.get(url).send().await.map_err(|e| format!("TLS/HTTP: {e:?}"))?;
-        result.http_status = Some(response.status().as_u16());
-        validate_response(url, response).await
-        }.await;
+            let client = reqwest::Client::builder()
+                .no_proxy()
+                .user_agent("Obsession-Diagnostics/1.1")
+                .connect_timeout(Duration::from_secs(4))
+                .timeout(Duration::from_secs(7))
+                .redirect(reqwest::redirect::Policy::limited(3))
+                .build()
+                .map_err(|e| format!("HTTP client: {e}"))?;
+            let response = client
+                .get(url)
+                .send()
+                .await
+                .map_err(|e| format!("TLS/HTTP: {e:?}"))?;
+            result.http_status = Some(response.status().as_u16());
+            validate_response(url, response).await
+        }
+        .await;
         match check {
-            Ok(bytes) => { result.bytes = bytes; result.passed = true; result.error = None; break; }
+            Ok(bytes) => {
+                result.bytes = bytes;
+                result.passed = true;
+                result.error = None;
+                break;
+            }
             Err(error) => result.error = Some(error),
         }
         // One retry for a transport/body failure or a server error, not a 403/404.
-        if attempt == 2 || result.http_status.is_some_and(|code| (400..500).contains(&code)) { break; }
+        if attempt == 2
+            || result
+                .http_status
+                .is_some_and(|code| (400..500).contains(&code))
+        {
+            break;
+        }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
     result.elapsed_ms = started.elapsed().as_millis() as u64;
@@ -148,11 +208,12 @@ async fn validate_response(url: &str, mut response: reqwest::Response) -> Result
         // Do not let a redirect to an unrelated HTML page evade strict JSON
         // validation, which dispatches by the final response host.
         let expected_host = reqwest::Url::parse(url).map_err(|e| e.to_string())?;
-        if response.url().scheme() != "https" || response.url().host_str() != expected_host.host_str() {
+        if response.url().scheme() != "https"
+            || response.url().host_str() != expected_host.host_str()
+        {
             return Err("Discord API redirected outside its expected HTTPS host".into());
         }
-        return crate::service_health::read_response(response, Duration::from_secs(7))
-            .await;
+        return crate::service_health::read_response(response, Duration::from_secs(7)).await;
     }
     let image = url == DISCORD_IMAGE || url == YOUTUBE_IMAGE;
     if image {
@@ -167,41 +228,77 @@ async fn validate_response(url: &str, mut response: reqwest::Response) -> Result
     loop {
         match response.chunk().await {
             Ok(Some(chunk)) => {
-                if image && chunk.len() > limit - body.len() { return Err("Image exceeds probe size limit".into()); }
+                if image && chunk.len() > limit - body.len() {
+                    return Err("Image exceeds probe size limit".into());
+                }
                 body.extend_from_slice(&chunk[..chunk.len().min(limit - body.len())]);
-                if !image && body.len() == limit { break; }
+                if !image && body.len() == limit {
+                    break;
+                }
             }
             Ok(None) => break,
-            Err(error) => return Err(format!("response body after {} bytes: {error:?}", body.len())),
+            Err(error) => {
+                return Err(format!(
+                    "response body after {} bytes: {error:?}",
+                    body.len()
+                ))
+            }
         }
     }
-    if image { validate_image(url, &body)?; }
-    if !body.is_empty() { Ok(body.len()) } else { Err("empty response body".into()) }
+    if image {
+        validate_image(url, &body)?;
+    }
+    if !body.is_empty() {
+        Ok(body.len())
+    } else {
+        Err("empty response body".into())
+    }
 }
 
 fn validate_image(url: &str, body: &[u8]) -> Result<(), String> {
     let valid = if url == DISCORD_IMAGE {
         body.starts_with(b"\x89PNG\r\n\x1a\n") && body.ends_with(b"IEND\xaeB`\x82")
-    } else { body.starts_with(&[0xff, 0xd8, 0xff]) && body.ends_with(&[0xff, 0xd9]) };
-    if valid { Ok(()) } else { Err("Response is not a complete expected PNG/JPEG image".into()) }
+    } else {
+        body.starts_with(&[0xff, 0xd8, 0xff]) && body.ends_with(&[0xff, 0xd9])
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err("Response is not a complete expected PNG/JPEG image".into())
+    }
 }
 
-pub(crate) async fn run(app: &AppHandle, category: &str, config: &str, fail_fast: bool) -> Result<TestReport, String> {
+pub(crate) async fn run(
+    app: &AppHandle,
+    category: &str,
+    config: &str,
+    fail_fast: bool,
+) -> Result<TestReport, String> {
     let urls = targets(category)?;
     #[cfg(windows)]
     {
         let state = app.state::<AppState>();
         state.test_cancel.store(false, Ordering::SeqCst);
         let epoch = state.test_generation.fetch_add(1, Ordering::SeqCst) + 1;
-        let request = start_request(DpiEngine::Legacy,
-            &[(category.to_owned(), config.to_owned())], 0, false, &BTreeMap::new())?;
+        let request = start_request(
+            DpiEngine::Legacy,
+            &[(category.to_owned(), config.to_owned())],
+            0,
+            false,
+            false,
+            &[],
+        )?;
         // Check the authoritative runtime; never stop an existing user session.
         let response = tauri::async_runtime::spawn_blocking(move || {
             if runtime_snapshot_blocking(OPERATION_TIMEOUT)?.dpi.is_some() {
-                return Err("Перед тестом выключите защиту: служба сообщает об активной сессии.".into());
+                return Err(
+                    "Перед тестом выключите защиту: служба сообщает об активной сессии.".into(),
+                );
             }
             call_service("dpi-start", request, OPERATION_TIMEOUT)
-        }).await.map_err(|e| e.to_string())??;
+        })
+        .await
+        .map_err(|e| e.to_string())??;
         let generation = match response {
             Response::Started(started) => started.generation,
             _ => return Err("Неожиданный ответ службы при запуске теста.".into()),
@@ -209,33 +306,64 @@ pub(crate) async fn run(app: &AppHandle, category: &str, config: &str, fail_fast
         tokio::time::sleep(Duration::from_millis(800)).await;
         let cancel = async {
             loop {
-                if cancelled(app, epoch) { break; }
+                if cancelled(app, epoch) {
+                    break;
+                }
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
         };
         let (checks, was_cancelled) = collect_probes(
-            urls, fail_fast, PROBE_ROUND_TIMEOUT, cancel,
+            urls,
+            fail_fast,
+            PROBE_ROUND_TIMEOUT,
+            cancel,
             |url| async move { probe(&url).await },
-        ).await;
+        )
+        .await;
         for result in &checks {
-            util::emit_log(app, if result.passed { "info" } else { "warn" }, "dpi",
-                &format!("{config}: {}: {}; {} мс; {} байт; попыток {}; {}", result.url,
-                    if result.passed { "OK" } else if result.attempts == 0 { "не завершено" } else { "не подтверждено" },
-                    result.elapsed_ms, result.bytes, result.attempts, result.error.as_deref().unwrap_or("")));
+            util::emit_log(
+                app,
+                if result.passed { "info" } else { "warn" },
+                "dpi",
+                &format!(
+                    "{config}: {}: {}; {} мс; {} байт; попыток {}; {}",
+                    result.url,
+                    if result.passed {
+                        "OK"
+                    } else if result.attempts == 0 {
+                        "не завершено"
+                    } else {
+                        "не подтверждено"
+                    },
+                    result.elapsed_ms,
+                    result.bytes,
+                    result.attempts,
+                    result.error.as_deref().unwrap_or("")
+                ),
+            );
         }
         // Stop exactly the generation returned by this start, not a fresh
         // snapshot which could belong to another client. Cleanup errors abort
         // the entire picker; it must not continue against an unknown runtime.
         tauri::async_runtime::spawn_blocking(move || {
-            match call_service("dpi-stop", Request::DpiStop(DpiStopRequest { generation }), OPERATION_TIMEOUT)? {
+            match call_service(
+                "dpi-stop",
+                Request::DpiStop(DpiStopRequest { generation }),
+                OPERATION_TIMEOUT,
+            )? {
                 Response::Stopped => Ok(()),
                 _ => Err("Служба не подтвердила завершение тестовой сессии.".to_string()),
             }
-        }).await.map_err(|e| e.to_string())??;
+        })
+        .await
+        .map_err(|e| e.to_string())??;
         Ok(report(checks, was_cancelled || cancelled(app, epoch)))
     }
     #[cfg(not(windows))]
-    { let _ = (app, config, urls, fail_fast); Err(unavailable()) }
+    {
+        let _ = (app, config, urls, fail_fast);
+        Err(unavailable())
+    }
 }
 
 #[cfg(test)]
@@ -251,40 +379,66 @@ mod tests {
         }
     }
     fn evidence(passed: bool) -> ProbeResult {
-        ProbeResult { url: "https://example.com".into(), passed, elapsed_ms: 20,
-            bytes: 0, attempts: 1, http_status: None, error: None }
+        ProbeResult {
+            url: "https://example.com".into(),
+            passed,
+            elapsed_ms: 20,
+            bytes: 0,
+            attempts: 1,
+            http_status: None,
+            error: None,
+        }
     }
 
     #[tokio::test]
     async fn category_probes_start_concurrently_and_keep_target_order() {
         let urls = ["one", "two", "three", "four"];
         let barrier = Arc::new(tokio::sync::Barrier::new(urls.len()));
-        let (checks, was_cancelled) = tokio::time::timeout(Duration::from_secs(2), collect_probes(
-            &urls, false, Duration::from_secs(1), std::future::pending(),
-            |url| {
-                let barrier = Arc::clone(&barrier);
-                async move {
-                    barrier.wait().await;
-                    let mut result = evidence(true);
-                    result.url = url;
-                    result
-                }
-            },
-        )).await.unwrap();
+        let (checks, was_cancelled) = tokio::time::timeout(
+            Duration::from_secs(2),
+            collect_probes(
+                &urls,
+                false,
+                Duration::from_secs(1),
+                std::future::pending(),
+                |url| {
+                    let barrier = Arc::clone(&barrier);
+                    async move {
+                        barrier.wait().await;
+                        let mut result = evidence(true);
+                        result.url = url;
+                        result
+                    }
+                },
+            ),
+        )
+        .await
+        .unwrap();
         assert!(!was_cancelled);
         assert!(report(checks, false).passed);
-        let (checks, _) = collect_probes(&urls, false, Duration::from_secs(1),
-            std::future::pending(), |url| async move {
+        let (checks, _) = collect_probes(
+            &urls,
+            false,
+            Duration::from_secs(1),
+            std::future::pending(),
+            |url| async move {
                 let mut result = evidence(true);
                 result.url = url;
                 result
-            }).await;
-        assert_eq!(checks.iter().map(|r| r.url.as_str()).collect::<Vec<_>>(), urls);
+            },
+        )
+        .await;
+        assert_eq!(
+            checks.iter().map(|r| r.url.as_str()).collect::<Vec<_>>(),
+            urls
+        );
     }
 
     struct ProbeDropCounter(Arc<std::sync::atomic::AtomicUsize>);
     impl Drop for ProbeDropCounter {
-        fn drop(&mut self) { self.0.fetch_add(1, Ordering::SeqCst); }
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
     }
 
     #[tokio::test]
@@ -292,17 +446,26 @@ mod tests {
         let urls = ["failed", "stalled-one", "stalled-two", "stalled-three"];
         let barrier = Arc::new(tokio::sync::Barrier::new(urls.len()));
         let dropped = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let (checks, was_cancelled) = collect_probes(&urls, true, Duration::from_secs(1),
-            std::future::pending(), |url| {
+        let (checks, was_cancelled) = collect_probes(
+            &urls,
+            true,
+            Duration::from_secs(1),
+            std::future::pending(),
+            |url| {
                 let barrier = Arc::clone(&barrier);
                 let dropped = Arc::clone(&dropped);
                 async move {
                     let _guard = ProbeDropCounter(dropped);
                     barrier.wait().await;
-                    if url == "failed" { evidence(false) }
-                    else { std::future::pending().await }
+                    if url == "failed" {
+                        evidence(false)
+                    } else {
+                        std::future::pending().await
+                    }
                 }
-            }).await;
+            },
+        )
+        .await;
         assert!(!was_cancelled);
         assert_eq!(dropped.load(Ordering::SeqCst), urls.len());
         assert_eq!(checks[0].attempts, 1);
@@ -313,11 +476,17 @@ mod tests {
     #[tokio::test]
     async fn manual_probe_failure_still_collects_every_endpoint() {
         let urls = ["failed", "working-one", "working-two"];
-        let (checks, was_cancelled) = collect_probes(&urls, false, Duration::from_secs(1),
-            std::future::pending(), |url| async move {
+        let (checks, was_cancelled) = collect_probes(
+            &urls,
+            false,
+            Duration::from_secs(1),
+            std::future::pending(),
+            |url| async move {
                 tokio::task::yield_now().await;
                 evidence(url != "failed")
-            }).await;
+            },
+        )
+        .await;
         assert!(!was_cancelled);
         assert!(checks.iter().all(|r| r.attempts == 1));
         assert_eq!(report(checks, false).status, "partial");
@@ -329,8 +498,17 @@ mod tests {
         let started = Arc::new(tokio::sync::Semaphore::new(0));
         let dropped = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let cancellation_signal = Arc::clone(&started);
-        let (checks, was_cancelled) = collect_probes(&urls, true, Duration::from_secs(1),
-            async move { cancellation_signal.acquire_many_owned(3).await.unwrap().forget(); },
+        let (checks, was_cancelled) = collect_probes(
+            &urls,
+            true,
+            Duration::from_secs(1),
+            async move {
+                cancellation_signal
+                    .acquire_many_owned(3)
+                    .await
+                    .unwrap()
+                    .forget();
+            },
             |_| {
                 let started = Arc::clone(&started);
                 let dropped = Arc::clone(&dropped);
@@ -339,7 +517,9 @@ mod tests {
                     started.add_permits(1);
                     std::future::pending::<ProbeResult>().await
                 }
-            }).await;
+            },
+        )
+        .await;
         assert!(was_cancelled);
         assert_eq!(dropped.load(Ordering::SeqCst), urls.len());
         assert_eq!(report(checks, was_cancelled).status, "cancelled");
@@ -347,11 +527,20 @@ mod tests {
 
     #[tokio::test]
     async fn round_deadline_cannot_turn_incomplete_probes_into_success() {
-        let (checks, was_cancelled) = collect_probes(&["working", "stalled"], false,
-            Duration::from_millis(40), std::future::pending(), |url| async move {
-                if url == "working" { evidence(true) }
-                else { std::future::pending().await }
-            }).await;
+        let (checks, was_cancelled) = collect_probes(
+            &["working", "stalled"],
+            false,
+            Duration::from_millis(40),
+            std::future::pending(),
+            |url| async move {
+                if url == "working" {
+                    evidence(true)
+                } else {
+                    std::future::pending().await
+                }
+            },
+        )
+        .await;
         assert!(!was_cancelled);
         assert!(checks[0].passed);
         assert!(!checks[1].passed);
@@ -361,7 +550,10 @@ mod tests {
 
     #[test]
     fn partial_and_cancelled_reports_never_confirm_a_config() {
-        assert_eq!(report(vec![evidence(true), evidence(false)], false).status, "partial");
+        assert_eq!(
+            report(vec![evidence(true), evidence(false)], false).status,
+            "partial"
+        );
         assert!(!report(vec![evidence(true), evidence(false)], false).passed);
         assert_eq!(report(vec![evidence(false)], false).status, "failed");
         assert!(!report(vec![], false).passed);
@@ -373,7 +565,9 @@ mod tests {
     #[test]
     fn cdn_probe_uses_public_image_and_rejects_html_and_truncation() {
         assert!(targets("discord").unwrap().contains(&DISCORD_IMAGE));
-        assert!(!targets("discord").unwrap().contains(&"https://cdn.discordapp.com/"));
+        assert!(!targets("discord")
+            .unwrap()
+            .contains(&"https://cdn.discordapp.com/"));
         assert!(validate_image(DISCORD_IMAGE, b"<html>Access denied</html>").is_err());
         assert!(validate_image(DISCORD_IMAGE, b"\x89PNG\r\n\x1a\ntruncated").is_err());
         assert!(validate_image(YOUTUBE_IMAGE, &[0xff, 0xd8, 0xff, 0]).is_err());
@@ -387,9 +581,15 @@ mod tests {
         let worker = std::thread::spawn(move || {
             for status in [503, 200] {
                 let (mut socket, _) = listener.accept().unwrap();
-                socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
                 socket.read(&mut [0; 2048]).unwrap();
-                write!(socket, "HTTP/1.1 {status} Test\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok").unwrap();
+                write!(
+                    socket,
+                    "HTTP/1.1 {status} Test\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"
+                )
+                .unwrap();
             }
         });
         let result = probe(&format!("http://{address}/")).await;
@@ -407,7 +607,10 @@ mod tests {
         assert!(urls.contains(&DISCORD_UPDATER));
         let updater = reqwest::Url::parse(DISCORD_UPDATER).unwrap();
         assert_eq!(updater.host_str(), Some("updates.discord.com"));
-        assert_eq!(format!("{}?{}", updater.path(), updater.query().unwrap()), crate::service_health::DISCORD_UPDATE_PATH);
+        assert_eq!(
+            format!("{}?{}", updater.path(), updater.query().unwrap()),
+            crate::service_health::DISCORD_UPDATE_PATH
+        );
         assert!(urls.contains(&"https://discord.com/"));
         assert!(urls.contains(&"https://discord.com/api/v10/gateway"));
     }
@@ -419,14 +622,28 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let worker = std::thread::spawn(move || {
             let (mut socket, _) = listener.accept().unwrap();
-            socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
             let mut request = [0; 2048];
             socket.read(&mut request).unwrap();
-            socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}").unwrap();
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
+                .unwrap();
         });
-        let response = reqwest::Client::builder().no_proxy().build().unwrap()
-            .get(format!("http://{address}/")).timeout(Duration::from_secs(2)).send().await.unwrap();
-        assert!(validate_response(DISCORD_UPDATER, response).await.unwrap_err().contains("expected HTTPS host"));
+        let response = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap()
+            .get(format!("http://{address}/"))
+            .timeout(Duration::from_secs(2))
+            .send()
+            .await
+            .unwrap();
+        assert!(validate_response(DISCORD_UPDATER, response)
+            .await
+            .unwrap_err()
+            .contains("expected HTTPS host"));
         worker.join().unwrap();
     }
     #[tokio::test]
@@ -442,14 +659,26 @@ mod tests {
             let address = listener.local_addr().unwrap();
             let worker = std::thread::spawn(move || {
                 let (mut socket, _) = listener.accept().unwrap();
-                socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
                 let mut request = [0; 2048];
                 socket.read(&mut request).unwrap();
-                write!(socket, "HTTP/1.1 {status} Test\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+                write!(
+                    socket,
+                    "HTTP/1.1 {status} Test\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                )
+                .unwrap();
             });
-            let response = reqwest::Client::builder().no_proxy().build().unwrap()
-                .get(format!("http://{address}/")).timeout(Duration::from_secs(2))
-                .send().await.unwrap();
+            let response = reqwest::Client::builder()
+                .no_proxy()
+                .build()
+                .unwrap()
+                .get(format!("http://{address}/"))
+                .timeout(Duration::from_secs(2))
+                .send()
+                .await
+                .unwrap();
             assert_eq!(validate_response(url, response).await.is_ok(), expected);
             worker.join().unwrap();
         }
@@ -469,9 +698,18 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn test_start_disables_recovery_without_mutating_user_settings() {
-        let request = start_request(DpiEngine::Legacy,
-            &[("discord".into(), "discord_1.conf".into())], 0, false, &BTreeMap::new()).unwrap();
-        let Request::DpiStart(request) = request else { panic!("expected start"); };
+        let request = start_request(
+            DpiEngine::Legacy,
+            &[("discord".into(), "discord_1.conf".into())],
+            0,
+            false,
+            false,
+            &[],
+        )
+        .unwrap();
+        let Request::DpiStart(request) = request else {
+            panic!("expected start");
+        };
         assert!(!request.options.legacy_reliability);
         assert!(request.options.zapret2_overrides.is_empty());
     }

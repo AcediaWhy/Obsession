@@ -81,10 +81,15 @@ pub(crate) async fn dpi_start_locked(
     if runtime_is_shutting_down(app) {
         return Err("Приложение завершает работу.".to_string());
     }
-    let (engine, zapret2_level) = {
+    if app.state::<AppState>().settings.lock_recover().dpi_engine == "zapret2" {
+        let migration_app = app.clone();
+        tauri::async_runtime::spawn_blocking(move || crate::protected_runtime::zapret2_picker::migrate_saved_profiles(&migration_app))
+            .await.map_err(|error| error.to_string())??;
+    }
+    let (engine, zapret2_level, zapret2_clienthello, zapret2_profiles) = {
         let state = app.state::<AppState>();
         let settings = state.settings.lock_recover();
-        (settings.dpi_engine.clone(), settings.zapret2_level)
+        (settings.dpi_engine.clone(), settings.zapret2_level, false, settings.zapret2_profiles.clone())
     };
     let protected_engine = if engine == "zapret2" {
         if !crate::protected_runtime::zapret2_available() {
@@ -95,7 +100,7 @@ pub(crate) async fn dpi_start_locked(
         obsession_runtime_protocol::DpiEngine::Legacy
     };
 
-    crate::protected_runtime::dpi_start(app, protected_engine, pairs, zapret2_level).await?;
+    crate::protected_runtime::dpi_start(app, protected_engine, pairs, zapret2_level, zapret2_clienthello, zapret2_profiles).await?;
     if runtime_is_shutting_down(app) {
         let _ = crate::protected_runtime::dpi_stop(app).await;
         return Err("Запуск отменён: приложение завершает работу.".to_string());
@@ -114,7 +119,12 @@ pub(crate) async fn dpi_start_session(
     app: &AppHandle,
     pairs: Vec<(String, String)>,
 ) -> Result<Vec<u32>, String> {
-    crate::util::emit_log(app, "info", "dpi", "Запрошен запуск DPI: источник=команда интерфейса");
+    crate::util::emit_log(
+        app,
+        "info",
+        "dpi",
+        "Запрошен запуск DPI: источник=команда интерфейса",
+    );
     if runtime_is_shutting_down(app) {
         return Err("Приложение завершает работу.".to_string());
     }
@@ -144,7 +154,12 @@ pub(crate) async fn dpi_toggle_session(
         return Err("Приложение завершает работу.".to_string());
     }
     let active = crate::protected_runtime::dpi_active().await?;
-    crate::util::emit_log(app, "info", "dpi", &format!("Переключение DPI: служба до команды active={active}"));
+    crate::util::emit_log(
+        app,
+        "info",
+        "dpi",
+        &format!("Переключение DPI: служба до команды active={active}"),
+    );
     if active {
         dpi_stop_locked(app).await?;
         Ok(false)
@@ -209,34 +224,70 @@ pub fn dpi_engine_list(app: AppHandle) -> Vec<EngineOption> {
 }
 
 #[tauri::command]
-pub async fn dpi_zapret2_profiles(
-    app: AppHandle,
-    categories: Vec<String>,
-) -> Result<Vec<crate::dpi::Zapret2ProfileDescriptor>, String> {
-    let snapshot = crate::protected_runtime::adaptive_runtime_snapshot();
-    let (selections, overrides) = match snapshot.launch {
-        Some(crate::state::DpiLaunchSpec::Zapret2 {
-            selections,
-            adaptive_overrides,
-        }) => (selections, adaptive_overrides),
-        _ => {
-            let selections = categories
-                .into_iter()
-                .map(|category| (category, String::new()))
-                .collect::<Vec<_>>();
-            let overrides =
-                crate::adaptive_strategy::runtime::confirmed_overrides_for_current_network(
-                    &app,
-                    &selections,
-                )
-                .await;
-            (selections, overrides)
-        }
-    };
-    let entries =
-        crate::adaptive_strategy::runtime::cached_entries_for_overrides(&app, &overrides).await;
-    crate::dpi::describe_zapret2_profiles(&app, &selections, &overrides, &entries)
+pub fn dpi_zapret2_profiles(app: AppHandle, categories: Vec<String>) -> Result<Vec<crate::dpi::Zapret2ProfileDescriptor>, String> {
+    crate::protected_runtime::zapret2_picker::migrate_saved_profiles(&app)?;
+    let selections = crate::protected_runtime::zapret2_selections().unwrap_or_else(|| categories.into_iter().map(|category| (category, String::new())).collect());
+    crate::dpi::describe_zapret2_profiles(&app, &selections)
 }
+
+#[tauri::command]
+pub fn dpi_zapret2_catalog(app: AppHandle, categories: Vec<String>) -> Result<Vec<crate::protected_runtime::zapret2_picker::CatalogProfile>, String> {
+    crate::protected_runtime::zapret2_picker::catalog(&app, &categories)
+}
+
+#[tauri::command]
+pub async fn dpi_zapret2_select(app: AppHandle, category: String, transport: String, profile_id: String) -> Result<(), String> {
+    // Closing the invoking view must not drop a launched runtime's cleanup.
+    tauri::async_runtime::spawn(async move {
+        let state = app.state::<AppState>();
+        let _gate = state.dpi_gate.lock().await;
+        crate::protected_runtime::zapret2_picker::select(&app, category, transport, profile_id).await
+    }).await.map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub async fn dpi_zapret2_pick(app: AppHandle, category: String, transport: String, mode: String,
+    composition: Option<obsession_runtime_protocol::zapret2_composition::DiscordComposition>) -> Result<crate::protected_runtime::zapret2_picker::PickerResult, String> {
+    tauri::async_runtime::spawn(async move {
+        let state = app.state::<AppState>();
+        let _gate = state.dpi_gate.lock().await;
+        crate::protected_runtime::zapret2_picker::pick(&app, category, transport, mode, composition).await
+    }).await.map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub async fn dpi_zapret2_apply_result(app: AppHandle, run_id: String, category: String, transport: String, profile_id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn(async move {
+        let state = app.state::<AppState>();
+        let _gate = state.dpi_gate.lock().await;
+        crate::protected_runtime::zapret2_picker::apply_result(&app, run_id, category, transport, profile_id).await
+    }).await.map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub async fn dpi_zapret2_test_scenario(app: AppHandle, request_id: String, run_id: String, category: String, transport: String,
+    profile_id: String, scenario: crate::protected_runtime::zapret2_scenario::Scenario) -> Result<crate::protected_runtime::zapret2_scenario::ResultRecord, String> {
+    tauri::async_runtime::spawn(async move {
+        let state = app.state::<AppState>();
+        let _gate = state.dpi_gate.lock().await;
+        crate::protected_runtime::zapret2_picker::test_scenario(&app, request_id, run_id, category, transport, profile_id, scenario).await
+    }).await.map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub fn dpi_zapret2_scenario_observe(trial_id: String, step_id: String,
+    observation: crate::protected_runtime::zapret2_scenario::Observation) -> Result<(), String> {
+    // Deliberately independent of dpi_gate: the trial owns it while waiting.
+    crate::protected_runtime::zapret2_scenario::observe(&trial_id, &step_id, observation)
+}
+
+#[tauri::command]
+pub async fn dpi_zapret2_history(app: AppHandle) -> Result<Vec<crate::protected_runtime::zapret2_history::Record>, String> {
+    let base = app.state::<AppState>().paths.base_dir.clone();
+    tauri::async_runtime::spawn_blocking(move || crate::protected_runtime::zapret2_history::load(&base))
+        .await.map_err(|error| error.to_string())?
+}
+
 /// Меняет выбранный DPI-движок. Отклоняет всё, что ещё не предоставлено
 /// защищённой службой.
 /// Смена сериализуется dpi_gate — не пересекается с активным start/stop.
@@ -278,41 +329,27 @@ pub async fn dpi_engine_set(app: AppHandle, engine: String) -> Result<(), String
 }
 
 #[tauri::command]
-pub async fn dpi_test(app: AppHandle, category: String, config_file: String, fail_fast: Option<bool>) -> Result<crate::protected_runtime::legacy_test::TestReport, String> {
+pub async fn dpi_test(
+    app: AppHandle,
+    category: String,
+    config_file: String,
+    fail_fast: Option<bool>,
+) -> Result<crate::protected_runtime::legacy_test::TestReport, String> {
     if runtime_is_shutting_down(&app) {
         return Err("Приложение завершает работу.".into());
-    }
-    let adaptive_busy = app
-        .state::<AppState>()
-        .adaptive
-        .lock()
-        .ok()
-        .and_then(|value| value.as_ref().map(|handle| handle.status.borrow().phase))
-        .is_some_and(|phase| {
-            !matches!(
-                phase,
-                crate::adaptive_strategy::model::RecoveryPhase::Idle
-                    | crate::adaptive_strategy::model::RecoveryPhase::Suggested
-                    | crate::adaptive_strategy::model::RecoveryPhase::Applied
-                    | crate::adaptive_strategy::model::RecoveryPhase::Exhausted
-                    | crate::adaptive_strategy::model::RecoveryPhase::Cancelled
-            )
-        });
-    if adaptive_busy {
-        crate::util::emit_log(
-            &app,
-            "warn",
-            "adaptive",
-            "Обычный DPI-тест отложен до завершения adaptive search.",
-        );
-        return Err("Дождитесь завершения адаптивного поиска.".into());
     }
     let state = app.state::<AppState>();
     let _gate = state.dpi_gate.lock().await;
     if runtime_is_shutting_down(&app) {
         return Err("Приложение завершает работу.".into());
     }
-    crate::protected_runtime::legacy_test::run(&app, &category, &config_file, fail_fast.unwrap_or(false)).await
+    crate::protected_runtime::legacy_test::run(
+        &app,
+        &category,
+        &config_file,
+        fail_fast.unwrap_or(false),
+    )
+    .await
 }
 
 /// Отмена текущего теста. Намеренно НЕ берёт `dpi_gate` (его держит бегущий
@@ -583,6 +620,20 @@ pub async fn hosts_status(app: AppHandle, provider: String) -> crate::hosts::Hos
 }
 
 #[tauri::command]
+pub async fn system_dns_status() -> Result<obsession_runtime_protocol::SystemDnsStatus, String> {
+    crate::protected_runtime::system_dns_status().await
+}
+
+#[tauri::command]
+pub async fn system_dns_restore(app: AppHandle) -> Result<obsession_runtime_protocol::SystemDnsStatus, String> {
+    let state = app.state::<AppState>();
+    let _gate = state.dpi_gate.lock().await;
+    let status = crate::protected_runtime::system_dns_restore().await?;
+    crate::util::emit_log(&app, "info", "dns", "dns_recovery_restored: исходные настройки системного DNS восстановлены");
+    Ok(status)
+}
+
+#[tauri::command]
 pub async fn hosts_install(
     app: AppHandle,
     provider: String,
@@ -610,7 +661,10 @@ pub async fn hosts_uninstall(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn hosts_refresh_gemini(app: AppHandle, preference: obsession_runtime_protocol::GeminiRoutePreference) -> Result<obsession_runtime_protocol::HostsHealthSnapshot, String> {
+pub async fn hosts_refresh_gemini(
+    app: AppHandle,
+    preference: obsession_runtime_protocol::GeminiRoutePreference,
+) -> Result<obsession_runtime_protocol::HostsHealthSnapshot, String> {
     let state = app.state::<AppState>();
     let _gate = state.hosts_gate.lock().await;
     crate::protected_runtime::hosts_refresh_gemini(preference).await?;
@@ -635,7 +689,6 @@ pub struct RuntimeSnapshot {
     pub dpi: crate::util::DpiStatusPayload,
     pub proxy: crate::util::ProxyStatusPayload,
     pub brain: Option<crate::brain::BrainStatus>,
-    pub adaptive: Option<crate::adaptive_strategy::model::RecoveryStatus>,
 }
 
 #[tauri::command]
@@ -660,24 +713,15 @@ pub fn runtime_get_snapshot(app: AppHandle) -> RuntimeSnapshot {
             .ok()
             .and_then(|guard| guard.as_ref().map(|bh| bh.status.borrow().clone()))
     };
-    let adaptive = {
-        let state = app.state::<AppState>();
-        state
-            .adaptive
-            .lock()
-            .ok()
-            .and_then(|guard| guard.as_ref().map(|handle| handle.status.borrow().clone()))
-    };
     RuntimeSnapshot {
         dpi,
         proxy,
         brain,
-        adaptive,
     }
 }
 
 /// Версия wire-контракта единого startup/resume snapshot.
-pub const BOOTSTRAP_SCHEMA_VERSION: u32 = 8;
+pub const BOOTSTRAP_SCHEMA_VERSION: u32 = 9;
 
 #[derive(Serialize)]
 pub struct BootstrapSettings {
@@ -702,7 +746,6 @@ pub struct BootstrapSnapshot {
     pub dpi: VersionedSection<crate::util::DpiStatusPayload>,
     pub proxy: VersionedSection<crate::util::ProxyStatusPayload>,
     pub brain: VersionedSection<Option<crate::brain::BrainStatus>>,
-    pub adaptive: VersionedSection<Option<crate::adaptive_strategy::model::RecoveryStatus>>,
     pub legacy_reliability:
         VersionedSection<crate::legacy_reliability::status::LegacyReliabilityStatus>,
     pub hosts: VersionedSection<crate::hosts::HostsStatus>,
@@ -777,16 +820,6 @@ pub fn bootstrap_get_snapshot(app: AppHandle) -> BootstrapSnapshot {
         VersionedSection::new(revision, value)
     };
 
-    let adaptive = {
-        let revision = state.adaptive_revision.current();
-        let value = state
-            .adaptive
-            .lock()
-            .ok()
-            .and_then(|guard| guard.as_ref().map(|handle| handle.status.borrow().clone()));
-        VersionedSection::new(revision, value)
-    };
-
     let legacy_reliability = {
         // The protected service owns its own observer revision. Bootstrap
         // projection advances the app-local section clock on every fresh IPC
@@ -811,7 +844,6 @@ pub fn bootstrap_get_snapshot(app: AppHandle) -> BootstrapSnapshot {
         dpi,
         proxy,
         brain,
-        adaptive,
         legacy_reliability,
         hosts,
     }
@@ -841,17 +873,29 @@ fn patch_requires_legacy_controls_sync(patch: &SettingsPatch) -> bool {
         || patch.legacy_reliability_frozen_categories.is_some()
 }
 
-fn mutate_settings<F>(app: &AppHandle, mutate: F) -> Result<Settings, String>
+pub(crate) fn mutate_settings<F>(app: &AppHandle, mutate: F) -> Result<Settings, String>
 where
+    F: FnOnce(&mut Settings),
+{
+    mutate_settings_checked(app, |_| Ok(()), mutate)
+}
+
+pub(crate) fn mutate_settings_checked<C, F>(app: &AppHandle, check: C, mutate: F) -> Result<Settings, String>
+where
+    C: FnOnce(&Settings) -> Result<(), String>,
     F: FnOnce(&mut Settings),
 {
     let state = app.state::<AppState>();
     let base = state.paths.base_dir.clone();
+    // All writers read their base snapshot AFTER taking the serialization gate.
+    // A picker compares and updates its choices in this same transaction.
+    let _save = state.settings_save_gate.blocking_lock();
     let (next, legacy_automation_changed) = {
         let guard = state
             .settings
             .lock()
             .map_err(|_| "settings lock poisoned".to_string())?;
+        check(&guard)?;
         let mut next = guard.clone();
         mutate(&mut next);
         let changed = guard.legacy_reliability_enabled != next.legacy_reliability_enabled
@@ -863,10 +907,7 @@ where
     };
     // Запись на диск — под отдельным save-gate и ВНЕ std::Mutex settings,
     // чтобы fsync/rename не блокировали читателей (dpi_start, хоткей, close).
-    {
-        let _save = state.settings_save_gate.blocking_lock();
-        next.save(&base).map_err(|e| e.to_string())?;
-    }
+    next.save(&base).map_err(|e| e.to_string())?;
     {
         let mut guard = state
             .settings
@@ -1079,175 +1120,6 @@ pub async fn legacy_reliability_approve(
     }
 }
 
-// ─── Adaptive Zapret2 Strategy Brain ───────────────────────────────────────
-
-fn adaptive_category(
-    value: &str,
-) -> Result<crate::adaptive_strategy::dsl::AdaptiveCategory, String> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "discord" => Ok(crate::adaptive_strategy::dsl::AdaptiveCategory::Discord),
-        "youtube" | "youtube_twitch" => {
-            Ok(crate::adaptive_strategy::dsl::AdaptiveCategory::YoutubeTwitch)
-        }
-        "gaming" | "gaming_github" => Ok(crate::adaptive_strategy::dsl::AdaptiveCategory::Gaming),
-        _ => Err(format!("Adaptive category не поддерживается: {value}")),
-    }
-}
-
-fn adaptive_transport(
-    value: Option<&str>,
-) -> Result<Option<crate::adaptive_strategy::dsl::StrategyTransport>, String> {
-    match value.map(str::trim).filter(|value| !value.is_empty()) {
-        None => Ok(None),
-        Some("tls") => Ok(Some(crate::adaptive_strategy::dsl::StrategyTransport::Tls)),
-        Some("quic") => Ok(Some(crate::adaptive_strategy::dsl::StrategyTransport::Quic)),
-        Some(value) => Err(format!("Adaptive transport не поддерживается: {value}")),
-    }
-}
-fn adaptive_input(
-    app: &AppHandle,
-) -> Result<crate::adaptive_strategy::runtime::AdaptiveInput, String> {
-    let state = app.state::<AppState>();
-    let guard = state
-        .adaptive
-        .lock()
-        .map_err(|_| "adaptive lock poisoned".to_string())?;
-    guard
-        .as_ref()
-        .map(|handle| handle.input.clone())
-        .ok_or_else(|| "Adaptive runtime не запущен".to_string())
-}
-
-#[tauri::command]
-pub fn adaptive_get_status(
-    app: AppHandle,
-) -> Option<crate::adaptive_strategy::model::RecoveryStatus> {
-    let state = app.state::<AppState>();
-    let guard = state.adaptive.lock().ok()?;
-    guard.as_ref().map(|handle| handle.status.borrow().clone())
-}
-
-#[tauri::command]
-pub async fn adaptive_start_search(
-    app: AppHandle,
-    category: String,
-    transport: Option<String>,
-) -> Result<(), String> {
-    if !app
-        .state::<AppState>()
-        .settings
-        .lock()
-        .map(|settings| settings.adaptive_strategy_enabled)
-        .unwrap_or(false)
-    {
-        return Err("Adaptive Strategy Brain выключен в настройках".to_string());
-    }
-    if !crate::protected_runtime::adaptive_zapret2_available() {
-        return Err("Adaptive Zapret2 недоступен в защищённой службе".to_string());
-    }
-    if !matches!(
-        crate::protected_runtime::adaptive_runtime_snapshot().launch,
-        Some(crate::state::DpiLaunchSpec::Zapret2 { .. })
-    ) {
-        return Err("Поиск доступен только при активном Zapret2".to_string());
-    }
-    if adaptive_get_status(app.clone()).is_some_and(|status| {
-        matches!(
-            status.phase,
-            crate::adaptive_strategy::model::RecoveryPhase::DiscoveringQuic
-                | crate::adaptive_strategy::model::RecoveryPhase::Calibrating
-                | crate::adaptive_strategy::model::RecoveryPhase::Searching
-                | crate::adaptive_strategy::model::RecoveryPhase::CandidateProbe
-                | crate::adaptive_strategy::model::RecoveryPhase::TemporaryVerification
-                | crate::adaptive_strategy::model::RecoveryPhase::Applying
-                | crate::adaptive_strategy::model::RecoveryPhase::RollingBack
-        )
-    }) {
-        return Err("search_already_running".to_string());
-    }
-    let category = adaptive_category(&category)?;
-    let transport = adaptive_transport(transport.as_deref())?;
-    if category == crate::adaptive_strategy::dsl::AdaptiveCategory::Discord
-        && transport == Some(crate::adaptive_strategy::dsl::StrategyTransport::Quic)
-    {
-        return Err("Discord QUIC/media не входит в adaptive search".to_string());
-    }
-    if category == crate::adaptive_strategy::dsl::AdaptiveCategory::Gaming
-        && !adaptive_get_status(app.clone()).is_some_and(|status| {
-            status.phase == crate::adaptive_strategy::model::RecoveryPhase::Suggested
-                && status.category == Some(crate::adaptive_strategy::dsl::AdaptiveCategory::Gaming)
-        })
-    {
-        return Err("gaming_recovery_requires_failure_evidence".to_string());
-    }
-    adaptive_input(&app)?
-        .start_search(category, transport)
-        .await
-}
-
-#[tauri::command]
-pub async fn adaptive_get_recommendation(
-    app: AppHandle,
-    category: String,
-    transport: String,
-) -> Result<Option<crate::adaptive_strategy::runtime::AdaptiveRecommendationDescriptor>, String> {
-    let category = adaptive_category(&category)?;
-    if category != crate::adaptive_strategy::dsl::AdaptiveCategory::Gaming {
-        return Err("Локальные рекомендации пока доступны только для Gaming + GitHub".into());
-    }
-    let transport = adaptive_transport(Some(&transport))?
-        .ok_or_else(|| "Для рекомендации требуется transport".to_string())?;
-    crate::adaptive_strategy::runtime::gaming_recommendation_for_current_network(&app, transport)
-        .await
-}
-
-#[tauri::command]
-pub async fn adaptive_apply_recommendation(
-    app: AppHandle,
-    category: String,
-    transport: String,
-) -> Result<crate::adaptive_strategy::runtime::AdaptiveRecommendationDescriptor, String> {
-    let category = adaptive_category(&category)?;
-    if category != crate::adaptive_strategy::dsl::AdaptiveCategory::Gaming {
-        return Err("Локальные рекомендации пока доступны только для Gaming + GitHub".into());
-    }
-    let transport = adaptive_transport(Some(&transport))?
-        .ok_or_else(|| "Для рекомендации требуется transport".to_string())?;
-    crate::adaptive_strategy::runtime::apply_gaming_recommendation(&app, transport).await
-}
-
-#[tauri::command]
-pub async fn adaptive_cancel_search(app: AppHandle) -> Result<(), String> {
-    adaptive_input(&app)?.cancel().await
-}
-
-#[tauri::command]
-pub async fn adaptive_confirm_candidate(
-    app: AppHandle,
-    session_id: u64,
-    candidate_id: String,
-) -> Result<(), String> {
-    adaptive_input(&app)?
-        .confirm(session_id, candidate_id)
-        .await
-}
-
-#[tauri::command]
-pub async fn adaptive_reject_candidate(
-    app: AppHandle,
-    session_id: u64,
-    candidate_id: String,
-) -> Result<(), String> {
-    adaptive_input(&app)?.reject(session_id, candidate_id).await
-}
-
-#[tauri::command]
-pub async fn adaptive_reset_saved(app: AppHandle, category: String) -> Result<(), String> {
-    adaptive_input(&app)?
-        .reset_saved(adaptive_category(&category)?)
-        .await
-}
-
 // ─── Списки (домены / IP) ─────────────────────────────────────────────────
 
 #[tauri::command]
@@ -1436,7 +1308,6 @@ mod bootstrap_tests {
                 },
             ),
             brain: VersionedSection::new(5, None),
-            adaptive: VersionedSection::new(6, None),
             legacy_reliability: VersionedSection::new(
                 7,
                 crate::legacy_reliability::status::LegacyReliabilityStatus::inactive(),
@@ -1472,7 +1343,6 @@ mod bootstrap_tests {
         assert_eq!(value["dpi"]["revision"], 3);
         assert_eq!(value["proxy"]["revision"], 4);
         assert_eq!(value["brain"]["revision"], 5);
-        assert_eq!(value["adaptive"]["revision"], 6);
         assert_eq!(value["legacyReliability"]["revision"], 7);
         assert_eq!(value["legacyReliability"]["value"]["phase"], "inactive");
         assert_eq!(value["hosts"]["revision"], 8);

@@ -11,7 +11,6 @@ use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command as TokioCommand;
 
-use crate::adaptive_strategy::dsl::{override_key, StrategyCandidate, StrategyTransport};
 use crate::state::{
     AppState, DpiLaunchSpec, DpiProc, DpiRuntimeSnapshot, LegacyCategoryRuntimeSnapshot,
     LegacyProcessOwner,
@@ -1404,7 +1403,7 @@ fn collect_category_hostlist(app: &AppHandle, selections: &[(String, String)]) -
     domains.into_iter().collect()
 }
 
-/// Compatibility Eyes path for Zapret2 Adaptive. It intentionally keeps the
+/// Compatibility Eyes path for Zapret2. It intentionally keeps the
 /// existing TCP/443 observation contract while remaining isolated from Legacy
 /// Brain and Legacy Reliability Manager.
 #[cfg(windows)]
@@ -1481,14 +1480,6 @@ fn start_zapret2_eyes(app: &AppHandle, hostlist: Vec<String>) {
         util::emit_log(&app_cb, "info", "eyes", &line);
         // Сырое наблюдение во фронт (debug-читалка Глаз).
         let _ = app_cb.emit("eyes://observation", &obs);
-        let adaptive_input = {
-            let st = app_cb.state::<AppState>();
-            let guard = st.adaptive.lock().ok();
-            guard.and_then(|value| value.as_ref().map(|handle| handle.input.clone()))
-        };
-        if let Some(input) = adaptive_input {
-            let _ = input.try_observation(obs.domain.clone(), obs.verdict, eyes_generation);
-        }
     }) {
         Ok(handle) => {
             let st = app.state::<AppState>();
@@ -3454,24 +3445,6 @@ pub async fn stop_all(app: &AppHandle) {
     }
 }
 
-/// Запускает Zapret2 (winws2) для набора категорий одним процессом с N профилями.
-/// `selections` = (категория, strategy_id); пустой/неизвестный id → мягчайшая
-/// стратегия категории из пака. Возвращает PID. Целостность пака проверяется
-/// (`load_pack`) — на непроверенном Lua движок не стартует.
-#[expect(
-    dead_code,
-    reason = "kept fail-closed until Zapret2 is implemented by the protected service"
-)]
-pub async fn start_zapret2(
-    app: &AppHandle,
-    selections: &[(String, String)],
-) -> Result<u32, String> {
-    let overrides =
-        crate::adaptive_strategy::runtime::confirmed_overrides_for_current_network(app, selections)
-            .await;
-    start_zapret2_with_overrides(app, selections, &overrides).await
-}
-
 #[derive(Clone, Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Zapret2ProfileDescriptor {
@@ -3482,14 +3455,6 @@ pub struct Zapret2ProfileDescriptor {
     pub ports: String,
     pub hostlist: Option<String>,
     pub ipset: Option<String>,
-    pub candidate_id: Option<String>,
-    pub verification: String,
-    pub trust: String,
-    pub evidence_source: Option<String>,
-    pub source_candidate_id: Option<String>,
-    pub source_category: Option<String>,
-    pub source_transport: Option<String>,
-    pub recommendation_reason: Option<String>,
     pub data_plane: bool,
     pub broad_ipset: bool,
 }
@@ -3497,98 +3462,17 @@ pub struct Zapret2ProfileDescriptor {
 pub(crate) fn describe_zapret2_profiles(
     app: &AppHandle,
     selections: &[(String, String)],
-    adaptive_overrides: &BTreeMap<String, StrategyCandidate>,
-    adaptive_entries: &BTreeMap<String, crate::adaptive_strategy::cache::AdaptiveCacheEntry>,
 ) -> Result<Vec<Zapret2ProfileDescriptor>, String> {
     let state = app.state::<AppState>();
     let pack = crate::dpi_engine::load_pack(&state.paths.strategy_pack_dir("builtin"))?;
-    let level = state.settings.lock_recover().zapret2_level;
+    let (level, profiles) = {
+        let settings = state.settings.lock_recover();
+        (settings.zapret2_level, settings.zapret2_profiles.clone())
+    };
     let mut descriptors = Vec::new();
 
     for (category, _) in selections {
-        let Some(category_value) =
-            crate::adaptive_strategy::dsl::AdaptiveCategory::from_key(category)
-        else {
-            continue;
-        };
-        let strategies = pack.profiles_for(category, level);
-        let adaptive = [StrategyTransport::Tls, StrategyTransport::Quic]
-            .into_iter()
-            .filter_map(|transport| {
-                adaptive_overrides.get(&override_key(category_value, transport))
-            })
-            .collect::<Vec<_>>();
-
-        for candidate in &adaptive {
-            let cache_key = override_key(category_value, candidate.transport);
-            let metadata = adaptive_entries
-                .get(&cache_key)
-                .filter(|entry| entry.candidate_id == candidate.candidate_id());
-            let control = strategies.iter().find(|strategy| {
-                strategy.ipset.is_none()
-                    && match candidate.transport {
-                        StrategyTransport::Tls => {
-                            strategy.transports.is_empty()
-                                || strategy.transports.iter().any(|value| value == "tcp")
-                        }
-                        StrategyTransport::Quic => {
-                            strategy.transports.iter().any(|value| value == "quic")
-                        }
-                    }
-            });
-            descriptors.push(Zapret2ProfileDescriptor {
-                category: category.clone(),
-                profile_id: candidate.candidate_id(),
-                source: "adaptive".into(),
-                transport: candidate.transport.as_key().into(),
-                ports: "443".into(),
-                hostlist: control
-                    .and_then(|strategy| strategy.hostlist.clone())
-                    .or_else(|| Some(format!("{category}.txt"))),
-                ipset: None,
-                candidate_id: Some(candidate.candidate_id()),
-                verification: match metadata.map(|entry| entry.trust) {
-                    Some(crate::adaptive_strategy::cache::StrategyTrust::Confirmed) => {
-                        "verified".into()
-                    }
-                    Some(crate::adaptive_strategy::cache::StrategyTrust::Recommended) => {
-                        "recommended".into()
-                    }
-                    _ => "not_actively_verified".into(),
-                },
-                trust: metadata
-                    .map(|entry| entry.trust.as_key())
-                    .unwrap_or("prepared")
-                    .into(),
-                evidence_source: metadata.and_then(|entry| entry.evidence_source.clone()),
-                source_candidate_id: metadata.and_then(|entry| entry.source_candidate_id.clone()),
-                source_category: metadata
-                    .and_then(|entry| entry.source_category)
-                    .map(|category| category.as_key().to_string()),
-                source_transport: metadata
-                    .and_then(|entry| entry.source_transport)
-                    .map(|transport| transport.as_key().to_string()),
-                recommendation_reason: metadata
-                    .and_then(|entry| entry.recommendation_reason.clone()),
-                data_plane: false,
-                broad_ipset: false,
-            });
-        }
-
-        for strategy in strategies {
-            let replaced = strategy.ipset.is_none()
-                && adaptive.iter().any(|candidate| match candidate.transport {
-                    StrategyTransport::Tls => {
-                        strategy.transports.is_empty()
-                            || strategy.transports.iter().any(|value| value == "tcp")
-                    }
-                    StrategyTransport::Quic => {
-                        strategy.transports.iter().any(|value| value == "quic")
-                    }
-                });
-            if replaced {
-                continue;
-            }
+        for strategy in pack.profiles_for_selections(category, level, false, &profiles)? {
             let profile =
                 crate::dpi_engine::zapret2::profile_from_strategy_def(&strategy, None, None);
             let transport = if strategy.filter_l7.iter().any(|value| value == "quic") {
@@ -3620,18 +3504,6 @@ pub(crate) fn describe_zapret2_profiles(
                 hostlist,
                 broad_ipset: strategy.ipset.as_deref() == Some("ipset-gaming.txt"),
                 ipset: strategy.ipset,
-                candidate_id: None,
-                verification: if data_plane {
-                    "not_actively_verified".into()
-                } else {
-                    "baseline".into()
-                },
-                trust: "prepared".into(),
-                evidence_source: None,
-                source_candidate_id: None,
-                source_category: None,
-                source_transport: None,
-                recommendation_reason: None,
                 data_plane,
             });
         }
@@ -3639,26 +3511,12 @@ pub(crate) fn describe_zapret2_profiles(
     Ok(descriptors)
 }
 
-fn zapret2_strategy_lua_files(
-    strategies: &[crate::dpi_engine::manifest::StrategyDef],
-) -> Vec<&str> {
-    let mut files = Vec::new();
-    for strategy in strategies {
-        let lua = strategy.lua.as_str();
-        if !lua.is_empty() && !files.contains(&lua) {
-            files.push(lua);
-        }
-    }
-    files
-}
 
-/// Вариант запуска Zapret2 с проверенными DSL-overrides. Override заменяет
-/// только свой транспорт выбранной категории; противоположный транспорт и все
-/// профили остальных категорий остаются из целостного bundled Strategy Pack.
-pub(crate) async fn start_zapret2_with_overrides(
+/// Запускает обычные профили Zapret2 из проверенного встроенного пака.
+#[expect(dead_code, reason = "ordinary launches are owned by the protected service")]
+pub async fn start_zapret2(
     app: &AppHandle,
     selections: &[(String, String)],
-    adaptive_overrides: &BTreeMap<String, StrategyCandidate>,
 ) -> Result<u32, String> {
     crate::security::require_protected_runtime("Zapret2")?;
     use crate::dpi_engine::{load_pack, zapret2};
@@ -3673,15 +3531,16 @@ pub(crate) async fn start_zapret2_with_overrides(
         return Err("Запуск Zapret2 отменён: приложение завершает работу.".to_string());
     }
 
-    let (winws2, pack_dir, base, lists_dir, level) = {
+    let (winws2, pack_dir, base, lists_dir, level, clienthello) = {
         let state = app.state::<AppState>();
-        let level = state.settings.lock_recover().zapret2_level;
+        let settings = state.settings.lock_recover();
         (
             state.paths.winws2_path(),
             state.paths.strategy_pack_dir("builtin"),
             state.paths.base_dir.clone(),
             state.paths.lists_dir(),
-            level,
+            settings.zapret2_level,
+            settings.zapret2_clienthello,
         )
     };
     crate::dpi_engine::resources::validate_engine_resources(&base, "zapret2")
@@ -3699,7 +3558,7 @@ pub(crate) async fn start_zapret2_with_overrides(
     let mut profiles: Vec<zapret2::Zapret2Profile> = Vec::new();
     let mut lua_init = vec![abs(zapret2::LUA_LIB)];
     for (category, _selected_config) in selections {
-        let selected_profiles = pack.profiles_for(category, level);
+        let selected_profiles = pack.profiles_for_options(category, level, clienthello)?;
         if selected_profiles.is_empty() {
             util::emit_log(
                 app,
@@ -3710,92 +3569,7 @@ pub(crate) async fn start_zapret2_with_overrides(
             continue;
         }
 
-        // Adaptive profiles compile to the same Lua desync functions as their
-        // bundled control profiles. Load those runtime modules before deciding
-        // which built-in profiles are replaced, otherwise an all-adaptive
-        // category would leave functions such as `fake` undefined in winws2.
-        for lua in zapret2_strategy_lua_files(&selected_profiles) {
-            let lua = abs(lua);
-            if !lua_init.contains(&lua) {
-                lua_init.push(lua);
-            }
-        }
-
-        let adaptive = [StrategyTransport::Tls, StrategyTransport::Quic]
-            .into_iter()
-            .filter_map(|transport| {
-                adaptive_overrides.get(&override_key(
-                    match category.as_str() {
-                        "discord" => crate::adaptive_strategy::dsl::AdaptiveCategory::Discord,
-                        "youtube_twitch" => {
-                            crate::adaptive_strategy::dsl::AdaptiveCategory::YoutubeTwitch
-                        }
-                        "gaming" => crate::adaptive_strategy::dsl::AdaptiveCategory::Gaming,
-                        _ => return None,
-                    },
-                    transport,
-                ))
-            })
-            .collect::<Vec<_>>();
-        for candidate in &adaptive {
-            if candidate.category.as_key() != category {
-                return Err(format!(
-                    "Adaptive override {} не соответствует категории {category}",
-                    candidate.candidate_id()
-                ));
-            }
-            let control = selected_profiles
-                .iter()
-                .find(|strategy| {
-                    strategy.ipset.is_none()
-                        && match candidate.transport {
-                            StrategyTransport::Tls => {
-                                strategy.transports.is_empty()
-                                    || strategy.transports.iter().any(|value| value == "tcp")
-                            }
-                            StrategyTransport::Quic => {
-                                strategy.transports.iter().any(|value| value == "quic")
-                            }
-                        }
-                })
-                .ok_or_else(|| {
-                    format!(
-                        "Adaptive override {} не нашёл control profile категории {category}",
-                        candidate.candidate_id()
-                    )
-                })?;
-            let hostlist = resolve_strategy_hostlist(&lists_dir, category, control)?
-                .ok_or_else(|| format!("Adaptive override {category} требует hostlist"))?;
-            let profile =
-                crate::adaptive_strategy::compiler::compile(candidate, Path::new(&hostlist))
-                    .map_err(|error| error.to_string())?;
-            zapret2::validate_profile_scope(&profile)?;
-            util::emit_log(
-                app,
-                "info",
-                "dpi",
-                &format!(
-                    "[zapret2] {category} → adaptive {}",
-                    candidate.candidate_id()
-                ),
-            );
-            profiles.push(profile);
-        }
-
         for strategy in selected_profiles {
-            let replaced_transport = strategy.ipset.is_none()
-                && adaptive.iter().any(|candidate| match candidate.transport {
-                    StrategyTransport::Tls => {
-                        strategy.transports.is_empty()
-                            || strategy.transports.iter().any(|value| value == "tcp")
-                    }
-                    StrategyTransport::Quic => {
-                        strategy.transports.iter().any(|value| value == "quic")
-                    }
-                });
-            if replaced_transport {
-                continue;
-            }
             if !strategy.lua.is_empty() {
                 let lua = abs(&strategy.lua);
                 if !lua_init.contains(&lua) {
@@ -3905,7 +3679,6 @@ pub(crate) async fn start_zapret2_with_overrides(
         );
         d.active_launch = Some(DpiLaunchSpec::Zapret2 {
             selections: selections.to_vec(),
-            adaptive_overrides: adaptive_overrides.clone(),
         });
         generation
     };
@@ -4019,28 +3792,6 @@ pub(crate) async fn start_zapret2_with_overrides(
             emit_status(&app_mon);
             return;
         };
-
-        // Временный adaptive candidate обязан откатиться к точному session
-        // snapshot, а не к общему Legacy fallback. Generation в input не даёт
-        // stale monitor перехватить уже подтверждённый/новый запуск.
-        let adaptive_input = {
-            let state = app_mon.state::<AppState>();
-            let guard = state.adaptive.lock().ok();
-            guard.and_then(|value| value.as_ref().map(|handle| handle.input.clone()))
-        };
-        if adaptive_input
-            .as_ref()
-            .is_some_and(|input| input.try_candidate_crashed(generation))
-        {
-            util::emit_log(
-                &app_mon,
-                "warn",
-                "adaptive",
-                "Временный candidate завершился — запрошен точный rollback.",
-            );
-            emit_status(&app_mon);
-            return;
-        }
 
         util::emit_log(
             &app_mon,
@@ -4869,31 +4620,6 @@ mod tests {
     }
     use super::*;
 
-    #[test]
-    fn adaptive_replacement_retains_strategy_lua_dependencies() {
-        let strategy = crate::dpi_engine::manifest::StrategyDef {
-            id: "adaptive-control".into(),
-            category: "youtube_twitch".into(),
-            aggressiveness: 1,
-            lua: "lua/zapret-antidpi.lua".into(),
-            desync: vec!["fake:blob=fake_default_quic:repeats=6".into()],
-            transports: vec!["udp".into(), "quic".into()],
-            hostlist: None,
-            ipset: None,
-            filter_tcp: None,
-            filter_udp: Some("443".into()),
-            filter_l7: vec!["quic".into()],
-            payload: vec!["quic_initial".into()],
-            out_range: None,
-            in_range: None,
-        };
-
-        assert_eq!(
-            zapret2_strategy_lua_files(&[strategy.clone(), strategy]),
-            vec!["lua/zapret-antidpi.lua"],
-            "adaptive replacement still needs the control profile's Lua runtime",
-        );
-    }
 
     #[test]
     fn reliability_reconcile_waits_for_transactions_and_never_touches_dpi_processes() {

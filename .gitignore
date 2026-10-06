@@ -12,6 +12,7 @@ target/
 .env
 .env.*
 !.env.example
+ObsessionTauri/.secrets/
 
 # Редакторы и системные файлы
 .vscode/

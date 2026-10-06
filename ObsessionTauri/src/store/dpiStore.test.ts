@@ -1,7 +1,9 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 
+const commands = vi.hoisted(() => ({ start: vi.fn(), stop: vi.fn(), update: vi.fn() }));
+
 vi.mock("../lib/tauri", () => ({
-  api: {},
+  api: { dpiStart: commands.start, dpiStop: commands.stop, updateSettings: commands.update },
   runtime: { bootstrap: vi.fn() },
 }));
 
@@ -45,8 +47,9 @@ describe("dpiStore.initialize: снятая с поддержки категор
       hotkey_toggle: "Ctrl+Shift+KeyO",
       lan_publish_secs: 0,
       zapret2_level: 0,
-      adaptive_strategy_enabled: false,
-      adaptive_search_mode: "balanced",
+      zapret2_clienthello: false,
+      zapret2_profiles: [],
+      zapret2_pick_mode: "balanced",
     });
     expect(useDpiStore.getState().selectedCategories).toEqual(expected);
     expect(useDpiStore.getState().categorySelections.legacy).toEqual(expected);
@@ -100,5 +103,23 @@ describe("dpiStore.applyStatus", () => {
     expect(useDpiStore.getState().revision).toBe(2);
     expect(useDpiStore.getState().active).toBe(true);
     expect(useDpiStore.getState().startedAt).toBe(10_000);
+  });
+});
+
+describe("dpiStore guards during a Zapret2 picker", () => {
+  it.each(["testing", "transitioning"] as const)("does not mutate runtime or categories while %s", async (operation) => {
+    vi.clearAllMocks();
+    useDpiStore.setState({ active: false, testing: false, transitioning: false, [operation]: true,
+      selectedCategories: ["discord"], selectedConfigs: { discord: "original.conf" }, error: "" });
+    useDpiStore.getState().toggleCategory("youtube_twitch");
+    useDpiStore.getState().setConfig("discord", "other.conf");
+    await useDpiStore.getState().start();
+    await useDpiStore.getState().stop();
+    expect(useDpiStore.getState().selectedCategories).toEqual(["discord"]);
+    expect(useDpiStore.getState().selectedConfigs).toEqual({ discord: "original.conf" });
+    expect(commands.start).not.toHaveBeenCalled();
+    expect(commands.stop).not.toHaveBeenCalled();
+    expect(commands.update).not.toHaveBeenCalled();
+    useDpiStore.setState({ testing: false, transitioning: false });
   });
 });

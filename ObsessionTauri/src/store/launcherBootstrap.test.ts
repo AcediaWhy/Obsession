@@ -12,7 +12,6 @@ import {
   type LauncherBootstrapPorts,
 } from "./launcherBootstrap";
 import type {
-  AdaptiveStatus,
   AppConfig,
   BootstrapSnapshot,
   BrainStatus,
@@ -54,8 +53,9 @@ const settings: Settings = {
   lan_publish_secs: 0,
   dpi_engine: "zapret2",
   zapret2_level: 0,
-  adaptive_strategy_enabled: true,
-  adaptive_search_mode: "balanced",
+  zapret2_clienthello: false,
+  zapret2_profiles: [],
+  zapret2_pick_mode: "balanced",
 };
 
 const config: AppConfig = {
@@ -116,7 +116,7 @@ function legacyStatus(
 
 function makeSnapshot(revisions: Partial<Record<string, number>> = {}) {
   return {
-    schemaVersion: 8,
+    schemaVersion: 9,
     settings: {
       revision: revisions.settings ?? 1,
       value: {
@@ -128,12 +128,12 @@ function makeSnapshot(revisions: Partial<Record<string, number>> = {}) {
           serviceVersion: "1.2.3",
           dpi: true,
           zapret2: true,
-          adaptiveZapret2: true,
           eyesEvents: true,
           legacyReliabilityControls: true,
           legacyReliability: true,
           hosts: false,
           proxyLanFirewall: false,
+          systemDnsRecovery: false,
         },
         protectedRuntimeAvailable: false,
         protectedDpiAvailable: true,
@@ -162,10 +162,6 @@ function makeSnapshot(revisions: Partial<Record<string, number>> = {}) {
       revision: revisions.brain ?? 1,
       value: null,
     },
-    adaptive: {
-      revision: revisions.adaptive ?? 1,
-      value: { phase: "idle" } as AdaptiveStatus,
-    },
     legacyReliability: {
       revision: revisions.legacyReliability ?? 1,
       value: legacyStatus("inactive"),
@@ -188,7 +184,6 @@ type SectionKey =
   | "dpi"
   | "proxy"
   | "brain"
-  | "adaptive"
   | "legacyReliability"
   | "hosts";
 
@@ -198,7 +193,6 @@ function createHarness(listenerGate?: Promise<void>) {
     dpi: -1,
     proxy: -1,
     brain: -1,
-    adaptive: -1,
     legacyReliability: -1,
     hosts: -1,
   };
@@ -207,12 +201,11 @@ function createHarness(listenerGate?: Promise<void>) {
     dpi?: (section: VersionedSection<DpiStatus>) => void;
     proxy?: (section: VersionedSection<ProxyStatus>) => void;
     brain?: (section: VersionedSection<BrainStatus>) => void;
-    adaptive?: (section: VersionedSection<AdaptiveStatus>) => void;
     legacyReliability?: (
       section: VersionedSection<LegacyReliabilityStatus>,
     ) => void;
   } = {};
-  const unlisteners = Array.from({ length: 8 }, () => vi.fn());
+  const unlisteners = Array.from({ length: 5 }, () => vi.fn());
   let unlistenIndex = 0;
   const snapshots: Array<Promise<BootstrapSnapshot>> = [];
 
@@ -239,18 +232,9 @@ function createHarness(listenerGate?: Promise<void>) {
     listenDpi: vi.fn((cb) => register("dpi", cb)),
     listenProxy: vi.fn((cb) => register("proxy", cb)),
     listenBrain: vi.fn((cb) => register("brain", cb)),
-    listenAdaptive: vi.fn((cb) => register("adaptive", cb)),
     listenLegacyReliability: vi.fn((cb) =>
       register("legacyReliability", cb),
     ),
-    listenSuggestion: vi.fn(async () => {
-      if (listenerGate) await listenerGate;
-      return unlisteners[unlistenIndex++];
-    }),
-    listenProbe: vi.fn(async () => {
-      if (listenerGate) await listenerGate;
-      return unlisteners[unlistenIndex++];
-    }),
     subscribeSettings: () => unlisteners[unlistenIndex++],
     getSnapshot: vi.fn(() => {
       const next = snapshots.shift();
@@ -263,12 +247,9 @@ function createHarness(listenerGate?: Promise<void>) {
     applyDpi: (section) => apply("dpi", section),
     applyProxy: (section) => apply("proxy", section),
     applyBrain: (section) => apply("brain", section),
-    applyAdaptive: (section) => apply("adaptive", section),
     applyLegacyReliability: (section) =>
       apply("legacyReliability", section),
     applyHosts: (section) => apply("hosts", section),
-    applySuggestion: vi.fn(),
-    applyProbe: vi.fn(),
     initializeDpi: vi.fn(),
     initializeProxy: vi.fn(),
     loadDpiMetadata: vi.fn(async () => {}),
@@ -431,17 +412,17 @@ describe("launcherBootstrap", () => {
     const refreshing = bootstrap.refresh();
     await Promise.resolve();
 
-    harness.callbacks.adaptive?.({
+    harness.callbacks.brain?.({
       revision: 3,
-      value: { phase: "searching" } as AdaptiveStatus,
+      value: { phase: "confirming" } as BrainStatus,
     });
-    resume.resolve(makeSnapshot({ dpi: 2, adaptive: 2 }));
+    resume.resolve(makeSnapshot({ dpi: 2, }));
     await refreshing;
 
     expect(harness.revisions.dpi).toBe(2);
-    expect(harness.revisions.adaptive).toBe(3);
-    expect((harness.values.adaptive as AdaptiveStatus).phase).toBe(
-      "searching",
+    expect(harness.revisions.brain).toBe(3);
+    expect((harness.values.brain as BrainStatus).phase).toBe(
+      "confirming",
     );
     release();
   });

@@ -112,16 +112,23 @@
 @property --overview-surface-energy { syntax: "<number>"; inherits: true; initial-value: 0; }
 .overview-board .glass.overview-service[data-material="true"] {
   transition: border-color 420ms ease, background-color 420ms ease, box-shadow 420ms ease,
-    --overview-pointer-x 300ms ease-out, --overview-pointer-y 300ms ease-out,
-    --overview-surface-energy 480ms ease-out;
+    --overview-surface-energy 220ms ease-out;
 }
 .overview-fx-material {
   position: absolute; inset: 0; z-index: 0; border-radius: inherit;
   overflow: hidden; pointer-events: none; opacity: var(--overview-surface-energy);
 }
 .overview-fx-material::before, .overview-fx-material::after { content: ""; position: absolute; inset: 0; pointer-events: none; }
-[data-theme="goldenmeadow"] .overview-board .overview-fx-material::before { background: radial-gradient(ellipse 125px 80px at var(--overview-pointer-x) var(--overview-pointer-y), #eac17d43, #d9a65e18 55%, transparent 85%); }
-[data-theme="goldenmeadow"] .overview-board .overview-fx-material::after { background: repeating-linear-gradient(105deg, #efd4a80a 0 1px, transparent 1px 5px); mask-image: radial-gradient(ellipse 120px 75px at var(--overview-pointer-x) var(--overview-pointer-y), #000 15%, transparent 90%); }
+[data-theme="goldenmeadow"] .overview-board .overview-fx-material::before,
+[data-theme="goldenmeadow"] .overview-board .overview-fx-material::after {
+  inset: 0 auto auto 0;
+  width: 250px; height: 160px;
+  transform: translate(calc(var(--overview-pointer-px, 125px) - 125px), calc(var(--overview-pointer-py, 80px) - 80px));
+}
+[data-theme="goldenmeadow"] .overview-board .overview-service[data-material="true"]:hover .overview-fx-material::before,
+[data-theme="goldenmeadow"] .overview-board .overview-service[data-material="true"]:hover .overview-fx-material::after { will-change: transform; }
+[data-theme="goldenmeadow"] .overview-board .overview-fx-material::before { background: radial-gradient(ellipse 125px 80px at center, #eac17d43, #d9a65e18 55%, transparent 85%); }
+[data-theme="goldenmeadow"] .overview-board .overview-fx-material::after { background: repeating-linear-gradient(105deg, #efd4a80a 0 1px, transparent 1px 5px); mask-image: radial-gradient(ellipse 120px 75px at center, #000 15%, transparent 90%); }
 [data-theme="aurora"] .overview-board .overview-fx-material::before { background: radial-gradient(ellipse 145px 88px at var(--overview-pointer-x) var(--overview-pointer-y), #69dfcf40, #7c93d51e 55%, transparent 90%); }
 [data-theme="aurora"] .overview-board .overview-fx-material::after { background: linear-gradient(110deg, transparent 35%, #b4eeed0b 55%, transparent 75%); transform: translateX(calc((var(--overview-pointer-x) - 50%) * .14)); }
 [data-theme="japan"] .overview-board .overview-fx-material::before { background: radial-gradient(ellipse 128px 85px at var(--overview-pointer-x) var(--overview-pointer-y), #c9ebfa3a, #89c6de16 60%, transparent 90%); }

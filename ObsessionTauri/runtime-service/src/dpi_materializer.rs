@@ -22,6 +22,9 @@ pub const RUNTIME_STATE_RELATIVE: &str = "Obsession/Runtime";
 
 const DPI_DIRECTORY: &str = "dpi";
 const GENERATIONS_DIRECTORY: &str = "generations";
+const GENERATION_SEQUENCE_FILE: &str = "generation.sequence";
+const GENERATION_SEQUENCE_PENDING_FILE: &str = "generation.sequence.new";
+const GENERATION_SEQUENCE_LOCK_FILE: &str = "generation.sequence.lock";
 const AUTOHOSTS_DIRECTORY: &str = "autohosts";
 const MAX_CONFIG_BYTES: u64 = 512 * 1024;
 const MAX_CONFIG_TOKENS: usize = 65_536;
@@ -79,6 +82,152 @@ impl ProtectedDataLayout {
         &self.root
     }
 
+    /// Persist a high-water mark before returning a launch generation. This
+    /// keeps stale IPC fences invalid after both clean and abrupt restarts.
+    /// Old generation artifacts are inspected by name only and left untouched.
+    pub(crate) fn reserve_generation_at_least(
+        &self,
+        minimum: u64,
+    ) -> Result<u64, MaterializationError> {
+        if minimum == 0 {
+            return Err(MaterializationError::GenerationExhausted);
+        }
+        let dpi_root = self.ensure_directory(Path::new(DPI_DIRECTORY))?;
+        let _sequence_lock = self.lock_generation_sequence(&dpi_root)?;
+        let sequence = dpi_root.join(GENERATION_SEQUENCE_FILE);
+        let pending = dpi_root.join(GENERATION_SEQUENCE_PENDING_FILE);
+        let committed = self.read_generation_sequence(&sequence, false)?.unwrap_or(0);
+        let pending_value = self.read_generation_sequence(&pending, true)?;
+        let mut high_water = committed.max(pending_value.unwrap_or(0));
+        if high_water == 0 {
+            // The first upgrade from the old volatile counter has no historic
+            // high-water mark. Seed an epoch so its small stale IPC fences
+            // cannot alias the first new runtime either.
+            high_water = u64::try_from(std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|_| MaterializationError::InvalidGenerationState)?
+                .as_micros()).map_err(|_| MaterializationError::GenerationExhausted)?;
+        }
+        let generations_root = self.ensure_directory(
+            Path::new(DPI_DIRECTORY).join(GENERATIONS_DIRECTORY).as_path(),
+        )?;
+        let entries = fs::read_dir(&generations_root).map_err(|source| MaterializationError::Io {
+            operation: "inspect existing generation numbers",
+            path: generations_root.clone(),
+            source,
+        })?;
+        for entry in entries {
+            let entry = entry.map_err(|source| MaterializationError::Io {
+                operation: "inspect existing generation number",
+                path: generations_root.clone(),
+                source,
+            })?;
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else { continue };
+            if name.is_empty() || !name.bytes().all(|byte| byte.is_ascii_digit()) {
+                continue;
+            }
+            // Inspect names only: existing files, directories and reparse
+            // points reserve their number but never become launch authority.
+            if let Ok(existing) = name.parse::<u64>() {
+                high_water = high_water.max(existing);
+            }
+        }
+        let next = minimum.max(high_water.checked_add(1)
+            .ok_or(MaterializationError::GenerationExhausted)?);
+
+        // A pending write was never returned to the launcher. A valid one
+        // still reserves its number; a torn one can be replaced after its
+        // ownership/reparse checks, without weakening committed-state checks.
+        match fs::remove_file(&pending) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(source) => return Err(MaterializationError::Io {
+                operation: "remove pending generation sequence", path: pending, source,
+            }),
+        }
+        write_new_synced(&pending, format!("{next}\n").as_bytes())
+            .map_err(|error| generation_sequence_io(error, "write generation sequence"))?;
+        self.verify_service_owned_acl(&pending)?;
+        replace_generation_sequence(&pending, &sequence)?;
+        self.verify_service_owned_acl(&sequence)?;
+        if self.read_generation_sequence(&sequence, false)? != Some(next) {
+            return Err(MaterializationError::InvalidGenerationState);
+        }
+        Ok(next)
+    }
+
+    fn lock_generation_sequence(&self, dpi_root: &Path) -> Result<File, MaterializationError> {
+        let path = dpi_root.join(GENERATION_SEQUENCE_LOCK_FILE);
+        match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(file) => drop(file),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(source) => return Err(MaterializationError::Io {
+                operation: "create generation sequence lock", path, source,
+            }),
+        }
+        match fs::symlink_metadata(&path) {
+            Ok(metadata) => {
+                reject_reparse_point(&path)?;
+                self.verify_service_owned_acl(&path)?;
+                if !metadata.is_file() { return Err(MaterializationError::InvalidGenerationState); }
+            }
+            Err(source) => return Err(MaterializationError::Io {
+                operation: "inspect generation sequence lock", path, source,
+            }),
+        }
+        let mut options = OpenOptions::new();
+        options.read(true).write(true);
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            use windows::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
+            options.share_mode(0).custom_flags(FILE_FLAG_OPEN_REPARSE_POINT.0);
+        }
+        let lock = options.open(&path).map_err(|source| MaterializationError::Io {
+            operation: "lock generation sequence", path: path.clone(), source,
+        })?;
+        let metadata = lock.metadata().map_err(|source| MaterializationError::Io {
+            operation: "inspect locked generation sequence", path: path.clone(), source,
+        })?;
+        if !metadata.is_file() || is_windows_reparse_point(&metadata) {
+            return Err(MaterializationError::InvalidGenerationState);
+        }
+        Ok(lock)
+    }
+
+    fn read_generation_sequence(
+        &self,
+        path: &Path,
+        allow_torn_pending: bool,
+    ) -> Result<Option<u64>, MaterializationError> {
+        match fs::symlink_metadata(path) {
+            Ok(metadata) => {
+                reject_reparse_point(path)?;
+                self.verify_service_owned_acl(path)?;
+                if !metadata.is_file() || metadata.len() > 21 {
+                    return Err(MaterializationError::InvalidGenerationState);
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(source) => return Err(MaterializationError::Io {
+                operation: "inspect generation sequence", path: path.to_path_buf(), source,
+            }),
+        }
+        let bytes = read_regular_file_bounded(path, 21)
+            .map_err(|error| generation_sequence_io(error, "read generation sequence"))?;
+        let parsed = std::str::from_utf8(&bytes).ok()
+            .and_then(|value| value.strip_suffix('\n'))
+            .filter(|value| !value.is_empty() && !value.starts_with('0')
+                && value.bytes().all(|byte| byte.is_ascii_digit()))
+            .and_then(|value| value.parse::<u64>().ok());
+        match parsed {
+            Some(value) => Ok(Some(value)),
+            None if allow_torn_pending => Ok(None),
+            None => Err(MaterializationError::InvalidGenerationState),
+        }
+    }
+
     pub fn materialize(
         &self,
         plan: &VerifiedDpiPlan,
@@ -99,10 +248,16 @@ impl ProtectedDataLayout {
         let autohosts_root =
             self.ensure_directory(Path::new(DPI_DIRECTORY).join(AUTOHOSTS_DIRECTORY).as_path())?;
         let generation_dir = generations_root.join(generation.to_string());
-        fs::create_dir(&generation_dir).map_err(|source| MaterializationError::Io {
-            operation: "create generation directory",
-            path: generation_dir.clone(),
-            source,
+        fs::create_dir(&generation_dir).map_err(|source| {
+            if source.kind() == std::io::ErrorKind::AlreadyExists {
+                MaterializationError::GenerationAlreadyExists(generation)
+            } else {
+                MaterializationError::Io {
+                    operation: "create generation directory",
+                    path: generation_dir.clone(),
+                    source,
+                }
+            }
         })?;
         reject_reparse_point(&generation_dir)?;
         self.verify_service_owned_acl(&generation_dir)?;
@@ -381,6 +536,26 @@ impl ProtectedDataLayout {
     }
 
     /// Fixed, service-owned journal location; never accepts a client path.
+    pub(crate) fn dns_recovery_journal(&self) -> Result<PathBuf, MaterializationError> {
+        let directory = self.ensure_directory(Path::new("dns-settings"))?;
+        let path = directory.join("recovery.json");
+        for candidate in [&path, &directory.join("recovery.new")] {
+            match fs::symlink_metadata(candidate) {
+                Ok(metadata) => {
+                    reject_reparse_point(candidate)?;
+                    self.verify_service_owned_acl(candidate)?;
+                    if !metadata.is_file() { return Err(MaterializationError::InvalidStatePath); }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(source) => return Err(MaterializationError::Io {
+                    operation: "inspect DNS recovery journal", path: candidate.clone(), source,
+                }),
+            }
+        }
+        Ok(path)
+    }
+
+    /// Fixed, service-owned journal location; never accepts a client path.
     pub(crate) fn tcp_timestamp_journal(&self) -> Result<PathBuf, MaterializationError> {
         let directory = self.ensure_directory(Path::new("tcp-settings"))?;
         let path = directory.join("timestamps.restore");
@@ -460,6 +635,14 @@ pub struct MaterializedLaunch {
 }
 
 impl MaterializedLaunch {
+    #[cfg(test)]
+    pub(crate) fn parser_only_diagnostic_fixture(executable: PathBuf, observer: &Path) -> Self {
+        let executable_sha256 = hex_digest(Sha256::digest(std::fs::read(&executable).unwrap()));
+        Self { working_directory: executable.parent().unwrap().to_owned(), executable, executable_sha256,
+            arguments: vec!["--dry-run".into(), "--wf-tcp-out=443".into(), format!("--lua-init=@{}", observer.display())],
+            response_file: None, engine: DpiEngine::Zapret2, category: DpiCategory::Discord,
+            strategy_id: "parser-only-test".into(), config_sha256: String::new() }
+    }
     pub fn executable(&self) -> &Path {
         &self.executable
     }
@@ -572,6 +755,9 @@ pub enum MaterializationError {
     },
     InvalidStatePath,
     InvalidGeneration,
+    GenerationAlreadyExists(u64),
+    GenerationExhausted,
+    InvalidGenerationState,
     InvalidConfig(&'static str),
     UndeclaredConfigPath(String),
     InvalidAutoHostlist,
@@ -629,6 +815,11 @@ impl std::fmt::Display for MaterializationError {
             ),
             Self::InvalidStatePath => formatter.write_str("invalid protected state path"),
             Self::InvalidGeneration => formatter.write_str("generation must be non-zero"),
+            Self::GenerationAlreadyExists(generation) => {
+                write!(formatter, "materialized generation {generation} already exists")
+            }
+            Self::GenerationExhausted => formatter.write_str("materialized generation numbers are exhausted"),
+            Self::InvalidGenerationState => formatter.write_str("invalid protected generation sequence"),
             Self::InvalidConfig(reason) => write!(formatter, "invalid protected config: {reason}"),
             Self::UndeclaredConfigPath(path) => {
                 write!(formatter, "config references an undeclared path: {path}")
@@ -940,6 +1131,37 @@ fn write_new_synced(path: &Path, bytes: &[u8]) -> Result<(), MaterializationErro
             path: path.to_path_buf(),
             source,
         })
+}
+
+fn replace_generation_sequence(from: &Path, to: &Path) -> Result<(), MaterializationError> {
+    #[cfg(windows)]
+    let result = {
+        use std::os::windows::ffi::OsStrExt;
+        use windows::core::PCWSTR;
+        use windows::Win32::Storage::FileSystem::{
+            MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+        };
+        let from_wide: Vec<_> = from.as_os_str().encode_wide().chain(Some(0)).collect();
+        let to_wide: Vec<_> = to.as_os_str().encode_wide().chain(Some(0)).collect();
+        unsafe { MoveFileExW(
+            PCWSTR(from_wide.as_ptr()), PCWSTR(to_wide.as_ptr()),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        ) }.map_err(|error| {
+            std::io::Error::from_raw_os_error(error.code().0 & 0xffff)
+        })
+    };
+    #[cfg(not(windows))]
+    let result = fs::rename(from, to);
+    result.map_err(|source| MaterializationError::Io {
+        operation: "commit generation sequence", path: to.to_path_buf(), source,
+    })
+}
+
+fn generation_sequence_io(error: MaterializationError, operation: &'static str) -> MaterializationError {
+    match error {
+        MaterializationError::Io { path, source, .. } => MaterializationError::Io { operation, path, source },
+        other => other,
+    }
 }
 
 fn ensure_existing_or_create_directory(path: &Path) -> Result<(), MaterializationError> {
@@ -1468,9 +1690,10 @@ mod tests {
                     strategy_id: "discord_1.conf".into(),
                 }],
                 options: DpiRuntimeOptions {
-                    zapret2_level: 0,
+                    zapret2_level: 0, zapret2_clienthello: false, zapret2_profiles: Vec::new(),
                     legacy_reliability: true,
                     zapret2_overrides: Vec::new(),
+                    zapret2_diagnostics: false,
                 },
             })
             .unwrap();
@@ -1632,5 +1855,48 @@ mod tests {
         ));
         state.cleanup_generation(&materialized).unwrap();
         assert!(!materialized.directory().exists());
+    }
+
+    #[test]
+    fn existing_generation_is_never_overwritten_or_cleaned_on_reservation_collision() {
+        let test = TestRoot::new();
+        let (plan, state) = verified_legacy_plan(&test);
+        let old = state.materialize(&plan, 4).unwrap();
+        let path = old.launches()[0].response_file().unwrap();
+        let bytes = fs::read(path).unwrap();
+        assert!(matches!(state.materialize(&plan, 4), Err(MaterializationError::GenerationAlreadyExists(4))));
+        assert_eq!(fs::read(path).unwrap(), bytes);
+        let next = state.reserve_generation_at_least(1).unwrap();
+        assert!(next > 4);
+        assert_eq!(fs::read(path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn pending_generation_sequence_recovers_after_interrupted_commit() {
+        for pending_bytes in [b"101\n".as_slice(), b"10".as_slice(), b"".as_slice()] {
+            let test = TestRoot::new();
+            let (_plan, state) = verified_legacy_plan(&test);
+            let dpi = state.root().join("dpi");
+            fs::create_dir_all(&dpi).unwrap();
+            fs::write(dpi.join(GENERATION_SEQUENCE_FILE), b"100\n").unwrap();
+            fs::write(dpi.join(GENERATION_SEQUENCE_PENDING_FILE), pending_bytes).unwrap();
+            let reserved = state.reserve_generation_at_least(1).unwrap();
+            assert_eq!(reserved, if pending_bytes == b"101\n" { 102 } else { 101 });
+            assert_eq!(fs::read_to_string(dpi.join(GENERATION_SEQUENCE_FILE)).unwrap(), format!("{reserved}\n"));
+            assert!(!dpi.join(GENERATION_SEQUENCE_PENDING_FILE).exists());
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn concurrent_sequence_reservation_fails_closed_without_changing_high_water() {
+        let test = TestRoot::new();
+        let (_plan, state) = verified_legacy_plan(&test);
+        let reserved = state.reserve_generation_at_least(1).unwrap();
+        let lock = state.lock_generation_sequence(&state.root().join("dpi")).unwrap();
+        assert!(state.reserve_generation_at_least(1).is_err());
+        assert_eq!(state.read_generation_sequence(&state.root().join("dpi/generation.sequence"), false).unwrap(), Some(reserved));
+        drop(lock);
+        assert_eq!(state.reserve_generation_at_least(1).unwrap(), reserved + 1);
     }
 }

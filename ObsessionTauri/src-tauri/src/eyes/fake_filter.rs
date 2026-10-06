@@ -70,6 +70,8 @@ mod tests {
 
     fn pkt(outbound: bool, ttl: u8, seq: u32) -> ParsedPacket {
         ParsedPacket {
+            local_ip: "127.0.0.1".parse().unwrap(),
+            ack_number: 0,
             outbound,
             key: FlowKey {
                 local_port: 50000,

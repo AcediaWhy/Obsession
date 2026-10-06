@@ -1,0 +1,65 @@
+{
+  "reason": "Positive fake sequence offset corrupts the modeled receive stream when TCP timestamps are absent. Not selectable in the application.",
+  "profiles": [
+    {
+      "id": "research_discord_tls_fake_ts_seq_split",
+      "category": "discord",
+      "aggressiveness": 1,
+      "lua": "lua/zapret-antidpi.lua",
+      "transports": [
+        "tcp",
+        "tls"
+      ],
+      "filter_l7": [
+        "tls"
+      ],
+      "payload": [
+        "tls_client_hello"
+      ],
+      "candidate": {
+        "label": "Fake TS/SEQ + разбиение",
+        "family": "fake_split",
+        "urls": [
+          "https://github.com/bol-van/zapret2/discussions/123#discussioncomment-15932243"
+        ],
+        "evidence": "author_report",
+        "notes": "Выделено из большой Linux-сборки. Используется наш tls_google; идентичность чужому blob не установлена. Успех части требует проверки."
+      },
+      "filter_tcp": "443,2053,2083,2087,2096,8443",
+      "desync": [
+        "fake:ip_id=zero:blob=tls_google:tcp_ts=-10000:tcp_seq=400:repeats=6",
+        "multisplit:ip_id=zero:repeats=6"
+      ]
+    },
+    {
+      "id": "research_youtube_twitch_tls_fake_ts_seq_split",
+      "category": "youtube_twitch",
+      "aggressiveness": 1,
+      "lua": "lua/zapret-antidpi.lua",
+      "transports": [
+        "tcp",
+        "tls"
+      ],
+      "filter_l7": [
+        "tls"
+      ],
+      "payload": [
+        "tls_client_hello"
+      ],
+      "candidate": {
+        "label": "Fake TS/SEQ + разбиение",
+        "family": "fake_split",
+        "urls": [
+          "https://github.com/bol-van/zapret2/discussions/123#discussioncomment-15932243"
+        ],
+        "evidence": "author_report",
+        "notes": "Выделено из большой Linux-сборки. Используется наш tls_google; идентичность чужому blob не установлена. Успех части требует проверки."
+      },
+      "filter_tcp": "443",
+      "desync": [
+        "fake:ip_id=zero:blob=tls_google:tcp_ts=-10000:tcp_seq=400:repeats=6",
+        "multisplit:ip_id=zero:repeats=6"
+      ]
+    }
+  ]
+}

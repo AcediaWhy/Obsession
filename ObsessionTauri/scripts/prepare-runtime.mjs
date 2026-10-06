@@ -327,7 +327,7 @@ function generateManifest() {
     ),
   );
   if (
-    packManifest.schema_version !== 1 ||
+    ![1, 2].includes(packManifest.schema_version) ||
     !Array.isArray(packManifest.files) ||
     !Array.isArray(packManifest.strategies) ||
     packManifest.files.length === 0 ||
@@ -350,7 +350,8 @@ function generateManifest() {
     ...packResources,
   ]);
   for (const [category, wireCategory] of ZAPRET2_CATEGORY_NAMES) {
-    const profiles = packManifest.strategies.filter((strategy) => strategy.category === category);
+    const profiles = [...packManifest.strategies, ...(packManifest.presets ?? []), ...(packManifest.experiments ?? [])]
+      .filter((strategy) => strategy.category === category);
     if (profiles.length === 0) {
       throw new Error(`Zapret2 Strategy Pack не содержит профили ${category}`);
     }
@@ -423,6 +424,8 @@ function verifyWithRuntimeService() {
         "--",
         obsessionRoot,
         ...(process.argv.includes("--dry-run-engines") ? ["--dry-run-engines"] : []),
+        ...(process.argv.includes("--dry-run-compositions") ? ["--dry-run-compositions"] : []),
+        ...process.argv.filter((arg) => arg.startsWith("--composition-receipt=")),
       ],
       root,
     );

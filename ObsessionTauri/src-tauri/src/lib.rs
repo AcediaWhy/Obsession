@@ -1,6 +1,5 @@
 //! Obsession — DPI bypass launcher (Tauri backend).
 
-mod adaptive_strategy;
 mod service_health;
 mod admin;
 mod ai_probe;
@@ -26,12 +25,14 @@ mod onboarding;
 mod paths;
 mod profiles;
 mod protected_runtime;
+mod zapret2_saved_profiles;
 mod proxy;
 mod ranking;
 mod security;
 mod settings;
 mod state;
 mod util;
+mod updater;
 mod webmem;
 mod window_restore;
 
@@ -140,12 +141,6 @@ pub fn run() {
                 "Открытие Obsession {}: наблюдаемый DPI active={}; команда запуска не отправлялась.",
                 env!("CARGO_PKG_VERSION"), initial_dpi.active,
             ));
-
-            // Adaptive Zapret2 coordinator изолирован от Legacy Brain и всегда
-            // готов принять passive observations/явную команду поиска. До
-            // нажатия пользователя он не меняет DPI runtime.
-            let adaptive = adaptive_strategy::runtime::start(handle.clone());
-            *handle.state::<AppState>().adaptive.lock_recover() = Some(adaptive);
 
             // Не завершаем winws по имени процесса: это может затронуть службу
             // или другое приложение. Здесь только сообщаем о найденных процессах.
@@ -337,6 +332,13 @@ pub fn run() {
             commands::dpi_test,
             commands::dpi_engine_list,
             commands::dpi_zapret2_profiles,
+            commands::dpi_zapret2_catalog,
+            commands::dpi_zapret2_select,
+            commands::dpi_zapret2_pick,
+            commands::dpi_zapret2_apply_result,
+            commands::dpi_zapret2_test_scenario,
+            commands::dpi_zapret2_scenario_observe,
+            commands::dpi_zapret2_history,
             commands::dpi_engine_set,
             commands::dpi_test_cancel,
             commands::dpi_detect_orphaned,
@@ -351,6 +353,8 @@ pub fn run() {
             commands::proxy_link,
             commands::open_external_url,
             commands::hosts_status,
+            commands::system_dns_status,
+            commands::system_dns_restore,
             commands::hosts_install,
             commands::hosts_check,
             commands::hosts_uninstall,
@@ -372,14 +376,6 @@ pub fn run() {
             commands::brain_set_enabled,
             commands::brain_get_status,
             commands::legacy_reliability_approve,
-            commands::adaptive_get_status,
-            commands::adaptive_start_search,
-            commands::adaptive_get_recommendation,
-            commands::adaptive_apply_recommendation,
-            commands::adaptive_cancel_search,
-            commands::adaptive_confirm_candidate,
-            commands::adaptive_reject_candidate,
-            commands::adaptive_reset_saved,
             onboarding::onboarding_start,
             onboarding::onboarding_get_snapshot,
             onboarding::onboarding_get_recovery,
@@ -395,6 +391,8 @@ pub fn run() {
             onboarding::onboarding_skip,
             onboarding::onboarding_cancel,
             onboarding::launch_repair_setup,
+            updater::update_check,
+            updater::update_install,
         ])
         .build(tauri::generate_context!())
         .expect("ошибка запуска Obsession")
@@ -477,17 +475,6 @@ fn begin_exit(app: &tauri::AppHandle) {
 /// Вызывается вне главного потока.
 async fn shutdown(app: &tauri::AppHandle) {
     let state = app.state::<AppState>();
-
-    // Coordinator может держать временный candidate и для Shutdown обязан
-    // сначала выполнить exact rollback. Поэтому ждём его ДО захвата dpi_gate.
-    let adaptive = state
-        .adaptive
-        .lock()
-        .ok()
-        .and_then(|mut value| value.take());
-    if let Some(handle) = adaptive {
-        handle.shutdown().await;
-    }
 
     let _dpi_gate = state.dpi_gate.lock().await;
     let _proxy_gate = state.proxy_gate.lock().await;

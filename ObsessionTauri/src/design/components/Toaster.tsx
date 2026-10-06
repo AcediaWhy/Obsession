@@ -47,7 +47,7 @@ export function Toaster() {
               ].join(" ")}
             >
               <span className={`mt-0.5 shrink-0 ${tone.text}`}>{tone.icon}</span>
-              <p className="flex-1 text-xs leading-relaxed text-ink">{t.message}</p>
+              <p className="min-w-0 flex-1 break-words text-xs leading-relaxed text-ink [overflow-wrap:anywhere]">{t.message}</p>
               <button
                 onClick={() => dismiss(t.id)}
                 className="no-drag -mr-1 -mt-0.5 shrink-0 rounded-md p-1 text-ink-muted transition-colors hover:text-ink"

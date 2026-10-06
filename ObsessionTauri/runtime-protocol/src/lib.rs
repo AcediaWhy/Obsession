@@ -5,18 +5,20 @@
 //! operations. The absence of arbitrary path/argument request types is a
 //! security boundary, not an incomplete convenience API.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u16 = 4;
+pub mod zapret2_recipe;
+pub mod zapret2_composition;
+
+pub const PROTOCOL_VERSION: u16 = 6;
 pub const RUNTIME_PIPE_NAME: &str = r"\\.\pipe\ObsessionRuntime.v1";
 pub const MAX_FRAME_BYTES: usize = 64 * 1024;
 pub const MAX_REQUEST_ID_BYTES: usize = 64;
 pub const MAX_SELECTIONS: usize = 5;
 pub const MAX_STRATEGY_ID_BYTES: usize = 128;
-pub const MAX_ZAPRET2_OVERRIDES: usize = 6;
 pub const MAX_RELIABILITY_LANES: usize = MAX_SELECTIONS;
 pub const MAX_RELIABILITY_COUNTER: u64 = u32::MAX as u64;
 pub const MIN_FIREWALL_LEASE_SECONDS: u16 = 30;
@@ -36,6 +38,7 @@ pub enum ProtocolError {
     InvalidGeneration,
     InvalidZapret2Level,
     InvalidZapret2Overrides,
+    InvalidZapret2Profiles,
     InvalidLegacyRecoveryControls,
     InvalidLegacyRecoveryApproval,
     InvalidPort,
@@ -56,9 +59,10 @@ impl fmt::Display for ProtocolError {
             Self::InvalidSelections => "DPI selections are empty, duplicated, or too numerous",
             Self::InvalidStrategyId => "strategy id is invalid",
             Self::InvalidGeneration => "runtime generation must be non-zero",
-            Self::InvalidZapret2Level => "Zapret2 level must be between 0 and 3",
+            Self::InvalidZapret2Level => "Zapret2 level must be between 0 and 4",
+            Self::InvalidZapret2Profiles => "Zapret2 profiles must be unique bounded selections for selected categories",
             Self::InvalidZapret2Overrides => {
-                "Zapret2 adaptive overrides are inconsistent or outside the typed allowlist"
+                "Automatic Zapret2 overrides have been retired"
             }
             Self::InvalidLegacyRecoveryControls => {
                 "Legacy recovery controls are inconsistent or unbounded"
@@ -99,6 +103,7 @@ impl RequestEnvelope {
         validate_request_id(&self.request_id)?;
         self.request.validate()
     }
+
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -128,6 +133,15 @@ pub enum Request {
     /// accepted from the caller.
     DpiReplace(DpiReplaceRequest),
     DpiStop(DpiStopRequest),
+    /// Read bounded metadata from the exact active generation. No file paths,
+    /// packet data, handles, or debug arguments cross this boundary.
+    GetDpiDiagnostics(DpiStopRequest),
+    /// Service-owned DNS recovery. The caller supplies only the exact DPI
+    /// generation, never an interface, resolver address, URL or command.
+    FlushSystemDns(SystemDnsRequest),
+    RepairSystemDns(SystemDnsRequest),
+    RestoreSystemDns,
+    GetSystemDns,
     HostsInstall(HostsMutationRequest),
     /// Explicit, service-owned refresh of Gemini only; no caller-supplied paths or IPs.
     HostsRefreshGemini(GeminiRoutePreference),
@@ -144,7 +158,10 @@ impl Request {
         match self {
             Self::DpiStart(request) => request.validate(),
             Self::DpiReplace(request) => request.validate(),
-            Self::DpiStop(request) => request.validate(),
+            Self::DpiStop(request) | Self::GetDpiDiagnostics(request) => request.validate(),
+            Self::FlushSystemDns(request) | Self::RepairSystemDns(request) => {
+                if request.generation == 0 { Err(ProtocolError::InvalidGeneration) } else { Ok(()) }
+            }
             Self::SetLegacyRecoveryControls(request) => request.validate(),
             Self::ApproveLegacyRecovery(request) => request.validate(),
             Self::FirewallOpenProxyLan(request) => request.validate(),
@@ -158,6 +175,7 @@ impl Request {
             | Self::HostsRestoreLastKnownGood(_)
             | Self::FirewallCloseProxyLan
             | Self::SubscribeEvents => Ok(()),
+            Self::RestoreSystemDns | Self::GetSystemDns => Ok(()),
         }
     }
 }
@@ -167,6 +185,35 @@ impl Request {
 pub enum DpiEngine {
     Legacy,
     Zapret2,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SystemDnsRequest { pub generation: u64 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SystemDnsProvider { Cloudflare, Google }
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SystemDnsStatus {
+    pub active: bool,
+    pub restore_available: bool,
+    pub provider: Option<SystemDnsProvider>,
+    pub interface_name: Option<String>,
+}
+
+impl SystemDnsStatus {
+    fn validate(&self) -> Result<(), ProtocolError> {
+        if self.restore_available != self.provider.is_some()
+            || self.restore_available != self.interface_name.is_some()
+            || (self.active && !self.restore_available)
+            || self.interface_name.as_ref().is_some_and(|s| s.is_empty() || s.len() > 1024 || s.chars().any(char::is_control)) {
+            return Err(ProtocolError::InvalidResponse);
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -284,260 +331,44 @@ pub struct DpiSelection {
     pub strategy_id: String,
 }
 
-pub const ZAPRET2_ADAPTIVE_SCHEMA_VERSION: u8 = 1;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum Zapret2AdaptiveTransport {
-    Tls,
-    Quic,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum Zapret2AdaptiveFunction {
-    Fake,
-    MultiSplit,
-    MultiDisorder,
-    MultiDisorderLegacy,
-    FakeDSplit,
-    FakeDDisorder,
-    SendIpFrag,
-    Drop,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum Zapret2AdaptiveValue {
-    Bool(bool),
-    Integer(i64),
-    Text(String),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Zapret2AdaptiveStep {
-    pub function: Zapret2AdaptiveFunction,
-    #[serde(default)]
-    pub args: BTreeMap<String, Zapret2AdaptiveValue>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum Zapret2AdaptivePayload {
-    TlsClientHello,
-    QuicInitial,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum Zapret2AdaptiveRange {
-    FirstTenDataPackets,
-    Always,
-}
-
-/// Bounded Zapret2 candidate DSL. Text values are not command fragments: the
-/// protocol validator accepts them only for the finite blob/tls-mod/position
-/// grammars below, and the service renders the final Lua arguments itself.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Zapret2AdaptiveOverride {
-    pub schema_version: u8,
-    pub category: DpiCategory,
-    pub transport: Zapret2AdaptiveTransport,
-    pub steps: Vec<Zapret2AdaptiveStep>,
-    pub payload: Zapret2AdaptivePayload,
-    pub out_range: Option<Zapret2AdaptiveRange>,
-}
-
-impl Zapret2AdaptiveOverride {
-    pub fn validate(&self) -> Result<(), ProtocolError> {
-        if self.schema_version != ZAPRET2_ADAPTIVE_SCHEMA_VERSION
-            || !matches!(
-                self.category,
-                DpiCategory::Discord | DpiCategory::YoutubeTwitch | DpiCategory::Gaming
-            )
-            || (self.category == DpiCategory::Discord
-                && self.transport == Zapret2AdaptiveTransport::Quic)
-            || self.steps.is_empty()
-            || self.steps.len() > 3
-            || self.payload
-                != match self.transport {
-                    Zapret2AdaptiveTransport::Tls => Zapret2AdaptivePayload::TlsClientHello,
-                    Zapret2AdaptiveTransport::Quic => Zapret2AdaptivePayload::QuicInitial,
-                }
-        {
-            return Err(ProtocolError::InvalidZapret2Overrides);
-        }
-
-        for (index, step) in self.steps.iter().enumerate() {
-            validate_zapret2_step(self.transport, step)?;
-            match step.function {
-                Zapret2AdaptiveFunction::SendIpFrag
-                    if self.steps.get(index + 1).map(|next| next.function)
-                        != Some(Zapret2AdaptiveFunction::Drop) =>
-                {
-                    return Err(ProtocolError::InvalidZapret2Overrides);
-                }
-                Zapret2AdaptiveFunction::Drop
-                    if index == 0
-                        || self.steps[index - 1].function
-                            != Zapret2AdaptiveFunction::SendIpFrag =>
-                {
-                    return Err(ProtocolError::InvalidZapret2Overrides);
-                }
-                _ => {}
-            }
-        }
-        Ok(())
-    }
-}
-
-fn validate_zapret2_step(
-    transport: Zapret2AdaptiveTransport,
-    step: &Zapret2AdaptiveStep,
-) -> Result<(), ProtocolError> {
-    if step.args.len() > 8
-        || (transport == Zapret2AdaptiveTransport::Quic
-            && !matches!(
-                step.function,
-                Zapret2AdaptiveFunction::Fake
-                    | Zapret2AdaptiveFunction::SendIpFrag
-                    | Zapret2AdaptiveFunction::Drop
-            ))
-    {
-        return Err(ProtocolError::InvalidZapret2Overrides);
-    }
-
-    let allowed: &[&str] = match step.function {
-        Zapret2AdaptiveFunction::Fake => &[
-            "blob",
-            "repeats",
-            "tcp_md5",
-            "tcp_seq",
-            "tcp_ts",
-            "tcp_ts_up",
-            "tls_mod",
-            "badsum",
-        ],
-        Zapret2AdaptiveFunction::MultiSplit
-        | Zapret2AdaptiveFunction::MultiDisorder
-        | Zapret2AdaptiveFunction::MultiDisorderLegacy => &["pos", "seqovl", "nodrop"],
-        Zapret2AdaptiveFunction::FakeDSplit | Zapret2AdaptiveFunction::FakeDDisorder => &[
-            "pos",
-            "blob",
-            "repeats",
-            "tcp_md5",
-            "tcp_seq",
-            "tcp_ts",
-            "tcp_ts_up",
-            "badsum",
-        ],
-        Zapret2AdaptiveFunction::SendIpFrag => &["ipfrag_pos_udp"],
-        Zapret2AdaptiveFunction::Drop => &[],
-    };
-    if step.args.keys().any(|key| !allowed.contains(&key.as_str())) {
-        return Err(ProtocolError::InvalidZapret2Overrides);
-    }
-
-    let requires_position = matches!(
-        step.function,
-        Zapret2AdaptiveFunction::MultiSplit
-            | Zapret2AdaptiveFunction::MultiDisorder
-            | Zapret2AdaptiveFunction::MultiDisorderLegacy
-            | Zapret2AdaptiveFunction::FakeDSplit
-            | Zapret2AdaptiveFunction::FakeDDisorder
-    );
-    let requires_blob = matches!(
-        step.function,
-        Zapret2AdaptiveFunction::Fake
-            | Zapret2AdaptiveFunction::FakeDSplit
-            | Zapret2AdaptiveFunction::FakeDDisorder
-    );
-    if (requires_position && !step.args.contains_key("pos"))
-        || (requires_blob && !step.args.contains_key("blob"))
-    {
-        return Err(ProtocolError::InvalidZapret2Overrides);
-    }
-
-    for (key, value) in &step.args {
-        let valid = match (key.as_str(), value) {
-            ("blob", Zapret2AdaptiveValue::Text(value)) => match transport {
-                Zapret2AdaptiveTransport::Tls => {
-                    matches!(value.as_str(), "fake_default_tls" | "tls_google")
-                }
-                Zapret2AdaptiveTransport::Quic => {
-                    matches!(value.as_str(), "fake_default_quic" | "quic_google")
-                }
-            },
-            ("repeats", Zapret2AdaptiveValue::Integer(value)) => (1..=12).contains(value),
-            ("tcp_seq" | "tcp_ts", Zapret2AdaptiveValue::Integer(value)) => {
-                transport == Zapret2AdaptiveTransport::Tls && (-100_000..=100_000).contains(value)
-            }
-            ("seqovl", Zapret2AdaptiveValue::Integer(value)) => (1..=2_048).contains(value),
-            ("tcp_md5" | "tcp_ts_up", Zapret2AdaptiveValue::Bool(true)) => {
-                transport == Zapret2AdaptiveTransport::Tls
-            }
-            ("badsum" | "nodrop", Zapret2AdaptiveValue::Bool(true)) => true,
-            ("tls_mod", Zapret2AdaptiveValue::Text(value)) => {
-                transport == Zapret2AdaptiveTransport::Tls
-                    && matches!(
-                        value.as_str(),
-                        "rnd"
-                            | "rndsni"
-                            | "dupsid"
-                            | "rnd,dupsid"
-                            | "rnd,rndsni,dupsid"
-                            | "rnd,dupsid,sni=www.google.com"
-                    )
-            }
-            ("pos", Zapret2AdaptiveValue::Text(value)) => valid_zapret2_position_list(value),
-            ("ipfrag_pos_udp", Zapret2AdaptiveValue::Integer(value)) => {
-                transport == Zapret2AdaptiveTransport::Quic && matches!(*value, 8 | 16 | 32 | 64)
-            }
-            _ => false,
-        };
-        if !valid {
-            return Err(ProtocolError::InvalidZapret2Overrides);
-        }
-    }
-    Ok(())
-}
-
-fn valid_zapret2_position_list(value: &str) -> bool {
-    let positions = value.split(',').collect::<Vec<_>>();
-    !positions.is_empty()
-        && positions.len() <= 5
-        && positions.into_iter().all(valid_zapret2_position)
-}
-
-fn valid_zapret2_position(value: &str) -> bool {
-    if matches!(value, "1" | "2" | "midsld" | "sniext" | "host" | "endhost") {
-        return true;
-    }
-    ["midsld", "sniext", "host", "endhost"]
-        .into_iter()
-        .any(|base| {
-            value.strip_prefix(base).is_some_and(|offset| {
-                let digits = offset
-                    .strip_prefix('+')
-                    .or_else(|| offset.strip_prefix('-'));
-                digits.is_some_and(|digits| {
-                    !digits.is_empty()
-                        && digits.bytes().all(|byte| byte.is_ascii_digit())
-                        && digits.parse::<u8>().is_ok_and(|number| number <= 16)
-                })
-            })
-        })
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DpiRuntimeOptions {
     pub zapret2_level: u8,
+    /// Fixed profile identifiers resolved against the protected pack, never Lua or argv.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub zapret2_profiles: Vec<Zapret2ProfileSelection>,
+    /// A fixed service-owned experiment; callers cannot supply its Lua or argv.
+    /// Omit false so ordinary launches remain readable by older strict services.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub zapret2_clienthello: bool,
     pub legacy_reliability: bool,
     #[serde(default)]
-    pub zapret2_overrides: Vec<Zapret2AdaptiveOverride>,
+    /// Retained for wire compatibility. Nonempty values are always rejected.
+    pub zapret2_overrides: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub zapret2_diagnostics: bool,
+}
+
+fn is_false(value: &bool) -> bool { !*value }
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Zapret2ProfileSelection {
+    pub category: String,
+    pub transport: String,
+    pub profile_id: String,
+}
+
+impl Zapret2ProfileSelection {
+    pub fn validate(&self) -> Result<(), ProtocolError> {
+        if !matches!(self.category.as_str(), "discord" | "youtube_twitch" | "gaming")
+            || !matches!(self.transport.as_str(), "tls" | "quic" | "voice" | "http" | "udp")
+            || self.profile_id.is_empty() || self.profile_id.len() > MAX_STRATEGY_ID_BYTES
+            || !self.profile_id.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+        { return Err(ProtocolError::InvalidZapret2Profiles); }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -550,29 +381,34 @@ pub struct DpiStartRequest {
 
 impl DpiStartRequest {
     pub fn validate(&self) -> Result<(), ProtocolError> {
-        if self.options.zapret2_level > 3 {
+        if self.options.zapret2_level > 4 {
             return Err(ProtocolError::InvalidZapret2Level);
         }
         validate_dpi_selections(&self.selections)?;
-        if self.engine != DpiEngine::Zapret2 && !self.options.zapret2_overrides.is_empty() {
-            return Err(ProtocolError::InvalidZapret2Overrides);
+        if self.options.zapret2_profiles.len() > 15
+            || (self.engine != DpiEngine::Zapret2 && !self.options.zapret2_profiles.is_empty()) {
+            return Err(ProtocolError::InvalidZapret2Profiles);
         }
-        if self.options.zapret2_overrides.len() > MAX_ZAPRET2_OVERRIDES {
-            return Err(ProtocolError::InvalidZapret2Overrides);
-        }
-        let selected = self
-            .selections
-            .iter()
-            .map(|selection| selection.category)
-            .collect::<BTreeSet<_>>();
-        let mut override_keys = BTreeSet::new();
-        for candidate in &self.options.zapret2_overrides {
-            if !selected.contains(&candidate.category)
-                || !override_keys.insert((candidate.category, candidate.transport))
-            {
-                return Err(ProtocolError::InvalidZapret2Overrides);
+        let mut profile_slots = BTreeSet::new();
+        for profile in &self.options.zapret2_profiles {
+            profile.validate()?;
+            let category = match profile.category.as_str() {
+                "discord" => DpiCategory::Discord,
+                "youtube_twitch" => DpiCategory::YoutubeTwitch,
+                "gaming" => DpiCategory::Gaming,
+                _ => return Err(ProtocolError::InvalidZapret2Profiles),
+            };
+            if !self.selections.iter().any(|selection| selection.category == category)
+                || !profile_slots.insert((&profile.category, &profile.transport)) {
+                return Err(ProtocolError::InvalidZapret2Profiles);
             }
-            candidate.validate()?;
+        }
+        if self.engine != DpiEngine::Zapret2
+            && (!self.options.zapret2_overrides.is_empty() || self.options.zapret2_diagnostics || self.options.zapret2_clienthello) {
+            return Err(ProtocolError::InvalidZapret2Overrides);
+        }
+        if !self.options.zapret2_overrides.is_empty() {
+            return Err(ProtocolError::InvalidZapret2Overrides);
         }
         Ok(())
     }
@@ -795,10 +631,28 @@ impl ResponseEnvelope {
             Response::Capabilities(capabilities) => capabilities.validate(),
             Response::RuntimeSnapshot(snapshot) => snapshot.validate(),
             Response::HostsHealth(snapshot) => snapshot.validate(),
+            Response::SystemDns(status) => status.validate(),
+            Response::DpiDiagnostics(diagnostics) => diagnostics.validate(),
+            Response::Error(error) if error.restored_generation == Some(0) => Err(ProtocolError::InvalidResponse),
+            Response::Error(ServiceError { runtime_detail: Some(RuntimeFailureDetail::StartupFailed { exit_code, diagnostics }), .. }) => {
+                if diagnostics.exit_code != Some(*exit_code) || !diagnostics.trace_enabled {
+                    return Err(ProtocolError::InvalidResponse);
+                }
+                diagnostics.validate()
+            },
             Response::Accepted(accepted) if accepted.operation_id == 0 => {
                 Err(ProtocolError::InvalidResponse)
             }
-            Response::Started(started) if started.generation == 0 => {
+            Response::Started(started)
+                if started.generation == 0
+                    || started.initialization_retries > 1
+                    || started
+                        .materialized_fingerprint
+                        .as_ref()
+                        .is_some_and(|value| {
+                            value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit())
+                        }) =>
+            {
                 Err(ProtocolError::InvalidResponse)
             }
             Response::Accepted(_)
@@ -821,8 +675,10 @@ pub enum Response {
     Capabilities(Capabilities),
     RuntimeSnapshot(RuntimeSnapshot),
     HostsHealth(HostsHealthSnapshot),
+    SystemDns(SystemDnsStatus),
     Accepted(OperationAccepted),
     Started(RuntimeStarted),
+    DpiDiagnostics(DpiDiagnostics),
     Stopped,
     LegacyCleanupCompleted,
     Error(ServiceError),
@@ -837,7 +693,10 @@ pub enum Feature {
     DpiZapret2,
     /// The protected service supports generation-fenced replacement with the
     /// bounded typed Adaptive Zapret2 DSL.
+    /// Retained only to decode capability replies from older services.
     DpiZapret2Adaptive,
+    /// Separate, receive-only packet metadata during diagnostic Zapret2 runs.
+    DpiZapret2PacketDiagnostics,
     EyesEvents,
     /// The service accepts bounded atomic Legacy mode/pause/freeze controls
     /// and publishes their service-owned generation. This does not imply that
@@ -849,6 +708,9 @@ pub enum Feature {
     Hosts,
     HostsHealthV2,
     ProxyLanFirewall,
+    SystemDnsRecovery,
+    /// Read an old DNS undo journal and restore it on explicit request only.
+    SystemDnsRestore,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1402,6 +1264,114 @@ pub struct OperationAccepted {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RuntimeStarted {
     pub generation: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub materialized_fingerprint: Option<String>,
+    #[serde(default)]
+    pub initialization_retries: u8,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DpiDiagnostics {
+    pub generation: u64,
+    pub processes: Vec<DpiProcessDiagnostics>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub packet_capture: Option<DpiPacketCapture>,
+}
+
+/// Receive-only network-layer observations. These attest neither delivery on
+/// the physical link nor application HTTPS success. No payload crosses IPC.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DpiPacketCapture {
+    pub generation: u64,
+    pub state: DpiPacketCaptureState,
+    pub startup_error: Option<String>,
+    pub captured_packets: u64,
+    pub queue_drops: u64,
+    pub parse_errors: u64,
+    pub sensor_failed: bool,
+    pub capacity_evictions: u64,
+    pub flows: Vec<DpiTcpFlow>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DpiPacketCaptureState { Active, Unavailable, StartupFailed, TeardownPending, Expired, EngineExited }
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DpiTcpFlow {
+    pub local_address: std::net::SocketAddr,
+    pub remote_address: std::net::SocketAddr,
+    pub first_seen_ms: u64,
+    pub last_seen_ms: u64,
+    pub syn_ack_observed: bool,
+    pub client_hello_bytes: Option<u32>,
+    /// Highest in-window TCP ACK offset after the client's SYN. It can include
+    /// later TLS data; it is not an acknowledgement of any injected fake.
+    pub acked_client_bytes: Option<u32>,
+    pub outbound_payload_packets: u32,
+    pub repeated_sequence_packets: u32,
+    pub inbound_payload_bytes: u64,
+    pub inbound_reset: bool,
+    pub inbound_fin: bool,
+    pub tls_server_hello_observed: bool,
+    pub tls_alert_observed: bool,
+    pub conflicting_overlap: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DpiProcessDiagnostics {
+    pub pid: u32,
+    pub exit_code: Option<u32>,
+    pub trace_enabled: bool,
+    pub stream_closed: bool,
+    pub observed_bytes: u64,
+    pub discarded_lines: u64,
+    pub truncated: bool,
+    pub lines: Vec<String>,
+}
+
+impl DpiDiagnostics {
+    fn validate(&self) -> Result<(), ProtocolError> {
+        if self.generation == 0 || self.processes.len() > MAX_SELECTIONS {
+            return Err(ProtocolError::InvalidResponse);
+        }
+        if let Some(capture) = &self.packet_capture {
+            if capture.generation != self.generation || capture.flows.len() > 32
+                || capture.startup_error.as_ref().is_some_and(|message| message.len() > 512 || message.chars().any(|c| c.is_control()))
+                || capture.flows.iter().any(|flow| flow.local_address.port() == 0
+                    || flow.remote_address.port() != 443 || flow.first_seen_ms > flow.last_seen_ms
+                    || flow.client_hello_bytes.is_some_and(|n| n == 0 || n > 16 * 1024)
+                    || flow.acked_client_bytes.is_some_and(|n| n > 128 * 1024)) {
+                return Err(ProtocolError::InvalidResponse);
+            }
+        }
+        let mut total = 0usize;
+        let mut pids = BTreeSet::new();
+        for process in &self.processes {
+            if !pids.insert(process.pid) {
+                return Err(ProtocolError::InvalidResponse);
+            }
+            process.validate()?;
+            total += process.lines.iter().map(String::len).sum::<usize>();
+        }
+        if total > 16 * 1024 { return Err(ProtocolError::InvalidResponse); }
+        Ok(())
+    }
+}
+
+impl DpiProcessDiagnostics {
+    fn validate(&self) -> Result<(), ProtocolError> {
+        if self.pid == 0 || self.lines.len() > 128
+            || self.lines.iter().any(|line| line.len() > 512 || line.chars().any(|c| c.is_control()))
+            || self.lines.iter().map(String::len).sum::<usize>() > 16 * 1024 {
+            return Err(ProtocolError::InvalidResponse);
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1422,6 +1392,43 @@ pub enum ServiceErrorCode {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ServiceError {
     pub code: ServiceErrorCode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_detail: Option<RuntimeFailureDetail>,
+    /// A failed replacement may synchronously restore its previous runtime.
+    /// Only the service can identify that generation; the UI must not guess it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restored_generation: Option<u64>,
+}
+
+/// Bounded diagnostic facts and filtered engine metadata; never packet dumps or commands.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", tag = "stage", deny_unknown_fields)]
+pub enum RuntimeFailureDetail {
+    Materialization {
+        materialization_stage: RuntimeMaterializationStage,
+        windows_error: Option<u32>,
+    },
+    ExitedBeforeReady { exit_code: u32 },
+    StartupFailed { exit_code: u32, diagnostics: DpiProcessDiagnostics },
+    Windows { hresult: i32 },
+    InvalidLaunchPath,
+    NoLaunches,
+    ResumeFailed,
+    StopTimedOut,
+    UnexpectedWait { result: u32 },
+    OwnershipMismatch,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeMaterializationStage {
+    StateLayout,
+    GenerationReservation,
+    ResourceVerification,
+    ConfigCompilation,
+    ConfigWrite,
+    ConfigVerification,
+    Cleanup,
 }
 
 pub fn encode_request_frame(request: &RequestEnvelope) -> Result<Vec<u8>, ProtocolError> {
@@ -1522,32 +1529,89 @@ mod tests {
                     strategy_id: "discord_1".into(),
                 }],
                 options: DpiRuntimeOptions {
-                    zapret2_level: 0,
+                    zapret2_level: 0, zapret2_clienthello: false, zapret2_profiles: Vec::new(),
                     legacy_reliability: true,
                     zapret2_overrides: Vec::new(),
+                    zapret2_diagnostics: false,
                 },
             }),
         )
     }
 
-    fn valid_adaptive_override() -> Zapret2AdaptiveOverride {
-        Zapret2AdaptiveOverride {
-            schema_version: ZAPRET2_ADAPTIVE_SCHEMA_VERSION,
-            category: DpiCategory::YoutubeTwitch,
-            transport: Zapret2AdaptiveTransport::Tls,
-            steps: vec![Zapret2AdaptiveStep {
-                function: Zapret2AdaptiveFunction::MultiDisorderLegacy,
-                args: BTreeMap::from([(
-                    "pos".into(),
-                    Zapret2AdaptiveValue::Text("1,midsld".into()),
-                )]),
-            }],
-            payload: Zapret2AdaptivePayload::TlsClientHello,
-            out_range: Some(Zapret2AdaptiveRange::FirstTenDataPackets),
+
+    #[test]
+    fn packet_diagnostics_are_typed_generation_fenced_and_bounded() {
+        let request = RequestEnvelope::new("trace", Request::GetDpiDiagnostics(DpiStopRequest { generation: 9 }));
+        assert_eq!(decode_request_frame(&encode_request_frame(&request).unwrap()).unwrap(), request);
+        assert_eq!(encode_request_frame(&RequestEnvelope::new("trace", Request::GetDpiDiagnostics(DpiStopRequest { generation: 0 }))),
+            Err(ProtocolError::InvalidGeneration));
+        let mut response = ResponseEnvelope { protocol_version: PROTOCOL_VERSION, request_id: "trace".into(),
+            response: Response::DpiDiagnostics(DpiDiagnostics { packet_capture: None, generation: 9, processes: vec![DpiProcessDiagnostics {
+                pid: 42, exit_code: None, trace_enabled: true, stream_closed: false, observed_bytes: 10,
+                discarded_lines: 0, truncated: false, lines: vec!["OBS_DIAG|ready|v1".into()],
+            }] }) };
+        assert_eq!(decode_response_frame(&encode_response_frame(&response).unwrap()).unwrap(), response);
+        let Response::DpiDiagnostics(trace) = &mut response.response else { unreachable!() };
+        trace.processes[0].lines.push("x".repeat(513));
+        assert_eq!(response.validate(), Err(ProtocolError::InvalidResponse));
+    }
+
+    #[test]
+    fn packet_diagnostics_cannot_enable_legacy_or_supply_debug_arguments() {
+        let mut request = zapret2_start_request();
+        request.options.zapret2_diagnostics = true;
+        assert!(request.validate().is_ok());
+        request.engine = DpiEngine::Legacy;
+        assert_eq!(request.validate(), Err(ProtocolError::InvalidZapret2Overrides));
+        assert!(serde_json::from_str::<DpiRuntimeOptions>(r#"{"zapret2Level":0,"legacyReliability":false,"zapret2Diagnostics":true,"debugPath":"C:/elsewhere"}"#).is_err());
+    }
+
+    #[test]
+    fn passive_capture_receipt_rejects_foreign_generations_and_unbounded_metadata() {
+        let capture = DpiPacketCapture { generation:9, state:DpiPacketCaptureState::Active, startup_error:None,
+            captured_packets:0,queue_drops:0,parse_errors:0,sensor_failed:false,capacity_evictions:0,flows:vec![] };
+        let mut response = ResponseEnvelope { protocol_version:PROTOCOL_VERSION,request_id:"capture".into(),
+            response:Response::DpiDiagnostics(DpiDiagnostics { generation:9,processes:vec![],packet_capture:Some(capture) }) };
+        assert_eq!(decode_response_frame(&encode_response_frame(&response).unwrap()).unwrap(),response);
+        let Response::DpiDiagnostics(diagnostics) = &mut response.response else { unreachable!() };
+        diagnostics.packet_capture.as_mut().unwrap().generation=10;
+        assert_eq!(response.validate(),Err(ProtocolError::InvalidResponse));
+        let Response::DpiDiagnostics(diagnostics) = &mut response.response else { unreachable!() };
+        diagnostics.packet_capture.as_mut().unwrap().generation=9;
+        diagnostics.packet_capture.as_mut().unwrap().startup_error=Some("x".repeat(513));
+        assert_eq!(response.validate(),Err(ProtocolError::InvalidResponse));
+        let Response::DpiDiagnostics(diagnostics) = &mut response.response else { unreachable!() };
+        diagnostics.packet_capture.as_mut().unwrap().startup_error=None;
+        let flow = DpiTcpFlow { local_address:"192.0.2.1:50000".parse().unwrap(),remote_address:"192.0.2.2:443".parse().unwrap(),
+            first_seen_ms:0,last_seen_ms:1,syn_ack_observed:false,client_hello_bytes:None,acked_client_bytes:None,
+            outbound_payload_packets:0,repeated_sequence_packets:0,inbound_payload_bytes:0,inbound_reset:false,inbound_fin:false,
+            tls_server_hello_observed:false,tls_alert_observed:false,conflicting_overlap:false };
+        diagnostics.packet_capture.as_mut().unwrap().flows=vec![flow;33];
+        assert_eq!(response.validate(),Err(ProtocolError::InvalidResponse));
+    }
+
+    #[test]
+    fn startup_failure_metadata_survives_rollback_and_rejects_invalid_output() {
+        let trace = DpiProcessDiagnostics { pid: 42, exit_code: Some(87), trace_enabled: true,
+            stream_closed: true, observed_bytes: 100, discarded_lines: 3, truncated: false,
+            lines: vec!["LUA ERROR: attempt to call field 'pack' (a nil value)".into()] };
+        let mut response = ResponseEnvelope { protocol_version: PROTOCOL_VERSION, request_id: "startup".into(),
+            response: Response::Error(ServiceError { code: ServiceErrorCode::RuntimeFailed,
+                runtime_detail: Some(RuntimeFailureDetail::StartupFailed { exit_code: 87, diagnostics: trace.clone() }),
+                restored_generation: Some(12) }) };
+        assert_eq!(decode_response_frame(&encode_response_frame(&response).unwrap()).unwrap(), response);
+        for invalid in [DpiProcessDiagnostics { pid: 0, ..trace.clone() },
+            DpiProcessDiagnostics { exit_code: Some(0), ..trace.clone() },
+            DpiProcessDiagnostics { lines: vec!["x".repeat(513)], ..trace.clone() },
+            DpiProcessDiagnostics { lines: vec!["bad\nline".into()], ..trace.clone() },
+            DpiProcessDiagnostics { lines: vec!["x".repeat(512); 33], ..trace.clone() }] {
+            let Response::Error(error) = &mut response.response else { unreachable!() };
+            error.runtime_detail = Some(RuntimeFailureDetail::StartupFailed { exit_code: 87, diagnostics: invalid });
+            assert_eq!(response.validate(), Err(ProtocolError::InvalidResponse));
         }
     }
 
-    fn adaptive_start_request(overrides: Vec<Zapret2AdaptiveOverride>) -> DpiStartRequest {
+    fn zapret2_start_request() -> DpiStartRequest {
         DpiStartRequest {
             engine: DpiEngine::Zapret2,
             selections: vec![DpiSelection {
@@ -1555,11 +1619,77 @@ mod tests {
                 strategy_id: "builtin-youtube-twitch".into(),
             }],
             options: DpiRuntimeOptions {
-                zapret2_level: 2,
+                zapret2_level: 2, zapret2_clienthello: false, zapret2_profiles: Vec::new(),
                 legacy_reliability: false,
-                zapret2_overrides: overrides,
+                zapret2_overrides: Vec::new(),
+                zapret2_diagnostics: false,
             },
         }
+    }
+
+    #[test]
+    fn fixed_profile_selections_are_bounded_typed_and_wire_compatible() {
+        let mut runtime = zapret2_start_request();
+        assert!(!serde_json::to_string(&runtime.options).unwrap().contains("zapret2Profiles"));
+        let profile = Zapret2ProfileSelection { category: "youtube_twitch".into(), transport: "tls".into(), profile_id: "youtube_tls".into() };
+        runtime.options.zapret2_profiles = vec![profile.clone()];
+        let envelope = RequestEnvelope::new("profiles", Request::DpiStart(runtime.clone()));
+        assert_eq!(decode_request_frame(&encode_request_frame(&envelope).unwrap()).unwrap(), envelope);
+        assert!(serde_json::to_string(&runtime.options).unwrap().contains("\"profileId\":\"youtube_tls\""));
+        for invalid in [
+            Zapret2ProfileSelection { category: "discord".into(), ..profile.clone() },
+            Zapret2ProfileSelection { category: "universal".into(), ..profile.clone() },
+            Zapret2ProfileSelection { transport: "tcp-raw".into(), ..profile.clone() },
+            Zapret2ProfileSelection { profile_id: "../lua.lua".into(), ..profile.clone() },
+            Zapret2ProfileSelection { profile_id: "x:y=1".into(), ..profile.clone() },
+            Zapret2ProfileSelection { profile_id: "x".repeat(MAX_STRATEGY_ID_BYTES + 1), ..profile.clone() },
+        ] {
+            runtime.options.zapret2_profiles = vec![invalid];
+            assert_eq!(runtime.validate(), Err(ProtocolError::InvalidZapret2Profiles));
+        }
+        runtime.options.zapret2_profiles = vec![profile.clone(), profile.clone()];
+        assert_eq!(runtime.validate(), Err(ProtocolError::InvalidZapret2Profiles));
+        runtime.options.zapret2_profiles = vec![profile.clone(); 16];
+        assert_eq!(runtime.validate(), Err(ProtocolError::InvalidZapret2Profiles));
+        runtime.options.zapret2_profiles = vec![profile];
+        runtime.engine = DpiEngine::Legacy;
+        assert_eq!(runtime.validate(), Err(ProtocolError::InvalidZapret2Profiles));
+        assert!(serde_json::from_str::<Zapret2ProfileSelection>(r#"{"category":"youtube_twitch","transport":"tls","profileId":"youtube_tls","lua":"evil.lua"}"#).is_err());
+    }
+
+
+
+
+
+
+    #[test]
+    fn rejects_retired_overrides_for_start_and_replace() {
+        let mut runtime = zapret2_start_request();
+        runtime.options.zapret2_overrides = vec![serde_json::json!({"category":"youtubeTwitch","steps":[]})];
+        assert_eq!(runtime.validate(), Err(ProtocolError::InvalidZapret2Overrides));
+        assert_eq!(DpiReplaceRequest { expected_generation: 1, runtime }.validate(), Err(ProtocolError::InvalidZapret2Overrides));
+    }
+
+    #[test]
+    fn accepts_all_manual_zapret2_sets_and_rejects_unknown_levels() {
+        let mut runtime = zapret2_start_request();
+        for level in 0..=4 { runtime.options.zapret2_level = level; assert!(runtime.validate().is_ok()); }
+        runtime.options.zapret2_level = 5;
+        assert_eq!(runtime.validate(), Err(ProtocolError::InvalidZapret2Level));
+    }
+
+    #[test]
+    fn clienthello_is_explicit_and_ordinary_wire_stays_compatible() {
+        let old = r#"{"zapret2Level":0,"legacyReliability":false}"#;
+        let options: DpiRuntimeOptions = serde_json::from_str(old).unwrap();
+        assert!(!options.zapret2_clienthello);
+        assert!(!serde_json::to_string(&options).unwrap().contains("zapret2Clienthello"));
+        let mut runtime = zapret2_start_request();
+        runtime.options.zapret2_clienthello = true;
+        assert!(runtime.validate().is_ok());
+        assert!(serde_json::to_string(&runtime.options).unwrap().contains("\"zapret2Clienthello\":true"));
+        runtime.engine = DpiEngine::Legacy;
+        assert_eq!(runtime.validate(), Err(ProtocolError::InvalidZapret2Overrides));
     }
 
     #[test]
@@ -1571,12 +1701,12 @@ mod tests {
     }
 
     #[test]
-    fn adaptive_replace_roundtrips_without_privileged_payloads() {
+    fn zapret2_replace_roundtrips_without_privileged_payloads() {
         let request = RequestEnvelope::new(
-            "adaptive-replace-1",
+            "zapret2-replace-1",
             Request::DpiReplace(DpiReplaceRequest {
                 expected_generation: 7,
-                runtime: adaptive_start_request(vec![valid_adaptive_override()]),
+                runtime: zapret2_start_request(),
             }),
         );
         let frame = encode_request_frame(&request).unwrap();
@@ -1587,69 +1717,14 @@ mod tests {
         }
     }
 
-    #[test]
-    fn adaptive_dsl_rejects_paths_unknown_args_and_scope_confusion() {
-        let mut path = valid_adaptive_override();
-        path.steps[0] = Zapret2AdaptiveStep {
-            function: Zapret2AdaptiveFunction::Fake,
-            args: BTreeMap::from([(
-                "blob".into(),
-                Zapret2AdaptiveValue::Text(r"C:\Users\Public\payload.bin".into()),
-            )]),
-        };
-        let mut unknown = valid_adaptive_override();
-        unknown.steps[0].args.insert(
-            "command".into(),
-            Zapret2AdaptiveValue::Text("cmd /c whoami".into()),
-        );
-        let mut false_flag = valid_adaptive_override();
-        false_flag.steps[0]
-            .args
-            .insert("nodrop".into(), Zapret2AdaptiveValue::Bool(false));
-        let mut discord_quic = valid_adaptive_override();
-        discord_quic.category = DpiCategory::Discord;
-        discord_quic.transport = Zapret2AdaptiveTransport::Quic;
-        discord_quic.payload = Zapret2AdaptivePayload::QuicInitial;
-
-        for candidate in [path, unknown, false_flag, discord_quic] {
-            assert_eq!(
-                candidate.validate(),
-                Err(ProtocolError::InvalidZapret2Overrides)
-            );
-        }
-
-        let duplicate = valid_adaptive_override();
-        let request = adaptive_start_request(vec![duplicate.clone(), duplicate]);
-        assert_eq!(
-            request.validate(),
-            Err(ProtocolError::InvalidZapret2Overrides)
-        );
-
-        let mut wrong_category = valid_adaptive_override();
-        wrong_category.category = DpiCategory::Gaming;
-        assert_eq!(
-            adaptive_start_request(vec![wrong_category]).validate(),
-            Err(ProtocolError::InvalidZapret2Overrides)
-        );
-
-        let mut legacy = valid_start_request();
-        let Request::DpiStart(start) = &mut legacy.request else {
-            unreachable!();
-        };
-        start.options.zapret2_overrides = vec![valid_adaptive_override()];
-        assert_eq!(
-            encode_request_frame(&legacy),
-            Err(ProtocolError::InvalidZapret2Overrides)
-        );
-    }
 
     #[test]
-    fn adaptive_replace_requires_a_nonzero_generation() {
+    fn zapret2_replace_requires_a_nonzero_generation() {
         let request = RequestEnvelope::new(
-            "adaptive-replace-zero",
+            "zapret2-replace-zero",
             Request::DpiReplace(DpiReplaceRequest {
                 expected_generation: 0,
-                runtime: adaptive_start_request(vec![valid_adaptive_override()]),
+                runtime: zapret2_start_request(),
             }),
         );
         assert_eq!(
@@ -1841,6 +1916,34 @@ mod tests {
     }
 
     #[test]
+    fn system_dns_requests_and_status_are_bounded() {
+        for request in [Request::FlushSystemDns(SystemDnsRequest { generation: 0 }), Request::RepairSystemDns(SystemDnsRequest { generation: 0 })] {
+            assert_eq!(encode_request_frame(&RequestEnvelope::new("dns-1", request)), Err(ProtocolError::InvalidGeneration));
+        }
+        for request in [Request::RepairSystemDns(SystemDnsRequest { generation: 7 }), Request::GetSystemDns, Request::RestoreSystemDns] {
+            let envelope = RequestEnvelope::new("dns-2", request);
+            assert_eq!(decode_request_frame(&encode_request_frame(&envelope).unwrap()).unwrap(), envelope);
+        }
+        let status = SystemDnsStatus { active: false, restore_available: true, provider: Some(SystemDnsProvider::Cloudflare), interface_name: Some("Wi-Fi".into()) };
+        assert!(status.validate().is_ok()); // A partial write must still offer undo.
+        assert!(SystemDnsStatus { active: true, ..SystemDnsStatus::default() }.validate().is_err());
+        assert!(SystemDnsStatus { interface_name: Some("x".repeat(1025)), ..status.clone() }.validate().is_err());
+        let mut value = serde_json::to_value(RequestEnvelope::new("dns-3", Request::RepairSystemDns(SystemDnsRequest { generation: 7 }))).unwrap();
+        // The caller cannot supply an adapter, server, URL or command.
+        let text = serde_json::to_string(&value).unwrap();
+        assert!(text.contains("generation"));
+        fn add_field(value: &mut serde_json::Value) -> bool {
+            if let Some(object) = value.as_object_mut() {
+                if object.contains_key("generation") { object.insert("server".into(), "127.0.0.1".into()); return true; }
+                for child in object.values_mut() { if add_field(child) { return true; } }
+            }
+            false
+        }
+        assert!(add_field(&mut value));
+        assert!(serde_json::from_value::<RequestEnvelope>(value).is_err());
+    }
+
+    #[test]
     fn hosts_health_contract_is_bounded_unique_and_consistent() {
         let services = vec![
             AiServiceRouteHealth {
@@ -1935,7 +2038,11 @@ mod tests {
         let invalid = ResponseEnvelope {
             protocol_version: PROTOCOL_VERSION,
             request_id: "request-1".into(),
-            response: Response::Started(RuntimeStarted { generation: 0 }),
+            response: Response::Started(RuntimeStarted {
+                generation: 0,
+                materialized_fingerprint: None,
+                initialization_retries: 0,
+            }),
         };
         assert_eq!(
             encode_response_frame(&invalid),
@@ -1945,7 +2052,11 @@ mod tests {
         let valid = ResponseEnvelope {
             protocol_version: PROTOCOL_VERSION,
             request_id: "request-1".into(),
-            response: Response::Started(RuntimeStarted { generation: 7 }),
+            response: Response::Started(RuntimeStarted {
+                generation: 7,
+                materialized_fingerprint: None,
+                initialization_retries: 0,
+            }),
         };
         let frame = encode_response_frame(&valid).unwrap();
         assert_eq!(decode_response_frame(&frame).unwrap(), valid);
@@ -2215,5 +2326,86 @@ mod tests {
             encode_response_frame(&invalid_activity),
             Err(ProtocolError::InvalidResponse)
         );
+    }
+    #[test]
+    fn runtime_diagnostics_are_optional_and_roundtrip() {
+        let legacy: ServiceError = serde_json::from_str(r#"{"code":"runtimeFailed"}"#).unwrap();
+        assert_eq!(legacy.runtime_detail, None);
+        assert_eq!(legacy.restored_generation, None);
+        assert_eq!(
+            serde_json::to_string(&legacy).unwrap(),
+            r#"{"code":"runtimeFailed"}"#
+        );
+        let detailed = ServiceError {
+            code: ServiceErrorCode::RuntimeFailed,
+            runtime_detail: Some(RuntimeFailureDetail::ExitedBeforeReady { exit_code: 87 }),
+            restored_generation: None,
+        };
+        let bytes = serde_json::to_vec(&detailed).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<ServiceError>(&bytes).unwrap(),
+            detailed
+        );
+        let old_start: RuntimeStarted = serde_json::from_str(r#"{"generation":1}"#).unwrap();
+        assert_eq!(old_start.materialized_fingerprint, None);
+    }
+
+    #[test]
+    fn materialization_diagnostic_is_bounded_and_keeps_resource_failure_code() {
+        let envelope = ResponseEnvelope {
+            protocol_version: PROTOCOL_VERSION,
+            request_id: "generation-reservation-1".into(),
+            response: Response::Error(ServiceError {
+                code: ServiceErrorCode::ProtectedResourceInvalid,
+                runtime_detail: Some(RuntimeFailureDetail::Materialization {
+                    materialization_stage: RuntimeMaterializationStage::GenerationReservation,
+                    windows_error: Some(183),
+                }),
+                restored_generation: Some(5),
+            }),
+        };
+        let frame = encode_response_frame(&envelope).unwrap();
+        assert_eq!(decode_response_frame(&frame).unwrap(), envelope);
+        assert!(serde_json::from_str::<RuntimeFailureDetail>(
+            r#"{"stage":"materialization","materialization_stage":"generation_reservation","windows_error":183,"path":"private"}"#
+        ).is_err());
+    }
+
+    #[test]
+    fn replace_rollback_receipt_roundtrips_and_rejects_zero_generation() {
+        let mut envelope = ResponseEnvelope {
+            protocol_version: PROTOCOL_VERSION,
+            request_id: "replace-1".into(),
+            response: Response::Error(ServiceError {
+                code: ServiceErrorCode::RuntimeFailed,
+                runtime_detail: Some(RuntimeFailureDetail::ExitedBeforeReady { exit_code: 87 }),
+                restored_generation: Some(5),
+            }),
+        };
+        let bytes = encode_response_frame(&envelope).unwrap();
+        assert_eq!(decode_response_frame(&bytes).unwrap(), envelope);
+        let Response::Error(error) = &mut envelope.response else { unreachable!() };
+        error.restored_generation = Some(0);
+        assert_eq!(encode_response_frame(&envelope), Err(ProtocolError::InvalidResponse));
+    }
+
+    #[test]
+    fn materialized_fingerprint_is_validated_on_wire() {
+        for (fingerprint, valid) in [
+            ("a".repeat(64), true),
+            ("a".repeat(63), false),
+            ("z".repeat(64), false),
+        ] {
+            let envelope = ResponseEnvelope {
+                protocol_version: PROTOCOL_VERSION,
+                request_id: "test-diagnostics".into(),
+                response: Response::Started(RuntimeStarted {
+                    generation: 1,
+                    materialized_fingerprint: Some(fingerprint),
+                    initialization_retries: 0,
+                }),
+            };
+            assert_eq!(encode_response_frame(&envelope).is_ok(), valid);
+        }
     }
 }

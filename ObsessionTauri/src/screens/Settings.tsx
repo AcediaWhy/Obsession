@@ -18,6 +18,8 @@ import {
 import { Icon } from "../design/components/icons";
 import { spring } from "../design/tokens";
 import { api } from "../lib/tauri";
+import { useUpdateStore } from "../store/updateStore";
+import { SystemDnsPanel } from "../design/components/SystemDnsPanel";
 
 const AI_PROVIDERS = ["malw", "geohide"];
 
@@ -32,7 +34,6 @@ export function SettingsScreen() {
   const protectedRuntimeComplete =
     protectedRuntime.dpi &&
     protectedRuntime.zapret2 &&
-    protectedRuntime.adaptiveZapret2 &&
     protectedRuntime.eyesEvents &&
     protectedRuntime.legacyReliabilityControls &&
     protectedRuntime.legacyReliability &&
@@ -116,6 +117,13 @@ export function SettingsScreen() {
             {/* ИИ. */}
             <StaggerItem glass>
               <GlassPanel>
+                <SectionLabel>Системный DNS</SectionLabel>
+                <SystemDnsPanel />
+              </GlassPanel>
+            </StaggerItem>
+
+            <StaggerItem glass>
+              <GlassPanel>
                 <SectionLabel>ИИ-разблокировка</SectionLabel>
                 <div className="divide-y divide-white/5">
                   <Row label="Провайдер DNS" hint="Источник hosts для доступа к ИИ-сервисам">
@@ -155,6 +163,13 @@ export function SettingsScreen() {
                     />
                   </div>
                 </div>
+              </GlassPanel>
+            </StaggerItem>
+
+            <StaggerItem glass>
+              <GlassPanel>
+                <SectionLabel>Обновления</SectionLabel>
+                <UpdatesPanel />
               </GlassPanel>
             </StaggerItem>
 
@@ -204,6 +219,62 @@ export function SettingsScreen() {
           </Stagger>
         </div>
       )}
+    </div>
+  );
+}
+
+function UpdatesPanel() {
+  const phase = useUpdateStore((s) => s.phase);
+  const result = useUpdateStore((s) => s.result);
+  const error = useUpdateStore((s) => s.error);
+  const downloaded = useUpdateStore((s) => s.downloaded);
+  const total = useUpdateStore((s) => s.total);
+  const check = useUpdateStore((s) => s.check);
+  const install = useUpdateStore((s) => s.install);
+  const busy = phase === "checking" || phase === "downloading" || phase === "launching";
+  const percent = total > 0 ? Math.min(100, Math.round((downloaded / total) * 100)) : 0;
+
+  return (
+    <div className="flex flex-col gap-3 text-sm text-ink-soft">
+      <p>
+        {result
+          ? result.available
+            ? `Доступна версия ${result.latest_version} · установлена ${result.current_version}`
+            : `Установлена актуальная версия ${result.current_version}`
+          : `Версия ${__APP_VERSION__} · проверка последнего релиза на GitHub`}
+      </p>
+      {result?.available && result.notes && (
+        <div className="max-h-32 overflow-y-auto whitespace-pre-wrap rounded-lg border border-glass-border bg-black/10 p-2 text-xs leading-relaxed text-ink-muted">
+          {result.notes}
+        </div>
+      )}
+      {phase === "downloading" && (
+        <div aria-live="polite" className="flex flex-col gap-1.5">
+          <span className="text-xs">Загрузка установщика · {percent}%</span>
+          <div className="h-1.5 overflow-hidden rounded-full bg-white/10">
+            <div className="h-full bg-accent transition-[width] duration-200" style={{ width: `${percent}%` }} />
+          </div>
+        </div>
+      )}
+      {phase === "launching" && <p className="text-xs text-ok">Запускается Obsession Setup…</p>}
+      {error && <p role="alert" className="text-xs text-danger">{error}</p>}
+      <div className="flex flex-wrap gap-2">
+        <Button variant="ghost" disabled={busy} onClick={() => void check()}>
+          {phase === "checking" ? "Проверяем…" : "Проверить обновления"}
+        </Button>
+        {result?.available && (
+          <Button disabled={busy} onClick={() => void install()}>
+            Скачать и запустить Setup
+          </Button>
+        )}
+      </div>
+      <button
+        type="button"
+        className="self-start text-xs text-ink-muted underline underline-offset-2 hover:text-ink"
+        onClick={() => void api.openExternalUrl(result?.release_url ?? "https://github.com/AcediaWhy/Obsession/releases/latest")}
+      >
+        {result?.available ? "Описание релиза на GitHub" : "Страница релизов"}
+      </button>
     </div>
   );
 }

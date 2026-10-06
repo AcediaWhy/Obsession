@@ -28,6 +28,7 @@ use crate::dpi_executor::{
 };
 use crate::dpi_materializer::{MaterializationError, ProtectedDataLayout};
 use crate::hosts_controller::HostsController;
+use crate::dns_recovery::DnsRecovery;
 use crate::legacy_access_activity::LegacyAccessTracker;
 use crate::legacy_recovery_effects::{
     MachineLegacyRecoveryProbes, MachineNetwork, ProtectedLegacyRecoveryEffectState,
@@ -50,6 +51,7 @@ use crate::{BackendError, RuntimeBackend};
 pub struct ProtectedDpiBackend<L: RuntimeProcessLauncher> {
     catalog: VerifiedRuntimeCatalog,
     observer: Option<LegacyObserverRuntime>,
+    packet_observer: crate::packet_observer::PacketObserver,
     recovery: LegacyRecoveryRuntime,
     recovery_preflight: Option<PreparedLegacyRecovery>,
     recovery_transaction: Option<LegacyRecoveryTransaction>,
@@ -61,6 +63,7 @@ pub struct ProtectedDpiBackend<L: RuntimeProcessLauncher> {
     active_request: Option<DpiStartRequest>,
     access_tracker: Mutex<LegacyAccessTracker>,
     hosts: Option<HostsController>,
+    dns_recovery: Option<DnsRecovery>,
     proxy_lan_firewall: Option<ProxyLanFirewall>,
 }
 
@@ -83,11 +86,14 @@ impl<L: RuntimeProcessLauncher> ProtectedDpiBackend<L> {
             return Err(BackendInitializationError::LegacyEngineUnavailable);
         }
         let observer = LegacyObserverRuntime::from_catalog(&catalog).ok();
+        let packet_observer = crate::packet_observer::PacketObserver::from_catalog(&catalog);
         let hosts = HostsController::discover(&state_layout).ok();
+        let dns_recovery = DnsRecovery::discover(&state_layout).ok();
         let proxy_lan_firewall = ProxyLanFirewall::discover(&state_layout).ok();
         Ok(Self {
             catalog,
             observer,
+            packet_observer,
             recovery: LegacyRecoveryRuntime::new(),
             recovery_preflight: None,
             recovery_transaction: None,
@@ -99,6 +105,7 @@ impl<L: RuntimeProcessLauncher> ProtectedDpiBackend<L> {
             active_request: None,
             access_tracker: Mutex::new(LegacyAccessTracker::new()),
             hosts,
+            dns_recovery,
             proxy_lan_firewall,
         })
     }
@@ -140,18 +147,20 @@ impl<L: RuntimeProcessLauncher> ProtectedDpiBackend<L> {
             engine: DpiEngine::Legacy,
             selections: previous.selections.clone(),
             options: obsession_runtime_protocol::DpiRuntimeOptions {
-                zapret2_level: 0,
+                zapret2_level: 0, zapret2_clienthello: false, zapret2_profiles: Vec::new(),
                 legacy_reliability: observer_active,
                 zapret2_overrides: Vec::new(),
+                zapret2_diagnostics: false,
             },
         };
         let candidate_request = DpiStartRequest {
             engine: DpiEngine::Legacy,
             selections: selections.clone(),
             options: obsession_runtime_protocol::DpiRuntimeOptions {
-                zapret2_level: 0,
+                zapret2_level: 0, zapret2_clienthello: false, zapret2_profiles: Vec::new(),
                 legacy_reliability: observer_active,
                 zapret2_overrides: Vec::new(),
+                zapret2_diagnostics: false,
             },
         };
         let previous_plan = self
@@ -382,7 +391,6 @@ impl<L: RuntimeProcessLauncher> RuntimeBackend for ProtectedDpiBackend<L> {
         let mut features = vec![Feature::Dpi];
         if self.catalog.engine(DpiEngine::Zapret2).is_some() {
             features.push(Feature::DpiZapret2);
-            features.push(Feature::DpiZapret2Adaptive);
         }
         if self.observer.is_some() {
             features.push(Feature::EyesEvents);
@@ -391,9 +399,15 @@ impl<L: RuntimeProcessLauncher> RuntimeBackend for ProtectedDpiBackend<L> {
                 features.push(Feature::LegacyReliability);
             }
         }
+        if self.packet_observer.available() {
+            features.push(Feature::DpiZapret2PacketDiagnostics);
+        }
         if self.hosts.is_some() {
             features.push(Feature::Hosts);
             features.push(Feature::HostsHealthV2);
+        }
+        if self.dns_recovery.is_some() {
+            features.push(Feature::SystemDnsRestore);
         }
         if self.proxy_lan_firewall.is_some() {
             features.push(Feature::ProxyLanFirewall);
@@ -523,6 +537,7 @@ impl<L: RuntimeProcessLauncher> RuntimeBackend for ProtectedDpiBackend<L> {
             }
         }
         self.active_request = Some(request);
+        self.packet_observer.start(started.generation, plan.engine() == DpiEngine::Zapret2 && plan.zapret2_diagnostics());
         Ok(started)
     }
 
@@ -548,23 +563,40 @@ impl<L: RuntimeProcessLauncher> RuntimeBackend for ProtectedDpiBackend<L> {
             .catalog
             .resolve_dpi_plan(&request.runtime)
             .map_err(|_| BackendError::ProtectedResourceInvalid)?;
-        self.executor
-            .stop(request.expected_generation)
-            .map_err(map_executor_error)?;
+        let stop_result = self.executor.stop(request.expected_generation);
+        self.packet_observer.stop(request.expected_generation);
+        stop_result.map_err(map_executor_error)?;
 
         match self.executor.start(&replacement_plan) {
             Ok(started) => {
+                self.packet_observer.start(started.generation, replacement_plan.zapret2_diagnostics());
                 self.active_request = Some(request.runtime);
                 Ok(started)
             }
             Err(error) => {
                 self.active_request = None;
-                if self.executor.start(&previous_plan).is_ok() {
+                let failure = map_executor_error(error);
+                if let Ok(restored) = self.executor.start(&previous_plan) {
+                    self.packet_observer.start(restored.generation, previous_plan.zapret2_diagnostics());
                     self.active_request = Some(previous_request);
+                    return Err(BackendError::ReplacementRolledBack {
+                        code: failure.wire_code(),
+                        detail: match failure {
+                            BackendError::RuntimeProcessFailed(detail) | BackendError::ProtectedMaterializationFailed(detail) => Some(detail),
+                            _ => None,
+                        },
+                        generation: restored.generation,
+                    });
                 }
-                Err(map_executor_error(error))
+                Err(failure)
             }
         }
+    }
+
+    fn dpi_diagnostics(&self, request: DpiStopRequest) -> Result<obsession_runtime_protocol::DpiDiagnostics, BackendError> {
+        let mut diagnostics = self.executor.diagnostics(request.generation).map_err(map_executor_error)?;
+        diagnostics.packet_capture = self.packet_observer.snapshot(request.generation);
+        Ok(diagnostics)
     }
 
     fn dpi_stop(&mut self, request: DpiStopRequest) -> Result<(), BackendError> {
@@ -579,14 +611,22 @@ impl<L: RuntimeProcessLauncher> RuntimeBackend for ProtectedDpiBackend<L> {
             .observer
             .as_mut()
             .map(|observer| observer.stop(request.generation));
-        self.executor
-            .stop(request.generation)
-            .map_err(map_executor_error)?;
+        let stop_result = self.executor.stop(request.generation);
+        self.packet_observer.stop(request.generation);
+        stop_result.map_err(map_executor_error)?;
         self.active_request = None;
         if let Some(result) = observer_result {
             result.map_err(map_observer_error)?;
         }
         Ok(())
+    }
+
+    fn restore_system_dns(&mut self) -> Result<obsession_runtime_protocol::SystemDnsStatus, BackendError> {
+        self.dns_recovery.as_mut().ok_or(BackendError::ServiceUnavailable)?.restore()
+    }
+
+    fn system_dns_status(&self) -> Result<obsession_runtime_protocol::SystemDnsStatus, BackendError> {
+        self.dns_recovery.as_ref().ok_or(BackendError::ServiceUnavailable)?.status()
     }
 
     fn hosts_install(
@@ -652,6 +692,10 @@ impl<L: RuntimeProcessLauncher> RuntimeBackend for ProtectedDpiBackend<L> {
     }
 
     fn poll_background(&mut self) -> Result<(), BackendError> {
+        let engine_exited = self.executor.snapshot().is_none_or(|runtime|
+            self.executor.diagnostics(runtime.generation).is_ok_and(|diagnostics|
+                diagnostics.processes.iter().any(|process| process.exit_code.is_some())));
+        self.packet_observer.poll(engine_exited);
         let access_poll = self
             .access_tracker
             .lock()
@@ -840,9 +884,52 @@ fn map_executor_error(error: ExecutorError) -> BackendError {
     match error {
         ExecutorError::Busy => BackendError::Busy,
         ExecutorError::Conflict => BackendError::Conflict,
-        ExecutorError::Materialization(_) => BackendError::ProtectedResourceInvalid,
-        ExecutorError::InvalidOwnership | ExecutorError::Process(_) => BackendError::RuntimeFailed,
+        ExecutorError::Materialization(error) => BackendError::ProtectedMaterializationFailed(
+            materialization_failure_detail(&error)),
+        ExecutorError::InvalidOwnership => BackendError::RuntimeProcessFailed(
+            obsession_runtime_protocol::RuntimeFailureDetail::OwnershipMismatch),
+        ExecutorError::Process(error) => {
+            use crate::dpi_executor::ProcessError;
+            use obsession_runtime_protocol::RuntimeFailureDetail as Detail;
+            BackendError::RuntimeProcessFailed(match error {
+                ProcessError::ExitedBeforeReady { exit_code, .. } => Detail::ExitedBeforeReady { exit_code },
+                ProcessError::StartupFailed { exit_code, diagnostics, .. } => Detail::StartupFailed { exit_code, diagnostics },
+                ProcessError::Windows(error) => Detail::Windows { hresult: error.code().0 },
+                ProcessError::InvalidLaunchPath => Detail::InvalidLaunchPath,
+                ProcessError::NoLaunches => Detail::NoLaunches,
+                ProcessError::ResumeFailed => Detail::ResumeFailed,
+                ProcessError::StopTimedOut => Detail::StopTimedOut,
+                ProcessError::UnexpectedWaitResult(result) => Detail::UnexpectedWait { result },
+            })
+        },
     }
+}
+
+fn materialization_failure_detail(error: &MaterializationError) -> obsession_runtime_protocol::RuntimeFailureDetail {
+    use obsession_runtime_protocol::{RuntimeFailureDetail, RuntimeMaterializationStage as Stage};
+    let materialization_stage = match error {
+        MaterializationError::InvalidGeneration
+        | MaterializationError::GenerationAlreadyExists(_)
+        | MaterializationError::GenerationExhausted
+        | MaterializationError::InvalidGenerationState => Stage::GenerationReservation,
+        MaterializationError::Layout(_) => Stage::ResourceVerification,
+        MaterializationError::UndeclaredConfigPath(_) => Stage::ConfigCompilation,
+        MaterializationError::InvalidAutoHostlist => Stage::ConfigVerification,
+        MaterializationError::InvalidConfig(reason) if reason.starts_with("materialized") => Stage::ConfigVerification,
+        MaterializationError::InvalidConfig(_) => Stage::ConfigCompilation,
+        MaterializationError::Io { operation, .. } if operation.contains("generation sequence")
+            || operation.contains("generation number") || *operation == "create generation directory" => Stage::GenerationReservation,
+        MaterializationError::Io { operation: "create service-owned file" | "write service-owned file", .. } => Stage::ConfigWrite,
+        MaterializationError::Io { operation: "remove exact materialized generation", .. } => Stage::Cleanup,
+        _ => Stage::StateLayout,
+    };
+    let windows_error = match error {
+        MaterializationError::AclQueryFailed { code, .. } => Some(*code),
+        MaterializationError::Canonicalize { source, .. } | MaterializationError::Io { source, .. } => source.raw_os_error().map(|code| code as u32),
+        MaterializationError::Layout(LayoutError::Canonicalize { source, .. } | LayoutError::Read { source, .. }) => source.raw_os_error().map(|code| code as u32),
+        _ => None,
+    };
+    RuntimeFailureDetail::Materialization { materialization_stage, windows_error }
 }
 
 fn map_observer_error(error: LegacyObserverRuntimeError) -> BackendError {
@@ -907,9 +994,7 @@ mod tests {
     use crate::dpi_materializer::{MaterializedLaunch, RUNTIME_STATE_RELATIVE};
     use crate::protected_layout::RESOURCE_MANIFEST;
     use obsession_runtime_protocol::{
-        DpiCategory, DpiRuntimeOptions, DpiSelection, HostsProvider, Zapret2AdaptiveFunction,
-        Zapret2AdaptiveOverride, Zapret2AdaptivePayload, Zapret2AdaptiveRange, Zapret2AdaptiveStep,
-        Zapret2AdaptiveTransport, Zapret2AdaptiveValue, ZAPRET2_ADAPTIVE_SCHEMA_VERSION,
+        DpiCategory, DpiRuntimeOptions, DpiSelection, HostsProvider,
     };
     use obsession_runtime_reliability::legacy_reliability::assessment::AssessmentClassification;
     use obsession_runtime_reliability::legacy_reliability::contracts::{
@@ -1014,19 +1099,36 @@ mod tests {
             let pack_manifest = "strategy-packs/builtin/manifest.json";
             let lua_lib = "strategy-packs/builtin/lua/zapret-lib.lua";
             let lua_antidpi = "strategy-packs/builtin/lua/zapret-antidpi.lua";
+            let lua_diagnostic = "strategy-packs/builtin/lua/obsession-diagnostic.lua";
+            let lua_clienthello = "strategy-packs/builtin/lua/obsession-clienthello.lua";
             let lua_lib_bytes = b"-- protected lua runtime\n";
             let lua_antidpi_bytes = b"-- protected adaptive functions\n";
+            let lua_diagnostic_bytes = b"-- protected diagnostic observer\n";
+            let lua_clienthello_bytes = b"-- protected ClientHello experiment\n";
             let pack = serde_json::to_vec(&serde_json::json!({
                 "schema_version": 1,
                 "pack_id": "builtin",
                 "pack_version": "1.0.0",
                 "engine": { "winws2_min": ">=1.0.2", "lua_api": 6 },
                 "categories": ["discord"],
-                "protocols": ["tcp", "tls"],
+                "protocols": ["tcp", "tls", "udp", "quic"],
                 "files": [
                     { "path": "lua/zapret-lib.lua", "sha256": sha256(lua_lib_bytes) },
-                    { "path": "lua/zapret-antidpi.lua", "sha256": sha256(lua_antidpi_bytes) }
+                    { "path": "lua/zapret-antidpi.lua", "sha256": sha256(lua_antidpi_bytes) },
+                    { "path": "lua/obsession-diagnostic.lua", "sha256": sha256(lua_diagnostic_bytes) },
+                    { "path": "lua/obsession-clienthello.lua", "sha256": sha256(lua_clienthello_bytes) }
                 ],
+                "experiments": [{
+                    "id": "discord_tls_clienthello_clone", "category": "discord", "aggressiveness": 1,
+                    "lua": "lua/obsession-clienthello.lua", "desync": ["obsession_clienthello"],
+                    "transports": ["tcp", "tls"], "filter_tcp": "443,2053,2083,2087,2096,8443",
+                    "filter_l7": ["tls"], "payload": ["tls_client_hello"], "out_range": "-d10"
+                }],
+                "presets": [{
+                    "id": "classic_discord_tls_split_sni", "category": "discord", "aggressiveness": 1,
+                    "lua": "lua/zapret-antidpi.lua", "desync": ["multisplit:pos=midsld"],
+                    "transports": ["tcp", "tls"], "filter_l7": ["tls"], "payload": ["tls_client_hello"], "out_range": "-d10"
+                }],
                 "strategies": [{
                     "id": "discord_tls_text",
                     "category": "discord",
@@ -1037,6 +1139,10 @@ mod tests {
                     "filter_l7": ["tls"],
                     "payload": ["tls_client_hello"],
                     "out_range": "-d10"
+                }, {
+                    "id": "discord_quic_level_1", "category": "discord", "aggressiveness": 1,
+                    "lua": "lua/zapret-antidpi.lua", "desync": ["fake:blob=fake_default_quic:repeats=1"],
+                    "transports": ["udp", "quic"], "filter_udp": "443", "filter_l7": ["quic"], "payload": ["quic_initial"]
                 }]
             }))
             .unwrap();
@@ -1044,6 +1150,8 @@ mod tests {
                 resource(&install_root, zapret2_executable, b"protected-zapret2"),
                 resource(&install_root, lua_lib, lua_lib_bytes),
                 resource(&install_root, lua_antidpi, lua_antidpi_bytes),
+                resource(&install_root, lua_diagnostic, lua_diagnostic_bytes),
+                resource(&install_root, lua_clienthello, lua_clienthello_bytes),
                 resource(&install_root, hostlist_relative, b"discord.com\n"),
                 resource(&install_root, pack_manifest, &pack),
             ];
@@ -1055,7 +1163,7 @@ mod tests {
                     "id": "builtin-discord",
                     "category": "discord",
                     "artifact": pack_manifest,
-                    "dependencies": [lua_lib, lua_antidpi, hostlist_relative]
+                    "dependencies": [lua_lib, lua_antidpi, lua_diagnostic, lua_clienthello, hostlist_relative]
                 }]
             }));
         }
@@ -1089,6 +1197,7 @@ mod tests {
         launches: usize,
         stops: usize,
         fail_launch: bool,
+        fail_on_launch: Option<usize>,
         corrupt_identity: bool,
     }
 
@@ -1110,6 +1219,9 @@ mod tests {
         ) -> Result<Self::Group, ProcessError> {
             let mut state = self.0.lock().unwrap();
             state.launches += 1;
+            if state.fail_on_launch == Some(state.launches) {
+                return Err(ProcessError::ExitedBeforeReady { pid: 100, exit_code: 87 });
+            }
             if state.fail_launch {
                 return Err(ProcessError::InvalidLaunchPath);
             }
@@ -1153,9 +1265,10 @@ mod tests {
                 strategy_id: "discord_1.conf".into(),
             }],
             options: DpiRuntimeOptions {
-                zapret2_level: 0,
+                zapret2_level: 0, zapret2_clienthello: false, zapret2_profiles: Vec::new(),
                 legacy_reliability: false,
                 zapret2_overrides: Vec::new(),
+                zapret2_diagnostics: false,
             },
         }
     }
@@ -1164,12 +1277,16 @@ mod tests {
         fixture: &Fixture,
         state: Arc<Mutex<FakeState>>,
     ) -> ProtectedDpiBackend<FakeLauncher> {
-        ProtectedDpiBackend::from_preflight(
+        let mut backend = ProtectedDpiBackend::from_preflight(
             &fixture.install_layout,
             fixture.state_layout.clone(),
             FakeLauncher(state),
         )
-        .unwrap()
+        .unwrap();
+        // These tests exercise DPI/reliability only. Never dispatch native
+        // machine DNS operations from a fixture.
+        backend.dns_recovery = None;
+        backend
     }
 
     #[test]
@@ -1185,6 +1302,22 @@ mod tests {
             ),
             Err(BackendInitializationError::Layout(_))
         ));
+    }
+
+    #[test]
+    fn automatic_dns_mutations_are_disabled_for_every_dpi_generation() {
+        let fixture = setup_fixture();
+        let state = Arc::new(Mutex::new(FakeState::default()));
+        let mut backend = backend(&fixture, state);
+        let dns_request = |generation| obsession_runtime_protocol::SystemDnsRequest { generation };
+        assert_eq!(backend.repair_system_dns(dns_request(1)), Err(BackendError::ServiceUnavailable));
+        assert_eq!(backend.flush_system_dns(dns_request(1)), Err(BackendError::ServiceUnavailable));
+        let started = backend.dpi_start(request(DpiEngine::Legacy)).unwrap();
+        assert_eq!(backend.repair_system_dns(dns_request(started.generation + 1)), Err(BackendError::ServiceUnavailable));
+        assert_eq!(backend.flush_system_dns(dns_request(started.generation + 1)), Err(BackendError::ServiceUnavailable));
+        assert_eq!(backend.repair_system_dns(dns_request(started.generation)), Err(BackendError::ServiceUnavailable));
+        assert_eq!(backend.flush_system_dns(dns_request(started.generation)), Err(BackendError::ServiceUnavailable));
+        assert!(!backend.capabilities().unwrap().features.contains(&Feature::SystemDnsRecovery));
     }
 
     #[test]
@@ -1331,84 +1464,206 @@ mod tests {
         assert_eq!(state.lock().unwrap().stops, 1);
     }
 
+
     #[test]
-    fn zapret2_adaptive_replace_is_capability_gated_and_generation_fenced() {
+    fn diagnostic_sensor_is_explicit_and_does_not_start_legacy_recovery() {
+        use obsession_runtime_protocol::DpiPacketCaptureState;
+        let fixture = setup_fixture_with_zapret2(true);
+        let state = Arc::new(Mutex::new(FakeState::default()));
+        let mut backend = backend(&fixture, state);
+        let diagnostic = DpiStartRequest {
+            engine: DpiEngine::Zapret2,
+            selections: vec![DpiSelection { category: DpiCategory::Discord, strategy_id: "builtin-discord".into() }],
+            options: DpiRuntimeOptions { zapret2_level: 1, zapret2_clienthello: false, zapret2_profiles: Vec::new(), legacy_reliability: false,
+                zapret2_overrides: vec![], zapret2_diagnostics: true },
+        };
+        let started = backend.dpi_start(diagnostic.clone()).unwrap();
+        let capture = backend.dpi_diagnostics(DpiStopRequest { generation: started.generation }).unwrap().packet_capture.unwrap();
+        assert_eq!(capture.generation, started.generation);
+        // The fixture deliberately has no real driver DLL. Missing observation
+        // must be explicit, and must not turn a fake-launcher test into capture.
+        assert_eq!(capture.state, DpiPacketCaptureState::Unavailable);
+        assert!(backend.runtime_snapshot().unwrap().legacy_reliability.is_none());
+        let replaced = backend.dpi_replace(DpiReplaceRequest { expected_generation: started.generation, runtime: diagnostic.clone() }).unwrap();
+        assert_eq!(backend.dpi_diagnostics(DpiStopRequest { generation: started.generation }), Err(BackendError::Conflict));
+        assert_eq!(backend.dpi_diagnostics(DpiStopRequest { generation: replaced.generation }).unwrap().packet_capture.unwrap().generation, replaced.generation);
+        let normal = DpiStartRequest { options: DpiRuntimeOptions { zapret2_diagnostics: false, ..diagnostic.options }, ..diagnostic };
+        let normal = backend.dpi_replace(DpiReplaceRequest { expected_generation: replaced.generation, runtime: normal }).unwrap();
+        assert!(backend.dpi_diagnostics(DpiStopRequest { generation: normal.generation }).unwrap().packet_capture.is_none());
+        backend.dpi_stop(DpiStopRequest { generation: normal.generation }).unwrap();
+    }
+
+    #[test]
+    fn diagnostic_observer_preserves_strategy_arguments_and_requires_verified_resource() {
+        let fixture = setup_fixture_with_zapret2(true);
+        let catalog = fixture.install_layout.load_verified_catalog().unwrap();
+        let mut request = DpiStartRequest { engine: DpiEngine::Zapret2,
+            selections: vec![DpiSelection { category: DpiCategory::Discord, strategy_id: "builtin-discord".into() }],
+            options: DpiRuntimeOptions { zapret2_level: 1, zapret2_clienthello: false, zapret2_profiles: Vec::new(), legacy_reliability: false,
+                zapret2_overrides: vec![], zapret2_diagnostics: false } };
+        let normal_plan = catalog.resolve_dpi_plan(&request).unwrap();
+        let normal = fixture.state_layout.materialize(&normal_plan, 10).unwrap();
+        request.options.zapret2_diagnostics = true;
+        let observed_plan = catalog.resolve_dpi_plan(&request).unwrap();
+        assert_ne!(normal_plan.fingerprint(), observed_plan.fingerprint());
+        let observed = fixture.state_layout.materialize(&observed_plan, 11).unwrap();
+        let arguments = observed.launches()[0].arguments();
+        assert_eq!(&arguments[arguments.len()-3..], ["--new", "--name=obsession_unmatched", "--lua-desync=obsession_trace:profile=unmatched:routing"]);
+        let original_arguments = arguments[..arguments.len()-3].iter().filter(|arg|
+            !arg.ends_with("obsession-diagnostic.lua")
+                && !arg.starts_with("--lua-desync=obsession_trace:"))
+            .cloned().collect::<Vec<_>>();
+        assert_eq!(original_arguments, normal.launches()[0].arguments());
+        // Loading diagnostic helpers must not take over ordinary builtin profiles.
+        assert!(!arguments.iter().any(|arg| arg.starts_with("--lua-desync=obsession_execute:")));
+        let lua = fixture.install_layout.root().join("strategy-packs/builtin/lua/obsession-diagnostic.lua");
+        fs::write(lua, b"modified observer").unwrap();
+        assert!(observed_plan.reverify().is_err());
+    }
+
+
+    #[test]
+    fn failed_replace_attests_the_restarted_previous_request_and_native_error() {
+        let fixture = setup_fixture_with_zapret2(true);
+        let state = Arc::new(Mutex::new(FakeState {
+            fail_on_launch: Some(2), ..Default::default()
+        }));
+        let mut backend = backend(&fixture, state.clone());
+        let previous = DpiStartRequest {
+            engine: DpiEngine::Zapret2,
+            selections: vec![DpiSelection {
+                category: DpiCategory::Discord, strategy_id: "builtin-discord".into(),
+            }],
+            options: DpiRuntimeOptions {
+                zapret2_level: 1, zapret2_clienthello: false, zapret2_profiles: Vec::new(), legacy_reliability: false, zapret2_overrides: vec![],
+                zapret2_diagnostics: false,
+            },
+        };
+        let started = backend.dpi_start(previous.clone()).unwrap();
+        let replacement = DpiStartRequest {
+            options: DpiRuntimeOptions { zapret2_level: 2, ..previous.options.clone() },
+            ..previous.clone()
+        };
+        let error = backend.dpi_replace(DpiReplaceRequest {
+            expected_generation: started.generation, runtime: replacement,
+        }).unwrap_err();
+        let restored = backend.runtime_snapshot().unwrap().dpi.unwrap();
+        assert!(restored.generation > started.generation);
+        assert_eq!(error, BackendError::ReplacementRolledBack {
+            code: obsession_runtime_protocol::ServiceErrorCode::RuntimeFailed,
+            detail: Some(obsession_runtime_protocol::RuntimeFailureDetail::ExitedBeforeReady { exit_code: 87 }),
+            generation: restored.generation,
+        });
+        assert_eq!(backend.active_request.as_ref(), Some(&previous));
+        let state = state.lock().unwrap();
+        assert_eq!(state.launches, 3);
+        assert_eq!(state.stops, 1);
+    }
+
+    #[test]
+    fn retired_override_cannot_replace_a_running_manual_configuration() {
         let fixture = setup_fixture_with_zapret2(true);
         let state = Arc::new(Mutex::new(FakeState::default()));
         let mut backend = backend(&fixture, state.clone());
-        assert!(backend
-            .capabilities()
-            .unwrap()
-            .features
-            .contains(&Feature::DpiZapret2Adaptive));
-
-        let initial_request = DpiStartRequest {
+        assert!(!backend.capabilities().unwrap().features.contains(&Feature::DpiZapret2Adaptive));
+        let original = DpiStartRequest {
             engine: DpiEngine::Zapret2,
             selections: vec![DpiSelection {
                 category: DpiCategory::Discord,
                 strategy_id: "builtin-discord".into(),
             }],
             options: DpiRuntimeOptions {
-                zapret2_level: 1,
+                zapret2_level: 1, zapret2_clienthello: false, zapret2_profiles: Vec::new(),
                 legacy_reliability: false,
                 zapret2_overrides: Vec::new(),
+                zapret2_diagnostics: false,
             },
         };
-        let started = backend.dpi_start(initial_request.clone()).unwrap();
-        let adaptive_override = Zapret2AdaptiveOverride {
-            schema_version: ZAPRET2_ADAPTIVE_SCHEMA_VERSION,
-            category: DpiCategory::Discord,
-            transport: Zapret2AdaptiveTransport::Tls,
-            steps: vec![Zapret2AdaptiveStep {
-                function: Zapret2AdaptiveFunction::MultiDisorderLegacy,
-                args: std::collections::BTreeMap::from([(
-                    "pos".into(),
-                    Zapret2AdaptiveValue::Text("1,midsld".into()),
-                )]),
-            }],
-            payload: Zapret2AdaptivePayload::TlsClientHello,
-            out_range: Some(Zapret2AdaptiveRange::FirstTenDataPackets),
-        };
-        let replacement_request = DpiStartRequest {
-            options: DpiRuntimeOptions {
-                zapret2_overrides: vec![adaptive_override.clone()],
-                ..initial_request.options.clone()
-            },
-            ..initial_request
-        };
-
-        assert_eq!(
-            backend.dpi_replace(DpiReplaceRequest {
-                expected_generation: started.generation + 1,
-                runtime: replacement_request.clone(),
-            }),
-            Err(BackendError::Conflict)
-        );
-        let replaced = backend
-            .dpi_replace(DpiReplaceRequest {
-                expected_generation: started.generation,
-                runtime: replacement_request,
-            })
-            .unwrap();
-
-        assert_ne!(replaced.generation, started.generation);
-        assert_eq!(
-            backend.runtime_snapshot().unwrap().dpi.unwrap().generation,
-            replaced.generation
-        );
-        assert_eq!(
-            backend
-                .active_request
-                .as_ref()
-                .unwrap()
-                .options
-                .zapret2_overrides,
-            vec![adaptive_override]
-        );
+        let started = backend.dpi_start(original.clone()).unwrap();
+        let mut retired = original.clone();
+        retired.options.zapret2_overrides = vec![serde_json::json!({
+            "category": "discord", "steps": []
+        })];
+        assert!(backend.dpi_replace(DpiReplaceRequest {
+            expected_generation: started.generation,
+            runtime: retired,
+        }).is_err());
+        assert_eq!(backend.runtime_snapshot().unwrap().dpi.unwrap().generation, started.generation);
+        assert_eq!(backend.active_request.as_ref(), Some(&original));
         let state = state.lock().unwrap();
-        assert_eq!(state.launches, 2);
-        assert_eq!(state.stops, 1);
+        assert_eq!(state.launches, 1);
+        assert_eq!(state.stops, 0);
     }
+
+    #[test]
+    fn invalid_named_profile_is_rejected_before_stopping_active_generation() {
+        use obsession_runtime_protocol::Zapret2ProfileSelection;
+        let fixture = setup_fixture_with_zapret2(true);
+        let state = Arc::new(Mutex::new(FakeState::default()));
+        let mut backend = backend(&fixture, state.clone());
+        let mut original = request(DpiEngine::Zapret2);
+        original.selections[0].strategy_id = "builtin-discord".into();
+        let started = backend.dpi_start(original.clone()).unwrap();
+        for (transport, id) in [("tls", "unknown_profile"), ("tls", "discord_quic_level_1"), ("quic", "discord_tls_text")] {
+            let mut replacement = original.clone();
+            replacement.options.zapret2_profiles = vec![Zapret2ProfileSelection { category: "discord".into(), transport: transport.into(), profile_id: id.into() }];
+            assert!(backend.dpi_replace(DpiReplaceRequest { expected_generation: started.generation, runtime: replacement }).is_err());
+            assert_eq!(backend.runtime_snapshot().unwrap().dpi.unwrap().generation, started.generation);
+            assert_eq!(backend.active_request.as_ref(), Some(&original));
+        }
+        let state = state.lock().unwrap();
+        assert_eq!(state.launches, 1);
+        assert_eq!(state.stops, 0);
+    }
+
+    #[test]
+    fn named_profiles_use_canonical_plan_identity_and_verified_native_resources() {
+        use obsession_runtime_protocol::Zapret2ProfileSelection;
+        let fixture = setup_fixture_with_zapret2(true);
+        let catalog = fixture.install_layout.load_verified_catalog().unwrap();
+        let mut request = request(DpiEngine::Zapret2);
+        request.selections[0].strategy_id = "builtin-discord".into();
+        let original = catalog.resolve_dpi_plan(&request).unwrap();
+        request.options.zapret2_profiles = vec![
+            Zapret2ProfileSelection { category: "discord".into(), transport: "tls".into(), profile_id: "classic_discord_tls_split_sni".into() },
+            Zapret2ProfileSelection { category: "discord".into(), transport: "quic".into(), profile_id: "discord_quic_level_1".into() },
+        ];
+        let explicit = catalog.resolve_dpi_plan(&request).unwrap();
+        assert_ne!(explicit.fingerprint(), original.fingerprint());
+        request.options.zapret2_profiles.reverse();
+        let reversed = catalog.resolve_dpi_plan(&request).unwrap();
+        assert_eq!(explicit, reversed);
+        let materialized = fixture.state_layout.materialize(&explicit, 200).unwrap();
+        let arguments = materialized.launches()[0].arguments();
+        assert!(arguments.iter().any(|argument| argument == "--name=classic_discord_tls_split_sni"));
+        assert!(arguments.iter().any(|argument| argument == "--lua-desync=multisplit:pos=midsld"));
+        assert!(arguments.iter().any(|argument| argument == "--name=discord_quic_level_1"));
+        assert!(!arguments.iter().any(|argument| argument.contains("obsession_execute")));
+        fs::write(fixture.install_layout.root().join("strategy-packs/builtin/lua/zapret-antidpi.lua"), b"tampered").unwrap();
+        assert!(catalog.resolve_dpi_plan(&request).is_err());
+    }
+
+    #[test]
+    fn clienthello_uses_only_verified_experiment_and_changes_plan_identity() {
+        let fixture = setup_fixture_with_zapret2(true);
+        let catalog = fixture.install_layout.load_verified_catalog().unwrap();
+        let mut runtime = request(DpiEngine::Zapret2);
+        runtime.selections[0].strategy_id = "builtin-discord".into();
+        let normal = catalog.resolve_dpi_plan(&runtime).unwrap();
+        let original = fixture.state_layout.materialize(&normal, 1).unwrap();
+        runtime.options.zapret2_clienthello = true;
+        let experiment = catalog.resolve_dpi_plan(&runtime).unwrap();
+        assert_ne!(normal.fingerprint(), experiment.fingerprint());
+        let experimental = fixture.state_layout.materialize(&experiment, 2).unwrap();
+        let arguments = experimental.launches()[0].arguments();
+        assert!(arguments.iter().any(|arg| arg == "--lua-desync=obsession_clienthello"));
+        assert!(arguments.iter().any(|arg| arg.ends_with("obsession-clienthello.lua")));
+        assert!(!arguments.iter().any(|arg| arg.starts_with("--lua-desync=multidisorder_legacy:")));
+        assert!(original.launches()[0].arguments().iter().any(|arg| arg.starts_with("--lua-desync=multidisorder_legacy:")));
+        fs::write(fixture.install_layout.root().join("strategy-packs/builtin/lua/obsession-clienthello.lua"), b"tampered experiment").unwrap();
+        assert!(experiment.reverify().is_err());
+    }
+
 
     #[test]
     fn recovery_owner_is_joined_by_exact_generation_category_and_selection() {
@@ -1556,7 +1811,7 @@ mod tests {
         let mut process_backend = backend(&fixture, process_state);
         assert_eq!(
             process_backend.dpi_start(request(DpiEngine::Legacy)),
-            Err(BackendError::RuntimeFailed)
+            Err(BackendError::RuntimeProcessFailed(obsession_runtime_protocol::RuntimeFailureDetail::InvalidLaunchPath))
         );
 
         let fixture = setup_fixture();
@@ -1565,7 +1820,12 @@ mod tests {
         fs::write(&fixture.executable, b"tampered-after-startup").unwrap();
         assert_eq!(
             integrity_backend.dpi_start(request(DpiEngine::Legacy)),
-            Err(BackendError::ProtectedResourceInvalid)
+            Err(BackendError::ProtectedMaterializationFailed(
+                obsession_runtime_protocol::RuntimeFailureDetail::Materialization {
+                    materialization_stage: obsession_runtime_protocol::RuntimeMaterializationStage::ResourceVerification,
+                    windows_error: None,
+                }
+            ))
         );
         assert_eq!(integrity_state.lock().unwrap().launches, 0);
     }
@@ -1580,10 +1840,35 @@ mod tests {
         let mut backend = backend(&fixture, state.clone());
         assert_eq!(
             backend.dpi_start(request(DpiEngine::Legacy)),
-            Err(BackendError::RuntimeFailed)
+            Err(BackendError::RuntimeProcessFailed(obsession_runtime_protocol::RuntimeFailureDetail::OwnershipMismatch))
         );
         let state = state.lock().unwrap();
         assert_eq!(state.launches, 1);
         assert_eq!(state.stops, 1);
     }
+    #[test]
+    fn process_exit_detail_survives_backend_mapping() {
+        let mapped = map_executor_error(ExecutorError::Process(
+            crate::dpi_executor::ProcessError::ExitedBeforeReady { pid: 123, exit_code: 87 }));
+        assert_eq!(mapped, BackendError::RuntimeProcessFailed(
+            obsession_runtime_protocol::RuntimeFailureDetail::ExitedBeforeReady { exit_code: 87 }));
+        assert_eq!(mapped.wire_code(), obsession_runtime_protocol::ServiceErrorCode::RuntimeFailed);
+    }
+
+    #[test]
+    fn generation_reservation_detail_keeps_native_error_and_resource_wire_code() {
+        let mapped = map_executor_error(ExecutorError::Materialization(MaterializationError::Io {
+            operation: "create generation directory",
+            path: PathBuf::from("never-sent-private-path"),
+            source: std::io::Error::from_raw_os_error(183),
+        }));
+        assert_eq!(mapped, BackendError::ProtectedMaterializationFailed(
+            obsession_runtime_protocol::RuntimeFailureDetail::Materialization {
+                materialization_stage: obsession_runtime_protocol::RuntimeMaterializationStage::GenerationReservation,
+                windows_error: Some(183),
+            }
+        ));
+        assert_eq!(mapped.wire_code(), obsession_runtime_protocol::ServiceErrorCode::ProtectedResourceInvalid);
+    }
+
 }

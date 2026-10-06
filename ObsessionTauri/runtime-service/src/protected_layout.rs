@@ -10,7 +10,7 @@ use std::io::{BufReader, Read};
 use std::path::{Component, Path, PathBuf};
 
 use obsession_runtime_protocol::{
-    DpiCategory, DpiEngine, DpiStartRequest, Zapret2AdaptiveOverride, MAX_SELECTIONS,
+    DpiCategory, DpiEngine, DpiStartRequest, Zapret2ProfileSelection, MAX_SELECTIONS,
     MAX_STRATEGY_ID_BYTES,
 };
 use serde::Deserialize;
@@ -86,15 +86,27 @@ impl VerifiedRuntimeCatalog {
                 })?;
             strategies.push(strategy.clone());
         }
-        Ok(VerifiedDpiPlan {
+        let mut zapret2_profiles = request.options.zapret2_profiles.clone();
+        zapret2_profiles.sort_by(|left, right| (&left.category, &left.transport, &left.profile_id).cmp(&(&right.category, &right.transport, &right.profile_id)));
+        let plan = VerifiedDpiPlan {
             root: self.root.clone(),
             engine: request.engine,
             executable: engine.executable.clone(),
             strategies,
             zapret2_level: request.options.zapret2_level,
+            zapret2_profiles,
+            zapret2_clienthello: request.options.zapret2_clienthello,
             legacy_reliability: request.options.legacy_reliability,
-            zapret2_overrides: request.options.zapret2_overrides.clone(),
-        })
+            zapret2_diagnostics: request.options.zapret2_diagnostics,
+        };
+        // Explicit profile IDs must be resolved before a replace can stop the
+        // current generation, rather than failing later during materialization.
+        #[cfg(windows)]
+        if !plan.zapret2_profiles.is_empty() {
+            plan.reverify()?;
+            crate::zapret2_pack::compile(&plan).map_err(|_| LayoutError::InvalidDpiPlan)?;
+        }
+        Ok(plan)
     }
 }
 
@@ -105,8 +117,10 @@ pub struct VerifiedDpiPlan {
     executable: VerifiedResource,
     strategies: Vec<VerifiedStrategy>,
     zapret2_level: u8,
+    zapret2_profiles: Vec<Zapret2ProfileSelection>,
+    zapret2_clienthello: bool,
     legacy_reliability: bool,
-    zapret2_overrides: Vec<Zapret2AdaptiveOverride>,
+    zapret2_diagnostics: bool,
 }
 
 impl VerifiedDpiPlan {
@@ -134,13 +148,16 @@ impl VerifiedDpiPlan {
         self.zapret2_level
     }
 
+    pub fn zapret2_clienthello(&self) -> bool { self.zapret2_clienthello }
+
+    pub fn zapret2_profiles(&self) -> &[Zapret2ProfileSelection] { &self.zapret2_profiles }
+
     pub fn legacy_reliability(&self) -> bool {
         self.legacy_reliability
     }
 
-    pub fn zapret2_overrides(&self) -> &[Zapret2AdaptiveOverride] {
-        &self.zapret2_overrides
-    }
+
+    pub fn zapret2_diagnostics(&self) -> bool { self.zapret2_diagnostics }
 
     /// Re-checks every executable/config/data resource immediately before a
     /// launch. The catalog is an allowlist, not a lifetime integrity lease.
@@ -161,12 +178,17 @@ impl VerifiedDpiPlan {
             DpiEngine::Legacy => b"legacy".as_slice(),
             DpiEngine::Zapret2 => b"zapret2".as_slice(),
         });
-        digest.update([self.zapret2_level, u8::from(self.legacy_reliability)]);
-        if let Ok(overrides) = serde_json::to_vec(&self.zapret2_overrides) {
-            digest.update((overrides.len() as u64).to_le_bytes());
-            digest.update(overrides);
-        } else {
-            digest.update(u64::MAX.to_le_bytes());
+        digest.update([self.zapret2_level, u8::from(self.legacy_reliability), u8::from(self.zapret2_diagnostics)]);
+        if self.zapret2_clienthello {
+            digest.update(b"\0experimental-clienthello/v1");
+        }
+        if !self.zapret2_profiles.is_empty() {
+            digest.update(b"\0fixed-zapret2-profiles/v1");
+            for profile in &self.zapret2_profiles {
+                digest.update(profile.category.as_bytes()); digest.update([0]);
+                digest.update(profile.transport.as_bytes()); digest.update([0]);
+                digest.update(profile.profile_id.as_bytes()); digest.update([0]);
+            }
         }
         for strategy in &self.strategies {
             digest.update([category_tag(strategy.category)]);
@@ -885,9 +907,10 @@ mod tests {
                 strategy_id: "discord_1.conf".into(),
             }],
             options: DpiRuntimeOptions {
-                zapret2_level: 0,
+                zapret2_level: 0, zapret2_clienthello: false, zapret2_profiles: Vec::new(),
                 legacy_reliability: true,
                 zapret2_overrides: Vec::new(),
+                zapret2_diagnostics: false,
             },
         };
         let plan = catalog.resolve_dpi_plan(&request).unwrap();

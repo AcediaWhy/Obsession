@@ -22,6 +22,19 @@ export interface AppConfig {
   lists: string[];
 }
 
+export interface UpdateCheck {
+  current_version: string;
+  latest_version: string;
+  available: boolean;
+  notes: string;
+  release_url: string;
+}
+
+export interface UpdateProgress {
+  downloaded: number;
+  total: number;
+}
+
 export interface DpiTestReport {
   passed: boolean;
   status: "passed" | "partial" | "failed" | "cancelled";
@@ -61,7 +74,6 @@ export interface RuntimeSnapshot {
   dpi: DpiStatus;
   proxy: ProxyStatus;
   brain: BrainStatus | null;
-  adaptive: AdaptiveStatus | null;
 }
 
 export interface HostsStatus {
@@ -115,12 +127,19 @@ export interface ProtectedRuntimeCapabilities {
   serviceVersion: string | null;
   dpi: boolean;
   zapret2: boolean;
-  adaptiveZapret2: boolean;
   eyesEvents: boolean;
   legacyReliabilityControls: boolean;
   legacyReliability: boolean;
   hosts: boolean;
   proxyLanFirewall: boolean;
+  systemDnsRecovery: boolean;
+}
+
+export interface SystemDnsStatus {
+  active: boolean;
+  restoreAvailable: boolean;
+  provider: "cloudflare" | "google" | null;
+  interfaceName: string | null;
 }
 
 export interface BootstrapSettings {
@@ -139,7 +158,6 @@ export interface BootstrapSnapshot {
   dpi: VersionedSection<DpiStatus>;
   proxy: VersionedSection<ProxyStatus>;
   brain: VersionedSection<BrainStatus | null>;
-  adaptive: VersionedSection<AdaptiveStatus | null>;
   legacyReliability: VersionedSection<LegacyReliabilityStatus>;
   hosts: VersionedSection<HostsStatus>;
 }
@@ -204,9 +222,9 @@ export interface Settings {
   /** Выбранный DPI-движок: "legacy" (Zapret1) или "zapret2" (Beta). */
   dpi_engine: string;
   zapret2_level: number;
-  /** Локальный bounded-поиск Safe Strategy DSL для Zapret2. */
-  adaptive_strategy_enabled: boolean;
-  adaptive_search_mode: "fast" | "balanced" | "deep";
+  zapret2_clienthello: boolean;
+  zapret2_profiles: Zapret2ProfileChoice[];
+  zapret2_pick_mode: string;
 }
 
 export interface EngineOption {
@@ -217,26 +235,160 @@ export interface EngineOption {
   selected: boolean;
 }
 
-export type AdaptiveStrategyTrust = "prepared" | "recommended" | "confirmed";
-
 export interface Zapret2ProfileDescriptor {
   category: string;
   profileId: string;
-  source: "builtin" | "adaptive";
+  source: "builtin";
   transport: "http" | "tls" | "quic" | "tcp" | "udp";
   ports: string;
   hostlist: string | null;
   ipset: string | null;
-  candidateId: string | null;
-  verification: "verified" | "recommended" | "baseline" | "not_actively_verified";
-  trust: AdaptiveStrategyTrust;
-  evidenceSource: string | null;
-  sourceCandidateId: string | null;
-  sourceCategory: AdaptiveCategory | null;
-  sourceTransport: AdaptiveTransport | null;
-  recommendationReason: string | null;
   dataPlane: boolean;
   broadIpset: boolean;
+}
+
+export interface Zapret2ProfileChoice {
+  category: string;
+  transport: string;
+  profileId: string;
+}
+
+export interface Zapret2CatalogProfile extends Zapret2ProfileChoice {
+  compositionEligible?: boolean;
+  composition?: { apiProfileId: string; cdnProfileId: string } | null;
+  name: string;
+  experimental: boolean;
+  dataPlane: boolean;
+  level: number;
+  selected: boolean;
+  candidate?: {
+    label: string;
+    family: string;
+    urls: string[];
+    evidence: "author_report" | "blockcheck_report" | "derived";
+    notes: string;
+  } | null;
+}
+
+export type Zapret2PickMode = "fast" | "balanced" | "deep";
+
+export interface Zapret2PickerResult {
+  category: string;
+  transport: string;
+  profileId?: string;
+  status: "passed" | "exhausted" | "cancelled" | "tie" | "insufficient" | "partial" | "inconclusive" | "aborted";
+  checked: number;
+  total: number;
+  report?: DpiTestReport;
+  failure?: string | null;
+  historyWarning?: string | null;
+  tournament?: Zapret2Tournament;
+}
+
+export interface Zapret2FunctionSummary {
+  function: string;
+  label: string;
+  required: boolean;
+  passed: number;
+  failed: number;
+  inconclusive: number;
+  notTested: number;
+  cancelled: number;
+  proof: string;
+}
+
+export interface Zapret2CandidateSummary {
+  composition?: { apiProfileId: string; cdnProfileId: string } | null;
+  profileId: string;
+  label: string;
+  family: string;
+  fingerprint: string;
+  rounds: number;
+  completeRounds: number;
+  routingVerifiedRounds?: number;
+  requiredConfirmations: number;
+  status: "confirmed" | "partial" | "inconclusive" | "failed" | "not_tested";
+  functions: Zapret2FunctionSummary[];
+  bytes: number;
+  medianMs?: number | null;
+  transferBytesPerSec?: number | null;
+}
+
+export interface Zapret2Tournament {
+  runId: string;
+  requiredConfirmations: number;
+  maxAttempts: number;
+  budgetMs: number;
+  maxBodyBytes: number;
+  elapsedMs: number;
+  bytesRead: number;
+  stopReason: string;
+  candidates: Zapret2CandidateSummary[];
+  rounds: Zapret2RoundMeasurement[];
+}
+
+export interface Zapret2RoundMeasurement {
+  runId: string; profileId: string; fingerprint: string; runtimeGeneration: number | null;
+  ordinal: number; phase: string; transport: string; testerVersion: string; execution: string;
+  networkBefore: string | null; networkAfter: string | null; comparable: boolean; contextReason: string | null;
+  packetCapture?: {
+    generation: number; state: string; startupError: string | null;
+    capturedPackets: number; queueDrops: number; parseErrors: number; sensorFailed: boolean; capacityEvictions: number;
+    flows: Array<{ localAddress: string; remoteAddress: string; synAckObserved: boolean;
+      clientHelloBytes: number | null; ackedClientBytes: number | null; outboundPayloadPackets: number;
+      repeatedSequencePackets: number; inboundPayloadBytes: number; inboundReset: boolean; inboundFin: boolean;
+      tlsServerHelloObserved: boolean; tlsAlertObserved: boolean; conflictingOverlap: boolean }>;
+  };
+  functions: Array<{
+    function: string; label: string; required: boolean;
+    outcome: "passed" | "failed" | "inconclusive" | "not_tested" | "cancelled";
+    stage: string; proof: string; reason: string | null; target: string;
+    remoteAddress: string | null; ipFamily: string | null; elapsedMs: number; bytes: number; httpStatus: number | null;
+    transferBytes?: number; transferMs?: number | null;
+    connections?: Array<{
+      purpose: string; host: string; localAddress: string; remoteAddress: string;
+      expectedProfileId: string; observedProfiles: string[]; observedActions: string[]; observedSends?: string[]; status: string;
+      http?: { stage: string; startedAfterMs: number; elapsedMs: number; tlsMs: number | null; httpStatus: number | null; bytes: number };
+    }>;
+    tlsHandshakes?: Array<{
+      kind: "large_early_sni" | "large_late_sni";
+      handshakeBytes: number; sniOffset: number; hybridKeyBytes: number;
+      authenticatedTls: boolean; applicationOk: boolean;
+    }>;
+  }>;
+}
+
+export type Zapret2Scenario = "discord_startup" | "discord_voice" | "youtube_video";
+export type Zapret2Observation = "passed" | "failed" | "inconclusive";
+export interface Zapret2ScenarioProgress {
+  requestId: string;
+  trialId: string; runId: string; category: string; transport: string; profileId: string; scenario: Zapret2Scenario;
+  phase: "starting" | "step" | "waiting" | "restoring" | "idle";
+  stepId: string | null; stepIndex: number; total: number; label: string; instruction: string;
+  confirmAfterUnixMs: number; expiresUnixMs: number;
+}
+export interface Zapret2ScenarioResult {
+  requestId: string;
+  trialId: string; runId: string; category: string; transport: string; profileId: string; scenario: Zapret2Scenario;
+  source: "user_report"; scope: "whole_configuration"; actualTransport: "unverified";
+  configurationFingerprint: string; status: "passed" | "failed" | "inconclusive" | "cancelled" | "aborted";
+  restored: boolean; contextValid: boolean; recommendationAvailable: boolean;
+  failure: string | null; elapsedMs: number; measurement: Zapret2RoundMeasurement;
+  historyWarning?: string | null;
+}
+export interface Zapret2HistoryRecord {
+  recordedAtUnixMs: number; kind: "tournament" | "scenario"; subject: string; outcome: string;
+  report: Record<string, unknown>;
+}
+
+export interface Zapret2PickerProgress {
+  category: string;
+  transport: string;
+  current: number;
+  total: number;
+  profileId: string;
+  label: string;
+  phase: "testing" | "screening" | "confirmation" | "composition" | "restoring" | "idle";
 }
 
 // ─── Глаза / Мозг (контур надёжности) ───────────────────────────────────────
@@ -432,100 +584,6 @@ export interface LegacyReliabilityStatus {
   haltedCategories: string[];
 }
 
-export type AdaptiveCategory = "discord" | "youtube_twitch" | "gaming";
-export type AdaptiveTransport = "tls" | "quic";
-export type AdaptivePhase =
-  | "idle"
-  | "suggested"
-  | "discovering_quic"
-  | "calibrating"
-  | "searching"
-  | "candidate_probe"
-  | "temporary_verification"
-  | "applying"
-  | "rolling_back"
-  | "applied"
-  | "exhausted"
-  | "probe_unreliable"
-  | "quic_targets_unavailable"
-  | "base_unhealthy"
-  | "internal_error"
-  | "cancelled";
-
-export interface AdaptiveStatus {
-  phase: AdaptivePhase;
-  category: AdaptiveCategory | null;
-  diagnosis:
-    | "repeated_reset"
-    | "tls_blackhole"
-    | "quic_blackhole"
-    | "probe_failure"
-    | null;
-  sessionId: number | null;
-  attemptId: number | null;
-  candidateId: string | null;
-  candidateIndex: number | null;
-  candidateTotal: number | null;
-  verificationDeadlineMs: number | null;
-  rollbackReason: string | null;
-  transport: "tls" | "quic" | null;
-  sessionMode: "comparison" | "recovery" | null;
-  currentRound: number | null;
-  totalRounds: number | null;
-  failureStage:
-    | "none"
-    | "dns"
-    | "tcp"
-    | "tls"
-    | "quic"
-    | "https"
-    | "eyes_reset"
-    | "eyes_blackhole"
-    | "spawn"
-    | "stability"
-    | null;
-}
-
-export interface AdaptiveSuggestion {
-  category: AdaptiveCategory;
-  reason: NonNullable<AdaptiveStatus["diagnosis"]>;
-}
-
-export interface AdaptiveRecommendationDescriptor {
-  category: AdaptiveCategory;
-  transport: AdaptiveTransport;
-  candidateId: string;
-  trust: "recommended";
-  evidenceSource: string;
-  sourceCandidateId: string;
-  sourceCategory: AdaptiveCategory;
-  sourceTransport: AdaptiveTransport;
-  recommendationReason: string;
-}
-
-export interface AdaptiveTargetProbe {
-  host: string;
-  core: boolean;
-  round: number;
-  transport: "tls" | "quic";
-  dnsOk: boolean;
-  tcpOk: boolean;
-  tlsOk: boolean;
-  quicOk: boolean;
-  httpsOk: boolean;
-  httpStatus: number | null;
-  latencyMs: number;
-  failureStage: NonNullable<AdaptiveStatus["failureStage"]>;
-  detail: string;
-}
-
-export interface AdaptiveProbeBatch {
-  category: AdaptiveCategory;
-  transport: "tls" | "quic";
-  round: number;
-  targets: AdaptiveTargetProbe[];
-}
-
 /** Идентичность текущей сети (для дашборда «Обзор»). */
 export interface NetworkInfo {
   online: boolean;
@@ -555,6 +613,8 @@ function invoke<T>(
 }
 
 export const api = {
+  updateCheck: () => invoke<UpdateCheck>("update_check"),
+  updateInstall: () => invoke<void>("update_install"),
   getConfig: () => invoke<AppConfig>("get_config"),
   runtimeGetSnapshot: () => invoke<RuntimeSnapshot>("runtime_get_snapshot"),
   bootstrapGetSnapshot: () =>
@@ -573,6 +633,19 @@ export const api = {
   dpiEngineList: () => invoke<EngineOption[]>("dpi_engine_list"),
   dpiZapret2Profiles: (categories: string[]) =>
     invoke<Zapret2ProfileDescriptor[]>("dpi_zapret2_profiles", { categories }),
+  dpiZapret2Catalog: (categories: string[]) =>
+    invoke<Zapret2CatalogProfile[]>("dpi_zapret2_catalog", { categories }),
+  dpiZapret2Select: (category: string, transport: string, profileId: string) =>
+    invoke<void>("dpi_zapret2_select", { category, transport, profileId }),
+  dpiZapret2Pick: (category: string, transport: string, mode: Zapret2PickMode, composition?: {apiProfileId:string;cdnProfileId:string}) =>
+    invoke<Zapret2PickerResult>("dpi_zapret2_pick", { category, transport, mode, ...(composition ? {composition} : {}) }),
+  dpiZapret2ApplyResult: (runId: string, category: string, transport: string, profileId: string) =>
+    invoke<void>("dpi_zapret2_apply_result", { runId, category, transport, profileId }),
+  dpiZapret2TestScenario: (requestId: string, runId: string, category: string, transport: string, profileId: string, scenario: Zapret2Scenario) =>
+    invoke<Zapret2ScenarioResult>("dpi_zapret2_test_scenario", { requestId, runId, category, transport, profileId, scenario }),
+  dpiZapret2ScenarioObserve: (trialId: string, stepId: string, observation: Zapret2Observation) =>
+    invoke<void>("dpi_zapret2_scenario_observe", { trialId, stepId, observation }),
+  dpiZapret2History: () => invoke<Zapret2HistoryRecord[]>("dpi_zapret2_history"),
   dpiEngineSet: (engine: string) => invoke<void>("dpi_engine_set", { engine }),
   dpiDetectOrphaned: () => invoke<number[]>("dpi_detect_orphaned"),
   dpiEmergencyKill: () => invoke<void>("dpi_emergency_kill"),
@@ -598,6 +671,8 @@ export const api = {
   hostsCheck: (maxAgeSeconds: number) =>
     invoke<HostsHealthSnapshot>("hosts_check", { maxAgeSeconds }),
   hostsUninstall: () => invoke<void>("hosts_uninstall"),
+  systemDnsStatus: () => invoke<SystemDnsStatus>("system_dns_status"),
+  systemDnsRestore: () => invoke<SystemDnsStatus>("system_dns_restore"),
   hostsRestore: (provider: string) =>
     invoke<HostsHealthSnapshot>("hosts_restore", { provider }),
 
@@ -628,33 +703,6 @@ export const api = {
     invoke<void>("legacy_reliability_approve", {
       approval: { proposalId, attemptId },
     }),
-  adaptiveGetStatus: () =>
-    invoke<AdaptiveStatus | null>("adaptive_get_status"),
-  adaptiveStartSearch: (category: AdaptiveCategory, transport: AdaptiveTransport) =>
-    invoke<void>("adaptive_start_search", { category, transport }),
-  adaptiveGetRecommendation: (
-    category: AdaptiveCategory,
-    transport: AdaptiveTransport,
-  ) =>
-    invoke<AdaptiveRecommendationDescriptor | null>("adaptive_get_recommendation", {
-      category,
-      transport,
-    }),
-  adaptiveApplyRecommendation: (
-    category: AdaptiveCategory,
-    transport: AdaptiveTransport,
-  ) =>
-    invoke<AdaptiveRecommendationDescriptor>("adaptive_apply_recommendation", {
-      category,
-      transport,
-    }),
-  adaptiveCancelSearch: () => invoke<void>("adaptive_cancel_search"),
-  adaptiveConfirmCandidate: (sessionId: number, candidateId: string) =>
-    invoke<void>("adaptive_confirm_candidate", { sessionId, candidateId }),
-  adaptiveRejectCandidate: (sessionId: number, candidateId: string) =>
-    invoke<void>("adaptive_reject_candidate", { sessionId, candidateId }),
-  adaptiveResetSaved: (category: AdaptiveCategory) =>
-    invoke<void>("adaptive_reset_saved", { category }),
 };
 
 // ─── События ──────────────────────────────────────────────────────────────
@@ -671,6 +719,8 @@ function listenRuntime<T>(
 }
 
 export const on = {
+  updateProgress: (cb: (progress: UpdateProgress) => void): Promise<UnlistenFn> =>
+    listenRuntime<UpdateProgress>("update-progress", (e) => cb(e.payload)),
   log: (cb: (e: LogEvent) => void): Promise<UnlistenFn> =>
     listenRuntime<LogEvent>("log", (e) => cb(e.payload)),
   dpiStatus: (cb: (e: DpiStatus) => void): Promise<UnlistenFn> =>
@@ -711,22 +761,6 @@ export const on = {
       "legacy-reliability://status",
       (e) => cb(e.payload),
     ),
-  adaptiveStatus: (cb: (s: AdaptiveStatus) => void): Promise<UnlistenFn> =>
-    listenRuntime<VersionedSection<AdaptiveStatus>>("adaptive://status", (e) => {
-      cb(e.payload.value);
-    }),
-  adaptiveStatusVersioned: (
-    cb: (section: VersionedSection<AdaptiveStatus>) => void,
-  ): Promise<UnlistenFn> =>
-    listenRuntime<VersionedSection<AdaptiveStatus>>("adaptive://status", (e) =>
-      cb(e.payload),
-    ),
-  adaptiveSuggestion: (
-    cb: (suggestion: AdaptiveSuggestion) => void,
-  ): Promise<UnlistenFn> =>
-    listenRuntime<AdaptiveSuggestion>("adaptive://suggestion", (e) => cb(e.payload)),
-  adaptiveProbe: (cb: (probe: AdaptiveProbeBatch) => void): Promise<UnlistenFn> =>
-    listenRuntime<AdaptiveProbeBatch>("adaptive://probe", (e) => cb(e.payload)),
   // Rust сообщает о скрытии/показе окна в трей — дополняет Visibility API для
   // паузы анимаций (WebView2 не всегда шлёт visibilitychange на hide()).
   windowVisibility: (cb: (visible: boolean) => void): Promise<UnlistenFn> =>
@@ -737,6 +771,7 @@ export const on = {
 // Legacy snapshot stays available for compatibility; launcher hydration and
 // resume use independently versioned bootstrap sections.
 export const runtime = {
+  listen: listenRuntime,
   snapshot: (): Promise<RuntimeSnapshot> => api.runtimeGetSnapshot(),
   bootstrap: (): Promise<BootstrapSnapshot> => api.bootstrapGetSnapshot(),
 };

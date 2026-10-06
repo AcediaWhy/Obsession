@@ -17,11 +17,6 @@ export type ObsessionVisualSignals = {
     transitioning: boolean;
     error: string;
   };
-  adaptive: {
-    busy: boolean;
-    error: string;
-    phase: string | null;
-  };
   brain: {
     phase: string | null;
   };
@@ -32,16 +27,6 @@ export type ObsessionVisualSignals = {
   };
 };
 
-const ADAPTIVE_SCANNING = new Set([
-  "discovering_quic",
-  "calibrating",
-  "searching",
-  "candidate_probe",
-  "temporary_verification",
-  "applying",
-  "rolling_back",
-]);
-
 const BRAIN_SCANNING = new Set(["confirming", "switching"]);
 
 export function deriveObsessionVisualPhase(
@@ -50,8 +35,6 @@ export function deriveObsessionVisualPhase(
   const fault =
     signals.dpi.error.length > 0 ||
     signals.proxy.error.length > 0 ||
-    signals.adaptive.error.length > 0 ||
-    signals.adaptive.phase === "exhausted" ||
     signals.brain.phase === "exhausted" ||
     signals.reliability.phase === "blind" ||
     signals.reliability.activeAttemptPhase === "process_failed" ||
@@ -60,9 +43,6 @@ export function deriveObsessionVisualPhase(
 
   const scanning =
     signals.dpi.testing ||
-    signals.adaptive.busy ||
-    (signals.adaptive.phase != null &&
-      ADAPTIVE_SCANNING.has(signals.adaptive.phase)) ||
     (signals.brain.phase != null && BRAIN_SCANNING.has(signals.brain.phase)) ||
     signals.reliability.activeAttemptPhase != null;
   if (scanning) return "scanning";

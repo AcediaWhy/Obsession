@@ -11,6 +11,7 @@ type BtnProps = {
   variant?: "primary" | "ghost" | "danger";
   disabled?: boolean;
   className?: string;
+  title?: string;
 };
 
 export function Button({
@@ -19,6 +20,7 @@ export function Button({
   variant = "primary",
   disabled = false,
   className = "",
+  title,
 }: BtnProps) {
   const styles: Record<string, string> = {
     primary:
@@ -36,6 +38,7 @@ export function Button({
       transition={spring.flick}
       onClick={onClick}
       disabled={disabled}
+      title={title}
       className={[
         // Transform управляется framer-motion; CSS-анимация отвечает за цвет и свечение.
         "no-drag theme-morph btn-anim rounded-xl px-4 py-2.5 text-sm font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:cursor-not-allowed disabled:opacity-50",

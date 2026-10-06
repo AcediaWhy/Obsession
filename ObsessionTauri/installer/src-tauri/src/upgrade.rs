@@ -1257,6 +1257,20 @@ pub(crate) fn prepare_graphical_uninstall(target: &Path) -> Result<(), String> {
     let helper = artifacts.write("obsession-installer-safety", "ps1", SAFETY_HELPER)?;
     run_safety_helper(&helper, "StopOwnedApplication", target, None, None, &mut log)?;
     let client = RuntimeClient::new(Duration::from_secs(15)).map_err(|e| e.to_string())?;
+    let capabilities = client.call("uninstall-dns-capabilities", RuntimeRequest::GetCapabilities)
+        .map_err(|e| format!("Не удалось проверить службу перед восстановлением DNS: {e}"))?;
+    match capabilities.response {
+        RuntimeResponse::Capabilities(capabilities) => {
+            if capabilities.features.iter().any(|feature| matches!(feature, obsession_runtime_protocol::Feature::SystemDnsRestore | obsession_runtime_protocol::Feature::SystemDnsRecovery)) {
+                let response = client.call("uninstall-dns", RuntimeRequest::RestoreSystemDns)
+                    .map_err(|e| format!("Не удалось вернуть исходный DNS перед удалением: {e}"))?;
+                if !matches!(response.response, RuntimeResponse::SystemDns(ref status) if !status.restore_available) {
+                    return Err(format!("Служба не подтвердила восстановление DNS: {:?}. Восстановите DNS в Настройках Obsession.", response.response));
+                }
+            }
+        }
+        other => return Err(format!("Не удалось проверить восстановление DNS: {other:?}")),
+    }
     let snapshot = client.call("uninstall-snapshot", RuntimeRequest::GetRuntimeSnapshot)
         .map_err(|e| format!("Не удалось проверить службу перед удалением: {e}"))?;
     match snapshot.response {

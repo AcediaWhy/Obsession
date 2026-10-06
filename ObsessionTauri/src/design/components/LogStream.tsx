@@ -1,18 +1,17 @@
-import { useLayoutEffect, useRef } from "react";
-import { AnimatePresence, motion } from "framer-motion";
+import { useEffect, useRef } from "react";
 
 import { useLogStore } from "../../store/logStore";
-import { useMotionOff, useRenderHidden } from "../render";
-import { dur, ease, levelColor } from "../tokens";
+import { useRenderHidden } from "../render";
+import { levelColor } from "../tokens";
 
 const MAX_DOM_LINES = 120;
+const MAX_RENDERED_MESSAGE_CHARS = 700;
 const BOTTOM_THRESHOLD_PX = 24;
 
 // Журнал с пакетным обновлением строк и автопрокруткой у нижней границы.
 export function LogStream({ height }: { height?: number }) {
   const linesRaw = useLogStore((state) => state.lines);
   const clear = useLogStore((state) => state.clear);
-  const motionOff = useMotionOff();
   // В скрытом окне сохраняем последнюю видимую версию журнала.
   // После показа берём актуальные строки из хранилища.
   const hidden = useRenderHidden();
@@ -27,16 +26,12 @@ export function LogStream({ height }: { height?: number }) {
   const hiddenLineCount = lines.length - visibleLines.length;
   const lastLineId = lines[lines.length - 1]?.id ?? 0;
 
-  useLayoutEffect(() => {
+  useEffect(() => {
     const node = ref.current;
     if (!node || !stickToBottomRef.current) return;
-    const scrollToBottom = () => node.scrollTo({ top: node.scrollHeight });
     autoScrollRef.current = true;
-    scrollToBottom();
-    // content-visibility уточняет intrinsic-высоты после первого layout.
-    // Повторный проход не даёт заполненному до mount логу остаться на экран выше.
     const frame = window.requestAnimationFrame(() => {
-      scrollToBottom();
+      node.scrollTop = node.scrollHeight;
       autoScrollRef.current = false;
     });
     return () => {
@@ -81,50 +76,19 @@ export function LogStream({ height }: { height?: number }) {
             скрыто предыдущих строк: {hiddenLineCount}
           </div>
         )}
-        {/* Стабильный id — ключ к тому, что появление проигрывает только новая
-            строка. Уже видимые строки не перемонтируются при следующем batch. */}
-        <AnimatePresence initial={false}>
-          {visibleLines.map((line) => (
-            <motion.div
-              key={line.id}
-              initial={
-                motionOff
-                  ? { opacity: 0 }
-                  : {
-                      opacity: 0,
-                      y: 3,
-                      backgroundColor: "rgba(255, 255, 255, 0.035)",
-                    }
-              }
-              animate={{
-                opacity: 1,
-                y: 0,
-                backgroundColor: "rgba(255, 255, 255, 0)",
-              }}
-              transition={
-                motionOff
-                  ? { duration: dur.fast, ease: ease.enter }
-                  : {
-                      opacity: { duration: dur.base + dur.fast, ease: ease.enter },
-                      y: { duration: dur.base + dur.fast, ease: ease.enter },
-                      backgroundColor: {
-                        duration: dur.slow + dur.base,
-                        ease: ease.xfade,
-                      },
-                    }
-              }
-              className="log-row flex gap-2 rounded-sm"
+        {visibleLines.map((line) => (
+          <div key={line.id} className="log-row flex gap-2 rounded-sm">
+            <span className="shrink-0 text-ink-muted">{line.ts}</span>
+            <span
+              style={{ color: levelColor[line.level] }}
+              className="min-w-0 flex-1 whitespace-pre-wrap [overflow-wrap:anywhere]"
             >
-              <span className="shrink-0 text-ink-muted">{line.ts}</span>
-              <span
-                style={{ color: levelColor[line.level] }}
-                className="min-w-0 flex-1 whitespace-pre-wrap [overflow-wrap:anywhere]"
-              >
-                {line.message}
-              </span>
-            </motion.div>
-          ))}
-        </AnimatePresence>
+              {line.message.length > MAX_RENDERED_MESSAGE_CHARS
+                ? `${line.message.slice(0, MAX_RENDERED_MESSAGE_CHARS)}… (полная запись в app.log)`
+                : line.message}
+            </span>
+          </div>
+        ))}
       </div>
     </div>
   );
