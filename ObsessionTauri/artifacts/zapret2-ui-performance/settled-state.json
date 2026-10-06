@@ -1,0 +1,24 @@
+{
+  "canvases": [
+    {
+      "color": "206 74 82",
+      "dots": "1372",
+      "frames": "39",
+      "hover": "0.000",
+      "paintMs": "1.100",
+      "renderer": "2d",
+      "settling": "false"
+    },
+    {
+      "color": "206 74 82",
+      "dots": "1372",
+      "frames": "22",
+      "hover": "0.000",
+      "paintMs": "0.700",
+      "renderer": "2d",
+      "settling": "false"
+    }
+  ],
+  "pickerCanvases": 0,
+  "theme": "fallendown"
+}

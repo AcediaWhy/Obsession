@@ -1,0 +1,60 @@
+{
+  "idleBefore": [
+    {
+      "renderer": "2d",
+      "frames": 5,
+      "dots": 1410,
+      "width": 312,
+      "height": 200,
+      "settling": "false"
+    },
+    {
+      "renderer": "2d",
+      "frames": 5,
+      "dots": 1372,
+      "width": 312,
+      "height": 178,
+      "settling": "false"
+    }
+  ],
+  "idleAfter": [
+    {
+      "renderer": "2d",
+      "frames": 5,
+      "dots": 1410,
+      "width": 312,
+      "height": 178,
+      "settling": "false"
+    },
+    {
+      "renderer": "2d",
+      "frames": 5,
+      "dots": 1372,
+      "width": 312,
+      "height": 178,
+      "settling": "false"
+    }
+  ],
+  "afterLeave": [
+    {
+      "renderer": "2d",
+      "frames": 7,
+      "dots": 1372,
+      "width": 312,
+      "height": 178,
+      "settling": "true"
+    },
+    {
+      "renderer": "2d",
+      "frames": 5,
+      "dots": 1372,
+      "width": 312,
+      "height": 178,
+      "settling": "false"
+    }
+  ],
+  "cpuPaintAverageMs": 1.267924528301886,
+  "cpuPaintMaxMs": 1.6,
+  "samples": 53,
+  "scope": "card 2D CPU paint; not whole-app GPU utilization"
+}

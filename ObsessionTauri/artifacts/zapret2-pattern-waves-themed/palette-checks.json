@@ -1,0 +1,63 @@
+{
+  "themes": [
+    {
+      "theme": "catnap",
+      "color": "244 150 88",
+      "frames": "3285",
+      "morph": "0.550"
+    },
+    {
+      "theme": "japan",
+      "color": "122 152 190",
+      "frames": "3291",
+      "morph": "0.550"
+    },
+    {
+      "theme": "goldenmeadow",
+      "color": "220 177 103",
+      "frames": "3297",
+      "morph": "0.550"
+    },
+    {
+      "theme": "aurora",
+      "color": "99 102 241",
+      "frames": "3303",
+      "morph": "0.550"
+    },
+    {
+      "theme": "ophanim",
+      "color": "185 216 155",
+      "frames": "3311",
+      "morph": "0.550"
+    },
+    {
+      "theme": "midnight",
+      "color": "202 214 226",
+      "frames": "3318",
+      "morph": "0.550"
+    },
+    {
+      "theme": "fallendown",
+      "color": "206 74 82",
+      "frames": "3325",
+      "morph": "0.550"
+    },
+    {
+      "theme": "yanineko",
+      "color": "232 137 46",
+      "frames": "3331",
+      "morph": "0.550"
+    }
+  ],
+  "liveMorphContinuity": {
+    "before": {
+      "color": "244 150 88",
+      "frames": "1130",
+      "morph": "0.550"
+    },
+    "afterColor": "122 152 190",
+    "afterMorph": "0.550",
+    "afterFrames": "1137"
+  },
+  "reducedMotionRecolor": true
+}

@@ -1,0 +1,214 @@
+[
+  {
+    "cards": [
+      {
+        "accent": "127 168 150",
+        "background": "color(srgb 0.197882 0.297961 0.247608)",
+        "canvases": [
+          {
+            "color": "127 168 150",
+            "frames": "3",
+            "renderer": "2d",
+            "settling": "false"
+          },
+          {
+            "color": "127 168 150",
+            "frames": "858",
+            "renderer": "webgl",
+            "settling": "0"
+          }
+        ],
+        "font": "\"IBM Plex Sans\", system-ui, sans-serif",
+        "titleActionsOverlap": false,
+        "width": 294
+      },
+      {
+        "accent": "127 168 150",
+        "background": "color(srgb 0.197882 0.297961 0.247608)",
+        "canvases": [
+          {
+            "color": "127 168 150",
+            "frames": "3",
+            "renderer": "2d",
+            "settling": "false"
+          }
+        ],
+        "font": "\"IBM Plex Sans\", system-ui, sans-serif",
+        "titleActionsOverlap": false,
+        "width": 294
+      }
+    ],
+    "theme": "yanineko"
+  },
+  {
+    "cards": [
+      {
+        "accent": "122 152 190",
+        "background": "color(srgb 0.18502 0.252078 0.320157)",
+        "font": "\"IBM Plex Sans\", system-ui, sans-serif",
+        "renderers": [
+          "2d"
+        ],
+        "width": 294
+      },
+      {
+        "accent": "122 152 190",
+        "background": "color(srgb 0.18502 0.252078 0.320157)",
+        "font": "\"IBM Plex Sans\", system-ui, sans-serif",
+        "renderers": [
+          "2d"
+        ],
+        "width": 294
+      }
+    ],
+    "theme": "japan"
+  },
+  {
+    "cards": [
+      {
+        "accent": "244 150 88",
+        "background": "color(srgb 0.312706 0.19702 0.139373)",
+        "font": "\"IBM Plex Sans\", system-ui, sans-serif",
+        "renderers": [
+          "2d"
+        ],
+        "width": 294
+      },
+      {
+        "accent": "244 150 88",
+        "background": "color(srgb 0.312706 0.19702 0.139373)",
+        "font": "\"IBM Plex Sans\", system-ui, sans-serif",
+        "renderers": [
+          "2d"
+        ],
+        "width": 294
+      }
+    ],
+    "theme": "catnap"
+  },
+  {
+    "cards": [
+      {
+        "accent": "220 177 103",
+        "background": "color(srgb 0.259059 0.211843 0.140863)",
+        "font": "\"IBM Plex Sans\", system-ui, sans-serif",
+        "renderers": [
+          "2d"
+        ],
+        "titleActionsOverlap": false,
+        "width": 294
+      },
+      {
+        "accent": "220 177 103",
+        "background": "color(srgb 0.259059 0.211843 0.140863)",
+        "font": "\"IBM Plex Sans\", system-ui, sans-serif",
+        "renderers": [
+          "2d"
+        ],
+        "titleActionsOverlap": false,
+        "width": 294
+      }
+    ],
+    "theme": "goldenmeadow"
+  },
+  {
+    "cards": [
+      {
+        "accent": "99 102 241",
+        "background": "color(srgb 0.135294 0.147059 0.273961)",
+        "font": "\"IBM Plex Sans\", system-ui, sans-serif",
+        "renderers": [
+          "2d"
+        ],
+        "titleActionsOverlap": false,
+        "width": 294
+      },
+      {
+        "accent": "99 102 241",
+        "background": "color(srgb 0.135294 0.147059 0.273961)",
+        "font": "\"IBM Plex Sans\", system-ui, sans-serif",
+        "renderers": [
+          "2d"
+        ],
+        "titleActionsOverlap": false,
+        "width": 294
+      }
+    ],
+    "theme": "aurora"
+  },
+  {
+    "cards": [
+      {
+        "accent": "185 216 155",
+        "background": "color(srgb 0.246588 0.236627 0.253725)",
+        "font": "\"IBM Plex Sans\", system-ui, sans-serif",
+        "renderers": [
+          "2d"
+        ],
+        "titleActionsOverlap": false,
+        "width": 294
+      },
+      {
+        "accent": "185 216 155",
+        "background": "color(srgb 0.246588 0.236627 0.253725)",
+        "font": "\"IBM Plex Sans\", system-ui, sans-serif",
+        "renderers": [
+          "2d"
+        ],
+        "titleActionsOverlap": false,
+        "width": 294
+      }
+    ],
+    "theme": "ophanim"
+  },
+  {
+    "cards": [
+      {
+        "accent": "202 214 226",
+        "background": "color(srgb 0.239059 0.26251 0.289333)",
+        "font": "\"IBM Plex Sans\", system-ui, sans-serif",
+        "renderers": [
+          "2d"
+        ],
+        "titleActionsOverlap": false,
+        "width": 294
+      },
+      {
+        "accent": "202 214 226",
+        "background": "color(srgb 0.239059 0.26251 0.289333)",
+        "font": "\"IBM Plex Sans\", system-ui, sans-serif",
+        "renderers": [
+          "2d"
+        ],
+        "titleActionsOverlap": false,
+        "width": 294
+      }
+    ],
+    "theme": "midnight"
+  },
+  {
+    "cards": [
+      {
+        "accent": "206 74 82",
+        "background": "color(srgb 0.224392 0.135059 0.152941)",
+        "font": "\"IBM Plex Sans\", system-ui, sans-serif",
+        "renderers": [
+          "2d"
+        ],
+        "titleActionsOverlap": false,
+        "width": 294
+      },
+      {
+        "accent": "206 74 82",
+        "background": "color(srgb 0.224392 0.135059 0.152941)",
+        "font": "\"IBM Plex Sans\", system-ui, sans-serif",
+        "renderers": [
+          "2d"
+        ],
+        "titleActionsOverlap": false,
+        "width": 294
+      }
+    ],
+    "theme": "fallendown"
+  }
+]
