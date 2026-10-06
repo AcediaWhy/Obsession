@@ -1,0 +1,20 @@
+[package]
+name = "obsession-tls-record-proxy"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Isolated loopback TLS record-fragmentation prototype"
+
+[dependencies]
+tokio = { version = "=1.52.3", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync", "signal"] }
+
+[dev-dependencies]
+rustls = { version = "=0.23.41", default-features = false, features = ["std", "ring", "tls12"] }
+tokio-rustls = { version = "=0.26.4", default-features = false, features = ["ring", "tls12"] }
+rcgen = "=0.13.2"
+# Keep the test certificate generator on the already available offline toolchain inputs.
+time = "=0.3.53"
+
+[[bin]]
+name = "obsession-tls-record-proxy"
+path = "src/main.rs"
