@@ -7,6 +7,7 @@ import {
 } from "framer-motion";
 
 import { HeroField } from "./design/components/HeroField";
+import { ThemeAtmosphere, ThemeAtmosphereBackdrop } from "./design/components/ThemeAtmosphere";
 import { ParallaxProvider, Parallax } from "./design/parallax";
 import { CustomTitleBar } from "./design/components/CustomTitleBar";
 import { NavRail, TAB_ORDER, type Tab } from "./design/components/NavRail";
@@ -25,6 +26,8 @@ import { useSettingsStore } from "./store/settingsStore";
 import { useOnboardingStore } from "./store/onboardingStore";
 import { Onboarding } from "./design/components/Onboarding";
 import { Toaster } from "./design/components/Toaster";
+import { StartupIntro } from "./design/components/StartupIntro";
+import { useStartupIntro } from "./design/startupIntro";
 import { on } from "./lib/tauri";
 import { backendErrorNotification } from "./lib/backendNotifications";
 import { setWindowShown, useMotionOff, useRenderHidden } from "./design/render";
@@ -54,6 +57,7 @@ function ThemeScene({
   return (
     <motion.div
       className="absolute inset-0"
+      data-startup-world
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
@@ -89,6 +93,8 @@ export default function App() {
   const reduceMotion = useSettingsStore((s) => s.settings?.reduce_motion);
   const settingsLoaded = useSettingsStore((s) => s.loaded);
   const motionOff = useMotionOff();
+  const startup = useStartupIntro((s) => s.request);
+  const startupArriving = useStartupIntro((s) => s.arriving);
   const selectTab = (next: Tab) => {
     if (next === tab) return;
     tabDir.current = TAB_ORDER.indexOf(next) > TAB_ORDER.indexOf(tab) ? 1 : -1;
@@ -213,8 +219,11 @@ export default function App() {
         ref={shellRef}
         data-theme={theme}
         data-reduce-motion={motionOff}
+        data-startup-shell
+        data-startup-stage={startup ? startup.mode === "quick" ? "quick" : startupArriving ? "arriving" : "full" : undefined}
         className="relative h-screen w-screen overflow-hidden"
       >
+        <ThemeAtmosphere theme={theme} phase={obsessionPhase} screen={tab}>
         <ParallaxProvider>
           <div
             data-app-shell
@@ -241,6 +250,7 @@ export default function App() {
                 />
               </AnimatePresence>
             </Parallax>
+            <ThemeAtmosphereBackdrop />
 
             {/* Титлбар — чистый хром, без параллакса. */}
             <div className="absolute inset-x-0 top-0 z-20">
@@ -248,7 +258,7 @@ export default function App() {
             </div>
 
             {/* Контент. */}
-            <div className="absolute inset-0 top-10 flex">
+            <div data-startup-content className="absolute inset-0 top-10 z-10 flex">
               <NavRail active={tab} onSelect={selectTab} />
               <main className="flex min-w-0 flex-1 flex-col gap-3 overflow-hidden px-6 pb-6 pt-2">
                 <Onboarding onDestination={() => void launcherBootstrap.refresh()} />
@@ -282,8 +292,10 @@ export default function App() {
             </div>
 
             <Toaster />
+            <StartupIntro theme={theme} />
           </div>
         </ParallaxProvider>
+        </ThemeAtmosphere>
       </div>
     </MotionConfig>
   );

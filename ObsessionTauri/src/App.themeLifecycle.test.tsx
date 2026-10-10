@@ -56,11 +56,13 @@ vi.mock("./store/onboardingStore", () => ({
 }));
 vi.mock("./design/components/Onboarding", () => ({ Onboarding: () => null }));
 vi.mock("./design/components/Toaster", () => ({ Toaster: () => null }));
+vi.mock("./design/components/StartupIntro", () => ({ StartupIntro: () => null }));
 vi.mock("./lib/tauri", () => ({ on: { windowVisibility: () => Promise.resolve(() => {}), log: () => Promise.resolve(() => {}) } }));
 vi.mock("./design/render", () => ({
   setWindowShown: () => {},
   useMotionOff: () => false,
   useRenderHidden: () => false,
+  useRenderActive: () => true,
 }));
 vi.mock("./design/gl/trayStageRelease", () => ({
   initTrayStageRelease: () => () => {},

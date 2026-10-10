@@ -9,6 +9,7 @@ import { RainFallback } from "./RainFallback";
 import { CatnapField } from "./CatnapField";
 import { MidnightField } from "./MidnightField";
 import { YaniNekoField } from "./YaniNekoField";
+import { ThemeAtmosphereSceneVisitor } from "./ThemeAtmosphere";
 import type { ObsessionVisualPhase } from "../obsessionVisualState";
 
 // Гибридная WebGL-сцена Rain грузится только после выбора темы. Suspense и
@@ -141,6 +142,7 @@ export function HeroField({
       className="pointer-events-none absolute inset-0 overflow-hidden"
     >
       {scene}
+      <ThemeAtmosphereSceneVisitor theme={theme} />
     </div>
   );
 }

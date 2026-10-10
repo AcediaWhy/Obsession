@@ -14,6 +14,10 @@ import { useSettingsStore } from "./store/settingsStore";
 import { api } from "./lib/tauri";
 import { invokeBrowserPreview } from "./lib/browserPreview";
 import { useMotionOff } from "./design/render";
+import { useObsessionVisualPhase } from "./design/useObsessionVisualPhase";
+import { ThemeAtmosphere, ThemeAtmosphereBackdrop, AtmospherePreviewButton } from "./design/components/ThemeAtmosphere";
+import { StartupIntro, StartupIntroReplayButton } from "./design/components/StartupIntro";
+import { useStartupIntro } from "./design/startupIntro";
 import "./styles/fonts.css";
 import "./styles/globals.css";
 
@@ -32,6 +36,7 @@ async function prepareOverviewPreview() {
   useDpiStore.setState({ active: false, selectedCategories: ["discord", "youtube_twitch"], start: () => toggle(true), stop: () => toggle(false) });
   useProxyStore.setState({ available: true });
   useHostsStore.setState({ status: "installed", provider: "malw", localVersion: "29 августа 2026" });
+  if (new URLSearchParams(window.location.search).get("intro") === "full") useStartupIntro.getState().replay();
   createRoot(document.getElementById("root")!).render(<React.StrictMode><OverviewPreview /></React.StrictMode>);
 }
 
@@ -41,10 +46,15 @@ function OverviewPreview() {
   const [tab, setTab] = useState<Tab>("overview");
   const [edgeCase, setEdgeCase] = useState(false);
   const motionOff = useMotionOff();
+  const phase = useObsessionVisualPhase();
+  const startup = useStartupIntro((s) => s.request);
+  const arriving = useStartupIntro((s) => s.arriving);
   return (
     <MotionConfig reducedMotion={motionOff ? "always" : "never"}>
-      <div data-theme={theme} className="relative h-screen overflow-hidden text-ink">
+      <div data-theme={theme} data-startup-shell data-startup-stage={startup ? startup.mode === "quick" ? "quick" : arriving ? "arriving" : "full" : undefined} className="relative h-screen overflow-hidden text-ink">
+        <ThemeAtmosphere theme={theme} phase={phase} screen={tab}>
         <div className="absolute inset-0"><HeroField theme={theme} frozen={quiet} /></div>
+        <ThemeAtmosphereBackdrop />
         <div className="relative z-10 flex h-10 items-center justify-between gap-3 px-4 text-xs" style={{ background: "#24232beb", color: "#f2eadc" }}>
           <label className="flex items-center gap-2">Тема
             <select aria-label="Тема макета" value={theme} onChange={(event) => useThemeStore.setState({ theme: event.target.value as Theme })}
@@ -54,6 +64,8 @@ function OverviewPreview() {
             <span className="opacity-60">Макет</span>
           </label>
           <div className="flex gap-4">
+            <StartupIntroReplayButton />
+            <AtmospherePreviewButton />
             <label className="flex items-center gap-1.5"><input type="checkbox" checked={edgeCase} onChange={(event) => {
               setEdgeCase(event.target.checked);
               useHostsStore.setState({ status: event.target.checked ? "outdated" : "installed" });
@@ -65,10 +77,12 @@ function OverviewPreview() {
             }} />Меньше анимаций</label>
           </div>
         </div>
-        <div className="absolute inset-0 top-10 flex">
+        <div data-startup-content className="absolute inset-0 top-10 z-10 flex">
           <NavRail active={tab} onSelect={setTab} />
           <main className="min-w-0 flex-1 overflow-hidden px-6 pb-6 pt-2"><OverviewScreen /></main>
         </div>
+        <StartupIntro theme={theme} />
+        </ThemeAtmosphere>
       </div>
     </MotionConfig>
   );

@@ -1,0 +1,63 @@
+.startup-intro { position:absolute; inset:40px 0 0; z-index:60; overflow:clip; isolation:isolate; color:#f3efe5; }
+.startup-intro:focus { outline:none; }
+.startup-quick-veil { position:absolute; inset:0; background:var(--intro-surface); pointer-events:none; }
+.startup-aperture { position:absolute; inset:0; width:100%; height:100%; pointer-events:none; }
+.startup-aperture-shape { opacity:0; }
+/* One lockup, with enough empty space to read before the interface arrives. */
+.startup-lockup { position:absolute; top:46%; left:50%; display:flex; align-items:center; gap:24px; width:max-content; transform:translate(-50%,-50%); pointer-events:none; }
+.startup-logo { width:88px; height:88px; flex:none; transform-origin:0 0; }
+.startup-logo-clip { width:100%; height:100%; overflow:clip; }
+.startup-logo-art { width:100%; height:100%; transform:translateY(112%); }
+.startup-logo-art>img { width:100%; height:100%; object-fit:contain; border-radius:20%; }
+.startup-logo-art>.golden-meadow-core,.startup-logo-art .black-pond-cat-sprite { width:100%!important; height:100%!important; }
+.startup-wordmark { position:relative; display:flex; color:#f3efe5; font-size:clamp(72px,10.8vw,116px); font-weight:600; line-height:1.12; letter-spacing:-.045em; transform-origin:0 0; white-space:nowrap; }
+.startup-letter-clip { display:block; clip-path:inset(0 -.12em 0 -.12em); perspective:600px; padding-right:.045em; margin-right:-.045em; padding-bottom:.04em; margin-bottom:-.04em; }
+.startup-letter { display:block; transform-origin:50% .585em; opacity:0; }
+.startup-glyph { display:block; transform-origin:50% .935em; }
+/* IBM Plex Sans 600: dot ends at .343em, stem starts at .413em.
+   Both pieces render the original glyph; this cut is in the empty gap. */
+.startup-letter-i .startup-glyph { clip-path:inset(.378em -.08em 0 -.08em); }
+.startup-tittle { position:absolute; top:0; height:1.12em; opacity:0; pointer-events:none; }
+.startup-tittle-squash,.startup-tittle-ink { display:block; width:100%; height:100%; }
+.startup-tittle-squash { transform-origin:.1375em .269em; }
+.startup-tittle-ink { clip-path:inset(0 -.08em calc(100% - .378em) -.08em); }
+.startup-caption { position:absolute; left:112px; top:calc(100% + 20px); display:flex; align-items:center; gap:9px; font-size:11px; font-weight:500; letter-spacing:.08em; color:var(--intro-accent); opacity:0; }
+.startup-skip { position:absolute; right:26px; bottom:24px; display:flex; align-items:center; gap:12px; padding:9px 12px; border-radius:8px; background:var(--intro-surface); border:1px solid color-mix(in srgb,var(--intro-accent) 22%,transparent); color:#f3efe5; font-size:12px; }
+.startup-skip:hover { border-color:var(--intro-accent); }
+.startup-skip:focus-visible { outline:2px solid var(--intro-accent); outline-offset:4px; }
+.startup-skip span { opacity:.55; font-size:10px; }
+.startup-replay { display:flex; align-items:center; justify-content:space-between; gap:12px; width:100%; margin-top:16px; padding:11px 13px; border:1px solid rgb(var(--accent)/.28); background:rgb(var(--accent)/.06); border-radius:10px; color:inherit; font-size:12px; transition:background-color .2s; }
+.h-10 .startup-replay { width:auto; margin:0; padding:3px 8px; white-space:nowrap; }
+.startup-replay:hover { background:rgb(var(--accent)/.12); }
+.startup-replay:focus-visible { outline:2px solid rgb(var(--accent)/.7); outline-offset:3px; }
+.startup-replay:disabled { opacity:.45; cursor:default; }
+
+/* Keep glass ancestors transform-only: opacity/filter would change their backdrop root. */
+[data-startup-stage="full"] [data-startup-content] { visibility:hidden; }
+[data-startup-stage="full"] .app-nav-brand { opacity:0; }
+[data-startup-stage="arriving"] .app-nav-brand { animation:startup-brand-arrive 650ms cubic-bezier(.22,1,.36,1) 260ms both; }
+[data-startup-stage="arriving"] .app-nav-section-label,[data-startup-stage="arriving"] .nav-item,[data-startup-stage="arriving"] .app-nav-footer { animation:startup-nav-arrive 760ms cubic-bezier(.22,1,.36,1) both; }
+[data-startup-stage="arriving"] .nav-item:nth-child(2) { animation-delay:35ms; }
+[data-startup-stage="arriving"] .nav-item:nth-child(3) { animation-delay:70ms; }
+[data-startup-stage="arriving"] .nav-item:nth-child(4) { animation-delay:105ms; }
+[data-startup-stage="arriving"] .nav-item:nth-child(5) { animation-delay:140ms; }
+[data-startup-stage="arriving"] .nav-item:nth-child(6) { animation-delay:175ms; }
+[data-startup-stage="arriving"] .nav-item:nth-child(7) { animation-delay:210ms; }
+[data-startup-stage="arriving"] .overview-board>div:first-child { animation:startup-panel-arrive 800ms cubic-bezier(.22,1,.36,1) 100ms both; }
+[data-startup-stage="arriving"] .overview-command { animation:startup-panel-arrive 850ms cubic-bezier(.22,1,.36,1) 140ms both; }
+[data-startup-stage="arriving"] .overview-service { animation:startup-panel-arrive 850ms cubic-bezier(.22,1,.36,1) 200ms both; }
+[data-startup-stage="arriving"] .overview-notes>:nth-child(2) .overview-service { animation-delay:245ms; }
+[data-startup-stage="arriving"] .overview-notes>:nth-child(3) .overview-service { animation-delay:290ms; }
+[data-startup-stage="arriving"] .overview-notes>:nth-child(4) .overview-service { animation-delay:335ms; }
+[data-startup-stage="arriving"] [data-startup-world] { animation:startup-world-arrive 1170ms cubic-bezier(.22,1,.36,1) both; }
+@keyframes startup-brand-arrive { from { opacity:0; } to { opacity:1; } }
+@keyframes startup-world-arrive { from { transform:scale(1.035); } to { transform:scale(1); } }
+@keyframes startup-nav-arrive { from { opacity:0; translate:-12px 0; } to { opacity:1; translate:0 0; } }
+@keyframes startup-panel-arrive { from { opacity:0; translate:0 22px; } to { opacity:1; translate:0 0; } }
+@media(prefers-reduced-motion:reduce) {
+  .startup-intro { display:none; }
+  [data-startup-stage] [data-startup-content] { visibility:visible; }
+  [data-startup-stage] .app-nav-brand { opacity:1; animation:none; }
+  [data-startup-stage] :is(.app-nav-section-label,.nav-item,.app-nav-footer,.overview-command,.overview-service,[data-startup-world]),
+  [data-startup-stage] .overview-board>div:first-child { animation:none; }
+}

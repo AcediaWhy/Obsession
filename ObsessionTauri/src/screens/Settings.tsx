@@ -6,6 +6,7 @@ import { useThemeStore, THEMES, type Theme } from "../store/themeStore";
 import { useSecretStore } from "../store/secretStore";
 import { GlassPanel } from "../design/components/GlassPanel";
 import { ThemePreview } from "../design/components/ThemePreview";
+import { StartupIntroReplayButton } from "../design/components/StartupIntro";
 import { Stagger, StaggerItem } from "../design/components/Stagger";
 import {
   Button,
@@ -66,6 +67,7 @@ export function SettingsScreen() {
               <GlassPanel>
                 <SectionLabel>Оформление</SectionLabel>
                 <ThemePicker />
+                <StartupIntroReplayButton />
               </GlassPanel>
             </StaggerItem>
 

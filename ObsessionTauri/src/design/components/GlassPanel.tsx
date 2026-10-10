@@ -4,6 +4,7 @@ import { dur, ease, spring } from "../tokens";
 import { useParallaxOffset } from "../parallax";
 import { subscribePointerFrame } from "../pointerBus";
 import { useMotionOff } from "../render";
+import { ThemeAtmosphereSurface } from "./ThemeAtmosphere";
 
 type Props = Omit<HTMLMotionProps<"div">, "children"> & {
   padded?: boolean;
@@ -124,6 +125,7 @@ export function GlassPanel({
       {...rest}
     >
       {spotlight && <span className="spotlight-ring" aria-hidden />}
+      <ThemeAtmosphereSurface />
       {inner}
     </motion.div>
   );
