@@ -1,0 +1,53 @@
+:is(.theme-nav-icon, .halloween-icon) {
+  --icon-duration: 1120ms;
+  --icon-ease: cubic-bezier(.42, 0, .22, 1);
+  flex: none;
+  overflow: visible;
+  transform-origin: center;
+}
+
+.theme-nav-icon-midnight { --icon-duration: 1280ms; }
+.theme-nav-icon-catnap { --icon-duration: 1320ms; }
+.theme-nav-icon-yanineko { --icon-duration: 1240ms; }
+.theme-nav-icon-fallendown { --icon-duration: 1040ms; }
+
+[data-theme-icon-motion="true"] :is(.theme-nav-icon, .halloween-icon) {
+  transition: transform 220ms cubic-bezier(.2, .7, .3, 1);
+}
+
+[data-theme-icon-motion="true"] .nav-item[data-icon-reacting="true"] .nav-icon-reaction {
+  animation: nav-icon-settle var(--icon-duration) var(--icon-ease) both;
+}
+
+[data-theme-icon-motion="true"] .nav-item:active :is(.theme-nav-icon, .halloween-icon) {
+  transform: scale(.94);
+}
+
+@keyframes nav-icon-settle {
+  0%, 100% { transform: translateY(0) scale(1); }
+  28% { transform: translateY(-.7px) scale(1.035); }
+  62% { transform: translateY(.25px) scale(.995); }
+  82% { transform: translateY(-.1px) scale(1.005); }
+}
+
+html[data-hidden="true"] :is(.theme-nav-icon, .halloween-icon),
+html[data-hidden="true"] :is(.theme-nav-icon, .halloween-icon) *,
+[data-reduce-motion="true"] :is(.theme-nav-icon, .halloween-icon),
+[data-reduce-motion="true"] :is(.theme-nav-icon, .halloween-icon) * {
+  animation: none !important;
+  transition: none !important;
+}
+
+html[data-hidden="true"] :is(.theme-nav-icon, .halloween-icon),
+html[data-hidden="true"] .nav-icon-reaction,
+[data-reduce-motion="true"] :is(.theme-nav-icon, .halloween-icon),
+[data-reduce-motion="true"] .nav-icon-reaction { transform: none !important; }
+
+@media (prefers-reduced-motion: reduce) {
+  :is(.theme-nav-icon, .halloween-icon),
+  :is(.theme-nav-icon, .halloween-icon) * {
+    animation: none !important;
+    transition: none !important;
+  }
+  :is(.theme-nav-icon, .halloween-icon), .nav-icon-reaction { transform: none !important; }
+}

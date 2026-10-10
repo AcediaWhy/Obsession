@@ -6,6 +6,7 @@ import { GoldenMeadowCore } from "./GoldenMeadowCore";
 import { HalloweenIcon } from "./HalloweenIcon";
 import { ThemeNavIcon } from "./ThemeNavIcon";
 import { useMotionOff, useRenderActive } from "../render";
+import { useNavIconMotion } from "../navIconMotion";
 import { dur, ease, spring } from "../tokens";
 import { useThemeStore } from "../../store/themeStore";
 import { useDpiStore } from "../../store/dpiStore";
@@ -43,6 +44,7 @@ export function NavRail({
   const renderOn = useRenderActive();
   // Оформление меню зависит от [data-theme] в globals.css.
   const theme = useThemeStore((s) => s.theme);
+  const iconMotion = useNavIconMotion(renderOn && !motionOff, theme);
   // Оба хука вызываются без короткого замыкания, чтобы сохранять их порядок.
   const dpiActive = useDpiStore((s) => s.active);
   const proxyRunning = useProxyStore((s) => s.running);
@@ -55,6 +57,7 @@ export function NavRail({
 
   return (
     <nav
+      {...iconMotion}
       className={`app-nav-rail flex w-[220px] flex-col px-4 pb-4 pt-2 ${
         theme === "yanineko" ? "yani-cabbage-rail" : ""
       }`}
