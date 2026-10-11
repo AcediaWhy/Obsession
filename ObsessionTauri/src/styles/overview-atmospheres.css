@@ -1,5 +1,5 @@
 /* Карточки Обзора сохраняют размер и содержимое при наведении: движется только декор. */
-[data-theme="goldenmeadow"] .overview-board .overview-service { --note-paper: #32291ef5; --note-ink: #fff0d3; --note-muted: #c9b28d; --note-line: #a3804d; --note-accent: #e5b967; --note-ok: #add1a4; }
+[data-theme="goldenmeadow"] .overview-board .overview-service { --note-paper: #2a222ef2; --note-ink: #fff0d3; --note-muted: #d1b9ae; --note-line: #9f7b6877; --note-accent: #e5b967; --note-ok: #add1a4; }
 [data-theme="aurora"] .overview-board .overview-service { --note-paper: #131c34e8; --note-ink: #eaf5ff; --note-muted: #a7bbd3; --note-line: #647ead70; --note-accent: #9ddfdc; --note-ok: #9addce; }
 [data-theme="ophanim"] .overview-board .overview-service { --note-paper: #2c2336f2; --note-ink: #f0e4db; --note-muted: #c4accb; --note-line: #b88c6480; --note-accent: #d8b47e; --note-ok: #bdd1a1; }
 [data-theme="japan"] .overview-board .overview-service { --note-paper: #1d2c39ed; --note-ink: #e3eff3; --note-muted: #9fb9c5; --note-line: #b1d2de55; --note-accent: #a4c7db; --note-ok: #a1ccc2; }

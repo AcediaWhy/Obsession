@@ -12,7 +12,7 @@ export type GoldenMeadowOptions = {
   gustDirection?: number;
 };
 
-export function createGoldenMeadow(canvas: HTMLCanvasElement | OffscreenCanvas, configuration?: { scale?: number; cacheBackground?: boolean }): {
+export function createGoldenMeadow(canvas: HTMLCanvasElement | OffscreenCanvas, configuration?: { scale?: number; cacheBackground?: boolean; lighting?: 'dusk' | 'daylight' }): {
   render(time: number, options?: GoldenMeadowOptions): void;
   dispose(): void;
   dimensions: { width: number; height: number };

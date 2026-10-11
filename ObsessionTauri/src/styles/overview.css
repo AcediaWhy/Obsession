@@ -11,7 +11,7 @@
   container-type: inline-size;
 }
 [data-theme="goldenmeadow"] .overview-board {
-  --note-paper: #302519; --note-ink: #fff2da; --note-muted: #e1c9a2;
+  --note-paper: #2b2330; --note-ink: #fff2da; --note-muted: #dec9bf;
   --note-line: #c69b58; --note-accent: #dcb167; --note-ok: #9ed3a1; --note-warn: #f1c777;
 }
 [data-theme="aurora"] .overview-board {

@@ -1,11 +1,11 @@
 [data-theme="goldenmeadow"] {
-  --glass-bg: linear-gradient(145deg, rgba(49,36,24,.76), rgba(27,22,18,.8));
+  --glass-bg: linear-gradient(145deg, rgba(40,30,42,.79), rgba(25,22,31,.83));
   --glass-border: rgba(255,240,200,.25);
   --glass-blur: 0px;
   --glass-sat: 100%;
   --glass-specular: rgba(255,240,190,.21);
   color: #fff2da;
-  background: #a97327;
+  background: #302737;
   text-shadow: 0 1px 3px rgba(48,29,9,.66);
 }
 [data-theme="goldenmeadow"] .glass {
@@ -22,15 +22,15 @@
 [data-theme="goldenmeadow"] .text-ink { color: #fff5e5; }
 [data-theme="goldenmeadow"] .text-ink-soft { color: #f3dfbb; }
 [data-theme="goldenmeadow"] .text-ink-muted { color: #e1c9a2; }
-/* Тёплые цвета без тени сохраняют читаемость меню на светлом фоне. */
+/* Moonlit cream keeps the transparent navigation legible at dusk. */
 [data-theme="goldenmeadow"] .app-nav-rail :is(.text-ink, .text-ink-soft, .text-ink-muted),
 [data-theme="goldenmeadow"] .drag-region .text-ink-soft,
 [data-theme="goldenmeadow"] .drag-region button:not(:hover) {
-  color: #775733;
-  text-shadow: none;
+  color: #eedcc8;
+  text-shadow: 0 1px 4px #211c2cb3;
 }
-[data-theme="goldenmeadow"] .app-nav-rail .text-ink { color: #694b2d; }
-[data-theme="goldenmeadow"] .app-nav-rail .text-ink-muted { color: #89643a; }
+[data-theme="goldenmeadow"] .app-nav-rail .text-ink { color: #fff1da; }
+[data-theme="goldenmeadow"] .app-nav-rail .text-ink-muted { color: #d0bbc6; }
 [data-theme="goldenmeadow"] .text-gradient { background: linear-gradient(112deg, #fff9e8, #f7d787 58%, #d59648); background-clip: text; -webkit-background-clip: text; color: transparent; text-shadow: none; filter: drop-shadow(0 2px 3px rgba(54,30,11,.55)); }
 [data-theme="goldenmeadow"] .spotlight::after { background: radial-gradient(380px circle at var(--mx,-100px) var(--my,-100px), rgba(255,218,145,.10), transparent 64%); }
 [data-theme="goldenmeadow"] .btn-anim[class~="bg-accent/90"] { color: #2b2218; text-shadow: none; }

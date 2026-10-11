@@ -64,7 +64,7 @@ export function GoldenMeadowField({ paused = false }: { paused?: boolean }) {
     let time = 0;
     const loop = createRenderLoop((dt) => {
       time += dt;
-      renderer?.render(time, { wind: 1, windTime: time, ...interaction.sample(time) });
+      renderer?.render(time, { wind: .65, windTime: time, ...interaction.sample(time) });
     }, { role: "field", fps: 30 });
     loopRef.current = failed ? null : loop;
     if (!pausedRef.current && !failed) loop.start();
@@ -114,5 +114,5 @@ export function GoldenMeadowField({ paused = false }: { paused?: boolean }) {
     else loopRef.current?.start();
   }, [paused]);
 
-  return <div ref={hostRef} className="absolute inset-0 overflow-hidden bg-[#b87b25]" style={{ contain: "strict", backgroundImage: `url(${posterUrl})`, backgroundPosition: "center", backgroundSize: "cover" }} aria-hidden="true" />;
+  return <div ref={hostRef} className="absolute inset-0 overflow-hidden bg-[#302737]" style={{ contain: "strict", backgroundImage: `url(${posterUrl})`, backgroundPosition: "center", backgroundSize: "cover" }} aria-hidden="true" />;
 }

@@ -1,4 +1,4 @@
-[data-theme="goldenmeadow"] { --atmosphere-color: 255 216 139; --atmosphere-secondary: 214 152 59; }
+[data-theme="goldenmeadow"] { --atmosphere-color: 255 192 113; --atmosphere-secondary: 180 158 193; }
 [data-theme="aurora"] { --atmosphere-color: 134 235 221; --atmosphere-secondary: 170 151 238; }
 [data-theme="ophanim"] { --atmosphere-color: 223 188 124; --atmosphere-secondary: 180 150 214; }
 [data-theme="japan"] { --atmosphere-color: 193 229 246; --atmosphere-secondary: 116 169 192; }
@@ -25,6 +25,7 @@
   animation-name: atmosphere-headlights;
 }
 [data-atmosphere-theme="japan"] .atmosphere-world-ray { width: min(180px, 20vw); }
+[data-atmosphere-theme="goldenmeadow"] .atmosphere-world-ray { display: none; }
 [data-atmosphere-theme="ophanim"] .atmosphere-world-ray,
 [data-atmosphere-theme="fallendown"] .atmosphere-world-ray,
 [data-atmosphere-theme="yanineko"] .atmosphere-world-ray { display: none; }

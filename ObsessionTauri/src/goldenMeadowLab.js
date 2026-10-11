@@ -7,7 +7,8 @@ function startGoldenMeadowLab() {
   const canvas = $('#meadow');
   const abort = new AbortController();
   const on = (el, event, action) => el.addEventListener(event, action, { signal: abort.signal });
-  const scene = createGoldenMeadow(canvas);
+  let daylight = false;
+  let scene = createGoldenMeadow(canvas);
   setupMeadowPanels(canvas, abort.signal);
   const interaction = createMeadowInteraction();
   const stage = canvas.closest('.canvas-wrap');
@@ -27,7 +28,7 @@ function startGoldenMeadowLab() {
   const update = () => {
     $('#pause').textContent = playing ? 'Пауза' : 'Продолжить';
     $('#pause').setAttribute('aria-pressed', String(!playing));
-    $('#state').textContent = playing ? 'Ушки · хвост · ветер в поле' : 'Движение остановлено';
+    $('#state').textContent = playing ? daylight ? 'Ушки · хвост · ветер в поле' : 'Огоньки · туман · котик' : 'Движение остановлено';
   };
   const tick = now => {
     raf = 0;
@@ -96,6 +97,14 @@ function startGoldenMeadowLab() {
   on($('#tail'), 'click', () => { if (time - tailAt >= 3) tailAt = time; playing = true; schedule(); });
   on($('#ears'), 'click', () => { if (time - earAt >= 1.7) earAt = time; playing = true; schedule(); });
   on($('#wind'), 'input', () => { $('#wind-value').textContent = `${Number($('#wind').value).toFixed(1)}×`; paint(); });
+  on($('#lighting'), 'click', () => {
+    daylight = !daylight;
+    scene.dispose();
+    scene = createGoldenMeadow(canvas, { lighting: daylight ? 'daylight' : 'dusk' });
+    $('#lighting').setAttribute('aria-pressed', String(daylight));
+    $('#lighting').textContent = daylight ? 'Вернуть сумерки' : 'Дневной свет';
+    schedule();
+  });
   on($('#compare'), 'click', () => {
     const enabled = $('#compare').getAttribute('aria-pressed') !== 'true';
     $('#compare').setAttribute('aria-pressed', String(enabled));

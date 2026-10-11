@@ -1,5 +1,8 @@
 // Procedural study based on the composition of the supplied jeeklaart reference.
 // The source illustration is displayed separately, never sampled by this renderer.
+import { createMeadowDusk } from './goldenMeadowLighting.js';
+import { createMeadowGrass } from './goldenMeadowGrass.js';
+
 export function createGoldenMeadow(canvas, configuration = {}) {
   const buildStarted = performance.now();
   const W = 735, H = 505;
@@ -18,7 +21,9 @@ export function createGoldenMeadow(canvas, configuration = {}) {
   const range = (a, b) => a + (b - a) * random();
   const layer = (w = W, h = H, density = SCALE) => { const c = makeCanvas(); c.width = Math.ceil(w * density); c.height = Math.ceil(h * density); const g = c.getContext('2d'); g.scale(density, density); return { canvas: c, ctx: g, w, h }; };
   const drawLayer = (g, l, x = 0, y = 0, w = l.w, h = l.h) => g.drawImage(l.canvas, x, y, w, h);
-  const ink = '#151b18';
+  // Daylight is retained for the lab's composition comparison.
+  const dusk = configuration.lighting === 'daylight' ? null : createMeadowDusk(layer);
+  const ink = dusk ? '#1b2025' : '#151b18';
   const dryPatch = (g, x, y, rx, ry, color, density = 1) => {
     // Compose stipple in a pixel buffer; millions of Canvas fill commands stall
     // the browser's first paint even though these layers are only built once.
@@ -384,7 +389,7 @@ export function createGoldenMeadow(canvas, configuration = {}) {
   for (let i = 0; i < 14000; i++) frontStalks.ctx.fillRect(range(0, W), range(360, H), range(.3, .8), range(.3, 1));
   frontStalks.ctx.restore();
 
-  const movingGrass = [];
+  let movingGrass = [];
   for (let i = 0; i < 46; i++) {
     const x = range(115, 610), y = groundEdge(x) + range(2, 9), phase = range(0, Math.PI * 2);
     const blades = [];
@@ -553,10 +558,10 @@ export function createGoldenMeadow(canvas, configuration = {}) {
     hash = Math.imul(hash ^ hash >>> 13, 1274126177);
     const grain = (hash >>> 0) / 4294967296;
     const pigment = .73 + grain * .35 + noise * .17;
-    shadePixels.data[p] = 151; shadePixels.data[p + 1] = 105; shadePixels.data[p + 2] = 53;
+    shadePixels.data[p] = dusk ? 109 : 151; shadePixels.data[p + 1] = dusk ? 92 : 105; shadePixels.data[p + 2] = dusk ? 133 : 53;
     shadePixels.data[p + 3] = Math.round(255 * .34 * shade * pigment * (1 - clearing * .8) * distanceFade);
-    sunPixels.data[p] = 255; sunPixels.data[p + 1] = 214; sunPixels.data[p + 2] = 123;
-    sunPixels.data[p + 3] = Math.round(255 * .12 * sunlight * pigment * (1 - shade) * distanceFade);
+    sunPixels.data[p] = dusk ? 170 : 255; sunPixels.data[p + 1] = dusk ? 174 : 214; sunPixels.data[p + 2] = dusk ? 208 : 123;
+    sunPixels.data[p + 3] = Math.round(255 * (dusk ? .075 : .12) * sunlight * pigment * (1 - shade) * distanceFade);
   }
   canopyShade.ctx.putImageData(shadePixels, 0, 0); sunBreaks.ctx.putImageData(sunPixels, 0, 0);
   const framingBranch = layer(W, 145), branchG = framingBranch.ctx;
@@ -613,13 +618,31 @@ export function createGoldenMeadow(canvas, configuration = {}) {
     }
     g.restore();
   };
+  let meadowGrass;
+  if (dusk) {
+    dusk.grade(field);
+    for (const band of fieldBands) {
+      dusk.grade(band.surface);
+      for (const batch of band.batches) batch.color = dusk.color(batch.color);
+    }
+    dusk.grade(frontPumpkins, 1.22);
+    dusk.grade(ground, .88); dusk.grade(frontStalks, .76);
+    dusk.grade(framingBranch, .72);
+    for (const sprite of [...airLeaves, ...branchLeaves]) dusk.grade(sprite, .85);
+    meadowGrass = createMeadowGrass(layer, groundEdge, dusk);
+    drawLayer(ground.ctx, meadowGrass.surface, 0, meadowGrass.y);
+    meadowGrass.surface.canvas.width = meadowGrass.surface.canvas.height = 1;
+    movingGrass = meadowGrass.tufts;
+    dusk.prepareGround(ground);
+    dusk.preparePumpkins(frontPumpkins);
+  }
   let disposed = false;
   let backgroundCached = false;
   const render = (time, options = {}) => {
     if (disposed) return;
     const started = performance.now();
     ctx.setTransform(SCALE, 0, 0, SCALE, 0, 0); ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
-    const windTime = options.windTime ?? time, windStrength = options.wind ?? 1;
+    const windTime = (options.windTime ?? time) * (dusk ? .72 : 1), windStrength = options.wind ?? (dusk ? .65 : 1);
     const cursorWind = x => {
       const direction = options.gustDirection ?? 1;
       const delay = (direction > 0 ? x / W : 1 - x / W) * .65;
@@ -659,6 +682,9 @@ export function createGoldenMeadow(canvas, configuration = {}) {
       diagnostics.surfaceBytes = String(4 * (pixelWidth * pixelHeight + surfaces.reduce((sum, l) => sum + l.canvas.width * l.canvas.height, 0)));
     }
     }
+    dusk?.paintLight(ctx);
+    dusk?.paintLanterns(ctx, time, false);
+    dusk?.paintMist(ctx, time, false);
     const airborne = paintAirLeaves(ctx, windTime);
     const petTime = options.petTime ?? -20;
     const pet = petTime < 0 || petTime > 2.6 ? 0 : petTime < .48 ? smooth(petTime / .48) : petTime < 1.45 ? 1 : 1 - smooth((petTime - 1.45) / 1.15);
@@ -672,14 +698,21 @@ export function createGoldenMeadow(canvas, configuration = {}) {
     const cycle = time % 8.9;
     const closure = Math.max(blinkPulse(cycle - 1.7), .8 * blinkPulse(cycle - 6.5), blinkPulse(options.blinkTime ?? -1), pet * .94);
     eye(ctx, 311, 214, closure, .15); eye(ctx, 367, 229, closure, .19);
-    drawLayer(ctx, frontPumpkins); drawLayer(ctx, ground);
+    drawLayer(ctx, frontPumpkins); dusk?.paintPumpkinLight(ctx); dusk?.paintLanterns(ctx, time, true); drawLayer(ctx, ground);
+    dusk?.paintContact(ctx);
     for (const tuft of movingGrass) {
       const wind = windStrength * windAt(windTime, tuft.x, tuft.y) + cursorWind(tuft.x);
-      for (const b of tuft.blades) blade(ctx, tuft.x + b.x, tuft.y, b.height, b.lean + wind * (b.height / 24), b.width, b.color);
+      for (const b of tuft.blades) {
+        if (meadowGrass) meadowGrass.paint(ctx, b, wind * (b.height / 28));
+        else blade(ctx, tuft.x + b.x, tuft.y, b.height, b.lean + wind * (b.height / 24), b.width, b.color);
+      }
     }
+    dusk?.paintLight(ctx, true, time);
+    dusk?.paintMist(ctx, time, true);
     drawLayer(ctx, frontStalks);
     paintFramingBranch(ctx, windTime, windStrength, cursorWind(W * .8));
-    ctx.globalCompositeOperation = 'soft-light'; ctx.globalAlpha = .43; drawLayer(ctx, paper); ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
+    dusk?.paintShade(ctx);
+    ctx.globalCompositeOperation = 'soft-light'; ctx.globalAlpha = dusk ? .23 : .43; drawLayer(ctx, paper); ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
     diagnostics.time = time.toFixed(3); diagnostics.blink = closure.toFixed(3);
     diagnostics.tailTip = `${points.at(-1).x.toFixed(2)},${points.at(-1).y.toFixed(2)}`;
     diagnostics.ears = ears.map(a => a.toFixed(3)).join(',');
@@ -690,10 +723,11 @@ export function createGoldenMeadow(canvas, configuration = {}) {
     diagnostics.windTime = windTime.toFixed(3); diagnostics.airLeaves = String(airborne);
     diagnostics.renderMs = (performance.now() - started).toFixed(2);
   };
-  const dispose = () => { disposed = true; for (const l of [paper, field, ...fieldBands.map(b => b.surface), cat, headGrain, frontPumpkins, ground, frontStalks, ...oranges, ivory, ...airLeaves, canopyShade, sunBreaks, framingBranch, ...branchLeaves]) { l.canvas.width = l.canvas.height = 1; } };
+  const dispose = () => { disposed = true; for (const l of surfaces) { l.canvas.width = l.canvas.height = 1; } };
   diagnostics.buildMs = (performance.now() - buildStarted).toFixed(1);
   diagnostics.renderScale = String(SCALE);
-  const surfaces = [paper, field, ...fieldBands.map(b => b.surface), cat, headGrain, frontPumpkins, ground, frontStalks, ...oranges, ivory, ...airLeaves, canopyShade, sunBreaks, framingBranch, ...branchLeaves];
+  diagnostics.lighting = dusk ? 'dusk' : 'daylight';
+  const surfaces = [paper, field, ...fieldBands.map(b => b.surface), cat, headGrain, frontPumpkins, ground, frontStalks, ...oranges, ivory, ...airLeaves, canopyShade, sunBreaks, framingBranch, ...branchLeaves, ...(dusk?.surfaces ?? [])];
   diagnostics.surfaceBytes = String(4 * (pixelWidth * pixelHeight + surfaces.reduce((sum, l) => sum + l.canvas.width * l.canvas.height, 0)));
   return { render, dispose, diagnostics, dimensions: { width: W, height: H }, tailPoints, tailLengths };
 }
