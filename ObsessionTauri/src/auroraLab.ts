@@ -1,0 +1,43 @@
+import { createAuroraScene } from "./design/components/aurora/scene";
+import type { QualityTier } from "./design/render";
+import { AuroraPointerMotion } from "./design/components/aurora/pointer";
+
+const canvas = document.querySelector("canvas")!;
+const scene = createAuroraScene(canvas);
+const slider = document.querySelector<HTMLInputElement>("#time")!;
+const active = document.querySelector<HTMLInputElement>("#active")!;
+const quality = document.querySelector<HTMLSelectElement>("#quality")!;
+const pause = document.querySelector<HTMLButtonElement>("#pause")!;
+const output = document.querySelector("output")!;
+let frozen = false;
+let time = 12;
+let last = 0;
+let activity = 0;
+let activationAge = 30;
+const pointer = new AuroraPointerMotion();
+window.addEventListener("pointermove", (event) => {
+  if (!frozen) pointer.move(event.clientX / innerWidth, 1 - event.clientY / innerHeight);
+}, { passive: true });
+document.documentElement.addEventListener("pointerleave", () => pointer.leave());
+window.addEventListener("blur", () => pointer.leave());
+const resize = () => { scene?.resize(innerWidth, innerHeight, quality.value as QualityTier); scene?.draw(time, activity, activationAge); };
+window.addEventListener("resize", resize);
+quality.addEventListener("change", resize);
+pause.addEventListener("click", () => { frozen = !frozen; pause.textContent = frozen ? "Продолжить" : "Пауза"; });
+slider.addEventListener("input", () => { time = Number(slider.value); scene?.draw(time, activity, activationAge); });
+active.addEventListener("change", () => { activationAge = 0; if (frozen) { activity = Number(active.checked); scene?.draw(time, activity, 30); } });
+resize();
+const tick = (now: number) => {
+  requestAnimationFrame(tick);
+  const dt = last ? Math.min((now - last) / 1000, .1) : 0;
+  if (last && now - last < 32) return;
+  last = now;
+  if (frozen || document.hidden) return;
+  time += dt; activationAge += dt;
+  activity += (Number(active.checked) - activity) * (1 - Math.exp(-dt * .65));
+  scene?.draw(time, activity, activationAge, pointer.update(dt));
+  slider.value = String(time % 180);
+  output.textContent = `${time.toFixed(1)} с`;
+};
+requestAnimationFrame(tick);
+window.addEventListener("pagehide", () => scene?.dispose(), { once: true });

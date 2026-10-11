@@ -26,7 +26,8 @@ async function prepareOverviewPreview() {
   api.getNetworkIdentity = async () => ({ online: true, org: "AS12389 Ростелеком", asn_region: "Россия", gateway_mac_masked: "••:••:••:12:34:56" });
   const settings = await invokeBrowserPreview<Awaited<ReturnType<typeof api.getSettings>>>("get_settings");
   useSettingsStore.setState({ settings, loaded: true });
-  useThemeStore.setState({ theme: "goldenmeadow" });
+  const previewTheme = new URLSearchParams(window.location.search).get("theme");
+  useThemeStore.setState({ theme: THEMES.some((entry) => entry.id === previewTheme) ? previewTheme as Theme : "goldenmeadow" });
   const toggle = async (active: boolean) => {
     if (useDpiStore.getState().transitioning) return;
     useDpiStore.setState({ transitioning: true });

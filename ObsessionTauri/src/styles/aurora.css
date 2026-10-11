@@ -1,0 +1,20 @@
+.aurora-field { position: absolute; inset: 0; overflow: hidden; pointer-events: none; background: #070b21; }
+.aurora-field__poster { position: absolute; inset: 0; background-size: cover; background-position: center; }
+.aurora-field__canvas { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; }
+.aurora-field__canvas[data-ready="true"] { opacity: 1; }
+
+@property --aurora-light-x { syntax: "<percentage>"; inherits: true; initial-value: 51%; }
+@property --aurora-light { syntax: "<number>"; inherits: true; initial-value: .055; }
+[data-theme="aurora"] .overview-board .glass.overview-service.overview-note {
+  background-image: radial-gradient(ellipse 80% 100% at var(--aurora-light-x) -35%, rgb(108 210 225 / var(--aurora-light)), transparent 78%);
+  box-shadow: inset 0 1px rgb(155 218 232 / calc(var(--aurora-light) + .035)), 0 12px 30px #0003;
+  transition: --aurora-light-x 800ms linear, --aurora-light 800ms linear, border-color 420ms ease, background-color 420ms ease, box-shadow 420ms ease;
+}
+[data-theme="aurora"] .overview-board .overview-command {
+  background-image: radial-gradient(ellipse 60% 130% at var(--aurora-light-x) -45%, rgb(124 211 232 / calc(var(--aurora-light) * .6)), transparent 75%);
+}
+[data-hidden="true"] [data-theme="aurora"] .overview-board .glass.overview-service.overview-note,
+[data-theme="aurora"][data-aurora-still="true"] .overview-board .glass.overview-service.overview-note { transition: none; }
+@media (prefers-reduced-motion: reduce) {
+  [data-theme="aurora"] .overview-board .glass.overview-service.overview-note { transition: none; }
+}
