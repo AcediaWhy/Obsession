@@ -17,6 +17,7 @@ use tokio::io::AsyncWriteExt;
 use crate::state::AppState;
 
 const API_URL: &str = "https://api.github.com/repos/AcediaWhy/Obsession/releases/latest";
+const RELEASES_URL: &str = "https://github.com/AcediaWhy/Obsession/releases/latest";
 const PRODUCT_ID: &str = "com.vlarpsu.obsession";
 const MAX_SETUP_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_METADATA_BYTES: usize = 16 * 1024;
@@ -209,16 +210,91 @@ fn verify_and_launch(path: &Path, expected_size: u64, expected_sha256: &str) -> 
     Ok(())
 }
 
-async fn discover() -> Result<(UpdateCheck, Option<(Manifest, Url)>), String> {
+// GitHub's API and the public release page have different network paths and
+// rate limits. Only accept a redirect to this project's exact release tag;
+// installation still requires the pinned signature and matching Setup hash.
+fn release_from_redirect(url: &Url) -> Result<Release, String> {
+    let tag = url
+        .path()
+        .strip_prefix("/AcediaWhy/Obsession/releases/tag/")
+        .ok_or("GitHub не вернул страницу релиза Obsession")?;
+    if url.scheme() != "https"
+        || url.host_str() != Some("github.com")
+        || url.port().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || tag.contains('/')
+        || tag.contains('%')
+    {
+        return Err("Некорректная страница релиза Obsession".into());
+    }
+    let version = Version::parse(tag.strip_prefix('v').unwrap_or(tag))
+        .map_err(|_| "Некорректная версия релиза".to_string())?;
+    let names = [
+        "update.json".to_string(),
+        "update.json.sig".to_string(),
+        format!("Obsession-Setup_{version}_x64.exe"),
+    ];
+    Ok(Release {
+        tag_name: tag.to_string(),
+        body: None,
+        assets: names
+            .into_iter()
+            .map(|name| ReleaseAsset {
+                browser_download_url: format!(
+                    "https://github.com/AcediaWhy/Obsession/releases/download/{tag}/{name}"
+                ),
+                name,
+            })
+            .collect(),
+    })
+}
+
+async fn latest_release(client: &Client, app: &AppHandle) -> Result<Release, String> {
+    let api = async {
+        let bytes = limited_bytes(client, Url::parse(API_URL).unwrap(), 256 * 1024).await?;
+        serde_json::from_slice::<Release>(&bytes)
+            .map_err(|_| "Не удалось прочитать последний релиз GitHub".to_string())
+    }
+    .await;
+    match api {
+        Ok(release) => Ok(release),
+        Err(error) => {
+            crate::util::write_diagnostic_log(
+                app,
+                "warn",
+                "updater",
+                &format!("GitHub API unavailable; trying public release redirect: {error}"),
+            );
+            let response =
+                tokio::time::timeout(Duration::from_secs(20), client.get(RELEASES_URL).send())
+                    .await
+                    .map_err(|_| "Сервер обновлений не ответил. Попробуй позже.".to_string())?
+                    .map_err(|e| format!("Не удалось открыть страницу обновлений: {e}"))?
+                    .error_for_status()
+                    .map_err(|e| format!("Не удалось открыть страницу обновлений: {e}"))?;
+            let release = release_from_redirect(response.url())?;
+            crate::util::write_diagnostic_log(
+                app,
+                "info",
+                "updater",
+                &format!("Public release redirect succeeded: {}", release.tag_name),
+            );
+            Ok(release)
+        }
+    }
+}
+
+async fn discover(app: &AppHandle) -> Result<(UpdateCheck, Option<(Manifest, Url)>), String> {
     let client = Client::builder()
         .user_agent(concat!("Obsession-Updater/", env!("CARGO_PKG_VERSION")))
         .redirect(reqwest::redirect::Policy::limited(5))
-        .connect_timeout(Duration::from_secs(12))
+        .connect_timeout(Duration::from_secs(6))
         .build()
         .map_err(|error| format!("Не удалось создать клиент обновлений: {error}"))?;
-    let release_bytes = limited_bytes(&client, Url::parse(API_URL).unwrap(), 256 * 1024).await?;
-    let release: Release = serde_json::from_slice(&release_bytes)
-        .map_err(|_| "Не удалось прочитать последний релиз GitHub".to_string())?;
+    let release = latest_release(&client, app).await?;
     let tag = release
         .tag_name
         .strip_prefix('v')
@@ -267,8 +343,24 @@ async fn discover() -> Result<(UpdateCheck, Option<(Manifest, Url)>), String> {
 }
 
 #[tauri::command]
-pub async fn update_check() -> Result<UpdateCheck, String> {
-    discover().await.map(|(check, _)| check)
+pub async fn update_check(app: AppHandle) -> Result<UpdateCheck, String> {
+    discover(&app)
+        .await
+        .map(|(check, _)| check)
+        .map_err(|error| report_update_error(&app, error))
+}
+
+fn report_update_error(app: &AppHandle, error: String) -> String {
+    crate::util::write_diagnostic_log(app, "warn", "updater", &error);
+    if error.contains("429") {
+        "GitHub временно ограничил запросы. Попробуй позже.".into()
+    } else if error.contains("404") {
+        "Файлы обновления пока не опубликованы в релизе.".into()
+    } else if error.contains("error sending request") || error.contains("for url (") {
+        "Не удалось связаться с сервером обновлений. Попробуй позже.".into()
+    } else {
+        error
+    }
 }
 
 #[tauri::command]
@@ -279,7 +371,7 @@ pub async fn update_install(app: AppHandle, state: State<'_, AppState>) -> Resul
     let _guard = InstallGuard::acquire()?;
     // Never accept a URL, path, hash, or version from the WebView. Re-fetch the
     // latest signed release immediately before installation.
-    let (check, candidate) = discover().await?;
+    let (check, candidate) = discover(&app).await.map_err(|error| report_update_error(&app, error))?;
     let (manifest, url) = candidate.ok_or("Новой версии больше нет")?;
     let client = Client::builder()
         .user_agent(concat!("Obsession-Updater/", env!("CARGO_PKG_VERSION")))
@@ -290,9 +382,9 @@ pub async fn update_install(app: AppHandle, state: State<'_, AppState>) -> Resul
     let mut response = tokio::time::timeout(Duration::from_secs(20), client.get(url).send())
         .await
         .map_err(|_| "Истекло время подключения к загрузке".to_string())?
-        .map_err(|error| format!("Не удалось скачать установщик: {error}"))?
+        .map_err(|error| report_update_error(&app, format!("Не удалось скачать установщик: {error}")))?
         .error_for_status()
-        .map_err(|error| format!("Сервер обновлений ответил ошибкой: {error}"))?;
+        .map_err(|error| report_update_error(&app, format!("Сервер обновлений ответил ошибкой: {error}")))?;
     if response
         .content_length()
         .is_some_and(|length| length != manifest.size)
@@ -387,6 +479,34 @@ pub async fn update_install(app: AppHandle, state: State<'_, AppState>) -> Resul
 mod tests {
     use super::*;
     use ring::signature::{Ed25519KeyPair, KeyPair};
+
+    #[test]
+    fn public_release_fallback_only_accepts_this_projects_exact_version_tag() {
+        let release = release_from_redirect(
+            &Url::parse("https://github.com/AcediaWhy/Obsession/releases/tag/v1.2.0").unwrap(),
+        )
+        .unwrap();
+        assert_eq!(release.tag_name, "v1.2.0");
+        assert!(asset_url(&release, "update.json").is_ok());
+        assert!(asset_url(&release, "update.json.sig").is_ok());
+        assert!(asset_url(&release, "Obsession-Setup_1.2.0_x64.exe").is_ok());
+        for url in [
+            "http://github.com/AcediaWhy/Obsession/releases/tag/v1.2.0",
+            "https://example.com/AcediaWhy/Obsession/releases/tag/v1.2.0",
+            "https://github.com/Other/Obsession/releases/tag/v1.2.0",
+            "https://github.com/AcediaWhy/Obsession/releases/latest",
+            "https://github.com/AcediaWhy/Obsession/releases/tag/v1.2.0/file",
+            "https://github.com/AcediaWhy/Obsession/releases/tag/v1.2.0?other=1",
+            "https://github.com/AcediaWhy/Obsession/releases/tag/v1.2.0#other",
+            "https://github.com/user@github.com/AcediaWhy/Obsession/releases/tag/v1.2.0",
+            "https://github.com/AcediaWhy/Obsession/releases/tag/v1.2.0%2f..",
+        ] {
+            assert!(
+                release_from_redirect(&Url::parse(url).unwrap()).is_err(),
+                "{url}"
+            );
+        }
+    }
 
     #[test]
     fn verifies_authentic_manifest_and_rejects_modification() {

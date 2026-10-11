@@ -239,10 +239,12 @@ function UpdatesPanel() {
   return (
     <div className="flex flex-col gap-3 text-sm text-ink-soft">
       <p>
-        {result
+        {phase === "checking" ? `Версия ${__APP_VERSION__} · проверяем обновления…`
+          : error ? `Версия ${__APP_VERSION__} · сейчас проверить обновления не удалось`
+          : result
           ? result.available
             ? `Доступна версия ${result.latest_version} · установлена ${result.current_version}`
-            : `Установлена актуальная версия ${result.current_version}`
+            : `По последней проверке установлена актуальная версия ${result.current_version}`
           : `Версия ${__APP_VERSION__} · проверка последнего релиза на GitHub`}
       </p>
       {result?.available && result.notes && (

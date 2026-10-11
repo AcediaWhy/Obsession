@@ -17,6 +17,7 @@ interface UpdateState {
 }
 
 const LAST_CHECK_KEY = `obsession.update.last-check.${__APP_VERSION__}`;
+const LAST_ATTEMPT_KEY = `obsession.update.last-attempt.${__APP_VERSION__}`;
 const RESULT_KEY = "obsession.update.last-result";
 const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
@@ -48,8 +49,9 @@ export const useUpdateStore = create<UpdateState>((set, get) => ({
       if (!isTauri()) return;
       try {
         const last = Number(localStorage.getItem(LAST_CHECK_KEY) || 0);
-        if (Date.now() - last < CHECK_INTERVAL_MS) return;
-        localStorage.setItem(LAST_CHECK_KEY, String(Date.now()));
+        const attempt = Number(localStorage.getItem(LAST_ATTEMPT_KEY) || 0);
+        if (Date.now() - last < CHECK_INTERVAL_MS || Date.now() - attempt < 15 * 60 * 1000) return;
+        localStorage.setItem(LAST_ATTEMPT_KEY, String(Date.now()));
       } catch {
         // Storage may be disabled; a failed cache write must not block checking.
       }
@@ -59,7 +61,10 @@ export const useUpdateStore = create<UpdateState>((set, get) => ({
       const result = await api.updateCheck();
       const previous = get().result;
       set({ phase: "idle", result, error: null });
-      try { localStorage.setItem(RESULT_KEY, JSON.stringify(result)); } catch { /* optional cache */ }
+      try {
+        localStorage.setItem(RESULT_KEY, JSON.stringify(result));
+        localStorage.setItem(LAST_CHECK_KEY, String(Date.now()));
+      } catch { /* optional cache */ }
       if (automatic && result.available && previous?.latest_version !== result.latest_version) {
         toast.info(`Доступна Obsession ${result.latest_version}. Обновить можно в настройках.`, 9000);
       }
