@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { Zapret2CatalogProfile, Zapret2PickerResult, Zapret2PickerProgress } from "../../lib/tauri";
+import type { Zapret2CatalogProfile, Zapret2HistoryRecord, Zapret2PickerResult, Zapret2PickerProgress } from "../../lib/tauri";
 import { Zapret2StrategyPanel } from "./Zapret2StrategyPanel";
 
 const state = vi.hoisted(() => ({
@@ -8,6 +8,7 @@ const state = vi.hoisted(() => ({
   catalog: [] as Zapret2CatalogProfile[], busy: false, loading: false,
   operation: null as "pick" | null, progress: null as Zapret2PickerProgress | null, cancelling: false,
   results: {} as Record<string, Zapret2PickerResult>, clienthello: true,
+  history: [] as Zapret2HistoryRecord[], applied: {} as Record<string, string>,
   load: vi.fn(), select: vi.fn(), pick: vi.fn(), applyResult: vi.fn(), cancel: vi.fn(), applyProgress: vi.fn(),
 }));
 vi.mock("../render", () => ({ useMotionOff: () => false, useRenderHidden: () => false }));
@@ -39,6 +40,8 @@ describe("independent Zapret2 service controls", () => {
     state.progress = null;
     state.cancelling = false;
     state.results = {};
+    state.history = [];
+    state.applied = {};
     state.catalog = [
       profile("discord", "discord-normal", "Discord split", "tls", true),
       profile("discord", "discord-clone", "ClientHello · тест", "tls", false, true),
@@ -74,7 +77,7 @@ describe("independent Zapret2 service controls", () => {
     expect(markup).toContain("полное испытание сервиса не проведено");
     expect(markup).toContain("Условия и источник");
     expect(markup).toContain(entry.candidate.urls[0]);
-    expect(markup).not.toContain("Веб-проверки пройдены");
+    expect(markup).not.toContain("Сетевые проверки пройдены");
   });
 
   it("uses the selected normal profile even when the retired global ClientHello flag is true", () => {
@@ -90,13 +93,13 @@ describe("independent Zapret2 service controls", () => {
         url: "https://discord.com/api/v10/gateway", passed: true, elapsed_ms: 80, bytes: 100, attempts: 1, http_status: 200, error: null,
       }] } } };
     const markup = renderToStaticMarkup(<Zapret2StrategyPanel />);
-    expect(markup).toContain("Все проверки не подтверждены");
-    expect(markup).toMatch(/Голос<\/span><span[^>]*>Не проверен/);
-    expect(markup).not.toContain("Применить TLS");
+    expect(markup).toContain("Нужно перепроверить");
+    expect(markup).toMatch(/Голос<\/span><span[^>]*>Выбран/);
+    expect(markup).not.toContain('aria-label="Применить настройки Discord"');
     state.results["discord:tls"].report!.status = "partial";
     const partial = renderToStaticMarkup(<Zapret2StrategyPanel />);
-    expect(partial).not.toContain("Применить TLS");
-    expect(partial).toContain("Все проверки не подтверждены");
+    expect(partial).not.toContain('aria-label="Применить настройки Discord"');
+    expect(partial).toContain("Нужно перепроверить");
   });
 
   it("allows manual changes with active protection and locks all controls during a picker", () => {
@@ -139,13 +142,23 @@ describe("independent Zapret2 service controls", () => {
     expect(renderToStaticMarkup(<Zapret2StrategyPanel />)).not.toContain('role="progressbar"');
   });
 
-  it("keeps one shared depth setting next to each picker and collapses profile details", () => {
+  it("keeps depth next to each picker and separates the current profiles from a custom trial in closed manual settings", () => {
+    state.catalog[0].compositionEligible = true;
+    state.catalog[1].compositionEligible = true;
     const markup = renderToStaticMarkup(<Zapret2StrategyPanel />);
     for (const label of ["Discord", "YouTube", "Gaming + GitHub"]) {
       expect(markup).toContain(`aria-label="Глубина проверки для ${label}"`);
     }
     expect(markup.match(/value="balanced" selected=""/g)).toHaveLength(3);
-    expect(markup.match(/<details class="z2-service-details">/g)).toHaveLength(3);
+    const manualSections = markup.match(/<details class="z2-service-details z2-manual-settings">[\s\S]*?<\/details>/g)!;
+    expect(manualSections).toHaveLength(3);
+    expect(manualSections[0]).toContain('aria-label="Текущая конфигурация Discord"');
+    expect(manualSections[0]).toContain('aria-label="Discord · TLS"');
+    expect(manualSections[0]).toContain("Испытать своё сочетание");
+    expect(manualSections[0]).toContain('aria-label="Профиль сборки API / Gateway"');
+    expect(markup).not.toContain("Настройки и результаты");
+    expect(markup).not.toContain("О подборе");
+    expect(markup).not.toContain("Результаты проверки");
     expect(markup).not.toContain('aria-label="Режим подбора"');
   });
 
@@ -161,10 +174,36 @@ describe("independent Zapret2 service controls", () => {
         functions: [{ function: "quic_0", label: "QUIC YouTube", required: true, passed: 2, failed: 0,
           inconclusive: 0, cancelled: 0, notTested: 0, proof: "quic_handshake" }] }] };
     const markup = renderToStaticMarkup(<Zapret2StrategyPanel />);
-    expect(markup).toContain("QUIC-подключение подтверждено");
-    expect(markup).toContain("HTTP/3-запросы и видеопоток не проверяются");
+    expect(markup).toContain("Подключение проверено");
+    expect(markup).toContain("Соединение установлено. Видео проверяется отдельно.");
     expect(markup).not.toContain("Страница YouTube");
     expect(markup).not.toContain("загружено");
-    expect(markup).toContain("Применить QUIC");
+    expect(markup).toContain("Применить этот вариант");
+    expect(markup).toContain('<details class="z2-service-details z2-service-results"><summary>Результаты проверки</summary>');
+    expect(markup).not.toContain("Технические подробности");
+    expect(markup).not.toContain("<table");
+    expect(markup).not.toContain("Результаты по профилям и функциям");
+    expect(markup).toContain("Проверить видео");
+    expect(markup).not.toContain('aria-label="Применить настройки YouTube"');
+    state.results["youtube_twitch:quic"].status = "tie";
+    delete state.results["youtube_twitch:quic"].profileId;
+    const tied = renderToStaticMarkup(<Zapret2StrategyPanel />);
+    expect(tied).toContain("Подходят несколько вариантов. Можно применить предложенный.");
+    expect(tied).toContain("Применить этот вариант");
+    expect(tied).not.toContain("технических подробностях");
+    state.history = [{ recordedAtUnixMs: 1000, kind: "tournament", subject: "QUIC", outcome: "tie",
+      report: state.results["youtube_twitch:quic"] as unknown as Record<string, unknown> }];
+    state.results = {};
+    const archived = renderToStaticMarkup(<Zapret2StrategyPanel />);
+    expect(archived).toContain("Подключение ранее проверено");
+    expect(archived).not.toContain("Не проверено");
+    expect(archived).not.toContain("Применить этот вариант");
+    expect(archived).not.toContain("<pre");
+  });
+  it("keeps an applied status only while that profile is selected", () => {
+    state.applied = { "discord:tls": "discord-normal" };
+    expect(renderToStaticMarkup(<Zapret2StrategyPanel />)).toContain("Настройки применены");
+    state.applied = { "discord:tls": "discord-clone" };
+    expect(renderToStaticMarkup(<Zapret2StrategyPanel />)).not.toContain("Настройки применены");
   });
 });

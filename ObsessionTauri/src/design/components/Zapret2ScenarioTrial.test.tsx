@@ -37,4 +37,11 @@ describe("directed application scenario", () => {
       restored: false, contextValid: false, recommendationAvailable: false, failure: "Возврат runtime не подтверждён." }]} />);
     expect(aborted).toContain("Возврат runtime не подтверждён.");
   });
+  it("does not offer user success buttons during an automatic player trial", () => {
+    const markup = renderToStaticMarkup(<Zapret2ScenarioTrial progress={{ ...progress, scenario: "youtube_playback",
+      phase: "automatic", stepId: null }} cancelling={false} observing={false} observe={vi.fn()} cancel={vi.fn()} />);
+    expect(markup).not.toContain("Шаг работает"); expect(markup).not.toContain("Не работает");
+    expect(markup).toContain("Отмена и возврат"); expect(markup).toContain("загрузку из сети");
+    expect(markup).not.toContain("Результат подтверждаешь ты");
+  });
 });

@@ -1,15 +1,13 @@
-import { useState } from "react";
 import type { Zapret2HistoryRecord } from "../../lib/tauri";
 
 function RecordDetails({ entry }: { entry: Zapret2HistoryRecord }) {
-  const [open, setOpen] = useState(false);
-  const outcome = entry.outcome === "passed" ? (entry.kind === "scenario" ? "работает по наблюдению пользователя" : "сетевые пробы пройдены")
+  const outcome = entry.outcome === "passed" ? (entry.kind === "scenario" ? entry.report.source === "player_observation"
+    ? "видео проверено плеером" : "работает по твоей проверке" : "сетевые проверки пройдены")
     : ({ failed: "отказ", partial: "частичный результат", inconclusive: "не удалось оценить", insufficient: "недостаточно повторов",
       cancelled: "отменено", aborted: "прервано", exhausted: "подтверждённый профиль не найден", tie: "ничья" } as Record<string, string>)[entry.outcome] ?? entry.outcome;
-  return <details className="mb-2" onToggle={(event) => setOpen(event.currentTarget.open)}>
-    <summary className="cursor-pointer">{new Date(entry.recordedAtUnixMs).toLocaleString()} · {entry.subject} · {outcome}</summary>
-    {open && <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-all">{JSON.stringify(entry.report, null, 2)}</pre>}
-  </details>;
+  const service = ({ discord: "Discord", youtube_twitch: "YouTube", gaming: "Gaming + GitHub" } as Record<string, string>)[String(entry.report.category)]
+    ?? "Проверка";
+  return <p className="mb-2">{new Date(entry.recordedAtUnixMs).toLocaleString()} · {service} · {outcome}</p>;
 }
 
 export function Zapret2History({ records }: { records: Zapret2HistoryRecord[] }) {

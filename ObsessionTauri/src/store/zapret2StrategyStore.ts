@@ -53,6 +53,24 @@ export function confirmedPickerCandidate(result: Zapret2PickerResult | undefined
       && entry.failed === 0 && entry.inconclusive === 0 && entry.cancelled === 0 && entry.notTested === 0);
 }
 
+// Display archived evidence for the selected profile, without reconstructing
+// the session receipt that authorizes application or another live trial.
+export function historicalProfileCheck(records: Zapret2HistoryRecord[], profile: Zapret2CatalogProfile | undefined):
+  { checkedAt: number; passed: boolean; transport: string } | undefined {
+  if (!profile?.selected) return;
+  for (const entry of [...records].sort((a, b) => b.recordedAtUnixMs - a.recordedAtUnixMs)) {
+    if (entry.kind !== "tournament" || !Number.isFinite(entry.recordedAtUnixMs)) continue;
+    if (!entry.report || typeof entry.report !== "object") continue;
+    const result = entry.report as unknown as Zapret2PickerResult;
+    if (result.category !== profile.category || result.transport !== profile.transport) continue;
+    try {
+      const candidate = result.tournament?.candidates.find((item) => item.profileId === profile.profileId);
+      if (!candidate || candidate.rounds < 1) continue;
+      return { checkedAt: entry.recordedAtUnixMs, passed: confirmedPickerCandidate(result, profile.profileId), transport: profile.transport };
+    } catch { /* A damaged archive is not evidence. */ }
+  }
+}
+
 interface Zapret2StrategyState {
   catalog: Zapret2CatalogProfile[];
   loading: boolean;
@@ -61,6 +79,7 @@ interface Zapret2StrategyState {
   cancelling: boolean;
   progress: Zapret2PickerProgress | null;
   results: Record<string, Zapret2PickerResult>;
+  applied: Record<string, string>;
   scenarioProgress: Zapret2ScenarioProgress | null;
   scenarios: Record<string, Zapret2ScenarioResult>;
   observing: boolean;
@@ -94,7 +113,7 @@ function blocked() {
 
 export const useZapret2StrategyStore = create<Zapret2StrategyState>((set, get) => ({
   catalog: [], loading: false, busy: false, operation: null, cancelling: false,
-  progress: null, results: {}, error: "", scenarioProgress: null, scenarios: {}, observing: false,
+  progress: null, results: {}, applied: {}, error: "", scenarioProgress: null, scenarios: {}, observing: false,
   history: [], historyError: "",
   loadHistory: async () => {
     try { set({ history: await api.dpiZapret2History(), historyError: "" }); }
@@ -118,7 +137,8 @@ export const useZapret2StrategyStore = create<Zapret2StrategyState>((set, get) =
     useDpiStore.setState({ transitioning: true });
     try {
       await api.dpiZapret2Select(category, transport, profileId);
-      set({ results: {} });
+      set((state) => ({ results: {}, applied: Object.fromEntries(Object.entries(state.applied)
+        .filter(([key]) => key !== zapret2ChoiceKey(category, transport))) }));
     } catch (error) {
       set({ error: String(error) });
     } finally {
@@ -175,7 +195,7 @@ export const useZapret2StrategyStore = create<Zapret2StrategyState>((set, get) =
       await api.dpiZapret2ApplyResult(result.tournament.runId, category, transport, chosen!);
       // Any runtime change invalidates the context of recommendations for all
       // slots, even if their own profile IDs did not change.
-      set({ results: {} });
+      set((state) => ({ results: {}, applied: { ...state.applied, [zapret2ChoiceKey(category, transport)]: chosen! } }));
     } catch (error) { set({ error: String(error) }); }
     finally {
       try { await refreshRuntime(); } catch (error) { set({ error: String(error) }); }
@@ -187,7 +207,8 @@ export const useZapret2StrategyStore = create<Zapret2StrategyState>((set, get) =
   testScenario: async (category, transport, profileId, scenario) => {
     const key = zapret2ChoiceKey(category, transport);
     const result = get().results[key];
-    const allowed = scenario === "youtube_video" ? category === "youtube_twitch" && ["tls", "quic"].includes(transport)
+    const automatic = scenario === "youtube_playback";
+    const allowed = ["youtube_video", "youtube_playback"].includes(scenario) ? category === "youtube_twitch" && ["tls", "quic"].includes(transport)
       : category === "discord" && transport === "tls";
     if (get().busy || blocked() || !allowed || !useDpiStore.getState().selectedCategories.includes(category)
       || !confirmedPickerCandidate(result, profileId) || !result.tournament) return;
@@ -201,10 +222,26 @@ export const useZapret2StrategyStore = create<Zapret2StrategyState>((set, get) =
     try {
       const measured = await api.dpiZapret2TestScenario(requestId, runId, category, transport, profileId, scenario);
       if (measured.requestId !== requestId || measured.runId !== runId || measured.category !== category || measured.transport !== transport
-        || measured.profileId !== profileId || measured.scenario !== scenario || measured.source !== "user_report"
-        || measured.scope !== "whole_configuration") throw new Error("Ответ испытания относится к другому сценарию.");
+        || measured.profileId !== profileId || measured.scenario !== scenario || measured.source !== (automatic ? "player_observation" : "user_report")
+        || measured.scope !== "whole_configuration" || measured.actualTransport !== "unverified") throw new Error("Ответ испытания относится к другому сценарию.");
+      if (automatic && measured.status === "passed" && (!measured.playback || measured.playback.videoId !== "jNQXAC9IVRw"
+        || ![measured.playback.playbackSeconds, measured.playback.decodedFrames, measured.playback.mediaBytes,
+          measured.playback.mediaResponses, measured.playback.stallSeconds].every(Number.isFinite)
+        || measured.playback.playbackSeconds < 10 || measured.playback.decodedFrames < 30
+        || measured.playback.mediaBytes < 32768 || measured.playback.mediaResponses < 1
+        || measured.playback.stallSeconds > 4 || !measured.playback.seekConfirmed
+        || measured.playback.stopReason !== "completed" || measured.measurement.testerVersion !== "youtube-real-player-v1"
+        || measured.measurement.phase !== "player_scenario" || !measured.restored || !measured.contextValid
+        || !measured.measurement.comparable || measured.measurement.runtimeGeneration === null
+        || measured.measurement.runId !== measured.trialId || measured.measurement.profileId !== profileId
+        || !["media_download", "media_playback"].every((id) => measured.measurement.functions.some((entry) =>
+          entry.function === id && entry.required && entry.outcome === "passed" && entry.proof === "browser_media_and_decoded_frames")))) {
+        throw new Error("Воспроизведение видео не подтверждено наблюдениями плеера.");
+      }
       const retained = get().cancelling ? { ...measured, status: "cancelled" as const } : measured;
-      set((state) => ({ scenarios: { ...state.scenarios, [zapret2ScenarioKey(runId, profileId, scenario)]: retained },
+      set((state) => ({ scenarios: { ...Object.fromEntries(Object.entries(state.scenarios).filter(([, entry]) =>
+        !(category === "youtube_twitch" && entry.runId === runId && entry.profileId === profileId
+          && ["youtube_video", "youtube_playback"].includes(entry.scenario)))), [zapret2ScenarioKey(runId, profileId, scenario)]: retained },
         results: measured.contextValid ? { [key]: result } : {} }));
       if (measured.failure) set({ error: measured.failure });
     } catch (error) { set({ error: String(error), results: {} }); }
@@ -237,7 +274,7 @@ export const useZapret2StrategyStore = create<Zapret2StrategyState>((set, get) =
       || progress.profileId !== current.profileId || progress.scenario !== current.scenario
       || (current.trialId && progress.trialId !== current.trialId) || progress.phase === "idle") return;
     if ((current.phase === "restoring" && progress.phase !== "restoring")
-      || (progress.phase === "step" && progress.stepIndex < current.stepIndex)
+      || (["step", "automatic"].includes(progress.phase) && progress.stepIndex < current.stepIndex)
       || (progress.phase === "starting" && current.phase !== "starting")) return;
     set({ scenarioProgress: progress });
     // An early cancel may precede the backend's initialization of its cancel

@@ -538,6 +538,11 @@ mod tests {
     fn manual_application_reports_cannot_enter_the_automatic_tournament() {
         let mut tournament = Tournament::new(vec![candidate("a", "split")], 2, 4);
         let mut round = tests_round("a", true);
+        round.tester_version = super::super::youtube_playback::VERSION;
+        round.phase = "player_scenario".into();
+        round.functions[0].proof = "browser_media_and_decoded_frames";
+        assert!(tournament.record(round).is_err());
+        let mut round = tests_round("a", true);
         round.tester_version = super::super::zapret2_scenario::VERSION;
         assert!(tournament.record(round.clone()).is_err());
         round.tester_version = super::super::zapret2_measure::TESTER_VERSION;

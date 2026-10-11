@@ -4,6 +4,7 @@
 //! the UI cannot provide an executable path, a config path or raw arguments.
 
 pub(crate) mod legacy_test;
+mod youtube_playback;
 pub(crate) mod zapret2_picker;
 pub(crate) mod zapret2_quic;
 pub(crate) mod zapret2_measure;

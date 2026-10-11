@@ -39,6 +39,30 @@ function result(category: string, transport = "tls"): Zapret2PickerResult {
         transferBytesPerSec: 1638400, functions: [{ function: "fixture", label: "Тестовая сетевая проба", required: true,
           passed: 2, failed: 0, inconclusive: 0, cancelled: 0, notTested: 0, proof: "fixture" }] }] } };
 }
+
+// Synthetic routing receipts belong only to this lab. They never reach the
+// service or trial history; production confirmation checks stay unchanged.
+function fixtureRouting(value: Zapret2PickerResult) {
+  const tournament = value.tournament!;
+  const winner = tournament.candidates.find((entry) => entry.profileId === value.profileId);
+  if (!winner || value.transport !== "tls") return;
+  winner.routingVerifiedRounds = winner.rounds;
+  const profiles = winner.composition
+    ? [winner.composition.apiProfileId, winner.composition.cdnProfileId] : [winner.profileId];
+  tournament.rounds = Array.from({ length: winner.rounds }, (_, index) => ({
+    runId: tournament.runId, profileId: winner.profileId, fingerprint: winner.fingerprint,
+    runtimeGeneration: index + 1, ordinal: index + 1, phase: "confirmation", transport: "tls",
+    testerVersion: "zapret2-functions-v5-routing", execution: "flow_routing_verified",
+    networkBefore: "fixture-network", networkAfter: "fixture-network", comparable: true, contextReason: null,
+    functions: [{ function: "fixture", label: "Тестовая сетевая проба", required: true, outcome: "passed",
+      stage: "complete", proof: "fixture", reason: null, target: "https://example.invalid/fixture",
+      remoteAddress: "192.0.2.1:443", ipFamily: "ipv4", elapsedMs: 320, bytes: 524288, httpStatus: 200,
+      connections: profiles.map((profileId, connection) => ({ purpose: "fixture", host: "example.invalid",
+        localAddress: `127.0.0.1:${50000 + index * 10 + connection}`, remoteAddress: "192.0.2.1:443",
+        expectedProfileId: profileId, observedProfiles: [profileId], observedActions: ["fixture"],
+        observedSends: ["fixture"], status: "verified" })) }],
+  }));
+}
 let mode: Zapret2PickMode = "balanced";
 let selectedService = query.get("service") ?? "discord";
 let selectedTransport = query.get("transport") ?? "tls";
@@ -53,17 +77,27 @@ useDpiStore.setState({ selectedCategories: categories, config: { categories: ["d
   start: async () => { useDpiStore.setState({ active: true }); }, stop: async () => { useDpiStore.setState({ active: false }); },
   toggleCategory: (category) => useDpiStore.setState((s) => ({ selectedCategories: s.selectedCategories.includes(category)
     ? s.selectedCategories.filter((value) => value !== category) : [...s.selectedCategories, category] })) });
-useZapret2StrategyStore.setState({ catalog, loading: false, error: "", history: [], historyError: "",
+useZapret2StrategyStore.setState({ catalog, loading: false, error: "", history: [], historyError: "", applied: {},
   load: async () => { useZapret2StrategyStore.setState({ catalog }); }, loadHistory: async () => {},
   pick: async (category, transport, _mode, composition) => show(composition ? "composition" : "picking", category, transport),
   cancel: async () => show("cancelled"),
   select: async (category, transport, profileId) => { catalog.forEach((entry) => { if (entry.category === category && entry.transport === transport) entry.selected = entry.profileId === profileId; });
     useZapret2StrategyStore.setState({ catalog: [...catalog], results: {} }); },
-  applyResult: async () => show("idle"), testScenario: async (category, transport, profileId, scenario) => {
+  applyResult: async (category, transport, profileId) => {
+    const key = category + ":" + transport;
+    const chosen = profileId ?? useZapret2StrategyStore.getState().results[key]?.profileId;
+    if (!chosen) return;
+    catalog.forEach((entry) => { if (entry.category === category && entry.transport === transport) entry.selected = entry.profileId === chosen; });
+    useZapret2StrategyStore.setState((state) => ({ catalog: [...catalog], applied: { ...state.applied, [key]: chosen } }));
+    show("idle");
+  }, testScenario: async (category, transport, profileId, scenario) => {
+    const automatic = scenario === "youtube_playback";
     useDpiStore.setState({ testing: true });
     useZapret2StrategyStore.setState({ busy: true, operation: "scenario", scenarioProgress: { requestId: "fixture", trialId: "fixture", runId: "fixture-run",
-      category, transport, profileId, scenario, phase: "step", stepId: "fixture", stepIndex: 1, total: 2,
-      label: "Проверь видео", instruction: "Открой любое видео и включи качество 1080p.", confirmAfterUnixMs: 0, expiresUnixMs: Date.now() + 180000 } });
+      category, transport, profileId, scenario, phase: automatic ? "automatic" : "step", stepId: automatic ? null : "fixture", stepIndex: 1, total: 2,
+      label: automatic ? "Макет автоматической проверки видео" : "Проверь видео",
+      instruction: automatic ? "Это макет интерфейса. Настоящий тестовый плеер запускается только в приложении." : "Открой видео и проверь воспроизведение.",
+      confirmAfterUnixMs: 0, expiresUnixMs: Date.now() + (automatic ? 60000 : 180000) } });
   }, observeScenario: async () => show("passed") });
 
 function show(state: string, category = selectedService, transport = selectedTransport) {
@@ -80,6 +114,7 @@ function show(state: string, category = selectedService, transport = selectedTra
         {...winner,profileId:"discord-tls-1",label:"Разбиение SNI",status:"partial",completeRounds:0},
         {...winner,profileId:composed.profileId,label:composed.name,composition:composed.composition}];
     } else if (!["passed","composed"].includes(state)) { value.status = state as Zapret2PickerResult["status"]; value.profileId = undefined; }
+    if (["passed", "composed"].includes(state)) fixtureRouting(value);
     results[key + ":" + value.transport] = value;
   });
   useZapret2StrategyStore.setState({ busy: picking, operation: picking ? "pick" : null, cancelling: state === "restoring",

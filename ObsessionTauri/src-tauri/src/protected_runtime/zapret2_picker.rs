@@ -1175,9 +1175,18 @@ pub(crate) async fn test_scenario(
             fingerprint: ticket.confirmed[&profile_id].clone(),
             runtime_generation: None,
             ordinal: 0,
-            phase: "guided_scenario".into(),
+            phase: if scenario.automatic() {
+                "player_scenario"
+            } else {
+                "guided_scenario"
+            }
+            .into(),
             transport: transport.clone(),
-            tester_version: guided::VERSION,
+            tester_version: if scenario.automatic() {
+                super::youtube_playback::VERSION
+            } else {
+                guided::VERSION
+            },
             execution: "unverified",
             network_before: None,
             network_after: None,
@@ -1207,6 +1216,8 @@ pub(crate) async fn test_scenario(
         let _ = app.emit("zapret2-scenario-progress", &progress);
         let raw = std::sync::Arc::new(std::sync::Mutex::new(None));
         let capture = raw.clone();
+        let playback_metrics = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let capture_playback = playback_metrics.clone();
         let measured_round = round.clone();
         let measured_progress = progress.clone();
         let expected_network = ticket.network.clone();
@@ -1223,15 +1234,30 @@ pub(crate) async fn test_scenario(
                 tokio::time::sleep(Duration::from_millis(800)).await;
                 let mut measured_round = measured_round;
                 measured_round.runtime_generation = Some(generation);
-                let measured = guided::measure(
-                    app,
-                    epoch,
-                    scenario,
-                    measured_round,
-                    measured_progress.clone(),
-                    &expected_network,
-                )
-                .await;
+                let measured = if scenario.automatic() {
+                    super::youtube_playback::measure(
+                        app,
+                        epoch,
+                        measured_round,
+                        measured_progress.clone(),
+                        &expected_network,
+                    )
+                    .await
+                    .map(|(report, metrics)| {
+                        *capture_playback.lock_recover() = Some(metrics);
+                        report
+                    })
+                } else {
+                    guided::measure(
+                        app,
+                        epoch,
+                        scenario,
+                        measured_round,
+                        measured_progress.clone(),
+                        &expected_network,
+                    )
+                    .await
+                };
                 if let Ok(report) = &measured {
                     *capture.lock_recover() = report.measurement.clone();
                 }
@@ -1299,7 +1325,7 @@ pub(crate) async fn test_scenario(
             transport,
             profile_id,
             scenario,
-            source: "user_report",
+            source: scenario.source(),
             scope: "whole_configuration",
             actual_transport: "unverified",
             configuration_fingerprint,
@@ -1311,6 +1337,7 @@ pub(crate) async fn test_scenario(
             history_warning: None,
             elapsed_ms: started.elapsed().as_millis() as u64,
             measurement: measured,
+            playback: playback_metrics.lock_recover().take(),
         };
         match serde_json::to_value(&result) {
             Ok(report) => {

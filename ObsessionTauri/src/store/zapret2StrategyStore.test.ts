@@ -22,7 +22,7 @@ vi.mock("./settingsStore", async () => {
 });
 import { useDpiStore } from "./dpiStore";
 import { useSettingsStore } from "./settingsStore";
-import { applicablePickerResult, useZapret2StrategyStore } from "./zapret2StrategyStore";
+import { applicablePickerResult, historicalProfileCheck, useZapret2StrategyStore } from "./zapret2StrategyStore";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -71,7 +71,79 @@ function scenarioResult(requestId: string, overrides: Partial<Zapret2ScenarioRes
       networkBefore: "network", networkAfter: "network", comparable: true, contextReason: null, functions: [] }, ...overrides };
 }
 
+function playbackResult(requestId: string): Zapret2ScenarioResult {
+  const result = scenarioResult(requestId, { category: "youtube_twitch", profileId: "youtube-other", scenario: "youtube_playback", source: "player_observation" });
+  result.playback = { videoId: "jNQXAC9IVRw", networkBytes: 100000, mediaBytes: 65536, mediaResponses: 2, cachedResponses: 0,
+    firstMediaMs: 500, firstPlaybackMs: 1000, playbackSeconds: 12, stallSeconds: 0, decodedFrames: 360, droppedFrames: 0,
+    width: 480, height: 360, mediaProtocols: ["h2"], seekConfirmed: true, stopReason: "completed" };
+  result.measurement = { ...result.measurement, profileId: "youtube-other", phase: "player_scenario", testerVersion: "youtube-real-player-v1",
+    functions: ["media_download", "media_playback"].map((id) => ({ function: id, label: id, required: true, outcome: "passed",
+      proof: "browser_media_and_decoded_frames", stage: "player_trial", reason: null, target: "https://www.youtube.com/watch?v=jNQXAC9IVRw",
+      remoteAddress: null, ipFamily: null, elapsedMs: 14000, bytes: 65536, httpStatus: null, connections: [] })) };
+  return result;
+}
+
+function youtubePick(): Zapret2PickerResult {
+  const result: Zapret2PickerResult = structuredClone(passed);
+  result.category = "youtube_twitch"; result.profileId = "youtube-other";
+  result.tournament!.candidates[0].profileId = "youtube-other";
+  for (const round of result.tournament!.rounds) {
+    round.profileId = "youtube-other";
+    for (const entry of round.functions) for (const connection of entry.connections ?? []) {
+      connection.expectedProfileId = "youtube-other"; connection.observedProfiles = ["youtube-other"];
+    }
+  }
+  return result;
+}
+
 describe("per-service Zapret2 selection and finite picker", () => {
+  it("retains separate player evidence without adding any tournament confirmations or applying settings", async () => {
+    const picked = youtubePick();
+    useZapret2StrategyStore.setState({ results: { "youtube_twitch:tls": picked } });
+    const pending = deferred<Zapret2ScenarioResult>(); mocks.scenario.mockReturnValue(pending.promise);
+    const testing = useZapret2StrategyStore.getState().testScenario("youtube_twitch", "tls", "youtube-other", "youtube_playback");
+    const initial = useZapret2StrategyStore.getState().scenarioProgress!;
+    useZapret2StrategyStore.getState().applyScenarioProgress({ ...initial, trialId: "trial", phase: "automatic" });
+    await useZapret2StrategyStore.getState().observeScenario("passed");
+    expect(mocks.observe).not.toHaveBeenCalled();
+    pending.resolve(playbackResult(initial.requestId)); await testing;
+    expect(Object.values(useZapret2StrategyStore.getState().scenarios)[0].source).toBe("player_observation");
+    expect(useZapret2StrategyStore.getState().results["youtube_twitch:tls"]).toEqual(picked);
+    expect(mocks.apply).not.toHaveBeenCalled(); expect(mocks.recordWorkingConfig).not.toHaveBeenCalled();
+  });
+  it.each(["no_bytes", "no_frames", "no_seek", "user_report", "old_tester", "missing_evidence", "nan", "wrong_trial"])(
+    "rejects a claimed playback success with %s", async (fault) => {
+      useZapret2StrategyStore.setState({ results: { "youtube_twitch:tls": youtubePick() } });
+      mocks.scenario.mockImplementation(async (requestId: string) => {
+        const result = playbackResult(requestId);
+        if (fault === "no_bytes") result.playback!.mediaBytes = 0;
+        if (fault === "no_frames") result.playback!.decodedFrames = 0;
+        if (fault === "no_seek") result.playback!.seekConfirmed = false;
+        if (fault === "user_report") result.source = "user_report";
+        if (fault === "old_tester") result.measurement.testerVersion = "guided";
+        if (fault === "missing_evidence") result.measurement.functions = [];
+        if (fault === "nan") result.playback!.mediaBytes = NaN;
+        if (fault === "wrong_trial") result.measurement.runId = "other-trial";
+        return result;
+      });
+      await useZapret2StrategyStore.getState().testScenario("youtube_twitch", "tls", "youtube-other", "youtube_playback");
+      expect(useZapret2StrategyStore.getState().results).toEqual({});
+      expect(useZapret2StrategyStore.getState().error).not.toBe(""); expect(mocks.apply).not.toHaveBeenCalled();
+    });
+  it("an unavailable player preserves the network recommendation and a successful retest replaces a failed video scenario", async () => {
+    const picked = youtubePick();
+    useZapret2StrategyStore.setState({ results: { "youtube_twitch:tls": picked } });
+    mocks.scenario.mockImplementation(async (requestId: string) => ({ ...playbackResult(requestId), status: "inconclusive" }));
+    await useZapret2StrategyStore.getState().testScenario("youtube_twitch", "tls", "youtube-other", "youtube_playback");
+    expect(useZapret2StrategyStore.getState().results["youtube_twitch:tls"]).toEqual(picked);
+    useZapret2StrategyStore.setState({ scenarios: { old: scenarioResult("old", { category: "youtube_twitch", profileId: "youtube-other",
+      scenario: "youtube_video", status: "failed", recommendationAvailable: false }) } });
+    mocks.scenario.mockImplementation(async (requestId: string) => playbackResult(requestId));
+    await useZapret2StrategyStore.getState().testScenario("youtube_twitch", "tls", "youtube-other", "youtube_playback");
+    expect(Object.values(useZapret2StrategyStore.getState().scenarios)).toHaveLength(1);
+    await useZapret2StrategyStore.getState().applyResult("youtube_twitch", "tls");
+    expect(mocks.apply.mock.calls).toEqual([["run", "youtube_twitch", "tls", "youtube-other"]]);
+  });
   it("tests an explicit Discord pair without applying it or inheriting donor success", async () => {
     const pair={apiProfileId:"discord-normal",cdnProfileId:"discord-other"};
     useZapret2StrategyStore.setState({catalog:originalCatalog.map((entry)=>({...entry,compositionEligible:entry.category==="discord"&&entry.transport==="tls"}))});
@@ -103,6 +175,26 @@ describe("per-service Zapret2 selection and finite picker", () => {
     expect(useZapret2StrategyStore.getState().history).toHaveLength(1);
     expect(useZapret2StrategyStore.getState().results).toEqual({});
     await useZapret2StrategyStore.getState().applyResult("discord", "tls"); expect(mocks.apply).not.toHaveBeenCalled();
+  });
+  it("retains display evidence after applying without retaining a reusable application receipt", async () => {
+    useZapret2StrategyStore.setState({ results: { "discord:tls": passed } });
+    await useZapret2StrategyStore.getState().applyResult("discord", "tls");
+    expect(useZapret2StrategyStore.getState().applied["discord:tls"]).toBe("discord-other");
+    expect(useZapret2StrategyStore.getState().results).toEqual({});
+    await useZapret2StrategyStore.getState().applyResult("discord", "tls");
+    expect(mocks.apply).toHaveBeenCalledTimes(1);
+  });
+  it("only displays archived evidence for the selected profile and keeps a later failed trial", () => {
+    const selected = profile("discord", "discord-other", "tls", true);
+    const archive = { recordedAtUnixMs: 1000, kind: "tournament" as const, subject: "test", outcome: "passed",
+      report: passed as unknown as Record<string, unknown> };
+    expect(historicalProfileCheck([archive], selected)).toEqual({ checkedAt: 1000, passed: true, transport: "tls" });
+    expect(historicalProfileCheck([archive], profile("discord", "discord-normal", "tls", true))).toBeUndefined();
+    expect(historicalProfileCheck([archive], profile("discord", "discord-other"))).toBeUndefined();
+    const failed = { ...archive, recordedAtUnixMs: 2000, outcome: "exhausted", report: { ...passed, status: "exhausted" } };
+    expect(historicalProfileCheck([failed, archive], selected)?.passed).toBe(false);
+    expect(historicalProfileCheck([{ ...archive, report: {} }], selected)).toBeUndefined();
+    expect(historicalProfileCheck([{ ...archive, report: { ...passed, tournament: { candidates: null } } }], selected)).toBeUndefined();
   });
   it("waits for application observations and preserves a newer step when the acknowledgement arrives late", async () => {
     const pending = deferred<Zapret2ScenarioResult>(); mocks.scenario.mockReturnValue(pending.promise);
@@ -211,7 +303,7 @@ describe("per-service Zapret2 selection and finite picker", () => {
       selectedCategories: ["discord", "youtube_twitch", "gaming"] });
     useSettingsStore.setState({ protectedDpiAvailable: true });
     useZapret2StrategyStore.setState({ catalog: originalCatalog, loading: false, busy: false, operation: null,
-      cancelling: false, progress: null, results: {}, history: [], historyError: "", scenarios: {}, scenarioProgress: null, observing: false, error: "" });
+      cancelling: false, progress: null, results: {}, applied: {}, history: [], historyError: "", scenarios: {}, scenarioProgress: null, observing: false, error: "" });
   });
 
   it("changes YouTube TLS independently and refreshes authoritative selection while DPI is active", async () => {

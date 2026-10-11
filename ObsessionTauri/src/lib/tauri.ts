@@ -358,23 +358,29 @@ export interface Zapret2RoundMeasurement {
   }>;
 }
 
-export type Zapret2Scenario = "discord_startup" | "discord_voice" | "youtube_video";
+export type Zapret2Scenario = "discord_startup" | "discord_voice" | "youtube_video" | "youtube_playback";
 export type Zapret2Observation = "passed" | "failed" | "inconclusive";
 export interface Zapret2ScenarioProgress {
   requestId: string;
   trialId: string; runId: string; category: string; transport: string; profileId: string; scenario: Zapret2Scenario;
-  phase: "starting" | "step" | "waiting" | "restoring" | "idle";
+  phase: "starting" | "step" | "automatic" | "waiting" | "restoring" | "idle";
   stepId: string | null; stepIndex: number; total: number; label: string; instruction: string;
   confirmAfterUnixMs: number; expiresUnixMs: number;
 }
 export interface Zapret2ScenarioResult {
   requestId: string;
   trialId: string; runId: string; category: string; transport: string; profileId: string; scenario: Zapret2Scenario;
-  source: "user_report"; scope: "whole_configuration"; actualTransport: "unverified";
+  source: "user_report" | "player_observation"; scope: "whole_configuration"; actualTransport: "unverified";
   configurationFingerprint: string; status: "passed" | "failed" | "inconclusive" | "cancelled" | "aborted";
   restored: boolean; contextValid: boolean; recommendationAvailable: boolean;
   failure: string | null; elapsedMs: number; measurement: Zapret2RoundMeasurement;
   historyWarning?: string | null;
+  playback?: {
+    videoId: string; networkBytes: number; mediaBytes: number; mediaResponses: number; cachedResponses: number;
+    firstMediaMs: number | null; firstPlaybackMs: number | null; playbackSeconds: number; stallSeconds: number;
+    decodedFrames: number; droppedFrames: number; width: number; height: number; mediaProtocols: string[];
+    seekConfirmed: boolean; stopReason: string;
+  } | null;
 }
 export interface Zapret2HistoryRecord {
   recordedAtUnixMs: number; kind: "tournament" | "scenario"; subject: string; outcome: string;

@@ -12,6 +12,7 @@ type BtnProps = {
   disabled?: boolean;
   className?: string;
   title?: string;
+  "aria-label"?: string;
 };
 
 export function Button({
@@ -21,6 +22,7 @@ export function Button({
   disabled = false,
   className = "",
   title,
+  "aria-label": ariaLabel,
 }: BtnProps) {
   const styles: Record<string, string> = {
     primary:
@@ -39,6 +41,7 @@ export function Button({
       onClick={onClick}
       disabled={disabled}
       title={title}
+      aria-label={ariaLabel}
       className={[
         // Transform управляется framer-motion; CSS-анимация отвечает за цвет и свечение.
         "no-drag theme-morph btn-anim rounded-xl px-4 py-2.5 text-sm font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70 disabled:cursor-not-allowed disabled:opacity-50",

@@ -285,6 +285,9 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            // Auxiliary probe windows have their own lifecycle. Closing one
+            // must not hide the main UI or trigger application shutdown.
+            if window.label() != "main" { return; }
             if let WindowEvent::Resized(size) = event {
                 window_restore::remember(window, *size);
             }

@@ -15,6 +15,7 @@ pub enum Scenario {
     DiscordStartup,
     DiscordVoice,
     YoutubeVideo,
+    YoutubePlayback,
 }
 
 impl Scenario {
@@ -23,6 +24,7 @@ impl Scenario {
             Self::DiscordStartup => "Запуск Discord",
             Self::DiscordVoice => "Голос Discord",
             Self::YoutubeVideo => "Видео YouTube",
+            Self::YoutubePlayback => "Автоматическая проверка видео YouTube",
         }
     }
     pub fn allowed(self, category: &str, transport: &str) -> bool {
@@ -30,13 +32,23 @@ impl Scenario {
             Self::DiscordStartup | Self::DiscordVoice => {
                 category == "discord" && transport == "tls"
             }
-            Self::YoutubeVideo => {
+            Self::YoutubeVideo | Self::YoutubePlayback => {
                 category == "youtube_twitch" && matches!(transport, "tls" | "quic")
             }
         }
     }
     pub fn blocks_application_on_failure(self) -> bool {
         self != Self::DiscordVoice
+    }
+    pub fn automatic(self) -> bool {
+        self == Self::YoutubePlayback
+    }
+    pub fn source(self) -> &'static str {
+        if self.automatic() {
+            "player_observation"
+        } else {
+            "user_report"
+        }
     }
     pub fn steps(self) -> &'static [Step] {
         match self {
@@ -53,6 +65,7 @@ impl Scenario {
                 Step { id: "playback", label: "Воспроизведение", instruction: "Смотри не менее 10 секунд. Видео и звук должны воспроизводиться без постоянной буферизации. Подтверждение станет доступно через 10 секунд после начала этого шага.", min_wait_ms: 10_000 },
                 Step { id: "seek", label: "Продолжение после перемотки", instruction: "Перемотай на другой участок видео и дождись продолжения воспроизведения. Эта проверка относится ко всей конфигурации; фактический TLS/QUIC-транспорт браузера здесь не определяется.", min_wait_ms: 0 },
             ],
+            Self::YoutubePlayback => &[],
         }
     }
 }
@@ -124,6 +137,8 @@ pub struct ResultRecord {
     pub history_warning: Option<String>,
     pub elapsed_ms: u64,
     pub measurement: RoundMeasurement,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub playback: Option<super::youtube_playback::Metrics>,
 }
 
 struct Gate {
@@ -213,6 +228,10 @@ impl Drop for Session {
 }
 
 pub fn pending(round: &mut RoundMeasurement, scenario: Scenario) {
+    if scenario.automatic() {
+        super::youtube_playback::pending(round);
+        return;
+    }
     round.functions = scenario
         .steps()
         .iter()
@@ -246,7 +265,12 @@ pub fn status(
 ) -> &'static str {
     if !restored || failure {
         "aborted"
-    } else if cancelled {
+    } else if cancelled
+        || round
+            .functions
+            .iter()
+            .any(|function| function.outcome == Outcome::Cancelled)
+    {
         "cancelled"
     } else if !round.comparable || round.runtime_generation.is_none() {
         "inconclusive"
@@ -499,6 +523,9 @@ mod tests {
         assert!(observe("video", "playback", Observation::Passed).is_err());
         assert!(serde_json::from_str::<Observation>("\"not_tested\"").is_err());
         assert!(Scenario::YoutubeVideo.allowed("youtube_twitch", "quic"));
+        assert!(Scenario::YoutubePlayback.allowed("youtube_twitch", "tls"));
+        assert_eq!(Scenario::YoutubePlayback.source(), "player_observation");
+        assert!(Scenario::YoutubePlayback.steps().is_empty());
         assert!(!Scenario::DiscordVoice.allowed("youtube_twitch", "tls"));
         observe("video", "playback", Observation::Inconclusive).unwrap();
     }
@@ -520,5 +547,7 @@ mod tests {
         assert_eq!(status(&round, false, true, false), "failed");
         assert!(Scenario::DiscordStartup.blocks_application_on_failure());
         assert!(!Scenario::DiscordVoice.blocks_application_on_failure());
+        round.functions[0].outcome = Outcome::Cancelled;
+        assert_eq!(status(&round, false, true, false), "cancelled");
     }
 }
