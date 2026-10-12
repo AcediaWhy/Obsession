@@ -1,23 +1,21 @@
 import type { Variants } from "framer-motion";
 
-import { dur, ease } from "./tokens";
+import { FOCUS_EXIT } from "./focusTransition";
 
-// Направление перехода передаётся через AnimatePresence.custom: свойства
-// уходящего экрана остаются замороженными до завершения анимации.
+// A paint-free sentinel retains the departing route for its brief content exit.
+// Glass fades on its own surface; the route never moves or changes opacity.
 export const screenVariants: Variants = {
-  // Небольшой сдвиг не конфликтует с анимациями внутри страницы.
-  enter: (dir: number) => ({ y: 8 * dir, pointerEvents: "auto" }),
+  enter: { "--route-presence": 1, pointerEvents: "auto" },
   // После прерванного выхода возвращаем странице обработку указателя.
   center: {
-    y: 0,
+    "--route-presence": 1,
     pointerEvents: "auto",
-    // Tween не даёт всей странице выходить за конечную позицию.
-    transition: { type: "tween", duration: dur.base, ease: [0.22, 1, 0.36, 1] },
+    transition: { duration: 0 },
   },
-  exit: (dir: number) => ({
-    y: -6 * dir,
+  exit: {
+    "--route-presence": 0,
     // Невидимый уходящий экран остаётся смонтированным и иначе перехватывает клики.
     pointerEvents: "none",
-    transition: { duration: dur.fast, ease: ease.exit },
-  }),
+    transition: { duration: FOCUS_EXIT / 1000 },
+  },
 };

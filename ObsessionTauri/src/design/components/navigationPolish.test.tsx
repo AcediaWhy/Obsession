@@ -18,11 +18,11 @@ describe("navigation polish", () => {
     expect(svg).toContain('cx="14" cy="17"');
     expect(svg).toContain('cx="18" cy="17"');
   });
-  it("uses a bounded page settle without an ancestor fade or blur", () => {
+  it("keeps the route stable and interactive while its contents take focus", () => {
     const center = screenVariants.center as Record<string, unknown>;
-    expect(center.transition).toMatchObject({ type: "tween", duration: 0.3 });
+    expect(center.transition).toMatchObject({ duration: 0 });
     expect(center.pointerEvents).toBe("auto");
-    expect(center).not.toHaveProperty("opacity");
-    expect(center).not.toHaveProperty("filter");
+    expect(center["--route-presence"]).toBe(1);
+    for (const property of ["y", "scale", "opacity", "filter"]) expect(center).not.toHaveProperty(property);
   });
 });

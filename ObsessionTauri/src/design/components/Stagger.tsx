@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 
 import { cascade, dur, ease, spring } from "../tokens";
 import { useMotionOff } from "../render";
+import { useScreenContinuity } from "../screenContinuity";
 
 // Контейнер запускает появление дочерних элементов с заданным интервалом.
 // В Chromium/WebView2 filter или opacity < 1 на предке ограничивают область
@@ -41,9 +42,10 @@ export function Stagger({
   className?: string;
 }) {
   const motionOff = useMotionOff();
-  if (motionOff) return <div className={className}>{children}</div>;
+  const continuity = useScreenContinuity();
+  if (motionOff || continuity) return <div className={className}>{children}</div>;
   return (
-    <motion.div variants={container} initial="hidden" animate="show" className={className}>
+    <motion.div variants={container} initial={continuity ? false : "hidden"} animate="show" className={className}>
       {children}
     </motion.div>
   );
@@ -63,11 +65,12 @@ export function StaggerItem({
   standalone?: boolean;
 }) {
   const motionOff = useMotionOff();
-  if (motionOff) return <div className={className}>{children}</div>;
+  const continuity = useScreenContinuity();
+  if (motionOff || continuity) return <div className={className}>{children}</div>;
   return (
     <motion.div
       variants={standalone ? itemStandalone : glass ? itemGlass : item}
-      {...(standalone ? { initial: "hidden", animate: "show" } : {})}
+      {...(standalone ? { initial: continuity ? false : "hidden", animate: "show" } : {})}
       // Прозрачностью стеклянной панели при выходе управляет GlassPanel.exit.
       exit={glass ? undefined : { opacity: 0, transition: { duration: dur.fast, ease: ease.exit } }}
       className={className}

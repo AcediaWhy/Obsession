@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactElement } from "react";
+import { useEffect, useLayoutEffect, useRef, type ReactElement } from "react";
 import {
   AnimatePresence,
   motion,
@@ -10,14 +10,8 @@ import { HeroField } from "./design/components/HeroField";
 import { ThemeAtmosphere, ThemeAtmosphereBackdrop } from "./design/components/ThemeAtmosphere";
 import { ParallaxProvider, Parallax } from "./design/parallax";
 import { CustomTitleBar } from "./design/components/CustomTitleBar";
-import { NavRail, TAB_ORDER, type Tab } from "./design/components/NavRail";
-import { OverviewScreen } from "./screens/Overview";
-import { DpiScreen } from "./screens/Dpi";
-import { AiScreen } from "./screens/Ai";
-import { TelegramScreen } from "./screens/Telegram";
-import { ListsScreen } from "./screens/Lists";
-import { SettingsScreen } from "./screens/Settings";
-import { ProfilesScreen } from "./screens/Profiles";
+import { NavRail, type Tab } from "./design/components/NavRail";
+import { ScreenDeck, useScreenNavigation } from "./design/components/ScreenDeck";
 
 import { initLogStream } from "./store/logStore";
 import { launcherBootstrap } from "./store/launcherBootstrap";
@@ -31,10 +25,9 @@ import { useStartupIntro } from "./design/startupIntro";
 import { on } from "./lib/tauri";
 import { backendErrorNotification } from "./lib/backendNotifications";
 import { setWindowShown, useMotionOff, useRenderHidden } from "./design/render";
-import { screenVariants } from "./design/screenTransition";
 import { initTrayStageRelease } from "./design/gl/trayStageRelease";
 import { initTraySleep } from "./design/traySleep";
-import { dur, ease, spring } from "./design/tokens";
+import { dur, ease } from "./design/tokens";
 import { toast } from "./store/toastStore";
 import { startUpdateChecks } from "./store/updateStore";
 import { useObsessionVisualPhase } from "./design/useObsessionVisualPhase";
@@ -84,10 +77,7 @@ function ThemeScene({
 }
 
 export default function App() {
-  const [tab, setTab] = useState<Tab>("overview");
-  // Направление последнего перехода по меню: +1 — вниз по списку, −1 — вверх.
-  // Ref, а не state: значение нужно в том же рендере, что и смена tab.
-  const tabDir = useRef(1);
+  const { tab, selectTab, deckRef } = useScreenNavigation();
   const theme = useThemeStore((s) => s.theme);
   const obsessionPhase = useObsessionVisualPhase();
   const reduceMotion = useSettingsStore((s) => s.settings?.reduce_motion);
@@ -95,11 +85,6 @@ export default function App() {
   const motionOff = useMotionOff();
   const startup = useStartupIntro((s) => s.request);
   const startupArriving = useStartupIntro((s) => s.arriving);
-  const selectTab = (next: Tab) => {
-    if (next === tab) return;
-    tabDir.current = TAB_ORDER.indexOf(next) > TAB_ORDER.indexOf(tab) ? 1 : -1;
-    setTab(next);
-  };
   // Заморозка скрытого окна: пока окно в трее, рендер отдаёт предыдущее
   // дерево как есть — React видит тот же элемент и пропускает согласование
   // поддерева целиком (см. кэш перед return ниже).
@@ -203,13 +188,6 @@ export default function App() {
   if (hidden && hiddenCache.current) {
     return hiddenCache.current;
   }
-  const screenContent = tab === "overview" ? <OverviewScreen />
-    : tab === "dpi" ? <DpiScreen />
-    : tab === "ai" ? <AiScreen />
-    : tab === "telegram" ? <TelegramScreen />
-    : tab === "lists" ? <ListsScreen />
-    : tab === "profiles" ? <ProfilesScreen />
-    : <SettingsScreen />;
   const tree = (
     <MotionConfig reducedMotion={reduceMotion ? "always" : "user"}>
       {/* Единый effective-флаг: настройка приложения ИЛИ системный
@@ -262,32 +240,7 @@ export default function App() {
               <NavRail active={tab} onSelect={selectTab} />
               <main className="flex min-w-0 flex-1 flex-col gap-3 overflow-hidden px-6 pb-6 pt-2">
                 <Onboarding onDestination={() => void launcherBootstrap.refresh()} />
-                <div className="relative min-h-0 flex-1">
-                  {motionOff ? (
-                    <div key={tab} className="absolute inset-0 h-full">
-                      {screenContent}
-                    </div>
-                  ) : <AnimatePresence mode="sync" custom={tabDir.current}>
-                    {/* Обёртка экрана — transform-only: opacity у предка стекла
-                        образует backdrop root (Chromium), и панели теряли матовость
-                        на время перехода. Фейд делают сами панели/элементы через
-                        exit-пропагацию (GlassPanel, StaggerItem). mode="sync"
-                        гарантирует, что новый экран смонтируется даже если exit
-                        предыдущей вкладки был прерван быстрым переключением. */}
-                    <motion.div
-                      key={tab}
-                      custom={tabDir.current}
-                      variants={screenVariants}
-                      initial="enter"
-                      animate="center"
-                      exit="exit"
-                      transition={spring.rise}
-                      className="absolute inset-0 h-full"
-                    >
-                      {screenContent}
-                    </motion.div>
-                  </AnimatePresence>}
-                </div>
+                <ScreenDeck ref={deckRef} tab={tab} onSelect={selectTab} />
               </main>
             </div>
 

@@ -42,7 +42,7 @@ const ZAPRET2_CATEGORY_LABELS: Record<string, string> = {
 
 const CATEGORY_ORDER = ["discord", "youtube_twitch", "gaming", "universal"];
 
-export function DpiScreen() {
+export function DpiScreen({ onBack, embedded = false }: { onBack?: () => void; embedded?: boolean }) {
   const motionOff = useMotionOff();
   const protectedDpiAvailable = useSettingsStore(
     (state) => state.protectedDpiAvailable,
@@ -102,26 +102,9 @@ export function DpiScreen() {
     return () => window.clearTimeout(timer);
   }, [s.reconcileTransition, s.transitioning, strategyBusy]);
 
-  return (
-    <div className="flex h-full flex-col gap-4">
-      {/* Заголовок. */}
-      <StaggerItem standalone className="flex items-center justify-between">
-        <div>
-          <h1 className="font-display text-3xl font-semibold tracking-tight text-gradient">DPI-обход</h1>
-          <p className="text-sm text-ink-muted">
-            Обход блокировок через Zapret (winws)
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <Uptime active={s.active} startedAt={s.startedAt} />
-          <StatusBadge active={s.active} />
-        </div>
-      </StaggerItem>
-
-      <div className="screen-split screen-split--end-360">
-        {/* Левая колонка: питание + категории. */}
-        <GlassPanel scroll>
-          <Stagger className="flex flex-col items-center gap-6">
+  const controls = (
+          <Stagger className="dpi-control-stack flex flex-col items-center gap-6">
+            {!embedded && (
             <StaggerItem className="mt-2 flex flex-col items-center gap-4">
               <Parallax depth={18}>
                 <HeroCore
@@ -146,6 +129,7 @@ export function DpiScreen() {
                   : "Активируйте ядро"}
               </div>
             </StaggerItem>
+            )}
 
             {!protectedDpiAvailable && (
               <StaggerItem className="w-full">
@@ -313,6 +297,42 @@ export function DpiScreen() {
               </StaggerItem>
             )}
           </Stagger>
+  );
+  if (embedded) return controls;
+
+  return (
+    <div className="flex h-full flex-col gap-4">
+      {/* Заголовок. */}
+      <StaggerItem standalone className="screen-heading flex flex-wrap items-center justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2.5">
+            <span data-dpi-anchor="icon" className="inline-flex h-[25px] w-[25px] shrink-0 items-center justify-center text-accent-cyan" aria-hidden="true">
+              <Icon.Bolt size={25} />
+            </span>
+            <h1 data-dpi-anchor="title" tabIndex={-1} className="inline-block whitespace-nowrap font-display text-3xl font-semibold tracking-tight text-gradient">DPI-обход</h1>
+          </div>
+          <p className="text-sm text-ink-muted">
+            Обход блокировок через Zapret (winws)
+          </p>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          {onBack && (
+            <button type="button" onClick={onBack} aria-label="Вернуться в Обзор" className="no-drag inline-flex items-center gap-1.5 rounded-lg border border-glass-border bg-white/5 px-2 py-1.5 text-xs text-ink transition-colors hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70">
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M13 8H3m4-4L3 8l4 4" />
+              </svg>
+              Обзор
+            </button>
+          )}
+          <Uptime active={s.active} startedAt={s.startedAt} />
+          <StatusBadge active={s.active} />
+        </div>
+      </StaggerItem>
+
+      <div className="screen-split screen-split--end-360">
+        {/* Левая колонка: питание + категории. */}
+        <GlassPanel scroll data-dpi-anchor="surface">
+          {controls}
         </GlassPanel>
 
         {/* Правая колонка: лог. */}

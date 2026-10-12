@@ -36,6 +36,7 @@ vi.mock("./design/components/NavRail", () => ({
 }));
 vi.mock("./screens/Overview", () => ({ OverviewScreen: () => null }));
 vi.mock("./screens/Dpi", () => ({ DpiScreen: () => null }));
+vi.mock("./design/components/ServiceWorkspace", () => ({ ServiceWorkspace: () => null }));
 vi.mock("./screens/Ai", () => ({ AiScreen: () => null }));
 vi.mock("./screens/Telegram", () => ({ TelegramScreen: () => null }));
 vi.mock("./screens/Lists", () => ({ ListsScreen: () => null }));

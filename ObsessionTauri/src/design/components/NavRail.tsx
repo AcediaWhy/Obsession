@@ -1,4 +1,3 @@
-import { useLayoutEffect, useRef } from "react";
 import { motion } from "framer-motion";
 import { Icon } from "./icons";
 import { EyeLogo } from "./EyeLogo";
@@ -7,7 +6,6 @@ import { HalloweenIcon } from "./HalloweenIcon";
 import { ThemeNavIcon } from "./ThemeNavIcon";
 import { useMotionOff, useRenderActive } from "../render";
 import { useNavIconMotion } from "../navIconMotion";
-import { dur, ease, spring } from "../tokens";
 import { useThemeStore } from "../../store/themeStore";
 import { useDpiStore } from "../../store/dpiStore";
 import { useProxyStore } from "../../store/proxyStore";
@@ -25,8 +23,7 @@ const items: { id: Tab; label: string; icon: (p: { size?: number }) => JSX.Eleme
   { id: "settings", label: "Настройки", icon: Icon.Settings },
 ];
 
-// Порядок вкладок в меню — источник направления для слайда экранов (App):
-// переход вниз по списку двигает контент вверх, и наоборот.
+// Shared navigation order for keyboard movement and service navigation.
 export const TAB_ORDER: Tab[] = items.map((it) => it.id);
 
 export function NavRail({
@@ -36,10 +33,6 @@ export function NavRail({
   active: Tab;
   onSelect: (t: Tab) => void;
 }) {
-  const previousActiveRef = useRef(active);
-  const previousIndex = TAB_ORDER.indexOf(previousActiveRef.current);
-  const activeIndex = TAB_ORDER.indexOf(active);
-  const farJump = Math.abs(activeIndex - previousIndex) > 1;
   const motionOff = useMotionOff();
   const renderOn = useRenderActive();
   // Оформление меню зависит от [data-theme] в globals.css.
@@ -51,9 +44,6 @@ export function NavRail({
   const updateAvailable = useUpdateStore((s) => s.result?.available ?? false);
   const burning = dpiActive || proxyRunning;
 
-  useLayoutEffect(() => {
-    previousActiveRef.current = active;
-  }, [active]);
 
   return (
     <nav
@@ -122,18 +112,9 @@ export function NavRail({
                   layoutId="nav-active"
                   aria-hidden
                   className="absolute inset-0 rounded-xl"
-                  // При дальнем переходе отключаем перемещение подложки и используем fade.
-                  transition={farJump || motionOff ? { duration: 0 } : spring.snappy}
+                  transition={motionOff ? { duration: 0 } : { type: "tween", duration: .36, ease: [.25, .72, .25, 1] }}
                 >
-                  <motion.span
-                    key={active}
-                    initial={farJump && !motionOff ? { opacity: 0, scale: 0.98 } : false}
-                    animate={{ opacity: 1, scale: 1 }}
-                    transition={
-                      farJump && !motionOff
-                        ? { duration: dur.fast, ease: ease.enter }
-                        : { duration: 0 }
-                    }
+                  <span
                     className="nav-active-plate absolute inset-0 rounded-xl border border-accent/40 bg-accent/15 shadow-glow"
                   />
                 </motion.div>

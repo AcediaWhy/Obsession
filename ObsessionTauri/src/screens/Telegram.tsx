@@ -54,7 +54,7 @@ function formatMMSS(secs: number): string {
   return `${m}:${String(s).padStart(2, "0")}`;
 }
 
-export function TelegramScreen() {
+export function TelegramScreen({ embedded = false }: { embedded?: boolean }) {
   const s = useProxyStore(useShallow((state) => ({
     available: state.available,
     running: state.running,
@@ -111,23 +111,9 @@ export function TelegramScreen() {
     };
   }, [qrLink]);
 
-  return (
-    <div className="flex h-full flex-col gap-4">
-      <StaggerItem standalone className="flex items-center justify-between">
-        <div>
-          <h1 className="font-display text-3xl font-semibold tracking-tight text-gradient">Telegram-прокси</h1>
-          <p className="text-sm text-ink-muted">
-            Собственный MTProto-прокси Obsession в один клик
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <Uptime active={s.running} />
-          <StatusBadge active={s.running} labelOn="Запущен" labelOff="Остановлен" />
-        </div>
-      </StaggerItem>
-
-      <div className="screen-split screen-split--end-360">
-        <GlassPanel scroll contentClassName="flex flex-col items-center gap-6">
+  const controls = (
+    <div className="telegram-control-stack flex w-full flex-col items-center gap-6">
+          {!embedded && (
           <div className="mt-2 flex flex-col items-center gap-4">
             <Parallax depth={18}>
               <HeroCore
@@ -148,6 +134,7 @@ export function TelegramScreen() {
                   : "Компонент Telegram-прокси отсутствует или повреждён"}
             </div>
           </div>
+          )}
 
           {!s.running && !canStart && (
             <GlassPanel className="border-warn/30">
@@ -267,6 +254,28 @@ export function TelegramScreen() {
               )}
             </div>
           )}
+    </div>
+  );
+  if (embedded) return controls;
+
+  return (
+    <div className="flex h-full flex-col gap-4">
+      <StaggerItem standalone className="flex items-center justify-between">
+        <div>
+          <h1 className="font-display text-3xl font-semibold tracking-tight text-gradient">Telegram-прокси</h1>
+          <p className="text-sm text-ink-muted">
+            Собственный MTProto-прокси Obsession в один клик
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <Uptime active={s.running} />
+          <StatusBadge active={s.running} labelOn="Запущен" labelOff="Остановлен" />
+        </div>
+      </StaggerItem>
+
+      <div className="screen-split screen-split--end-360">
+        <GlassPanel scroll contentClassName="flex flex-col items-center gap-6">
+          {controls}
         </GlassPanel>
 
         <GlassPanel className="flex flex-col overflow-hidden">

@@ -1,10 +1,11 @@
 import { motion, type HTMLMotionProps } from "framer-motion";
 import { useEffect, useRef, type ReactNode } from "react";
-import { dur, ease, spring } from "../tokens";
+import { dur, ease } from "../tokens";
 import { useParallaxOffset } from "../parallax";
 import { subscribePointerFrame } from "../pointerBus";
 import { useMotionOff } from "../render";
 import { ThemeAtmosphereSurface } from "./ThemeAtmosphere";
+import { useScreenContinuity } from "../screenContinuity";
 
 type Props = Omit<HTMLMotionProps<"div">, "children"> & {
   padded?: boolean;
@@ -35,6 +36,7 @@ export function GlassPanel({
   ...rest
 }: Props) {
   const motionOff = useMotionOff();
+  const continuity = useScreenContinuity();
   const { x, y } = useParallaxOffset(depth);
   const panelRef = useRef<HTMLDivElement>(null);
   const rectRef = useRef<DOMRect | null>(null);
@@ -104,12 +106,12 @@ export function GlassPanel({
       data-choir-lens
       // Анимируем прозрачность без scale, чтобы избежать дрожания размытого
       // фона при масштабировании. Движение при входе задаёт обёртка экрана.
-      initial={motionOff ? false : { opacity: 0 }}
+      initial={motionOff || continuity ? false : { opacity: 0 }}
       animate={{ opacity: 1 }}
       // Прозрачность меняется на самой панели: opacity на предке ограничивает
       // область backdrop-filter. Состояние exit приходит от AnimatePresence в App.
-      exit={{ opacity: 0, transition: motionOff ? { duration: 0 } : { duration: dur.fast, ease: ease.exit } }}
-      transition={motionOff ? { duration: 0 } : spring.soft}
+      exit={continuity ? undefined : { opacity: 0, transition: motionOff ? { duration: 0 } : { duration: dur.fast, ease: ease.exit } }}
+      transition={{ duration: motionOff || continuity ? 0 : .22, ease: ease.enter }}
       onPointerEnter={handlePointerEnter}
       onPointerLeave={handlePointerLeave}
       style={{ x, y, ...style }}
@@ -125,6 +127,7 @@ export function GlassPanel({
       {...rest}
     >
       {spotlight && <span className="spotlight-ring" aria-hidden />}
+      {continuity && <span className="focus-reflection-clip" aria-hidden><span className="focus-reflection" data-focus-reflection /></span>}
       <ThemeAtmosphereSurface />
       {inner}
     </motion.div>

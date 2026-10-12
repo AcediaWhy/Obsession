@@ -18,6 +18,7 @@ import { Icon } from "../design/components/icons";
 import { cascade, dur, ease } from "../design/tokens";
 import { useMotionOff, useRenderActive } from "../design/render";
 import { subscribePointerFrame } from "../design/pointerBus";
+import { useScreenContinuity, type ServiceTab } from "../design/screenContinuity";
 
 const CATEGORY_LABELS: Record<string, string> = {
   discord: "Discord",
@@ -90,8 +91,8 @@ export function OverviewScreen() {
 
   return (
     <div className="overview-board flex h-full flex-col gap-4 overflow-y-auto pr-1" data-note-motion={still ? "still" : "on"}>
-      <StaggerItem standalone>
-        <h1 className="font-display text-3xl font-semibold tracking-tight text-gradient">Обзор</h1>
+      <StaggerItem standalone className="screen-heading">
+        <h1 tabIndex={-1} className="font-display text-3xl font-semibold tracking-tight text-gradient">Обзор</h1>
         <p className="text-sm text-ink-muted">Состояние защиты одним взглядом</p>
       </StaggerItem>
 
@@ -172,6 +173,7 @@ export function OverviewScreen() {
         <StaggerItem glass>
           <StatusCard
             entryOrder={0}
+            service="dpi"
             theme={theme}
             still={still}
             icon={<Icon.Bolt size={18} />}
@@ -192,6 +194,7 @@ export function OverviewScreen() {
         <StaggerItem glass>
           <StatusCard
             entryOrder={1}
+            service="telegram"
             theme={theme}
             still={still}
             icon={<Icon.Send size={18} />}
@@ -284,6 +287,7 @@ function StatusCard({
   neutral = false,
   headingAction,
   detailHidden = false,
+  service,
 }: {
   entryOrder?: number;
   theme: Theme;
@@ -298,7 +302,9 @@ function StatusCard({
   neutral?: boolean;
   headingAction?: React.ReactNode;
   detailHidden?: boolean;
+  service?: ServiceTab;
 }) {
+  const continuity = useScreenContinuity();
   const motionOff = still;
   const tone = warn
     ? "text-warn"
@@ -364,10 +370,10 @@ function StatusCard({
       // Opacity анимирует сама стеклянная поверхность (это сохраняет корректный
       // backdrop sampling), а внешний transform даёт ей лёгкий settle без
       // ложного hover-lift: карточки здесь информационные, не кнопки.
-      initial={motionOff ? false : { y: 4, scale: 0.995 }}
+      initial={motionOff || continuity ? false : { y: 4, scale: 0.995 }}
       animate={{ y: 0, scale: 1 }}
       transition={
-        motionOff
+        motionOff || continuity
           ? { duration: 0 }
           : {
               duration: dur.slow,
@@ -379,13 +385,15 @@ function StatusCard({
     >
       <GlassPanel
         spotlight={false}
+        data-service-card={service}
+        data-service-anchor={service ? "surface" : undefined}
         data-active={on}
         data-tone={warn ? "warn" : on ? neutral ? "neutral" : "ok" : "off"}
         data-material={materialEnabled}
         onPointerEnter={moveMaterial}
         onPointerLeave={settleMaterial}
         transition={
-          motionOff
+          motionOff || continuity
             ? { duration: 0 }
             : {
                 duration: dur.slow,
@@ -400,10 +408,12 @@ function StatusCard({
         <OverviewStatusEffect theme={theme} event={stateKey} disabled={still} />
 
         <div className="overview-note-heading">
-          <span className="overview-note-icon text-ink-soft">
+          <span className="overview-note-icon text-ink-soft" data-service-anchor={service ? "icon" : undefined}>
             {icon}
           </span>
-          <span className="overview-note-title text-sm font-semibold text-ink">{title}</span>
+          <span className="overview-note-title text-sm font-semibold text-ink">
+            <span className={`inline-block${service ? " font-display" : ""}`} data-service-anchor={service ? "title" : undefined}>{title}</span>
+          </span>
           <span className="overview-note-tools">
             <span className="overview-note-number">0{entryOrder + 1}</span>
             {headingAction}

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
 
 import { useSettingsStore } from "../store/settingsStore";
@@ -45,14 +45,14 @@ export function SettingsScreen() {
   const patch = useSettingsStore((s) => s.patch);
 
   return (
-    <div className="flex h-full flex-col gap-4">
+    <div className="settings-screen flex h-full min-h-0 flex-col gap-4">
       {/* Заголовок + индикатор автосохранения. */}
-      <StaggerItem standalone className="flex items-center justify-between">
-        <div>
-          <h1 className="font-display text-3xl font-semibold tracking-tight text-gradient">Настройки</h1>
-          <p className="text-sm text-ink-muted">Параметры приложения · сохраняются автоматически</p>
+      <StaggerItem standalone className="screen-heading settings-heading flex flex-wrap items-center justify-between gap-2">
+        <div className="min-w-0">
+          <SettingsTitle />
+          <p data-settings-caption className="text-sm text-ink-muted">Параметры приложения · сохраняются автоматически</p>
         </div>
-        <SaveIndicator />
+        <div data-settings-save><SaveIndicator /></div>
       </StaggerItem>
 
       {!cfg ? (
@@ -60,14 +60,16 @@ export function SettingsScreen() {
           {error ? error : "Загрузка настроек…"}
         </GlassPanel>
       ) : (
-        <div className="grid flex-1 grid-cols-2 gap-4 overflow-y-auto pr-1">
+        <div data-settings-scroll className="grid min-h-0 flex-1 grid-cols-2 gap-4 overflow-y-auto pr-1">
           <Stagger className="flex flex-col gap-4">
             {/* Оформление — выбор визуальной темы hero/фона. */}
             <StaggerItem glass>
-              <GlassPanel>
-                <SectionLabel>Оформление</SectionLabel>
-                <ThemePicker />
-                <StartupIntroReplayButton />
+              <GlassPanel data-settings-panel="appearance">
+                <div data-settings-content>
+                  <SectionLabel>Оформление</SectionLabel>
+                  <ThemePicker />
+                  <StartupIntroReplayButton />
+                </div>
               </GlassPanel>
             </StaggerItem>
 
@@ -145,24 +147,26 @@ export function SettingsScreen() {
           <Stagger className="flex flex-col gap-4">
             {/* Telegram-прокси. */}
             <StaggerItem glass>
-              <GlassPanel>
-                <SectionLabel>Telegram-прокси</SectionLabel>
-                <div className="flex flex-col gap-3">
-                  <div className="flex flex-col gap-1.5">
-                    <span className="text-sm font-medium text-ink">Порт по умолчанию</span>
-                    <TextField
-                      type="number"
-                      value={String(cfg.proxy_port)}
-                      onChange={(v) => patch({ proxy_port: Number(v) || 1443 })}
-                    />
-                  </div>
-                  <div className="flex flex-col gap-1.5">
-                    <span className="text-sm font-medium text-ink">Fake TLS домен</span>
-                    <TextField
-                      value={cfg.fake_tls_domain}
-                      placeholder="напр. www.google.com"
-                      onChange={(v) => patch({ fake_tls_domain: v })}
-                    />
+              <GlassPanel data-settings-panel="telegram">
+                <div data-settings-content>
+                  <SectionLabel>Telegram-прокси</SectionLabel>
+                  <div className="flex flex-col gap-3">
+                    <div className="flex flex-col gap-1.5">
+                      <span className="text-sm font-medium text-ink">Порт по умолчанию</span>
+                      <TextField
+                        type="number"
+                        value={String(cfg.proxy_port)}
+                        onChange={(v) => patch({ proxy_port: Number(v) || 1443 })}
+                      />
+                    </div>
+                    <div className="flex flex-col gap-1.5">
+                      <span className="text-sm font-medium text-ink">Fake TLS домен</span>
+                      <TextField
+                        value={cfg.fake_tls_domain}
+                        placeholder="напр. www.google.com"
+                        onChange={(v) => patch({ fake_tls_domain: v })}
+                      />
+                    </div>
                   </div>
                 </div>
               </GlassPanel>
@@ -223,6 +227,13 @@ export function SettingsScreen() {
       )}
     </div>
   );
+}
+
+function SettingsTitle() {
+  return <h1 tabIndex={-1}
+    className="settings-title font-display text-3xl font-semibold tracking-tight text-gradient">
+    Настройки
+  </h1>;
 }
 
 function UpdatesPanel() {
@@ -337,6 +348,7 @@ function SecretBox() {
 // Плитки показывают анимированные превью тем. Секретные темы доступны
 // после разблокировки; превью продолжают работать при смене выбранной темы.
 function ThemePicker() {
+  const grid = useRef<HTMLDivElement>(null);
   const theme = useThemeStore((s) => s.theme);
   const setTheme = useThemeStore((s) => s.setTheme);
   const unlocked = useSecretStore((s) => s.unlocked);
@@ -345,8 +357,21 @@ function ThemePicker() {
     (th) => !th.secret || unlocked.includes(th.secret),
   );
 
+  useLayoutEffect(() => {
+    const root = grid.current;
+    if (!root) return;
+    const measure = () => {
+      const width = root.querySelector<HTMLElement>("[data-theme-preview]")?.clientWidth ?? 104;
+      root.style.setProperty("--settings-preview-scale", String(Math.min(1, width / 104)));
+    };
+    measure();
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+    observer?.observe(root);
+    return () => observer?.disconnect();
+  }, [visible.length]);
+
   return (
-    <div className="grid grid-cols-2 gap-3">
+    <div ref={grid} className="grid grid-cols-2 gap-3">
       {visible.map((th) => (
         <ThemeTile
           key={th.id}
@@ -389,7 +414,7 @@ function ThemeTile({
       ].join(" ")}
     >
       {/* Статичное декоративное preview: внутри плитки нет второй кнопки/canvas. */}
-      <div className="pointer-events-none flex h-[104px] items-center justify-center">
+      <div data-theme-preview className="pointer-events-none flex h-[104px] w-full min-w-0 items-center justify-center overflow-hidden">
         <ThemePreview theme={id} selected={selected} size={104} />
       </div>
       <div className="relative flex items-center">

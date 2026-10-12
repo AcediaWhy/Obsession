@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { screenVariants } from "./screenTransition";
+import { FOCUS_EXIT } from "./focusTransition";
 
 // Варианты направления — функции от custom; резолвим их так же, как framer.
 function resolve(variant: unknown, dir: number): Record<string, unknown> {
@@ -24,10 +25,21 @@ describe("screenVariants", () => {
     expect(resolve(screenVariants.center, 1).pointerEvents).toBe("auto");
   });
 
-  it("знак смещения следует направлению перехода", () => {
-    expect(resolve(screenVariants.enter, 1).y).toBe(8);
-    expect(resolve(screenVariants.enter, -1).y).toBe(-8);
-    expect(resolve(screenVariants.exit, 1).y).toBe(-6);
-    expect(resolve(screenVariants.exit, -1).y).toBe(6);
+  it("сохраняет геометрию и backdrop стекла на всех фазах", () => {
+    for (const phase of [screenVariants.enter, screenVariants.center, screenVariants.exit]) {
+      for (const direction of [-1, 1]) {
+        const variant = resolve(phase, direction);
+        for (const property of ["x", "y", "scale", "opacity", "filter"]) {
+          expect(variant).not.toHaveProperty(property);
+        }
+      }
+    }
+  });
+
+  it("держит уходящий экран только до завершения короткого выхода содержимого", () => {
+    expect(resolve(screenVariants.enter, 1)["--route-presence"]).toBe(1);
+    expect(resolve(screenVariants.center, 1)["--route-presence"]).toBe(1);
+    expect(resolve(screenVariants.exit, 1)["--route-presence"]).toBe(0);
+    expect(resolve(screenVariants.exit, 1).transition).toMatchObject({ duration: FOCUS_EXIT / 1000 });
   });
 });

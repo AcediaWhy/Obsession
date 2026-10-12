@@ -3,15 +3,15 @@
 import React, { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { MotionConfig } from "framer-motion";
-import { OverviewScreen } from "./screens/Overview";
+import { ScreenDeck, useScreenNavigation } from "./design/components/ScreenDeck";
 import { HeroField } from "./design/components/HeroField";
-import { NavRail, type Tab } from "./design/components/NavRail";
+import { NavRail } from "./design/components/NavRail";
 import { THEMES, useThemeStore, type Theme } from "./store/themeStore";
 import { useDpiStore } from "./store/dpiStore";
 import { useProxyStore } from "./store/proxyStore";
 import { useHostsStore } from "./store/hostsStore";
 import { useSettingsStore } from "./store/settingsStore";
-import { api } from "./lib/tauri";
+import { api, type AppConfig, type DpiTestReport, type EngineOption } from "./lib/tauri";
 import { invokeBrowserPreview } from "./lib/browserPreview";
 import { useMotionOff } from "./design/render";
 import { useObsessionVisualPhase } from "./design/useObsessionVisualPhase";
@@ -24,17 +24,86 @@ import "./styles/globals.css";
 async function prepareOverviewPreview() {
   if (!import.meta.env.DEV || "__TAURI_INTERNALS__" in window) return;
   api.getNetworkIdentity = async () => ({ online: true, org: "AS12389 Ростелеком", asn_region: "Россия", gateway_mac_masked: "••:••:••:12:34:56" });
-  const settings = await invokeBrowserPreview<Awaited<ReturnType<typeof api.getSettings>>>("get_settings");
-  useSettingsStore.setState({ settings, loaded: true });
+  const [savedSettings, emptyConfig, previewEngines] = await Promise.all([
+    invokeBrowserPreview<Awaited<ReturnType<typeof api.getSettings>>>("get_settings"),
+    invokeBrowserPreview<AppConfig>("get_config"),
+    invokeBrowserPreview<EngineOption[]>("dpi_engine_list"),
+  ]);
+  const settings = { ...savedSettings, selected_categories: ["discord", "youtube_twitch"] };
+  const sampleConfigs = {
+    discord: ["discord_1.conf", "discord_2.conf", "discord_3.conf"],
+    youtube_twitch: ["youtube_twitch_1.conf", "youtube_twitch_2.conf"],
+    gaming: ["gaming_1.conf", "gaming_2.conf"],
+    universal: ["universal_1.conf", "universal_2.conf"],
+  };
+  const config: AppConfig = {
+    ...emptyConfig,
+    categories: Object.keys(sampleConfigs),
+    configs: Object.fromEntries(Object.entries(sampleConfigs).map(([category, files]) => [
+      category, emptyConfig.configs[category]?.length ? emptyConfig.configs[category] : files,
+    ])),
+  };
+  useSettingsStore.setState((state) => ({
+    settings,
+    loaded: true,
+    protectedRuntimeAvailable: true,
+    protectedDpiAvailable: true,
+    protectedRuntime: { ...state.protectedRuntime, serviceAvailable: true, dpi: true },
+  }));
+  useDpiStore.getState().initialize(config, settings);
   const previewTheme = new URLSearchParams(window.location.search).get("theme");
   useThemeStore.setState({ theme: THEMES.some((entry) => entry.id === previewTheme) ? previewTheme as Theme : "goldenmeadow" });
   const toggle = async (active: boolean) => {
-    if (useDpiStore.getState().transitioning) return;
+    if (useDpiStore.getState().transitioning || useDpiStore.getState().testing) return;
     useDpiStore.setState({ transitioning: true });
     await new Promise((resolve) => setTimeout(resolve, 700));
-    useDpiStore.setState({ active, transitioning: false, startedAt: active ? Date.now() : null });
+    useDpiStore.setState((state) => ({
+      active,
+      transitioning: false,
+      startedAt: active ? Date.now() : null,
+      processes: active ? state.selectedCategories.map((category, index) => ({
+        pid: 1000 + index, category, config_file: state.selectedConfigs[category] ?? "",
+      })) : [],
+    }));
   };
-  useDpiStore.setState({ active: false, selectedCategories: ["discord", "youtube_twitch"], start: () => toggle(true), stop: () => toggle(false) });
+  // Sample reports belong only to this lab; no runtime or network test is started.
+  const test = async (autoConfigure = false) => {
+    const state = useDpiStore.getState();
+    if (state.active || state.transitioning || state.testing) return;
+    useDpiStore.setState({ testing: true, testCancel: false, error: "", testResults: {}, testReports: {} });
+    try {
+      for (const category of state.selectedCategories) {
+        const file = autoConfigure ? config.configs[category]?.[0] : state.selectedConfigs[category];
+        if (!file || useDpiStore.getState().testCancel) break;
+        useDpiStore.setState({ testingLabel: `${category}: ${file}` });
+        await new Promise((resolve) => setTimeout(resolve, 550));
+        if (useDpiStore.getState().testCancel) break;
+        const report: DpiTestReport = {
+          passed: true,
+          status: "passed",
+          checks: [{
+            url: category === "discord" ? "https://discord.com/api/v10/gateway" : "https://www.youtube.com/",
+            passed: true, elapsed_ms: 180, bytes: 4096, attempts: 1, http_status: 200, error: null,
+          }],
+        };
+        useDpiStore.setState((current) => ({
+          testReports: { ...current.testReports, [file]: report },
+          testResults: { ...current.testResults, [file]: true },
+          ...(autoConfigure ? { selectedConfigs: { ...current.selectedConfigs, [category]: file } } : {}),
+        }));
+      }
+    } finally {
+      useDpiStore.setState({ testing: false, testingLabel: "", testCancel: false });
+    }
+  };
+  useDpiStore.setState({
+    active: false,
+    engines: previewEngines.length ? previewEngines : [{ kind: "legacy", version: "1.0", beta: false, available: true, selected: true }],
+    start: () => toggle(true),
+    stop: () => toggle(false),
+    testAll: () => test(),
+    autoConfigure: () => test(true),
+  });
   useProxyStore.setState({ available: true });
   useHostsStore.setState({ status: "installed", provider: "malw", localVersion: "29 августа 2026" });
   if (new URLSearchParams(window.location.search).get("intro") === "full") useStartupIntro.getState().replay();
@@ -44,7 +113,7 @@ async function prepareOverviewPreview() {
 function OverviewPreview() {
   const theme = useThemeStore((state) => state.theme);
   const [quiet, setQuiet] = useState(false);
-  const [tab, setTab] = useState<Tab>("overview");
+  const { tab, selectTab, deckRef } = useScreenNavigation();
   const [edgeCase, setEdgeCase] = useState(false);
   const motionOff = useMotionOff();
   const phase = useObsessionVisualPhase();
@@ -79,8 +148,8 @@ function OverviewPreview() {
           </div>
         </div>
         <div data-startup-content className="absolute inset-0 top-10 z-10 flex">
-          <NavRail active={tab} onSelect={setTab} />
-          <main className="min-w-0 flex-1 overflow-hidden px-6 pb-6 pt-2"><OverviewScreen /></main>
+          <NavRail active={tab} onSelect={selectTab} />
+          <main className="h-full min-h-0 min-w-0 flex-1 overflow-hidden px-6 pb-6 pt-2"><ScreenDeck ref={deckRef} tab={tab} onSelect={selectTab} /></main>
         </div>
         <StartupIntro theme={theme} />
         </ThemeAtmosphere>
