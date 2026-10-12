@@ -129,8 +129,8 @@ export function invokeBrowserPreview<T>(
   switch (command) {
     case "update_check":
       value = {
-        current_version: "1.1.0",
-        latest_version: "1.1.0",
+        current_version: __APP_VERSION__,
+        latest_version: __APP_VERSION__,
         available: false,
         notes: "",
         release_url: "https://github.com/AcediaWhy/Obsession/releases/latest",

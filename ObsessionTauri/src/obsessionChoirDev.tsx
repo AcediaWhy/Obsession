@@ -97,7 +97,7 @@ function Harness() {
       <aside className="choir-rail">
         <div className="choir-brand">
           <div className="choir-brand-seal"><span /></div>
-          <div><strong>Obsession</strong><small>V1.1.0 · PROTOTYPE</small></div>
+          <div><strong>Obsession</strong><small>V{__APP_VERSION__} · PROTOTYPE</small></div>
         </div>
         <div className="choir-nav-label">MENU</div>
         <nav>

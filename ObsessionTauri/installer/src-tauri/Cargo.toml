@@ -5,7 +5,7 @@
 
 [package]
 name = "obsession-setup"
-version = "1.1.0"
+version = "1.2.0"
 description = "Obsession Setup — фирменный инсталлер"
 authors = ["AcediaWhy"]
 edition = "2021"
