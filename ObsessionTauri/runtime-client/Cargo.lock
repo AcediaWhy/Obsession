@@ -521,6 +521,7 @@ name = "obsession-runtime-reliability"
 version = "0.1.0"
 dependencies = [
  "libloading",
+ "obsession-runtime-protocol",
  "reqwest",
  "serde",
  "serde_json",
@@ -533,6 +534,7 @@ dependencies = [
 name = "obsession-runtime-service"
 version = "0.1.0"
 dependencies = [
+ "libloading",
  "obsession-runtime-protocol",
  "obsession-runtime-reliability",
  "reqwest",

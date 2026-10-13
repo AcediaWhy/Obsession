@@ -91,15 +91,19 @@ export type AiRouteHealth =
   | "inconclusive"
   | "unchecked";
 export type AiRouteKind = "preferred" | "fallback" | "direct";
-export type HostsRouteProvider = "malw" | "geohide" | "astracat" | "comss" | "xbox";
-export type GeminiRoutePreference = "auto" | "geohide" | "astracat";
+export type HostsRouteProvider = "malw" | "geohide" | "astracat" | "comss" | "xbox" | "bezmezhau";
+export type GeminiRoutePreference = "auto" | "geohide" | "astracat" | "malw" | "bezmezhau" | "comss";
 export type AiRouteFailureReason =
   | "timeout"
   | "tls"
   | "dns"
   | "routeMissing"
   | "offline"
-  | "externalChange";
+  | "externalChange"
+  | "challenge"
+  | "regionBlocked"
+  | "rateLimited"
+  | "httpError";
 
 export interface AiServiceRouteHealth {
   service: AiService;

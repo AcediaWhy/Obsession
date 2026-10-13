@@ -62,6 +62,17 @@ const COMSS_GEMINI_DOMAINS: [&str; 9] = [
     "alkalimakersuite-pa.clients6.google.com",
     "webchannel-alkalimakersuite-pa.clients6.google.com",
 ];
+const AI_DOH_DOMAINS: &[&str] = &[
+    "chatgpt.com", "ab.chatgpt.com", "auth.openai.com", "auth0.openai.com",
+    "api.openai.com", "platform.openai.com", "cdn.oaistatic.com",
+    "files.oaiusercontent.com", "webrtc.chatgpt.com", "tcr9i.chat.openai.com",
+    "claude.ai", "api.anthropic.com", "auth.anthropic.com", "console.anthropic.com",
+    "a.claude.ai", "claudeusercontent.com",
+    "gemini.google.com", "gemini.google", "bard.google.com", "aistudio.google.com",
+    "generativelanguage.googleapis.com", "aisandbox-pa.googleapis.com",
+    "robinfrontend-pa.googleapis.com", "alkalimakersuite-pa.clients6.google.com",
+    "webchannel-alkalimakersuite-pa.clients6.google.com",
+];
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const PROBE_BUDGET: Duration = Duration::from_secs(25);
 const MAX_PROBE_CANDIDATES_PER_DOMAIN: usize = 4;
@@ -98,21 +109,21 @@ struct HttpHostsDownloader {
 // This resolver is queried only for the fixed Gemini allowlist, never as the
 // system DNS. TLS verification remains enabled and redirects are forbidden.
 fn download_xbox_gemini() -> Result<Vec<u8>, BackendError> {
-    download_gemini_doh("https://xbox-dns.ru/dns-query", "Xbox DNS")
+    download_ai_doh("https://xbox-dns.ru/dns-query", "Xbox DNS", &COMSS_GEMINI_DOMAINS)
 }
 
 fn download_astracat_gemini() -> Result<Vec<u8>, BackendError> {
-    download_gemini_doh("https://dns.astracat.ru/dns-query", "Astracat DNS")
+    download_ai_doh("https://dns.astracat.ru/dns-query", "Astracat DNS", &COMSS_GEMINI_DOMAINS)
 }
 
-fn download_gemini_doh(url: &'static str, source: &'static str) -> Result<Vec<u8>, BackendError> {
+fn download_ai_doh(url: &'static str, source: &'static str, domains: &[&str]) -> Result<Vec<u8>, BackendError> {
     let client = reqwest::blocking::Client::builder()
         .timeout(COMSS_DOH_TIMEOUT).no_proxy()
         .redirect(reqwest::redirect::Policy::none())
         .build().map_err(|_| BackendError::ServiceUnavailable)?;
     let resolved = Mutex::new(BTreeMap::new());
     std::thread::scope(|scope| {
-        for domain in COMSS_GEMINI_DOMAINS {
+        for &domain in domains {
             let client = &client;
             let resolved = &resolved;
             scope.spawn(move || {
@@ -135,7 +146,7 @@ fn download_gemini_doh(url: &'static str, source: &'static str) -> Result<Vec<u8
             });
         }
     });
-    let mut output = format!("# {source}: authenticated DoH, Gemini only\n");
+    let mut output = format!("# {source}: authenticated DoH, fixed AI domains\n");
     for (domain, addresses) in resolved.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner) {
         for address in addresses { output.push_str(&format!("{address} {domain}\n")); }
     }
@@ -156,9 +167,12 @@ fn resolve_gemini_route(
     // Independent downloads: an unavailable provider must not prevent fallback.
     // Manual selections are strict: a failed probe preserves the installed route.
     let providers: &[HostsProvider] = match preference {
-        GeminiRoutePreference::Auto => &[HostsProvider::Geohide, HostsProvider::Astracat, HostsProvider::Xbox, HostsProvider::Comss],
+        GeminiRoutePreference::Auto => &[HostsProvider::Bezmezhau, HostsProvider::Malw, HostsProvider::Geohide, HostsProvider::Comss],
         GeminiRoutePreference::Geohide => &[HostsProvider::Geohide],
         GeminiRoutePreference::Astracat => &[HostsProvider::Astracat],
+        GeminiRoutePreference::Malw => &[HostsProvider::Malw],
+        GeminiRoutePreference::Bezmezhau => &[HostsProvider::Bezmezhau],
+        GeminiRoutePreference::Comss => &[HostsProvider::Comss],
     };
     for &provider in providers {
         let Ok(payload) = downloader.download(provider) else { continue };
@@ -166,7 +180,8 @@ fn resolve_gemini_route(
         let jobs = COMSS_GEMINI_DOMAINS.iter().flat_map(|host| {
             feed.ipv4.get(*host).into_iter().flatten().copied()
                 .filter(|ip| is_probeable_ipv4(*ip)).take(MAX_PROBE_CANDIDATES_PER_DOMAIN)
-                .map(|ip| ProbeJob { key: ProbeKey { host: (*host).to_owned(), address: Some(ip) }, path: "/" })
+                .map(|ip| ProbeJob { key: ProbeKey { host: (*host).to_owned(), address: Some(ip) },
+                    path: probe_targets(AiService::Gemini).iter().find(|target| target.host == *host).map_or("/", |target| target.path) })
         }).collect();
         let results = execute_probe_jobs(prober.clone(), jobs);
         let Some(mut selected) = viable_feed_candidates(&feed, AiService::Gemini, &results) else { continue };
@@ -181,7 +196,7 @@ fn resolve_gemini_route(
         for (host, ip) in &selected { replacement.push_str(&format!("{ip} {host}\n")); }
         return Ok((replacement.into_bytes(), ServiceRoutePlan {
             service: AiService::Gemini,
-            route: if provider == HostsProvider::Geohide { AiRouteKind::Preferred } else { AiRouteKind::Fallback },
+            route: if provider == providers[0] { AiRouteKind::Preferred } else { AiRouteKind::Fallback },
             provider: Some(provider), selected_candidates: selected,
         }));
     }
@@ -210,6 +225,7 @@ impl HttpHostsDownloader {
     fn new() -> Result<Self, BackendError> {
         let client = reqwest::blocking::Client::builder()
             .timeout(DOWNLOAD_TIMEOUT)
+            .no_proxy()
             .user_agent("Obsession-Runtime/1.1")
             .build()
             .map_err(|_| BackendError::ServiceUnavailable)?;
@@ -231,7 +247,7 @@ impl HttpHostsDownloader {
     fn download_comss_hosts(&self) -> Result<Vec<u8>, BackendError> {
         let resolved = Mutex::new(BTreeMap::<&'static str, Vec<Ipv4Addr>>::new());
         std::thread::scope(|scope| {
-            for domain in COMSS_GEMINI_DOMAINS {
+            for &domain in AI_DOH_DOMAINS {
                 let resolved = &resolved;
                 scope.spawn(move || {
                     if let Ok(addresses) = self.resolve_comss_ipv4(domain) {
@@ -294,6 +310,9 @@ impl HttpHostsDownloader {
 
 impl HostsDownloader for HttpHostsDownloader {
     fn download(&self, provider: HostsProvider) -> Result<Vec<u8>, BackendError> {
+        if provider == HostsProvider::Bezmezhau {
+            return download_ai_doh("https://dns.bezmezhau.com/dns-query", "Bezmezhau DNS", &COMSS_GEMINI_DOMAINS);
+        }
         if provider == HostsProvider::Xbox {
             return download_xbox_gemini();
         }
@@ -355,15 +374,17 @@ impl HostsRouteProber for HttpsRouteProber {
         let url = format!("https://{host}{path}");
         let mut last_reason = AiRouteFailureReason::Timeout;
         for _ in 0..2 {
-            match client.get(&url).send() {
+            let request = if host == "api.anthropic.com" {
+                client.post(&url).header("Content-Type", "application/json")
+                    .header("anthropic-version", "2023-06-01").body("{}")
+            } else { client.get(&url) };
+            match request.send() {
                 Ok(response) => {
-                    if route_response_usable(host, response) {
-                        return ProbeOutcome {
-                            working: true, reason: None,
-                            elapsed_millis: elapsed_millis(started),
-                        };
-                    }
-                    last_reason = AiRouteFailureReason::Tls;
+                    let reason = route_response_reason(host, response).err();
+                    return ProbeOutcome {
+                        working: reason.is_none(), reason,
+                        elapsed_millis: elapsed_millis(started),
+                    };
                 }
                 Err(error) => {
                     last_reason = if error.is_timeout() {
@@ -384,15 +405,56 @@ impl HostsRouteProber for HttpsRouteProber {
     }
 }
 
-fn route_response_usable(host: &str, response: reqwest::blocking::Response) -> bool {
-    if is_google_sorry_redirect(host, &response) { return false; }
-    // API roots may deliberately answer 401/404. Only the actual Gemini web
-    // entry point must return its HTML shell, not a generic error/challenge.
-    if host != "gemini.google.com" { return true; }
-    if !response.status().is_success() { return false; }
+fn route_response_reason(host: &str, response: reqwest::blocking::Response) -> Result<(), AiRouteFailureReason> {
+    let status = response.status().as_u16();
+    let location = response.headers().get(reqwest::header::LOCATION).and_then(|v| v.to_str().ok()).unwrap_or("").to_owned();
     let mut bytes = Vec::new();
-    if response.take(1024 * 1024 + 1).read_to_end(&mut bytes).is_err() { return false; }
-    gemini_page_usable(&bytes)
+    if response.take(1024 * 1024 + 1).read_to_end(&mut bytes).is_err() { return Err(AiRouteFailureReason::HttpError); }
+    classify_route_response(host, status, &location, &bytes)
+}
+
+fn classify_route_response(host: &str, status: u16, location: &str, bytes: &[u8]) -> Result<(), AiRouteFailureReason> {
+    use AiRouteFailureReason as Reason;
+    if bytes.len() > 1024 * 1024 { return Err(Reason::HttpError); }
+    let text = String::from_utf8_lossy(bytes).to_ascii_lowercase();
+    if location.contains("app-unavailable-in-region") || [
+        "unsupported_country", "unsupported country", "not supported in your country",
+        "not available in your country", "region is not supported",
+    ].iter().any(|marker| text.contains(marker)) { return Err(Reason::RegionBlocked); }
+    if google_sorry_location(host, location) || [
+        "cf-chl-", "challenge-platform", "<title>just a moment", "verify you are human",
+        "our systems have detected unusual traffic", "unusual traffic from your computer network",
+    ].iter().any(|marker| text.contains(marker)) { return Err(Reason::Challenge); }
+    if status == 429 { return Err(Reason::RateLimited); }
+    if status >= 500 { return Err(Reason::HttpError); }
+    if matches!(host, "api.anthropic.com" | "generativelanguage.googleapis.com" | "api.openai.com") {
+        if (200..300).contains(&status) { return Ok(()); }
+        let json = serde_json::from_slice::<serde_json::Value>(bytes).ok();
+        let message = json.as_ref().and_then(|v| v.get("error")).map(|v| v.to_string().to_ascii_lowercase()).unwrap_or_default();
+        return if matches!(status, 400 | 401 | 403 | 404 | 405) && [
+            "api-key", "api key", "authentication", "unregistered callers", "credentials", "method not allowed",
+        ].iter().any(|marker| message.contains(marker)) { Ok(()) } else { Err(Reason::HttpError) };
+    }
+    if host == "cdn.oaistatic.com" && status == 404 { return Ok(()); }
+    if (300..400).contains(&status) {
+        let url = reqwest::Url::parse(&format!("https://{host}/")).ok().and_then(|base| base.join(location).ok());
+        return if url.is_some_and(|url| url.scheme() == "https" && url.host_str().is_some_and(|destination| {
+            destination == host || matches!(destination, "auth.openai.com" | "accounts.google.com" | "claude.ai")
+        })) { Ok(()) } else { Err(Reason::HttpError) };
+    }
+    if !(200..300).contains(&status) { return Err(Reason::HttpError); }
+    let page_ok = match host {
+        "gemini.google.com" => gemini_page_usable(bytes),
+        "chatgpt.com" => text.split("<title>").nth(1).and_then(|v| v.split("</title>").next()).is_some_and(|title| title.contains("chatgpt")),
+        "claude.ai" => text.split("<title>").nth(1).and_then(|v| v.split("</title>").next()).is_some_and(|title| title.contains("claude")),
+        _ => true,
+    };
+    if page_ok { Ok(()) } else { Err(Reason::HttpError) }
+}
+
+fn selectable_probe(outcome: &ProbeOutcome) -> bool {
+    // A challenge proves a TLS route, but never a working browser session.
+    outcome.working || outcome.reason == Some(AiRouteFailureReason::Challenge)
 }
 
 fn gemini_page_usable(bytes: &[u8]) -> bool {
@@ -572,15 +634,6 @@ fn read_dns_name(message: &[u8], cursor: &mut usize) -> Option<String> {
     }
 }
 
-fn is_google_sorry_redirect(host: &str, response: &reqwest::blocking::Response) -> bool {
-    response.status().is_redirection()
-        && response
-            .headers()
-            .get(reqwest::header::LOCATION)
-            .and_then(|value| value.to_str().ok())
-            .is_some_and(|location| google_sorry_location(host, location))
-}
-
 fn google_sorry_location(request_host: &str, location: &str) -> bool {
     let relative_path = location.split(['?', '#']).next().unwrap_or(location);
     if relative_path == "/sorry" || relative_path.starts_with("/sorry/") {
@@ -718,7 +771,7 @@ const CLAUDE_TARGETS: [ProbeTarget; 2] = [
     },
     ProbeTarget {
         host: "api.anthropic.com",
-        path: "/",
+        path: "/v1/messages",
     },
 ];
 const GEMINI_TARGETS: [ProbeTarget; 3] = [
@@ -732,7 +785,7 @@ const GEMINI_TARGETS: [ProbeTarget; 3] = [
     },
     ProbeTarget {
         host: "generativelanguage.googleapis.com",
-        path: "/",
+        path: "/v1beta/models",
     },
 ];
 
@@ -773,7 +826,7 @@ fn service_for_domain(domain: &str) -> Option<AiService> {
     {
         return Some(AiService::Chatgpt);
     }
-    if suffix("claude.ai") || suffix("claude.com") || suffix("anthropic.com") {
+    if suffix("claude.ai") || suffix("claude.com") || suffix("anthropic.com") || suffix("claudeusercontent.com") {
         return Some(AiService::Claude);
     }
     if matches!(
@@ -797,7 +850,7 @@ fn other_provider(provider: HostsProvider) -> HostsProvider {
     match provider {
         HostsProvider::Malw => HostsProvider::Geohide,
         HostsProvider::Geohide => HostsProvider::Malw,
-        HostsProvider::Astracat | HostsProvider::Comss | HostsProvider::Xbox => HostsProvider::Geohide,
+        HostsProvider::Astracat | HostsProvider::Comss | HostsProvider::Xbox | HostsProvider::Bezmezhau => HostsProvider::Geohide,
     }
 }
 
@@ -999,9 +1052,13 @@ impl HostsController {
         let fallback_provider = other_provider(provider);
         let fetch = |source| self.downloader.download(source)
             .and_then(|payload| prepare_payload(source, &payload));
-        let preferred_result = fetch(provider);
-        let fallback_result = fetch(fallback_provider);
-        if preferred_result.is_err() && fallback_result.is_err() {
+        let (preferred_result, fallback_result, comss_feed) = std::thread::scope(|scope| {
+            let preferred = scope.spawn(|| fetch(provider));
+            let fallback = scope.spawn(|| fetch(fallback_provider));
+            let comss = scope.spawn(|| fetch(HostsProvider::Comss));
+            (preferred.join().unwrap(), fallback.join().unwrap(), comss.join().unwrap().ok())
+        });
+        if preferred_result.is_err() && fallback_result.is_err() && comss_feed.is_none() {
             return Err(preferred_result.err().unwrap());
         }
         let preferred_feed = preferred_result.ok();
@@ -1019,10 +1076,10 @@ impl HostsController {
             provider,
             &preferred_feed,
             &fallback_feed,
-            None,
+            comss_feed.as_ref(),
         );
         plans.retain(|plan| plan.service != AiService::Gemini);
-        let managed_payload = render_hybrid_payload(&preferred_feed, &fallback_feed, None, &plans)?;
+        let managed_payload = render_hybrid_payload(&preferred_feed, &fallback_feed, comss_feed.as_ref(), &plans)?;
         let (gemini_payload, gemini_plan) = match resolve_gemini_route(
             self.downloader.clone(), self.prober.clone(), gemini_preference,
         ) {
@@ -1035,6 +1092,14 @@ impl HostsController {
         };
         let managed_payload = replace_gemini_entries(&managed_payload, &gemini_payload)?;
         plans.push(gemini_plan);
+        // A failed selection must not silently erase an installed route.
+        // Abort before beginning the transaction, preserving the exact file.
+        let current_domains = collect_domains(&current, false);
+        if plans.iter().any(|plan| plan.provider.is_none() && current_domains.iter()
+            .any(|domain| service_for_domain(domain) == Some(plan.service)))
+            || plans.iter().all(|plan| plan.provider.is_none()) {
+            return Err(BackendError::RuntimeFailed);
+        }
         let prepared = merge_preserving_user_entries(
             &managed_payload,
             &current,
@@ -1579,6 +1644,7 @@ fn provider_url(provider: HostsProvider) -> &'static str {
         HostsProvider::Comss => "https://dns.comss.one/dns-query",
         HostsProvider::Xbox => "https://xbox-dns.ru/dns-query",
         HostsProvider::Astracat => "https://dns.astracat.ru/dns-query",
+        HostsProvider::Bezmezhau => "https://dns.bezmezhau.com/dns-query",
     }
 }
 
@@ -1589,6 +1655,7 @@ fn provider_key(provider: HostsProvider) -> &'static str {
         HostsProvider::Comss => "comss",
         HostsProvider::Xbox => "xbox",
         HostsProvider::Astracat => "astracat",
+        HostsProvider::Bezmezhau => "bezmezhau",
     }
 }
 
@@ -1609,6 +1676,7 @@ fn detect_managed_provider(bytes: &[u8]) -> Option<HostsProvider> {
         HostsProvider::Comss,
         HostsProvider::Xbox,
         HostsProvider::Astracat,
+        HostsProvider::Bezmezhau,
     ]
     .into_iter()
     .find(|provider| contains_marker(bytes, *provider))
@@ -1824,20 +1892,24 @@ fn plan_service_routes(
                     selected_candidates: BTreeMap::new(),
                 };
             }
-            if let Some(selected_candidates) = viable_feed_candidates(preferred, service, &results)
-            {
+            let feeds = if service == AiService::Chatgpt {
+                [comss, Some(preferred), Some(fallback)]
+            } else { [Some(preferred), Some(fallback), comss] };
+            // Prefer a real page over a faster challenge. Authentication challenges
+            // remain selectable, but are shown as inconclusive after installation.
+            let selected = feeds.into_iter().flatten().enumerate().filter_map(|(priority, feed)| {
+                let candidates = viable_feed_candidates(feed, service, &results)?;
+                let challenges = candidates.iter().filter(|(host, address)| {
+                    results.get(&ProbeKey { host: (*host).clone(), address: Some(**address) })
+                        .is_some_and(|outcome| !outcome.working)
+                }).count();
+                Some(((challenges, priority), feed, candidates))
+            }).min_by_key(|(rank, _, _)| *rank);
+            if let Some((_, feed, selected_candidates)) = selected {
                 return ServiceRoutePlan {
                     service,
-                    route: AiRouteKind::Preferred,
-                    provider: Some(preferred_provider),
-                    selected_candidates,
-                };
-            }
-            if let Some(selected_candidates) = viable_feed_candidates(fallback, service, &results) {
-                return ServiceRoutePlan {
-                    service,
-                    route: AiRouteKind::Fallback,
-                    provider: Some(fallback.provider),
+                    route: if feed.provider == preferred_provider { AiRouteKind::Preferred } else { AiRouteKind::Fallback },
+                    provider: Some(feed.provider),
                     selected_candidates,
                 };
             }
@@ -1870,7 +1942,8 @@ fn viable_feed_candidates(
                     host: target.host.to_owned(),
                     address: Some(address),
                 })?;
-                outcome.working.then_some((outcome.elapsed_millis, address))
+                (selectable_probe(outcome) && (service != AiService::Gemini || outcome.working))
+                    .then_some(((!outcome.working, outcome.elapsed_millis), address))
             })
             .min_by_key(|(elapsed_millis, _)| *elapsed_millis)?
             .1;
@@ -1888,30 +1961,8 @@ fn render_hybrid_payload(
     let mut output = String::with_capacity(preferred.normalized.len());
     output.push_str(&marker(preferred.provider));
     output.push('\n');
-    for raw_line in preferred.normalized.lines() {
-        let line = raw_line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        if line.starts_with('#') {
-            output.push_str(line);
-            output.push('\n');
-            continue;
-        }
-        let mut tokens = line.split_whitespace();
-        let Some(address) = tokens.next().and_then(|value| value.parse::<IpAddr>().ok()) else {
-            continue;
-        };
-        let domains = tokens
-            .take_while(|token| !token.starts_with('#'))
-            .filter(|domain| service_for_domain(domain).is_none())
-            .collect::<Vec<_>>();
-        if !domains.is_empty() {
-            output.push_str(&address.to_string());
-            output.push(' ');
-            output.push_str(&domains.join(" "));
-            output.push('\n');
-        }
+    if let Some(version) = extract_version(preferred.normalized.as_bytes()) {
+        output.push_str(&format!("# update: {version}\n"));
     }
     output.push_str("# obsession:verified-ai-routes\n");
     for plan in plans {
@@ -2011,7 +2062,7 @@ fn check_system_routes(
                     reason: Some(AiRouteFailureReason::RouteMissing),
                 };
             };
-            let failed = probe_targets(plan.service).iter().find_map(|target| {
+            let failed = probe_targets(plan.service).iter().filter_map(|target| {
                 results
                     .get(&ProbeKey {
                         host: target.host.to_owned(),
@@ -2019,11 +2070,13 @@ fn check_system_routes(
                     })
                     .filter(|outcome| !outcome.working)
                     .copied()
-            });
+            }).min_by_key(|outcome| outcome.reason == Some(AiRouteFailureReason::Challenge));
             AiServiceRouteHealth {
                 service: plan.service,
                 health: if failed.is_none() {
                     AiRouteHealth::Working
+                } else if failed.is_some_and(|outcome| outcome.reason == Some(AiRouteFailureReason::Challenge)) {
+                    AiRouteHealth::Inconclusive
                 } else {
                     AiRouteHealth::Unavailable
                 },
@@ -2080,7 +2133,8 @@ fn post_write_health_is_valid(plans: &[ServiceRoutePlan], health: &HostsHealthSn
     plans.iter().all(|plan| {
         plan.provider.is_none()
             || health.services.iter().any(|entry| {
-                entry.service == plan.service && entry.health == AiRouteHealth::Working
+                entry.service == plan.service && (entry.health == AiRouteHealth::Working
+                    || (entry.health == AiRouteHealth::Inconclusive && entry.reason == Some(AiRouteFailureReason::Challenge)))
             })
     })
 }
@@ -2491,7 +2545,7 @@ mod tests {
             Ok(match provider {
                 HostsProvider::Malw => self.malw.clone(),
                 HostsProvider::Geohide => self.geohide.clone(),
-                HostsProvider::Astracat | HostsProvider::Comss | HostsProvider::Xbox => return Err(BackendError::RuntimeFailed),
+                HostsProvider::Astracat | HostsProvider::Comss | HostsProvider::Xbox | HostsProvider::Bezmezhau => return Err(BackendError::RuntimeFailed),
             })
         }
     }
@@ -2680,6 +2734,134 @@ mod tests {
     }
 
     #[test]
+    fn http_errors_challenges_and_region_blocks_are_not_working_routes() {
+        let page = b"<html><title>ChatGPT</title></html>";
+        assert_eq!(classify_route_response("chatgpt.com", 200, "", page), Ok(()));
+        for (status, body, expected) in [
+            (403, b"<title>Just a moment...</title>".as_slice(), AiRouteFailureReason::Challenge),
+            (429, page.as_slice(), AiRouteFailureReason::RateLimited),
+            (503, page.as_slice(), AiRouteFailureReason::HttpError),
+            (403, b"Forbidden".as_slice(), AiRouteFailureReason::HttpError),
+            (200, b"<title>Service maintenance</title>".as_slice(), AiRouteFailureReason::HttpError),
+        ] {
+            assert_eq!(classify_route_response("chatgpt.com", status, "", body), Err(expected));
+        }
+        assert_eq!(classify_route_response("claude.ai", 302, "https://claude.com/app-unavailable-in-region", b""), Err(AiRouteFailureReason::RegionBlocked));
+        assert_eq!(classify_route_response("gemini.google.com", 302, "/sorry/index", b""), Err(AiRouteFailureReason::Challenge));
+        assert_eq!(classify_route_response("aistudio.google.com", 302, "/welcome", b""), Ok(()));
+        assert!(classify_route_response("chatgpt.com", 302, "https://example.com/login", b"").is_err());
+    }
+
+    #[test]
+    fn api_authentication_is_distinct_from_forbidden_or_html_errors() {
+        assert_eq!(classify_route_response("api.anthropic.com", 401, "", br#"{"error":{"type":"authentication_error","message":"x-api-key header is required"}}"#), Ok(()));
+        assert_eq!(classify_route_response("generativelanguage.googleapis.com", 403, "", br#"{"error":{"message":"Method doesn't allow unregistered callers"}}"#), Ok(()));
+        assert_eq!(classify_route_response("api.anthropic.com", 403, "", br#"{"error":{"message":"Request not allowed"}}"#), Err(AiRouteFailureReason::HttpError));
+        assert_eq!(classify_route_response("api.openai.com", 403, "", br#"{"error":{"code":"unsupported_country_region_territory"}}"#), Err(AiRouteFailureReason::RegionBlocked));
+        assert!(classify_route_response("api.openai.com", 401, "", b"<html>error</html>").is_err());
+        assert_eq!(classify_route_response("cdn.oaistatic.com", 404, "", b"Not found"), Ok(()));
+    }
+
+    #[test]
+    fn comss_can_repair_all_services_when_both_hosts_feeds_are_down() {
+        struct ComssOnly;
+        impl HostsDownloader for ComssOnly {
+            fn download(&self, provider: HostsProvider) -> Result<Vec<u8>, BackendError> {
+                if provider != HostsProvider::Comss { return Err(BackendError::RuntimeFailed); }
+                Ok(feed_for(Ipv4Addr::new(1, 2, 3, 4), Ipv4Addr::new(1, 2, 3, 4), Ipv4Addr::new(1, 2, 3, 4)))
+            }
+        }
+        let root = temp_root("comss-only");
+        let mut c = controller(&root, b"# fixture\n");
+        c.downloader = Arc::new(ComssOnly);
+        c.install(HostsMutationRequest { provider: HostsProvider::Malw }).unwrap();
+        assert!(c.state.health.as_ref().unwrap().services.iter().all(|route| route.provider == Some(HostsProvider::Comss)));
+    }
+
+    #[test]
+    fn failed_reselection_preserves_existing_routes_and_cached_health() {
+        let root = temp_root("preserve-old-ai");
+        let mut c = controller(&root, b"# fixture\n");
+        c.install(HostsMutationRequest { provider: HostsProvider::Malw }).unwrap();
+        let before = fs::read(&c.hosts_path).unwrap();
+        let health = c.state.health.clone();
+        let good = Ipv4Addr::new(1, 2, 3, 4);
+        let dead = Ipv4Addr::new(62, 133, 62, 97);
+        c.downloader = Arc::new(ProviderDownloader { malw: feed_for(good, good, dead), geohide: feed_for(good, good, dead) });
+        c.prober = Arc::new(ScriptedProber { controls_online:true, working_addresses:BTreeSet::from([good]), system_failures:BTreeSet::new() });
+        assert!(c.install(HostsMutationRequest { provider: HostsProvider::Malw }).is_err());
+        assert_eq!(fs::read(&c.hosts_path).unwrap(), before);
+        assert_eq!(c.state.health, health);
+        assert!(c.state.pending_rollback.is_none());
+    }
+
+    #[test]
+    fn ai_install_does_not_import_other_services_or_ad_blocking_rules() {
+        let root = temp_root("ai-only");
+        let mut c = controller(&root, b"1.2.3.4 api.github.com\n0.0.0.0 ads.example.com\n1.2.3.4 game.example.com\n1.2.3.4 claudeusercontent.com\n");
+        fs::write(&c.hosts_path, b"127.0.0.1 localhost\n9.9.9.9 user.example.com\n").unwrap();
+        c.install(HostsMutationRequest { provider: HostsProvider::Malw }).unwrap();
+        let installed = fs::read_to_string(&c.hosts_path).unwrap();
+        assert!(!installed.contains("api.github.com"));
+        assert!(!installed.contains("ads.example.com"));
+        assert!(!installed.contains("game.example.com"));
+        assert!(installed.contains("user.example.com"));
+        assert!(installed.contains("claudeusercontent.com"));
+    }
+
+    struct ChallengeProber;
+    impl HostsRouteProber for ChallengeProber {
+        fn probe(&self, host: &str, _path: &str, _address: Option<Ipv4Addr>) -> ProbeOutcome {
+            let challenge = host == "claude.ai";
+            ProbeOutcome { working:!challenge, reason:challenge.then_some(AiRouteFailureReason::Challenge), elapsed_millis:1 }
+        }
+    }
+
+    #[test]
+    fn challenge_routes_can_be_installed_but_are_not_verified_last_known_good() {
+        let root = temp_root("challenge-status");
+        let mut c = controller(&root, b"# fixture\n");
+        c.prober = Arc::new(ChallengeProber);
+        c.install(HostsMutationRequest { provider: HostsProvider::Malw }).unwrap();
+        let health = c.state.health.as_ref().unwrap();
+        let claude = health.services.iter().find(|route| route.service == AiService::Claude).unwrap();
+        assert_eq!(claude.health, AiRouteHealth::Inconclusive);
+        assert_eq!(claude.reason, Some(AiRouteFailureReason::Challenge));
+        assert!(!health.repair_recommended);
+        assert!(!c.snapshot().unwrap().rollback_available);
+    }
+
+    #[test]
+    fn a_hard_failure_is_not_hidden_by_an_authentication_challenge() {
+        struct MixedProber;
+        impl HostsRouteProber for MixedProber {
+            fn probe(&self, host:&str, _path:&str, _address:Option<Ipv4Addr>) -> ProbeOutcome {
+                let reason = match host { "auth.openai.com" => Some(AiRouteFailureReason::Challenge), "cdn.oaistatic.com" => Some(AiRouteFailureReason::Timeout), _ => None };
+                ProbeOutcome { working:reason.is_none(), reason, elapsed_millis:1 }
+            }
+        }
+        let plans = plans_from_cached_health(None, HostsProvider::Malw);
+        let health = check_system_routes(Arc::new(MixedProber), HostsProvider::Malw, &plans);
+        let chatgpt = health.services.iter().find(|route| route.service == AiService::Chatgpt).unwrap();
+        assert_eq!(chatgpt.health, AiRouteHealth::Unavailable);
+        assert_eq!(chatgpt.reason, Some(AiRouteFailureReason::Timeout));
+        assert!(!post_write_health_is_valid(&plans, &health));
+    }
+
+    #[test]
+    fn new_manual_gemini_sources_survive_service_reload() {
+        for (preference, provider) in [(GeminiRoutePreference::Bezmezhau, HostsProvider::Bezmezhau), (GeminiRoutePreference::Malw, HostsProvider::Malw), (GeminiRoutePreference::Comss, HostsProvider::Comss)] {
+            let root = temp_root("new-gemini-preference");
+            let mut c = controller(&root, b"# fixture\n");
+            c.install(HostsMutationRequest { provider: HostsProvider::Malw }).unwrap();
+            c.refresh_gemini(preference).unwrap();
+            let reloaded = HostsController::from_paths(c.hosts_path.clone(), c.state_path.clone(), c.backups_dir.clone(), c.downloader.clone(), c.prober.clone()).unwrap();
+            assert_eq!(reloaded.state.gemini_preference, preference);
+            assert_eq!(reloaded.state.health.as_ref().unwrap().services.iter().find(|route| route.service == AiService::Gemini).unwrap().provider, Some(provider));
+        }
+    }
+
+    #[test]
     fn targeted_replacement_preserves_other_lines_byte_for_byte() {
         let before = b"# mine\r\n1.2.3.4 chatgpt.com\r\n5.6.7.8 gemini.google.com\r\n9.8.7.6 claude.ai # keep\r\n";
         assert_eq!(replace_gemini_entries(before, b"87.228.47.194 gemini.google.com\n").unwrap(),
@@ -2742,6 +2924,8 @@ mod tests {
         c.downloader = Arc::new(ProviderDownloader {
             malw: feed_for(old, old, old), geohide: feed_for(next, next, next),
         });
+        c.prober = Arc::new(ScriptedProber { controls_online:true,
+            working_addresses:BTreeSet::from([next]), system_failures:BTreeSet::new() });
         c.refresh_gemini(GeminiRoutePreference::Auto).unwrap();
         let after = fs::read(&c.hosts_path).unwrap();
         assert_eq!(replace_gemini_entries(&before, b"").unwrap(), replace_gemini_entries(&after, b"").unwrap());
@@ -2776,7 +2960,7 @@ mod tests {
     }
 
     #[test]
-    fn gemini_refresh_prefers_xbox_and_falls_back_without_other_feeds() {
+    fn gemini_auto_skips_retired_xbox_even_if_its_feed_responds() {
         struct GeminiFeeds;
         impl HostsDownloader for GeminiFeeds {
             fn download(&self, provider: HostsProvider) -> Result<Vec<u8>, BackendError> {
@@ -2790,7 +2974,7 @@ mod tests {
         }
         let xbox = Ipv4Addr::new(87, 228, 47, 194);
         let comss = Ipv4Addr::new(132, 243, 119, 73);
-        for (working, expected) in [(vec![xbox, comss], HostsProvider::Xbox), (vec![comss], HostsProvider::Comss)] {
+        for (working, expected) in [(vec![xbox, comss], HostsProvider::Comss), (vec![comss], HostsProvider::Comss)] {
             let (payload, plan) = fresh_gemini_route(Arc::new(GeminiFeeds), Arc::new(ScriptedProber {
                 controls_online: true, working_addresses: working.into_iter().collect(), system_failures: BTreeSet::new(),
             })).unwrap();
@@ -2811,7 +2995,7 @@ mod tests {
                     HostsProvider::Astracat => Ipv4Addr::new(217, 60, 179, 6),
                     HostsProvider::Xbox => Ipv4Addr::new(87, 228, 47, 194),
                     HostsProvider::Comss => Ipv4Addr::new(45, 88, 174, 254),
-                    HostsProvider::Malw => return Err(BackendError::RuntimeFailed),
+                    HostsProvider::Malw | HostsProvider::Bezmezhau => return Err(BackendError::RuntimeFailed),
                 };
                 Ok(feed_for(ip, ip, ip))
             }
@@ -2833,7 +3017,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(plan.provider, Some(HostsProvider::Geohide));
-        assert_eq!(plan.route, AiRouteKind::Preferred);
+        assert_eq!(plan.route, AiRouteKind::Fallback);
         let text = String::from_utf8(payload).unwrap();
         assert!(text.contains("193.233.112.68 gemini.google.com"));
         assert!(!text.contains("chatgpt"));
@@ -2855,7 +3039,7 @@ mod tests {
             }
         }
 
-        let (payload, plan) = fresh_gemini_route(
+        let (payload, plan) = resolve_gemini_route(
             Arc::new(GeminiFeeds),
             Arc::new(ScriptedProber {
                 controls_online: true,
@@ -2864,12 +3048,12 @@ mod tests {
                     Ipv4Addr::new(87, 228, 47, 194),
                 ]),
                 system_failures: BTreeSet::new(),
-            }),
+            }), GeminiRoutePreference::Astracat,
         )
         .unwrap();
 
         assert_eq!(plan.provider, Some(HostsProvider::Astracat));
-        assert_eq!(plan.route, AiRouteKind::Fallback);
+        assert_eq!(plan.route, AiRouteKind::Preferred);
         let text = String::from_utf8(payload).unwrap();
         assert!(text.contains("217.60.179.6 gemini.google.com"));
         assert!(!text.contains("chatgpt"));
@@ -2893,6 +3077,28 @@ mod tests {
         let downloader = HttpHostsDownloader::new().unwrap();
         let (payload, plan) = fresh_gemini_route(Arc::new(downloader), Arc::new(HttpsRouteProber)).unwrap();
         println!("provider={:?}\n{}", plan.provider, String::from_utf8(payload).unwrap());
+    }
+
+    #[test]
+    #[ignore = "explicit read-only network check; no system mutation"]
+    fn live_ai_candidates_without_hosts_changes() {
+        let downloader = Arc::new(HttpHostsDownloader::new().unwrap());
+        let fetch = |provider| downloader.download(provider).and_then(|payload| prepare_payload(provider, &payload));
+        let preferred = fetch(HostsProvider::Malw).unwrap_or(PreparedFeed { provider:HostsProvider::Malw, normalized:String::new(), ipv4:BTreeMap::new() });
+        let fallback = fetch(HostsProvider::Geohide).unwrap_or(PreparedFeed { provider:HostsProvider::Geohide, normalized:String::new(), ipv4:BTreeMap::new() });
+        let comss = fetch(HostsProvider::Comss).ok();
+        let prober = Arc::new(HttpsRouteProber);
+        let plans = plan_service_routes(prober.clone(), HostsProvider::Malw, &preferred, &fallback, comss.as_ref());
+        for plan in plans.iter().filter(|plan| plan.service != AiService::Gemini) {
+            println!("service={:?} provider={:?}", plan.service, plan.provider);
+            for target in probe_targets(plan.service) {
+                let Some(ip) = plan.selected_candidates.get(target.host) else { continue };
+                println!("  {} {} {:?}", target.host, ip, prober.probe(target.host, target.path, Some(*ip)));
+            }
+        }
+        let (payload, gemini) = resolve_gemini_route(downloader, prober, GeminiRoutePreference::Auto).unwrap();
+        println!("Gemini provider={:?}\n{}", gemini.provider, String::from_utf8(payload).unwrap());
+        assert!(plans.iter().any(|plan| plan.service != AiService::Gemini && plan.provider.is_some()));
     }
 
     #[test]
@@ -3258,7 +3464,7 @@ mod tests {
         let health = controller.check(0).unwrap();
         assert_eq!(health.services[0].route, AiRouteKind::Preferred);
         assert_eq!(health.services[1].route, AiRouteKind::Preferred);
-        assert_eq!(health.services[2].route, AiRouteKind::Preferred);
+        assert_eq!(health.services[2].route, AiRouteKind::Fallback);
         assert!(health
             .services
             .iter()

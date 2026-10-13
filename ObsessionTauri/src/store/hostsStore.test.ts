@@ -122,6 +122,16 @@ describe("hosts route health store", () => {
     expect(useHostsStore.getState().error).toContain("pipe instances are busy");
   });
 
+  it("keeps the previous route health when a full repair is rejected", async () => {
+    useHostsStore.setState({ health, status: "installed" });
+    apiMock.hostsInstall.mockRejectedValue(new Error("No replacement found; previous configuration preserved"));
+    await useHostsStore.getState().install();
+    expect(useHostsStore.getState().health).toEqual(health);
+    expect(useHostsStore.getState().status).toBe("installed");
+    expect(useHostsStore.getState().busy).toBe(false);
+    expect(useHostsStore.getState().error).toContain("preserved");
+  });
+
   it("refreshes only Gemini through the dedicated command and coalesces clicks", async () => {
     let finish!: (value: HostsHealthSnapshot) => void;
     apiMock.hostsRefreshGemini.mockReturnValue(new Promise<HostsHealthSnapshot>((resolve) => { finish = resolve; }));

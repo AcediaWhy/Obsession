@@ -43,7 +43,9 @@ use obsession_runtime_protocol::{
 
 const DISCOVERY_TIMEOUT: Duration = Duration::from_millis(750);
 const OPERATION_TIMEOUT: Duration = Duration::from_secs(5);
-const HOSTS_OPERATION_TIMEOUT: Duration = Duration::from_secs(90);
+// Full selection can try several bounded sources and retry post-write checks.
+// Keep the client connected until the service has committed or rolled back.
+const HOSTS_OPERATION_TIMEOUT: Duration = Duration::from_secs(420);
 const PROXY_LAN_OPERATION_TIMEOUT: Duration = Duration::from_secs(5);
 
 static REQUEST_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -360,7 +362,7 @@ pub async fn hosts_refresh_gemini(
             call_service(
                 "hosts-refresh-gemini",
                 Request::HostsRefreshGemini(preference),
-                Duration::from_secs(240),
+                HOSTS_OPERATION_TIMEOUT,
             )
         })
         .await

@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 pub mod zapret2_recipe;
 pub mod zapret2_composition;
 
-pub const PROTOCOL_VERSION: u16 = 6;
+pub const PROTOCOL_VERSION: u16 = 7;
 pub const RUNTIME_PIPE_NAME: &str = r"\\.\pipe\ObsessionRuntime.v1";
 pub const MAX_FRAME_BYTES: usize = 64 * 1024;
 pub const MAX_REQUEST_ID_BYTES: usize = 64;
@@ -469,6 +469,7 @@ pub enum HostsProvider {
     Astracat,
     Comss,
     Xbox,
+    Bezmezhau,
 }
 
 /// A route preference, never a caller-provided address or hostname.
@@ -479,6 +480,9 @@ pub enum GeminiRoutePreference {
     Auto,
     Geohide,
     Astracat,
+    Malw,
+    Bezmezhau,
+    Comss,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -537,6 +541,10 @@ pub enum AiRouteFailureReason {
     RouteMissing,
     Offline,
     ExternalChange,
+    Challenge,
+    RegionBlocked,
+    RateLimited,
+    HttpError,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -569,7 +577,7 @@ impl HostsHealthSnapshot {
             if !services.insert(service.service)
                 || matches!(service.route, AiRouteKind::Direct) != service.provider.is_none()
                 || (matches!(service.health, AiRouteHealth::Working)
-                    && matches!(service.route, AiRouteKind::Direct))
+                    && (matches!(service.route, AiRouteKind::Direct) || service.reason.is_some()))
             {
                 return Err(ProtocolError::InvalidResponse);
             }
@@ -2013,6 +2021,26 @@ mod tests {
             serde_json::from_str::<HostsProvider>(&encoded).unwrap(),
             HostsProvider::Comss
         );
+    }
+
+    #[test]
+    fn new_ai_sources_and_challenge_health_have_strict_wire_contracts() {
+        assert_eq!(serde_json::to_string(&HostsProvider::Bezmezhau).unwrap(), "\"bezmezhau\"");
+        for preference in [GeminiRoutePreference::Bezmezhau, GeminiRoutePreference::Malw, GeminiRoutePreference::Comss] {
+            let request = RequestEnvelope::new("gemini-source", Request::HostsRefreshGemini(preference));
+            let encoded = encode_request_frame(&request).unwrap();
+            assert_eq!(decode_request_frame(&encoded).unwrap(), request);
+        }
+        let mut health = HostsHealthSnapshot {
+            preferred_provider: HostsProvider::Malw, installed: true, checked_at_unix:Some(1), repair_recommended:false,
+            services: [AiService::Chatgpt, AiService::Claude, AiService::Gemini].into_iter().map(|service| AiServiceRouteHealth {
+                service, health:AiRouteHealth::Inconclusive, route:AiRouteKind::Fallback,
+                provider:Some(HostsProvider::Bezmezhau), reason:Some(AiRouteFailureReason::Challenge),
+            }).collect(),
+        };
+        assert!(health.validate().is_ok());
+        health.services[0].health = AiRouteHealth::Working;
+        assert_eq!(health.validate(), Err(ProtocolError::InvalidResponse));
     }
 
     #[test]

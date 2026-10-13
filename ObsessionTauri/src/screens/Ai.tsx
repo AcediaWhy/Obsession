@@ -47,15 +47,20 @@ const PROVIDER_LABEL: Record<HostsRouteProvider, string> = {
   astracat: "Astracat",
   comss: "Comss",
   xbox: "Xbox DNS",
+  bezmezhau: "Bezmezhau",
 };
 
 const REASON_LABEL: Record<AiRouteFailureReason, string> = {
   timeout: "сервер не ответил вовремя",
   tls: "не удалось установить защищённое соединение",
   dns: "ошибка разрешения адреса",
-  routeMissing: "оба источника маршрута недоступны",
+  routeMissing: "не найден подходящий маршрут",
   offline: "нет подтверждённого доступа к сети",
   externalChange: "hosts изменён другой программой",
+  challenge: "откройте сервис в браузере и пройдите проверку",
+  regionBlocked: "сервис отклонил регион подключения",
+  rateLimited: "сервис временно ограничил число запросов",
+  httpError: "сервис вернул ошибку вместо ожидаемого ответа",
 };
 
 const STATUS_LABEL: Record<string, string> = {
@@ -145,9 +150,9 @@ export function AiScreen() {
               </span>
             </div>
             <p className="mt-2 text-xs leading-5 text-ink-muted">
-              Выбор выше применяется к ChatGPT и Claude. Если источник не
-              отвечает, runtime проверяет второй автоматически. Gemini можно
-              переключить отдельно ниже.
+              Для ChatGPT сначала проверяется Comss, затем выбранный источник
+              и резервный. Для Claude приоритет у выбранного источника.
+              Gemini можно переключить отдельно ниже.
             </p>
           </div>
 
@@ -174,7 +179,7 @@ export function AiScreen() {
                       <span className="mt-1 h-2 w-2 shrink-0 rounded-full bg-current" />
                     </div>
                     <div className="mt-3 text-xs font-medium">
-                      {HEALTH_LABEL[health]}
+                      {route?.reason === "challenge" ? "Нужна проверка в браузере" : HEALTH_LABEL[health]}
                     </div>
                     <div className="mt-1 min-w-0 break-words text-3xs leading-4 text-ink-muted">
                       {route
@@ -238,7 +243,7 @@ export function AiScreen() {
           <div className="flex flex-col gap-2">
             <span className="text-xs text-ink-soft">Маршрут Gemini</span>
             <div className="grid grid-cols-3 gap-2">
-              {([['auto', 'Авто'], ['geohide', 'GeoHide'], ['astracat', 'Astracat']] as const).map(([preference, label]) => (
+              {([['auto', 'Авто'], ['bezmezhau', 'Bezmezhau'], ['malw', 'Malw'], ['geohide', 'GeoHide'], ['comss', 'Comss']] as const).map(([preference, label]) => (
                 <Button key={preference} variant="ghost"
                   disabled={s.busy || !installed || !protectedHostsAvailable}
                   onClick={() => void s.refreshGemini(preference)}>
@@ -247,7 +252,7 @@ export function AiScreen() {
               ))}
             </div>
             <p className="text-3xs text-ink-muted">
-              Авто: GeoHide → Astracat → Xbox DNS → Comss. Ручной выбор сохраняется
+              Авто: Bezmezhau → Malw → GeoHide → Comss. Ручной выбор сохраняется
               при обновлении конфигурации. Если источник не ответит, текущий маршрут останется.
             </p>
             <Button
@@ -294,8 +299,8 @@ export function AiScreen() {
           <p className="text-xs leading-relaxed text-ink-muted">
             Обход изменяет системный файл hosts только после явного действия:
             снимок → выбор маршрутов → запись → системная HTTPS-проверка.
-            Неожиданный сбой записи или post-write проверки возвращает точный
-            предыдущий файл. Фоновая проверка никогда не переписывает hosts.
+            Если новый маршрут не найден или запись не прошла проверку, текущая
+            конфигурация сохраняется. Фоновая проверка не переписывает hosts.
           </p>
         </GlassPanel>
 

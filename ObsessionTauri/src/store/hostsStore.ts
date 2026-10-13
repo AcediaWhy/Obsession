@@ -124,13 +124,13 @@ export const useHostsStore = create<HostsState>((set, get) => ({
   },
 
   install: async () => {
-    set({ busy: true, error: "", health: null });
+    set({ busy: true, error: "" });
     try {
       const health = await api.hostsInstall(get().provider);
       set({ health });
       await get().refresh();
     } catch (e) {
-      set({ busy: false, error: String(e), health: null });
+      set({ busy: false, error: String(e) });
     }
   },
 
