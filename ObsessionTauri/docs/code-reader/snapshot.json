@@ -1,0 +1,293 @@
+{
+  "schema_version": 1,
+  "repository": "AcediaWhy/Obsession",
+  "source_ref": "v1.2.0",
+  "source_commit": "111889a8144070b8f2259252e1c905370b39d13b",
+  "source_date": "2026-10-13",
+  "app_version": "1.2.0",
+  "documents": [
+    {
+      "name": "installer",
+      "file": "installer.md",
+      "title": "Установщик: установка, обновление и откат",
+      "bytes": 332394,
+      "lines": 8504,
+      "sha256": "59845abed27d5f84bc56ee4a1060c2d467f8015b1c231a2ebc42cb66431e2cd0",
+      "sources": [
+        {
+          "file": "ObsessionTauri/installer/src-tauri/src/lib.rs",
+          "purpose": "Команды Setup, release/debug-ветки и пользовательская часть установки.",
+          "fence": "```",
+          "id": "source-01",
+          "language": "rust",
+          "bytes": 31352,
+          "lines": 869,
+          "sha256": "28c4d14264bdbcee1bf27492da0776b392000370faf851fa86e651c3d7d0ddd3",
+          "ends_with_newline": true
+        },
+        {
+          "file": "ObsessionTauri/installer/src-tauri/src/machine_handoff.rs",
+          "purpose": "Передача операции native worker через UAC и ожидание результата.",
+          "fence": "```",
+          "id": "source-02",
+          "language": "rust",
+          "bytes": 15628,
+          "lines": 428,
+          "sha256": "8e16910cf845727f60fc6813c979598802a585e54f69d29c932f53a6e467bcf7",
+          "ends_with_newline": true
+        },
+        {
+          "file": "ObsessionTauri/installer/src-tauri/src/machine_worker.rs",
+          "purpose": "Machine install/update/uninstall, payload, журнал, каталоги и служба.",
+          "fence": "```",
+          "id": "source-03",
+          "language": "rust",
+          "bytes": 157246,
+          "lines": 4057,
+          "sha256": "77fe10c9e6e695e76bf52e967b7af0b2805b726df795de66ac4647ab874ad2e6",
+          "ends_with_newline": true
+        },
+        {
+          "file": "ObsessionTauri/installer/src-tauri/src/installed_app.rs",
+          "purpose": "Поиск и проверка работающего установленного приложения.",
+          "fence": "```",
+          "id": "source-04",
+          "language": "rust",
+          "bytes": 11864,
+          "lines": 303,
+          "sha256": "c49cbb87d112ec785b2fd28911261631cd58736926c224de45f9e29fa689a7b0",
+          "ends_with_newline": true
+        },
+        {
+          "file": "ObsessionTauri/installer/src-tauri/src/payload_compression.rs",
+          "purpose": "Распаковка ограниченного по размеру payload и проверка хеша.",
+          "fence": "```",
+          "id": "source-05",
+          "language": "rust",
+          "bytes": 3786,
+          "lines": 107,
+          "sha256": "c77d4f5b94a51502255041e7896e4c9c0bbec165c3b2fd5b72ce9683886c31b3",
+          "ends_with_newline": true
+        },
+        {
+          "file": "ObsessionTauri/installer/src-tauri/src/upgrade.rs",
+          "purpose": "Планирование, пользовательские настройки, миграции и debug-транзакции.",
+          "fence": "```",
+          "id": "source-06",
+          "language": "rust",
+          "bytes": 89514,
+          "lines": 2499,
+          "sha256": "9f951e024e65790ae02ed0bc02ce8c7dd2d1850d9d3d7287a3868d65096d4dda",
+          "ends_with_newline": true
+        },
+        {
+          "file": "ObsessionTauri/scripts/build-setup.mjs",
+          "purpose": "Сборка приложения, ресурсов, Setup и подписанного обновления.",
+          "fence": "```",
+          "id": "source-07",
+          "language": "javascript",
+          "bytes": 10375,
+          "lines": 241,
+          "sha256": "82cba1aae8fc5c416dafca524d7df71d7b9887ae4227ddb0f8bf7051d91727fc",
+          "ends_with_newline": true
+        }
+      ]
+    },
+    {
+      "name": "runtime",
+      "file": "runtime.md",
+      "title": "Runtime: служба, процессы и восстановление",
+      "bytes": 386424,
+      "lines": 9517,
+      "sha256": "19c8fda91f8421dd8e5acddda53e61c0f7cf0e66c8105396b2608756e01e982c",
+      "sources": [
+        {
+          "file": "ObsessionTauri/runtime-service/src/lib.rs",
+          "purpose": "Dispatch, типы ошибок и контракт backend.",
+          "fence": "```",
+          "id": "source-01",
+          "language": "rust",
+          "bytes": 26790,
+          "lines": 730,
+          "sha256": "3dd4f502102ec219c3c45f23ecb8e3cdc548862d6a2526355ef293cade55d1a8",
+          "ends_with_newline": true
+        },
+        {
+          "file": "ObsessionTauri/runtime-service/src/scm.rs",
+          "purpose": "Запуск, остановка и транспорт Windows-службы.",
+          "fence": "```",
+          "id": "source-02",
+          "language": "rust",
+          "bytes": 7448,
+          "lines": 202,
+          "sha256": "e8851ce9cacf97caec23e80191bbd103ba062859a03eca60cc3aaf1e53a06047",
+          "ends_with_newline": true
+        },
+        {
+          "file": "ObsessionTauri/runtime-service/src/named_pipe.rs",
+          "purpose": "Аутентификация клиента, чтение IPC-фреймов и обработка запросов.",
+          "fence": "```",
+          "id": "source-03",
+          "language": "rust",
+          "bytes": 32848,
+          "lines": 896,
+          "sha256": "a2ac0d3f0feb2b6c4ce661c4291d519f628b32daab26286bfb2b49e7ff88fb6d",
+          "ends_with_newline": true
+        },
+        {
+          "file": "ObsessionTauri/runtime-service/src/protected_backend.rs",
+          "purpose": "Связь службы с процессами, hosts и recovery.",
+          "fence": "```",
+          "id": "source-04",
+          "language": "rust",
+          "bytes": 80320,
+          "lines": 1874,
+          "sha256": "0d919ee4cba64f50dc6a9d922c4316351488cf4cd306e4a65175fa17533b299a",
+          "ends_with_newline": true
+        },
+        {
+          "file": "ObsessionTauri/runtime-service/src/dpi_executor.rs",
+          "purpose": "Запуск, идентичность, Job Objects и завершение процессов.",
+          "fence": "```",
+          "id": "source-05",
+          "language": "rust",
+          "bytes": 40611,
+          "lines": 1067,
+          "sha256": "75c9593d38ebb9448a93c4d11a1c97109b1028707b0a3e8cc25d1aa08fe24b59",
+          "ends_with_newline": true
+        },
+        {
+          "file": "ObsessionTauri/runtime-service/src/tcp_timestamps.rs",
+          "purpose": "Журнал и временное изменение TCP timestamps для Legacy.",
+          "fence": "```",
+          "id": "source-06",
+          "language": "rust",
+          "bytes": 17621,
+          "lines": 516,
+          "sha256": "b2b8ff1634a93a3ba9c94620093ca913bd32e7c9cfa661a03af2d5ed21e14ce1",
+          "ends_with_newline": true
+        },
+        {
+          "file": "ObsessionTauri/runtime-service/src/hosts_controller.rs",
+          "purpose": "Получение ИИ-маршрутов, проверки, запись hosts и откат.",
+          "fence": "```",
+          "id": "source-07",
+          "language": "rust",
+          "bytes": 148173,
+          "lines": 3735,
+          "sha256": "7d5c47c65d01c464c4f85ddb6b22495fc1796424d4be68919c50d406c9a1b73e",
+          "ends_with_newline": true
+        },
+        {
+          "file": "ObsessionTauri/runtime-service/src/legacy_recovery_transaction.rs",
+          "purpose": "Переходы recovery-транзакции и передача preflight.",
+          "fence": "```",
+          "id": "source-08",
+          "language": "rust",
+          "bytes": 18951,
+          "lines": 497,
+          "sha256": "d2134ed8540f735c8f6303160dd8bd2510d1913493fa646e275f72a56b2d632e",
+          "ends_with_newline": true
+        }
+      ]
+    },
+    {
+      "name": "zapret2",
+      "file": "zapret2.md",
+      "title": "Zapret2: профили, методы и подбор",
+      "bytes": 451832,
+      "lines": 12119,
+      "sha256": "712be76a684830793b88d68b52c4cca43a792683716d1510ae42dd601ba9f4ec",
+      "sources": [
+        {
+          "file": "ObsessionTauri/src-tauri/resources/strategy-packs/builtin/manifest.json",
+          "purpose": "Все определения встроенного пака: стратегии, аргументы и рецепты.",
+          "fence": "```",
+          "id": "source-01",
+          "language": "json",
+          "bytes": 36447,
+          "lines": 1512,
+          "sha256": "e9d339de0e48a015f2ea05fdc09252a0b5f16f328c058057594fcff36520187d",
+          "ends_with_newline": true
+        },
+        {
+          "file": "ObsessionTauri/runtime-protocol/src/zapret2_recipe.rs",
+          "purpose": "Типизированные рецепты и источники кандидатов.",
+          "fence": "```",
+          "id": "source-02",
+          "language": "rust",
+          "bytes": 7834,
+          "lines": 230,
+          "sha256": "8fd2c17983946eb21e0f1915f69b5b39a68686512348e3e67760c38618a1dfa7",
+          "ends_with_newline": true
+        },
+        {
+          "file": "ObsessionTauri/runtime-service/src/zapret2_pack.rs",
+          "purpose": "Проверка и компиляция профилей для службы.",
+          "fence": "```",
+          "id": "source-03",
+          "language": "rust",
+          "bytes": 49214,
+          "lines": 1180,
+          "sha256": "bec5c6a3826869708a4911df5629a66b7ce7183d823cfbc549f320e7872d6d06",
+          "ends_with_newline": true
+        },
+        {
+          "file": "ObsessionTauri/src-tauri/src/protected_runtime/zapret2_picker.rs",
+          "purpose": "Каталог, подготовка кандидатов, подбор и применение.",
+          "fence": "```",
+          "id": "source-04",
+          "language": "rust",
+          "bytes": 91400,
+          "lines": 2424,
+          "sha256": "901cfc5e6018c4d899c8db7f0cd5db1ebffc345b53651c0713bc5c9c4b61e419",
+          "ends_with_newline": true
+        },
+        {
+          "file": "ObsessionTauri/src-tauri/src/protected_runtime/zapret2_tournament.rs",
+          "purpose": "Разнообразие кандидатов, подтверждения и выбор результата.",
+          "fence": "```",
+          "id": "source-05",
+          "language": "rust",
+          "bytes": 26324,
+          "lines": 698,
+          "sha256": "5af9e18d172cb4d3294d045ebf3fd21062033472fa0ad7998570ffade29b0ec0",
+          "ends_with_newline": true
+        },
+        {
+          "file": "ObsessionTauri/src-tauri/src/protected_runtime/zapret2_measure.rs",
+          "purpose": "Измерения, сравнимость и доказательства по функциям.",
+          "fence": "```",
+          "id": "source-06",
+          "language": "rust",
+          "bytes": 81108,
+          "lines": 2106,
+          "sha256": "1e60e3f4af6f7b37ed84dc194d7d47e8f3e5c46c5c0df44726ac43fa782dae67",
+          "ends_with_newline": true
+        },
+        {
+          "file": "ObsessionTauri/src-tauri/resources/strategy-packs/builtin/lua/zapret-antidpi.lua",
+          "purpose": "Lua-функции обхода, поставляемые с движком.",
+          "fence": "```",
+          "id": "source-07",
+          "language": "lua",
+          "bytes": 51782,
+          "lines": 1250,
+          "sha256": "31c9dd75b0bd55e98e5306293f2be81e9d2ecadcbbf9157394ff37dcff7dc85a",
+          "ends_with_newline": true
+        },
+        {
+          "file": "ObsessionTauri/src-tauri/resources/strategy-packs/builtin/lua/zapret-lib.lua",
+          "purpose": "Общие Lua-функции, используемые методами обхода.",
+          "fence": "```",
+          "id": "source-08",
+          "language": "lua",
+          "bytes": 92970,
+          "lines": 2719,
+          "sha256": "b67a470f23b00a8d6e732c4e5135a39b224511e0b71809d5f4616adf62674980",
+          "ends_with_newline": true
+        }
+      ]
+    }
+  ]
+}

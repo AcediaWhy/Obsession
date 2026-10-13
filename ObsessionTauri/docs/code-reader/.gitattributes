@@ -1,0 +1,4 @@
+# Source snapshots retain upstream trailing spaces inside code blocks.
+installer.md whitespace=-blank-at-eol
+runtime.md whitespace=-blank-at-eol
+zapret2.md whitespace=-blank-at-eol
