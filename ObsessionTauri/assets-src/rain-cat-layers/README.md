@@ -1,6 +1,6 @@
 # Rain cat: source-registered layers v1
 
-Prepared locally from the user-supplied original with Pillow/numpy, without image generation. `prepare_layers.py` reproduces the exports. The older `PREPARATION.md` documents the rejected generation attempt, not the status of this set.
+Prepared locally from the user-supplied original with Pillow/numpy, without image generation. `prepare_layers.py` reproduces the exports.
 
 ## Files
 
